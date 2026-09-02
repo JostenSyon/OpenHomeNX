@@ -178,7 +178,7 @@ int BankManager::countBanks(const std::string& basePath, GameType game) {
     return count;
 }
 
-bool BankManager::createBank(const std::string& name) {
+bool BankManager::createBank(const std::string& name, bool crossGen) {
     std::string safe = sanitizeName(name);
     if (safe.empty())
         return false;
@@ -192,6 +192,8 @@ bool BankManager::createBank(const std::string& name) {
 
     // Create an empty bank file
     Bank empty;
+    if (crossGen)
+        empty.makeCrossGen();
     if (!empty.save(path))
         return false;
 

@@ -731,6 +731,206 @@ pub extern "C" fn openhome_get_pkm_original_backup(
     copy_len as u32
 }
 
+// -------------------------------------------------------------------
+// OHPKM universal storage FFI (approccio B — banca cross-gen)
+// -------------------------------------------------------------------
+
+#[cfg(not(any(feature = "alloc", feature = "std")))]
+#[no_mangle]
+pub extern "C" fn openhome_get_ohpkm_bytes(
+    _handle: *mut PkmHandle,
+    _out: *mut u8,
+    _out_len: usize,
+) -> u32 {
+    0
+}
+#[cfg(any(feature = "alloc", feature = "std"))]
+#[no_mangle]
+pub extern "C" fn openhome_get_ohpkm_bytes(
+    handle: *mut PkmHandle,
+    out: *mut u8,
+    out_len: usize,
+) -> u32 {
+    if handle.is_null() || out.is_null() || out_len == 0 {
+        return 0;
+    }
+    let pkm = unsafe { &*handle };
+    let bytes = pkm.ohpkm.to_bytes();
+    if bytes.len() > out_len {
+        return 0;
+    }
+    let dst = unsafe { core::slice::from_raw_parts_mut(out, bytes.len()) };
+    dst.copy_from_slice(&bytes);
+    bytes.len() as u32
+}
+
+#[cfg(not(any(feature = "alloc", feature = "std")))]
+#[no_mangle]
+pub extern "C" fn openhome_load_ohpkm(_data: *const u8, _len: usize) -> *mut PkmHandle {
+    core::ptr::null_mut()
+}
+#[cfg(any(feature = "alloc", feature = "std"))]
+#[no_mangle]
+pub extern "C" fn openhome_load_ohpkm(data: *const u8, len: usize) -> *mut PkmHandle {
+    if data.is_null() || len == 0 {
+        return core::ptr::null_mut();
+    }
+    let slice = unsafe { core::slice::from_raw_parts(data, len) };
+    match pkm_rs::ohpkm::OhpkmV2::from_bytes(slice) {
+        Ok(ohpkm) => Box::into_raw(Box::new(PkmHandle { ohpkm })),
+        Err(_) => core::ptr::null_mut(),
+    }
+}
+
+// --- Accessor read-only su PkmHandle (nessuna materializzazione) ---
+
+#[cfg(not(any(feature = "alloc", feature = "std")))]
+#[no_mangle]
+pub extern "C" fn openhome_ohpkm_species(_handle: *mut PkmHandle) -> u16 {
+    0
+}
+#[cfg(any(feature = "alloc", feature = "std"))]
+#[no_mangle]
+pub extern "C" fn openhome_ohpkm_species(handle: *mut PkmHandle) -> u16 {
+    if handle.is_null() {
+        return 0;
+    }
+    let pkm = unsafe { &*handle };
+    pkm.ohpkm.species_and_form().get_ndex() as u16
+}
+
+#[cfg(not(any(feature = "alloc", feature = "std")))]
+#[no_mangle]
+pub extern "C" fn openhome_ohpkm_form(_handle: *mut PkmHandle) -> u16 {
+    0
+}
+#[cfg(any(feature = "alloc", feature = "std"))]
+#[no_mangle]
+pub extern "C" fn openhome_ohpkm_form(handle: *mut PkmHandle) -> u16 {
+    if handle.is_null() {
+        return 0;
+    }
+    let pkm = unsafe { &*handle };
+    pkm.ohpkm.species_and_form().get_forme_index()
+}
+
+#[cfg(not(any(feature = "alloc", feature = "std")))]
+#[no_mangle]
+pub extern "C" fn openhome_ohpkm_level(_handle: *mut PkmHandle) -> u8 {
+    0
+}
+#[cfg(any(feature = "alloc", feature = "std"))]
+#[no_mangle]
+pub extern "C" fn openhome_ohpkm_level(handle: *mut PkmHandle) -> u8 {
+    if handle.is_null() {
+        return 0;
+    }
+    let pkm = unsafe { &*handle };
+    use pkm_rs::traits::HasSpeciesAndForm;
+    pkm.ohpkm.calculate_level()
+}
+
+#[cfg(not(any(feature = "alloc", feature = "std")))]
+#[no_mangle]
+pub extern "C" fn openhome_ohpkm_is_shiny(_handle: *mut PkmHandle) -> bool {
+    false
+}
+#[cfg(any(feature = "alloc", feature = "std"))]
+#[no_mangle]
+pub extern "C" fn openhome_ohpkm_is_shiny(handle: *mut PkmHandle) -> bool {
+    if handle.is_null() {
+        return false;
+    }
+    let pkm = unsafe { &*handle };
+    pkm.ohpkm.is_shiny()
+}
+
+#[cfg(not(any(feature = "alloc", feature = "std")))]
+#[no_mangle]
+pub extern "C" fn openhome_ohpkm_gender(_handle: *mut PkmHandle) -> u8 {
+    0
+}
+#[cfg(any(feature = "alloc", feature = "std"))]
+#[no_mangle]
+pub extern "C" fn openhome_ohpkm_gender(handle: *mut PkmHandle) -> u8 {
+    if handle.is_null() {
+        return 0;
+    }
+    let pkm = unsafe { &*handle };
+    pkm.ohpkm.gender().to_byte()
+}
+
+#[cfg(not(any(feature = "alloc", feature = "std")))]
+#[no_mangle]
+pub extern "C" fn openhome_ohpkm_held_item(_handle: *mut PkmHandle) -> u16 {
+    0
+}
+#[cfg(any(feature = "alloc", feature = "std"))]
+#[no_mangle]
+pub extern "C" fn openhome_ohpkm_held_item(handle: *mut PkmHandle) -> u16 {
+    if handle.is_null() {
+        return 0;
+    }
+    let pkm = unsafe { &*handle };
+    pkm.ohpkm.held_item_index()
+}
+
+#[cfg(not(any(feature = "alloc", feature = "std")))]
+#[no_mangle]
+pub extern "C" fn openhome_ohpkm_origin_gen(_handle: *mut PkmHandle) -> u8 {
+    0
+}
+#[cfg(any(feature = "alloc", feature = "std"))]
+#[no_mangle]
+pub extern "C" fn openhome_ohpkm_origin_gen(handle: *mut PkmHandle) -> u8 {
+    if handle.is_null() {
+        return 0;
+    }
+    let pkm = unsafe { &*handle };
+    match pkm.ohpkm.game_of_origin().generation() {
+        pkm_rs_types::Generation::G1 => 1,
+        pkm_rs_types::Generation::G2 => 2,
+        pkm_rs_types::Generation::G3 => 3,
+        pkm_rs_types::Generation::G4 => 4,
+        pkm_rs_types::Generation::G5 => 5,
+        pkm_rs_types::Generation::G6 => 6,
+        pkm_rs_types::Generation::G7 => 7,
+        pkm_rs_types::Generation::G8 => 8,
+        pkm_rs_types::Generation::G9 => 9,
+        pkm_rs_types::Generation::None => 0,
+    }
+}
+
+#[cfg(not(any(feature = "alloc", feature = "std")))]
+#[no_mangle]
+pub extern "C" fn openhome_ohpkm_nickname(
+    _handle: *mut PkmHandle,
+    _out: *mut u8,
+    _out_len: usize,
+) -> u32 {
+    0
+}
+#[cfg(any(feature = "alloc", feature = "std"))]
+#[no_mangle]
+pub extern "C" fn openhome_ohpkm_nickname(
+    handle: *mut PkmHandle,
+    out: *mut u8,
+    out_len: usize,
+) -> u32 {
+    if handle.is_null() || out.is_null() || out_len == 0 {
+        return 0;
+    }
+    let pkm = unsafe { &*handle };
+    let name = alloc::string::String::from(&pkm.ohpkm.nickname());
+    let bytes = name.as_bytes();
+    if bytes.len() > out_len {
+        return 0;
+    }
+    let dst = unsafe { core::slice::from_raw_parts_mut(out, bytes.len()) };
+    dst.copy_from_slice(bytes);
+    bytes.len() as u32
+}
+
 #[no_mangle]
 pub extern "C" fn openhome_free_ptr(ptr: *mut c_void) {
     if ptr.is_null() {
@@ -1991,6 +2191,107 @@ mod tests {
             openhome_free_pkm(h);
             panic!("all-0xFF bytes must not parse as a valid Pk8");
         }
+    }
+
+    // TASK #1 — OHPKM universal storage round-trip + accessor
+    // Pk8 -> convert_with_backup -> to_bytes -> openhome_load_ohpkm -> from_bytes
+    // Verifica species/level/nickname e che i simboli #[no_mangle] esistano.
+    #[test]
+    fn ohpkm_bytes_roundtrip_and_accessors() {
+        use pkm_rs::ohpkm::OhpkmV2;
+        use pkm_rs::traits::HasSpeciesAndForm;
+
+        // Build a known Pk8 with nickname and exp for level check
+        let mut src_ohpkm = make_test_ohpkm(OriginGame::Sword, test_moves());
+        src_ohpkm.set_nickname(pkm_rs_types::strings::SizedUtf16String::<26>::from("PikaCross"));
+        src_ohpkm.set_held_item_index(17);
+        // expected values before OHPKM serialization
+        let expected_species = src_ohpkm.species_and_form().get_ndex();
+        let expected_form = src_ohpkm.species_and_form().get_forme_index();
+        let expected_level = src_ohpkm.calculate_level();
+        let expected_shiny = src_ohpkm.is_shiny();
+        let expected_gender = src_ohpkm.gender().to_byte();
+        let expected_held = src_ohpkm.held_item_index();
+        let expected_origin_gen = match src_ohpkm.game_of_origin().generation() {
+            pkm_rs_types::Generation::G1 => 1,
+            pkm_rs_types::Generation::G2 => 2,
+            pkm_rs_types::Generation::G3 => 3,
+            pkm_rs_types::Generation::G4 => 4,
+            pkm_rs_types::Generation::G5 => 5,
+            pkm_rs_types::Generation::G6 => 6,
+            pkm_rs_types::Generation::G7 => 7,
+            pkm_rs_types::Generation::G8 => 8,
+            pkm_rs_types::Generation::G9 => 9,
+            pkm_rs_types::Generation::None => 0,
+        };
+        let expected_nick = src_ohpkm.nickname().to_string();
+
+        // Pk8 -> OHPKM with backup (real save path)
+        let pk8 = Pk8::from_ohpkm(&src_ohpkm, ConvertStrategy::default()).expect("materialize Pk8");
+        let ohpkm = OhpkmV2::convert_with_backup(&pk8, &pk8.to_party_bytes()).expect("convert_with_backup");
+
+        // Serialize via to_bytes -> FFI get_ohpkm_bytes / load_ohpkm
+        let handle_orig = Box::into_raw(Box::new(PkmHandle { ohpkm }));
+        let mut buf = vec![0u8; 8192];
+        let n = openhome_get_ohpkm_bytes(handle_orig, buf.as_mut_ptr(), buf.len());
+        assert!(n > 0, "openhome_get_ohpkm_bytes must return >0");
+        // buffer too small -> 0
+        let mut small = vec![0u8; 8];
+        assert_eq!(openhome_get_ohpkm_bytes(handle_orig, small.as_mut_ptr(), small.len()), 0);
+        assert_eq!(openhome_get_ohpkm_bytes(handle_orig, core::ptr::null_mut(), 0), 0);
+        assert_eq!(openhome_get_ohpkm_bytes(core::ptr::null_mut(), buf.as_mut_ptr(), buf.len()), 0);
+
+        let loaded = openhome_load_ohpkm(buf.as_ptr(), n as usize);
+        assert!(!loaded.is_null(), "openhome_load_ohpkm must succeed on valid OHPKM bytes");
+        // error cases
+        assert!(openhome_load_ohpkm(core::ptr::null(), 10).is_null());
+        assert!(openhome_load_ohpkm(buf.as_ptr(), 0).is_null());
+        let mut bad = buf.clone();
+        if !bad.is_empty() { bad[0] ^= 0xFF; }
+        assert!(openhome_load_ohpkm(bad.as_ptr(), bad.len()).is_null());
+
+        // Verify via direct OhpkmV2::from_bytes and via accessors
+        let reparsed = OhpkmV2::from_bytes(&buf[..n as usize]).expect("OhpkmV2::from_bytes");
+        assert_eq!(reparsed.species_and_form().get_ndex(), expected_species);
+        assert_eq!(reparsed.calculate_level(), expected_level);
+        assert_eq!(reparsed.nickname().to_string(), expected_nick);
+
+        // Accessors on loaded handle
+        assert_eq!(openhome_ohpkm_species(loaded), expected_species as u16);
+        assert_eq!(openhome_ohpkm_form(loaded), expected_form);
+        assert_eq!(openhome_ohpkm_level(loaded), expected_level);
+        assert_eq!(openhome_ohpkm_is_shiny(loaded), expected_shiny);
+        assert_eq!(openhome_ohpkm_gender(loaded), expected_gender);
+        assert_eq!(openhome_ohpkm_held_item(loaded), expected_held);
+        assert_eq!(openhome_ohpkm_origin_gen(loaded), expected_origin_gen);
+        // nickname
+        let mut nick_buf = vec![0u8; 64];
+        let nick_len = openhome_ohpkm_nickname(loaded, nick_buf.as_mut_ptr(), nick_buf.len());
+        assert!(nick_len > 0);
+        assert_eq!(&nick_buf[..nick_len as usize], expected_nick.as_bytes());
+        // nickname buffer too small -> 0
+        let mut tiny = vec![0u8; 2];
+        assert_eq!(openhome_ohpkm_nickname(loaded, tiny.as_mut_ptr(), tiny.len()), 0);
+        assert_eq!(openhome_ohpkm_nickname(core::ptr::null_mut(), nick_buf.as_mut_ptr(), nick_buf.len()), 0);
+        assert_eq!(openhome_ohpkm_nickname(loaded, core::ptr::null_mut(), nick_buf.len()), 0);
+        // null handle accessors -> defaults
+        assert_eq!(openhome_ohpkm_species(core::ptr::null_mut()), 0);
+        assert_eq!(openhome_ohpkm_is_shiny(core::ptr::null_mut()), false);
+
+        // Verify symbols exist via direct calls (if they link, they exist)
+        let _ = openhome_get_ohpkm_bytes as *const ();
+        let _ = openhome_load_ohpkm as *const ();
+        let _ = openhome_ohpkm_species as *const ();
+        let _ = openhome_ohpkm_form as *const ();
+        let _ = openhome_ohpkm_level as *const ();
+        let _ = openhome_ohpkm_is_shiny as *const ();
+        let _ = openhome_ohpkm_gender as *const ();
+        let _ = openhome_ohpkm_held_item as *const ();
+        let _ = openhome_ohpkm_origin_gen as *const ();
+        let _ = openhome_ohpkm_nickname as *const ();
+
+        unsafe { openhome_free_pkm(handle_orig) };
+        unsafe { openhome_free_pkm(loaded) };
     }
 
 }

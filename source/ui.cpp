@@ -4,6 +4,7 @@
 #include "pokemon_ffi.h"
 #include "led.h"
 #include "i18n.h"
+#include "debug_log.h"
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -627,13 +628,20 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
         // update check. Cheap count poll, rising edge only.
         if (screen_ == AppScreen::GameSelector && !showGameSelMenu_) {
             static u32 s_lastUsbCount = 0;
+            static u32 s_lastUsbPhys  = 0;
             u32 usbCount = usbHsFsGetMountedDeviceCount();
-            if (usbCount > s_lastUsbCount) {
-                s_lastUsbCount = usbCount;
+            u32 usbPhys  = usbHsFsGetPhysicalDeviceCount();
+            if (usbCount != s_lastUsbCount || usbPhys != s_lastUsbPhys) {
+                DebugLog::line("usb hotplug: physical %u->%u mounted %u->%u",
+                               s_lastUsbPhys, usbPhys, s_lastUsbCount, usbCount);
+            }
+            bool rising = (usbCount > s_lastUsbCount);
+            s_lastUsbCount = usbCount;
+            s_lastUsbPhys  = usbPhys;
+            if (rising) {
+                DebugLog::line("usb hotplug: running update check");
                 if (checkForUpdate()) { running = false; break; }
                 markDirty();
-            } else {
-                s_lastUsbCount = usbCount;
             }
         }
 #endif

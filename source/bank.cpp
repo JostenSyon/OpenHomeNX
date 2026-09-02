@@ -7,6 +7,40 @@ Bank::Bank() {
     boxNames_.resize(boxCount_);
 }
 
+void Bank::makeCrossGen() {
+    crossGen_    = true;
+    gameType_    = GameType::S;   // pivot only — slots are OHPKM, not PK9
+    boxCount_    = 32;
+    slotsPerBox_ = 30;
+    slotSize_    = PokeCrypto::SIZE_9PARTY;
+    slots_.clear();
+    ohpkmSlots_.assign((size_t)boxCount_ * slotsPerBox_, {});
+    boxNames_.assign(boxCount_, std::string());
+}
+
+const std::vector<uint8_t>& Bank::ohpkmAt(int box, int slot) const {
+    static const std::vector<uint8_t> kEmpty;
+    if (!crossGen_) return kEmpty;
+    int idx = slotIndex(box, slot);
+    if (idx < 0 || idx >= (int)ohpkmSlots_.size()) return kEmpty;
+    return ohpkmSlots_[idx];
+}
+
+void Bank::setOhpkmAt(int box, int slot, std::vector<uint8_t> blob) {
+    if (!crossGen_) return;
+    int idx = slotIndex(box, slot);
+    if (idx < 0 || idx >= (int)ohpkmSlots_.size()) return;
+    if (blob.size() > OHPKM_MAX_BLOB) return;
+    ohpkmSlots_[idx] = std::move(blob);
+}
+
+void Bank::clearOhpkmAt(int box, int slot) {
+    if (!crossGen_) return;
+    int idx = slotIndex(box, slot);
+    if (idx < 0 || idx >= (int)ohpkmSlots_.size()) return;
+    ohpkmSlots_[idx].clear();
+}
+
 void Bank::setGameType(GameType g) {
     gameType_ = g;
     auto& info   = gameInfo(g);
@@ -39,6 +73,7 @@ bool Bank::isValidFile(const std::string& path) {
         case VERSION_LA:
         case VERSION_40BOX:
         case VERSION_32BOX:
+        case VERSION_CROSSGEN:
             return true;
         default:
             return false;
@@ -61,6 +96,40 @@ bool Bank::load(const std::string& path) {
 
     uint32_t version = 0;
     file.read(reinterpret_cast<char*>(&version), 4);
+
+    if (version == VERSION_CROSSGEN) {
+        crossGen_    = true;
+        gameType_    = GameType::S;
+        boxCount_    = 32;
+        slotsPerBox_ = 30;
+        slotSize_    = PokeCrypto::SIZE_9PARTY;
+        slots_.clear();
+        const int total = boxCount_ * slotsPerBox_;
+        ohpkmSlots_.assign(total, {});
+        boxNames_.assign(boxCount_, std::string());
+
+        file.seekg(HEADER_SIZE);
+        uint32_t slotCount = 0;
+        if (!file.read(reinterpret_cast<char*>(&slotCount), 4)) return true;
+        int n = (int)slotCount < total ? (int)slotCount : total;
+        for (int i = 0; i < n; i++) {
+            uint32_t len = 0;
+            if (!file.read(reinterpret_cast<char*>(&len), 4)) return true;
+            if (len == 0) continue;
+            if (len > OHPKM_MAX_BLOB) return true; // corrupt — stop cleanly
+            std::vector<uint8_t> blob(len);
+            if (!file.read(reinterpret_cast<char*>(blob.data()), len)) return true;
+            ohpkmSlots_[i] = std::move(blob);
+        }
+        for (int i = 0; i < boxCount_; i++) {
+            char nameBuf[BOX_NAME_SIZE] = {};
+            if (!file.read(nameBuf, BOX_NAME_SIZE)) break;
+            int len = 0;
+            while (len < BOX_NAME_SIZE && nameBuf[len] != '\0') len++;
+            boxNames_[i] = std::string(nameBuf, len);
+        }
+        return true;
+    }
 
     int fileBoxCount;
     int fileSlotSize;
@@ -158,6 +227,31 @@ bool Bank::save(const std::string& path) {
     if (!file.is_open())
         return false;
 
+    if (crossGen_) {
+        file.write(MAGIC, 8);
+        uint32_t ver = VERSION_CROSSGEN;
+        file.write(reinterpret_cast<const char*>(&ver), 4);
+        uint32_t reserved = 0;
+        file.write(reinterpret_cast<const char*>(&reserved), 4);
+
+        uint32_t slotCount = static_cast<uint32_t>(ohpkmSlots_.size());
+        file.write(reinterpret_cast<const char*>(&slotCount), 4);
+        for (const std::vector<uint8_t>& b : ohpkmSlots_) {
+            uint32_t len = static_cast<uint32_t>(b.size());
+            file.write(reinterpret_cast<const char*>(&len), 4);
+            if (len)
+                file.write(reinterpret_cast<const char*>(b.data()), len);
+        }
+        for (int i = 0; i < boxCount_; i++) {
+            char nameBuf[BOX_NAME_SIZE] = {};
+            if (i < (int)boxNames_.size())
+                std::memcpy(nameBuf, boxNames_[i].c_str(),
+                            std::min((int)boxNames_[i].size(), BOX_NAME_SIZE));
+            file.write(nameBuf, BOX_NAME_SIZE);
+        }
+        return file.good();
+    }
+
     // Write header
     file.write(MAGIC, 8);
     uint32_t ver = fileVersion();
@@ -203,6 +297,7 @@ bool Bank::save(const std::string& path) {
 }
 
 Pokemon Bank::getSlot(int box, int slot) const {
+    if (crossGen_) return Pokemon{}; // cross-gen slots are OHPKM, use ohpkmAt()
     int idx = slotIndex(box, slot);
     if (idx < 0 || idx >= totalSlots())
         return Pokemon{};
@@ -212,6 +307,7 @@ Pokemon Bank::getSlot(int box, int slot) const {
 }
 
 void Bank::setSlot(int box, int slot, const Pokemon& pkm) {
+    if (crossGen_) return;
     int idx = slotIndex(box, slot);
     if (idx < 0 || idx >= totalSlots())
         return;
@@ -219,6 +315,7 @@ void Bank::setSlot(int box, int slot, const Pokemon& pkm) {
 }
 
 void Bank::clearSlot(int box, int slot) {
+    if (crossGen_) { clearOhpkmAt(box, slot); return; }
     int idx = slotIndex(box, slot);
     if (idx < 0 || idx >= totalSlots())
         return;

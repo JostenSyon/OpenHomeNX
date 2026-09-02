@@ -20,3 +20,6 @@ __pycache__/
 
 # vendored USB FS lib clone (FAT-only ISC build in ./libusbhsfs/lib) — its own git repo
 /libusbhsfs/
+
+# release artifacts
+/dist/

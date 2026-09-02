@@ -18,13 +18,6 @@
 int main(int argc, char* argv[]) {
     romfsInit();
 
-#ifdef OH_USB_UPDATE
-    // USB Mass Storage host: lets "Check for update" scan an inserted USB drive
-    // for a newer OpenHomeNX.nro. FAT/exFAT only (ISC build). Spawns one bg
-    // thread; failure is non-fatal (the SD update/ folder still works).
-    usbHsFsInitialize(0);
-#endif
-
     // Determine base path — everything (banks/, save mount "main", crypto.cfg,
     // debug.enable, themes, language.txt, update/) lives next to the NRO, so it
     // follows wherever OpenHomeNX.nro is placed (e.g. sdmc:/switch/OpenHomeNX/).
@@ -55,6 +48,14 @@ int main(int argc, char* argv[]) {
 
     ledInitWithPath(basePath.c_str());
     DebugLog::init(basePath);
+
+#ifdef OH_USB_UPDATE
+    // USB Mass Storage host: lets "Check for update" scan an inserted USB drive
+    // for a newer OpenHomeNX.nro. FAT/exFAT only (ISC build). Spawns one bg
+    // thread; failure is non-fatal (the SD update/ folder still works).
+    Result usbRc = usbHsFsInitialize(0);
+    DebugLog::line("usbHsFsInitialize -> 0x%08X", (unsigned)usbRc);
+#endif
 
     std::string savePath = basePath + "main";
 

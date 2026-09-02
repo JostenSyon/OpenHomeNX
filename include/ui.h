@@ -298,6 +298,7 @@ private:
     int  bankSelCursor_ = 0;
     int  bankSelScroll_ = 0;
     bool showDeleteConfirm_ = false;
+    bool newBankCrossGen_ = false;
 
     TextInputPurpose textInputPurpose_;
     std::string textInputBuffer_;
@@ -506,6 +507,9 @@ private:
     // M6 transfer-on-drop.
     // Game type whose stored PKM layout a placement into `panel` will use.
     GameType destGameFor(Panel panel) const;
+    // True when `panel` targets a cross-gen bank (slots hold OHPKM, no
+    // per-format conversion on the way in).
+    bool destIsCrossGenBank(Panel panel) const;
     // Prepare `pkm` for placement into `panel`: no-op when the destination
     // stores the same layout, otherwise convert through the OH engine.
     // Returns false WITHOUT touching `pkm` when the conversion is impossible

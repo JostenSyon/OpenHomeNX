@@ -18,7 +18,7 @@ public:
     void refresh();
     const std::vector<BankInfo>& list() const;
 
-    bool createBank(const std::string& name);
+    bool createBank(const std::string& name, bool crossGen = false);
     // True if a bank file with this (sanitized) name already exists in the
     // current game folder. Used to give feedback when a create is rejected.
     bool bankExists(const std::string& name) const;

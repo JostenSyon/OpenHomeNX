@@ -728,18 +728,25 @@ bool UI::checkForUpdate() {
 #else
         "0.0.0";
 #endif
+    DebugLog::line("update: check start, running v%s, base=%s, applet=%d",
+                   curVer.c_str(), basePath_.c_str(), (int)appletMode_);
 
     // Candidate NRO locations, checked in order. USB drives (FAT/exFAT) come
     // first when built with OH_USB_UPDATE; the SD "update/" folder always works.
     std::vector<std::string> candidates;
 #ifdef OH_USB_UPDATE
     {
+        u32 phys = usbHsFsGetPhysicalDeviceCount();
         u32 n = usbHsFsGetMountedDeviceCount();
+        DebugLog::line("update: USB physical=%u mounted=%u", phys, n);
         if (n > 0) {
             if (n > 8) n = 8;
             std::vector<UsbHsFsDevice> devs(n);
             u32 got = usbHsFsListMountedDevices(devs.data(), n);
             for (u32 i = 0; i < got; i++) {
+                DebugLog::line("update: UMS[%u] name='%s' fs=%u cap=%llu",
+                               i, devs[i].name, (unsigned)devs[i].fs_type,
+                               (unsigned long long)devs[i].capacity);
                 std::string mnt = devs[i].name; // e.g. "ums0:"
                 candidates.push_back(mnt + "/OpenHomeNX.nro");
                 candidates.push_back(mnt + "/switch/OpenHomeNX/OpenHomeNX.nro");
@@ -753,12 +760,19 @@ bool UI::checkForUpdate() {
     std::string foundPath, foundVer;
     for (const auto& c : candidates) {
         std::string v;
-        if (readNroDisplayVersion(c, v) && compareVersionStrings(v, curVer) > 0) {
+        bool ok = readNroDisplayVersion(c, v);
+        int cmp = ok ? compareVersionStrings(v, curVer) : 0;
+        DebugLog::line("update: try '%s' -> read=%d ver='%s' cmp=%d",
+                       c.c_str(), (int)ok, ok ? v.c_str() : "", cmp);
+        if (ok && cmp > 0) {
             foundPath = c;
             foundVer = v;
             break;
         }
     }
+    DebugLog::line("update: result found='%s' v%s",
+                   foundPath.empty() ? "(none)" : foundPath.c_str(),
+                   foundVer.c_str());
 
     if (foundPath.empty()) {
         showMessageAndWait("Update", "No newer build found.\nCurrent version: v" + curVer +

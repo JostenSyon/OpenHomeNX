@@ -34,6 +34,17 @@ bool openhome_save_pkm_to_file(PkmHandle *pkm_handle, uint32_t slot);
 uint32_t openhome_get_pkm_box_bytes(PkmHandle *pkm_handle, uint8_t *out_buf, size_t out_len);
 uint32_t openhome_get_pkm_box_bytes_for_gen(PkmHandle *pkm_handle, uint32_t gen, uint8_t *out_buf, size_t out_len);
 uint32_t openhome_get_pkm_original_backup(PkmHandle *pkm_handle, uint8_t *out_buf, size_t out_len);
+// OHPKM universal storage (bank cross-gen)
+uint32_t openhome_get_ohpkm_bytes(PkmHandle *handle, uint8_t *out_buf, size_t out_len);
+PkmHandle *openhome_load_ohpkm(const uint8_t *data, size_t len);
+uint16_t openhome_ohpkm_species(PkmHandle *handle);
+uint16_t openhome_ohpkm_form(PkmHandle *handle);
+uint8_t openhome_ohpkm_level(PkmHandle *handle);
+bool openhome_ohpkm_is_shiny(PkmHandle *handle);
+uint8_t openhome_ohpkm_gender(PkmHandle *handle);
+uint16_t openhome_ohpkm_held_item(PkmHandle *handle);
+uint8_t openhome_ohpkm_origin_gen(PkmHandle *handle);
+uint32_t openhome_ohpkm_nickname(PkmHandle *handle, uint8_t *out_buf, size_t out_len);
 void openhome_free_ptr(void *ptr);
 const FormatList *openhome_get_supported_formats(void);
 
@@ -88,6 +99,29 @@ inline std::vector<uint8_t> getPkmOriginalBackup(PkmHandle* pkm_handle) {
     uint32_t written = openhome_get_pkm_original_backup(pkm_handle, buf, sizeof(buf));
     if (written == 0) return {};
     return std::vector<uint8_t>(buf, buf + written);
+}
+// OHPKM universal storage (bank cross-gen) — same style as getPkmBoxBytesForGen / loadPkmFromGen
+inline std::vector<uint8_t> getOhpkmBytes(PkmHandle* handle) {
+    uint8_t buf[512];
+    uint32_t written = openhome_get_ohpkm_bytes(handle, buf, sizeof(buf));
+    if (written == 0) return {};
+    return std::vector<uint8_t>(buf, buf + written);
+}
+inline PkmHandle* loadOhpkm(const std::vector<uint8_t>& data) {
+    return openhome_load_ohpkm(data.data(), data.size());
+}
+inline uint16_t ohpkmSpecies(PkmHandle* handle) { return openhome_ohpkm_species(handle); }
+inline uint16_t ohpkmForm(PkmHandle* handle) { return openhome_ohpkm_form(handle); }
+inline uint8_t ohpkmLevel(PkmHandle* handle) { return openhome_ohpkm_level(handle); }
+inline bool ohpkmIsShiny(PkmHandle* handle) { return openhome_ohpkm_is_shiny(handle); }
+inline uint8_t ohpkmGender(PkmHandle* handle) { return openhome_ohpkm_gender(handle); }
+inline uint16_t ohpkmHeldItem(PkmHandle* handle) { return openhome_ohpkm_held_item(handle); }
+inline uint8_t ohpkmOriginGen(PkmHandle* handle) { return openhome_ohpkm_origin_gen(handle); }
+inline std::string ohpkmNickname(PkmHandle* handle) {
+    uint8_t buf[64];
+    uint32_t written = openhome_ohpkm_nickname(handle, buf, sizeof(buf));
+    if (written == 0) return {};
+    return std::string(reinterpret_cast<char*>(buf), written);
 }
 inline void freePtr(void* ptr) { openhome_free_ptr(ptr); }
 inline const FormatList* getSupportedFormats() { return openhome_get_supported_formats(); }

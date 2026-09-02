@@ -737,6 +737,24 @@ Pokemon UI::getPokemonAt(int box, int slot, Panel panel) const {
         }
         return save_.getBoxSlot(box, slot);
     }
+    if (bank_.isCrossGen()) {
+        const std::vector<uint8_t>& blob = bank_.ohpkmAt(box, slot);
+        if (blob.empty()) return Pokemon{};
+        // Materialize a PK9 preview for rendering; keep the OHPKM on the mon so
+        // a later placement converts straight from it (lossless via its backup).
+        Pokemon p{};
+        PkmHandle* h = OpenHomeNX::loadOhpkm(blob);
+        if (h) {
+            std::vector<uint8_t> pk9 = OpenHomeNX::getPkmBoxBytesForGen(h, 9);
+            OpenHomeNX::freePkm(h);
+            if (!pk9.empty() && pk9.size() <= p.data.size()) {
+                std::memcpy(p.data.data(), pk9.data(), pk9.size());
+                p.gameType_ = GameType::S;
+            }
+        }
+        p.ohpkmBlob_ = blob;
+        return p;
+    }
     return bank_.getSlot(box, slot);
 }
 
@@ -747,6 +765,24 @@ void UI::setPokemonAt(int box, int slot, Panel panel, const Pokemon& pkm) {
             bankLeft_.setSlot(box, slot, pkm);
         } else
             save_.setBoxSlot(box, slot, pkm);
+    } else if (bank_.isCrossGen()) {
+        if (pkm.isEmpty()) {
+            bank_.clearOhpkmAt(box, slot);
+        } else {
+            std::vector<uint8_t> blob = pkm.ohpkmBlob_;
+            if (blob.empty()) {
+                // Native mon dropped in — build its OHPKM once here.
+                int g = ohSourceGenFor(pkm.gameType_);
+                int sz = ohRecordBytesFor(g);
+                if (g && sz > 0) {
+                    std::vector<uint8_t> src(pkm.data.begin(), pkm.data.begin() + sz);
+                    PkmHandle* h = OpenHomeNX::loadPkmFromGen(src, static_cast<uint32_t>(g));
+                    if (h) { blob = OpenHomeNX::getOhpkmBytes(h); OpenHomeNX::freePkm(h); }
+                }
+            }
+            if (!blob.empty())
+                bank_.setOhpkmAt(box, slot, std::move(blob));
+        }
     } else {
         bank_.setSlot(box, slot, pkm);
     }
@@ -764,6 +800,10 @@ GameType UI::destGameFor(Panel panel) const {
     return bank_.gameType();
 }
 
+bool UI::destIsCrossGenBank(Panel panel) const {
+    return panel == Panel::Bank && bank_.isCrossGen();
+}
+
 bool UI::prepareForPlacement(Pokemon& pkm, Panel panel, std::string& whyNot) const {
     if (pkm.isEmpty()) return true;
 
@@ -773,6 +813,66 @@ bool UI::prepareForPlacement(Pokemon& pkm, Panel panel, std::string& whyNot) con
     if (panel == Panel::Game && isDualBankMode() && leftBankName_.empty()) {
         whyNot = "No bank is loaded in the left panel.";
         return false;
+    }
+
+    // Cross-gen bank destination: slots hold OHPKM, no per-format conversion on
+    // the way in. setPokemonAt() builds the OHPKM (from pkm.ohpkmBlob_ if the
+    // mon came from another cross-gen bank, else from its native record).
+    if (destIsCrossGenBank(panel)) {
+        if (!pkm.ohpkmBlob_.empty())
+            return true; // already OHPKM, just move it
+        if (!useOpenHome()) {
+            whyNot = "Cross-gen bank needs the OpenHome core (menu -> Crypto: OpenHome).";
+            return false;
+        }
+        if (ohSourceGenFor(pkm.gameType_) == 0) {
+            whyNot = std::string("OpenHome cannot read a ")
+                   + gameDisplayNameOf(pkm.gameType_) + " Pokemon yet.";
+            return false;
+        }
+        return true;
+    }
+
+    // Mon picked up from a cross-gen bank (carries a full OHPKM): build the
+    // destination format straight from it — the OHPKM has its own backup so a
+    // return to the origin format is verbatim.
+    if (!pkm.ohpkmBlob_.empty()) {
+        const GameType d = destGameFor(panel);
+        if (sameStoredFormat(GameType::S, d) && !pkm.data.empty()) {
+            // dest is PK9-shaped: the preview bytes are already correct.
+            pkm.ohpkmBlob_.clear();
+            pkm.gameType_ = d;
+            return true;
+        }
+        if (!useOpenHome()) {
+            whyNot = "Cross-gen transfer needs the OpenHome core (menu -> Crypto: OpenHome).";
+            return false;
+        }
+        const int dg = ohTargetGenFor(d);
+        if (dg == 0) {
+            whyNot = std::string("OpenHome cannot build a ") + gameDisplayNameOf(d) + " Pokemon.";
+            return false;
+        }
+        PkmHandle* h = OpenHomeNX::loadOhpkm(pkm.ohpkmBlob_);
+        if (!h) { whyNot = "Could not read the stored OHPKM record."; return false; }
+        PkmHandle* out = PokemonFFI::transfer(h, static_cast<uint32_t>(dg));
+        PokemonFFI::free(h);
+        if (!out) {
+            whyNot = "Conversion to Gen " + std::to_string(dg)
+                   + " was refused (species missing from that dex?).";
+            return false;
+        }
+        std::vector<uint8_t> bytes = OpenHomeNX::getPkmBoxBytesForGen(out, static_cast<uint32_t>(dg));
+        PokemonFFI::free(out);
+        if (bytes.empty() || bytes.size() > pkm.data.size()) {
+            whyNot = "Could not extract the converted Pokemon bytes.";
+            return false;
+        }
+        pkm.data.fill(0);
+        std::memcpy(pkm.data.data(), bytes.data(), bytes.size());
+        pkm.gameType_ = d;
+        pkm.ohpkmBlob_.clear();
+        return true;
     }
 
     const GameType dest = destGameFor(panel);

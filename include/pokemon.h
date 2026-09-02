@@ -83,6 +83,12 @@ struct Pokemon {
     // on-disk slot record.
     std::vector<uint8_t> ohBackup_;
 
+    // Full OHPKM record, set while a mon is "in hand" after being picked up from
+    // a cross-gen bank (approach B). When non-empty, prepareForPlacement builds
+    // the destination format straight from this (the OHPKM carries its own
+    // OriginalBackup, so a return to the origin format stays lossless).
+    std::vector<uint8_t> ohpkmBlob_;
+
     // --- Helpers ---
     const PokemonOffsets& ofs() const { return pokemonOffsetsFor(gameType_); }
 
