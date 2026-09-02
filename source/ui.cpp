@@ -1,0 +1,816 @@
+#include "ui.h"
+#include "ui_util.h"
+#include "crypto_engine.h"
+#include "pokemon_ffi.h"
+#include "led.h"
+#include "i18n.h"
+#include <cmath>
+#include <cstdio>
+#include <cstring>
+#include <ctime>
+#include <sys/stat.h>
+#include <sys/statvfs.h>
+
+#include <switch.h>
+
+bool UI::init() {
+    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER) < 0)
+        return false;
+
+    if (TTF_Init() < 0) {
+        SDL_Quit();
+        return false;
+    }
+
+    if ((IMG_Init(IMG_INIT_PNG | IMG_INIT_JPG) & IMG_INIT_PNG) == 0) {
+        TTF_Quit();
+        SDL_Quit();
+        return false;
+    }
+
+    window_ = SDL_CreateWindow("OpenHomeNX",
+        SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
+        SCREEN_W, SCREEN_H, SDL_WINDOW_SHOWN);
+    if (!window_) {
+        IMG_Quit();
+        TTF_Quit();
+        SDL_Quit();
+        return false;
+    }
+
+    renderer_ = SDL_CreateRenderer(window_, -1,
+        SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
+    if (!renderer_) {
+        SDL_DestroyWindow(window_);
+        IMG_Quit();
+        TTF_Quit();
+        SDL_Quit();
+        return false;
+    }
+
+    SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_BLEND);
+
+    // Load font
+    // NOTE: PlSharedFontType_Standard covers Latin, Cyrillic, and Japanese glyphs.
+    // Korean (PlSharedFontType_KO) and Chinese (PlSharedFontType_ChineseSimplified /
+    // PlSharedFontType_ChineseTraditional) require loading separate system fonts.
+    // SDL_ttf does not support font fallback chains, so supporting these languages
+    // would require switching the primary font based on the active language.
+    PlFontData fontData;
+    plInitialize(PlServiceType_System);
+    plGetSharedFontByType(&fontData, PlSharedFontType_Standard);
+    SDL_RWops* rw = SDL_RWFromMem(fontData.address, fontData.size);
+    font_ = TTF_OpenFontRW(rw, 0, 18);
+    fontSmall_ = TTF_OpenFontRW(SDL_RWFromMem(fontData.address, fontData.size), 0, 14);
+    fontLarge_ = TTF_OpenFontRW(SDL_RWFromMem(fontData.address, fontData.size), 0, 28);
+
+    if (!font_ || !fontSmall_) {
+        if (!font_)
+            font_ = TTF_OpenFont("romfs:/fonts/default.ttf", 18);
+        if (!fontSmall_)
+            fontSmall_ = TTF_OpenFont("romfs:/fonts/default.ttf", 14);
+    }
+    if (!fontLarge_)
+        fontLarge_ = TTF_OpenFont("romfs:/fonts/default.ttf", 28);
+
+    // Load status icons
+    {
+        const char* iconDir = "romfs:/icons/";
+        auto loadIcon = [&](const char* name) -> SDL_Texture* {
+            std::string path = std::string(iconDir) + name;
+            SDL_Surface* s = IMG_Load(path.c_str());
+            if (!s) return nullptr;
+            SDL_Texture* t = SDL_CreateTextureFromSurface(renderer_, s);
+            SDL_FreeSurface(s);
+            return t;
+        };
+        iconShiny_      = loadIcon("shiny.png");
+        iconAlpha_      = loadIcon("alpha.png");
+        iconShinyAlpha_ = loadIcon("shiny_alpha.png");
+        iconBoxFull_     = loadIcon("box_full.png");
+        iconBoxEmpty_    = loadIcon("box_empty.png");
+        iconBoxNonEmpty_ = loadIcon("box_nonempty.png");
+    }
+
+    // Open game controller
+    for (int i = 0; i < SDL_NumJoysticks(); i++) {
+        if (SDL_IsGameController(i)) {
+            pad_ = SDL_GameControllerOpen(i);
+            break;
+        }
+    }
+
+    // Set default theme (persisted selection loaded in run())
+    theme_ = &getTheme(0);
+
+    return true;
+}
+
+void UI::shutdown() {
+    clearTextCache();
+    freeGameIcons();
+    account_.freeTextures();
+    freeSprites();
+    if (fontLarge_) TTF_CloseFont(fontLarge_);
+    if (fontSmall_) TTF_CloseFont(fontSmall_);
+    if (font_) TTF_CloseFont(font_);
+    if (pad_) SDL_GameControllerClose(pad_);
+    if (renderer_) SDL_DestroyRenderer(renderer_);
+    if (window_) SDL_DestroyWindow(window_);
+    IMG_Quit();
+    TTF_Quit();
+    SDL_Quit();
+    plExit();
+}
+
+void UI::showSplash() {
+    if (!renderer_) return;
+
+    const char* splashPath = "romfs:/splash.png";
+
+    SDL_Surface* surf = IMG_Load(splashPath);
+    if (!surf) return;
+
+    SDL_Texture* tex = SDL_CreateTextureFromSurface(renderer_, surf);
+    SDL_FreeSurface(surf);
+    if (!tex) return;
+
+    SDL_SetTextureBlendMode(tex, SDL_BLENDMODE_BLEND);
+
+    int texW, texH;
+    SDL_QueryTexture(tex, nullptr, nullptr, &texW, &texH);
+
+    // Scale to fit screen while preserving aspect ratio
+    float scale = std::min(static_cast<float>(SCREEN_W) / texW,
+                           static_cast<float>(SCREEN_H) / texH);
+    int dstW = static_cast<int>(texW * scale);
+    int dstH = static_cast<int>(texH * scale);
+    SDL_Rect dst = {(SCREEN_W - dstW) / 2, (SCREEN_H - dstH) / 2, dstW, dstH};
+
+    // Hold splash for ~2.5 seconds
+    Uint32 holdMs = 2500;
+    Uint32 start = SDL_GetTicks();
+    while (SDL_GetTicks() - start < holdMs) {
+        SDL_Event event;
+        while (SDL_PollEvent(&event)) {
+            if (event.type == SDL_QUIT) {
+                SDL_DestroyTexture(tex);
+                return;
+            }
+        }
+        SDL_SetRenderDrawColor(renderer_, T().bg.r, T().bg.g, T().bg.b, 255);
+        SDL_RenderClear(renderer_);
+        SDL_RenderCopy(renderer_, tex, nullptr, &dst);
+        SDL_RenderPresent(renderer_);
+        SDL_Delay(16);
+    }
+
+    // Fade out over ~0.5 seconds
+    Uint32 fadeMs = 500;
+    start = SDL_GetTicks();
+    while (true) {
+        SDL_Event event;
+        while (SDL_PollEvent(&event)) {
+            if (event.type == SDL_QUIT) {
+                SDL_DestroyTexture(tex);
+                return;
+            }
+        }
+        Uint32 elapsed = SDL_GetTicks() - start;
+        if (elapsed >= fadeMs)
+            break;
+        int alpha = 255 - static_cast<int>(255 * elapsed / fadeMs);
+        SDL_SetRenderDrawColor(renderer_, T().bg.r, T().bg.g, T().bg.b, 255);
+        SDL_RenderClear(renderer_);
+        SDL_SetTextureAlphaMod(tex, static_cast<Uint8>(alpha));
+        SDL_RenderCopy(renderer_, tex, nullptr, &dst);
+        SDL_RenderPresent(renderer_);
+        SDL_Delay(16);
+    }
+
+    SDL_DestroyTexture(tex);
+}
+
+int UI::drawBodyText(const std::string& body, int startY, const std::string& footer) {
+    int lineY = startY;
+    std::string remaining = body;
+    while (!remaining.empty()) {
+        size_t nl = remaining.find('\n');
+        std::string line = (nl != std::string::npos) ? remaining.substr(0, nl) : remaining;
+        drawTextCentered(line, SCREEN_W / 2, lineY, T().textDim, font_);
+        lineY += 24;
+        if (nl == std::string::npos) break;
+        remaining = remaining.substr(nl + 1);
+    }
+    drawTextCentered(footer, SCREEN_W / 2, lineY + 20, T().textDim, fontSmall_);
+    return lineY;
+}
+
+void UI::showMessageAndWait(const std::string& title, const std::string& body) {
+    if (!renderer_) return;
+    markDirty(); // Force redraw after modal returns
+
+    bool waiting = true;
+    while (waiting) {
+        SDL_Event event;
+        while (SDL_PollEvent(&event)) {
+            if (event.type == SDL_QUIT) {
+                waiting = false;
+            }
+            if (event.type == SDL_CONTROLLERBUTTONDOWN) {
+                if (event.cbutton.button == SDL_CONTROLLER_BUTTON_A) // Switch B
+                    waiting = false;
+            }
+        }
+
+        SDL_SetRenderDrawColor(renderer_, T().bg.r, T().bg.g, T().bg.b, 255);
+        SDL_RenderClear(renderer_);
+
+        drawTextCentered(title, SCREEN_W / 2, SCREEN_H / 2 - 40, T().red, fontLarge_);
+        drawBodyText(body, SCREEN_H / 2 + 5, i18n::get(StrKey::PressBToDismiss));
+
+        SDL_RenderPresent(renderer_);
+        SDL_Delay(16);
+    }
+}
+
+bool UI::showConfirmDialog(const std::string& title, const std::string& body) {
+    if (!renderer_) return false;
+    markDirty(); // Force redraw after modal returns
+
+    int result = -1; // -1 = undecided
+    while (result < 0) {
+        SDL_Event event;
+        while (SDL_PollEvent(&event)) {
+            if (event.type == SDL_QUIT) {
+                result = 0;
+            }
+            if (event.type == SDL_CONTROLLERBUTTONDOWN) {
+                if (event.cbutton.button == SDL_CONTROLLER_BUTTON_B) // Switch A = confirm
+                    result = 1;
+                if (event.cbutton.button == SDL_CONTROLLER_BUTTON_A) // Switch B = cancel
+                    result = 0;
+            }
+        }
+
+        SDL_SetRenderDrawColor(renderer_, T().bg.r, T().bg.g, T().bg.b, 255);
+        SDL_RenderClear(renderer_);
+
+        drawTextCentered(title, SCREEN_W / 2, SCREEN_H / 2 - 40, T().red, fontLarge_);
+        drawBodyText(body, SCREEN_H / 2 + 5, i18n::get(StrKey::AContinueBCancel));
+
+        SDL_RenderPresent(renderer_);
+        SDL_Delay(16);
+    }
+    return result == 1;
+}
+
+void UI::showWorking(const std::string& msg) {
+    if (!renderer_) return;
+    markDirty(); // Force redraw after modal returns
+
+    SDL_SetRenderDrawColor(renderer_, T().bg.r, T().bg.g, T().bg.b, 255);
+    SDL_RenderClear(renderer_);
+
+    // Dark card behind gear + message
+    constexpr int POP_W = 400;
+    constexpr int POP_H = 160;
+    int popX = (SCREEN_W - POP_W) / 2;
+    int popY = (SCREEN_H - POP_H) / 2;
+    drawRect(popX, popY, POP_W, POP_H, T().panelBg);
+    drawRectOutline(popX, popY, POP_W, POP_H, T().textDim, 2);
+
+    // Draw gear icon
+    int gearCX = SCREEN_W / 2;
+    int gearCY = popY + 58;
+    constexpr int OUTER_R = 28;
+    constexpr int INNER_R = 18;
+    constexpr int HOLE_R  = 9;
+    constexpr int TEETH    = 8;
+    constexpr int TOOTH_W  = 12;
+    constexpr int TOOTH_H  = 14;
+
+    // Filled circle helper (scanline)
+    auto fillCircle = [&](int cx, int cy, int r, SDL_Color c) {
+        SDL_SetRenderDrawColor(renderer_, c.r, c.g, c.b, c.a);
+        for (int dy = -r; dy <= r; dy++) {
+            int dx = static_cast<int>(std::sqrt(r * r - dy * dy));
+            SDL_RenderDrawLine(renderer_, cx - dx, cy + dy, cx + dx, cy + dy);
+        }
+    };
+
+    // Tooth rectangles around the gear (8 teeth at 45-degree intervals)
+    SDL_Color gearColor = T().arrow;
+    SDL_SetRenderDrawColor(renderer_, gearColor.r, gearColor.g, gearColor.b, gearColor.a);
+    for (int i = 0; i < TEETH; i++) {
+        double angle = i * (3.14159265 * 2.0 / TEETH);
+        int tx = gearCX + static_cast<int>((INNER_R + TOOTH_H / 2) * std::cos(angle));
+        int ty = gearCY + static_cast<int>((INNER_R + TOOTH_H / 2) * std::sin(angle));
+        SDL_Rect tooth = {tx - TOOTH_W / 2, ty - TOOTH_W / 2, TOOTH_W, TOOTH_W};
+        SDL_RenderFillRect(renderer_, &tooth);
+    }
+
+    // Gear body circle
+    fillCircle(gearCX, gearCY, OUTER_R, gearColor);
+
+    // Center hole
+    fillCircle(gearCX, gearCY, HOLE_R, T().panelBg);
+
+    // Message text below gear
+    drawTextCentered(msg, SCREEN_W / 2, popY + POP_H - 32, T().text, font_);
+
+    SDL_RenderPresent(renderer_);
+}
+
+void UI::run(const std::string& basePath, const std::string& savePath) {
+    basePath_ = basePath;
+    savePath_ = savePath;
+
+    // Load persisted theme
+    themeIndex_ = loadThemeIndex(basePath_);
+    theme_ = &getTheme(themeIndex_);
+
+    // Load persisted crypto engine (PK/OH)
+    int cryptoVal = loadCryptoEngine(basePath_);
+    g_cryptoEngine = (cryptoVal == 1) ? CryptoEngine::OH : CryptoEngine::PK;
+
+    // All games in menu order
+    constexpr GameType allGames[] = {
+        GameType::GP, GameType::GE, GameType::Sw, GameType::Sh,
+        GameType::BD, GameType::SP, GameType::LA, GameType::S,
+        GameType::V, GameType::ZA, GameType::FR, GameType::LG,
+        GameType::FR_ES, GameType::LG_ES, GameType::FR_DE, GameType::LG_DE,
+        GameType::FR_IT, GameType::LG_IT, GameType::FR_FR, GameType::LG_FR,
+        GameType::FR_JA, GameType::LG_JA
+    };
+
+    if (appletMode_) {
+        // Applet mode: skip profile, bank-only access
+        screen_ = AppScreen::GameSelector;
+        availableGames_.assign(std::begin(allGames), std::end(allGames));
+        refreshBankCounts();
+        showWorking(i18n::get(StrKey::LoadingGameIcons));
+        loadGameIcons();
+    } else {
+        showWorking(i18n::get(StrKey::LoadingProfiles));
+        if (account_.init() && account_.loadProfiles(renderer_)) {
+            screen_ = AppScreen::ProfileSelector;
+        } else {
+            screen_ = AppScreen::GameSelector;
+            availableGames_.assign(std::begin(allGames), std::end(allGames));
+            refreshBankCounts();
+            showWorking(i18n::get(StrKey::LoadingGameIcons));
+            loadGameIcons();
+        }
+    }
+
+    bool running = true;
+
+    while (running) {
+        // About popup intercepts input from any screen
+        if (showAbout_) {
+            SDL_Event event;
+            while (SDL_PollEvent(&event)) {
+                if (event.type == SDL_QUIT) { running = false; break; }
+                if (event.type == SDL_CONTROLLERBUTTONDOWN) {
+                    if (event.cbutton.button == SDL_CONTROLLER_BUTTON_BACK ||
+                        event.cbutton.button == SDL_CONTROLLER_BUTTON_A)
+                        { showAbout_ = false; markDirty(); }
+                }
+            }
+            if (!showAbout_) continue; // dismissed — let main draw section handle it
+            if (dirty_) {
+                if (theme_ != lastTheme_) { clearTextCache(); lastTheme_ = theme_; }
+                // Draw the underlying screen, then about popup on top
+                if (screen_ == AppScreen::ProfileSelector) drawProfileSelectorFrame();
+                else if (screen_ == AppScreen::GameSelector) {
+                    drawGameSelectorFrame();
+                    if (showGameSelMenu_) drawGameSelMenuPopup();
+                }
+                else if (screen_ == AppScreen::BankSelector) drawBankSelectorFrame();
+                else drawFrame();
+                drawAboutPopup();
+                SDL_RenderPresent(renderer_);
+                dirty_ = false;
+            }
+            SDL_Delay(16);
+            continue;
+        }
+
+        // Theme selector intercepts input from any screen
+        if (showThemeSelector_) {
+            SDL_Event event;
+            while (SDL_PollEvent(&event)) {
+                if (event.type == SDL_QUIT) { running = false; break; }
+                if (event.type == SDL_CONTROLLERAXISMOTION) {
+                    if (event.caxis.axis == SDL_CONTROLLER_AXIS_LEFTX ||
+                        event.caxis.axis == SDL_CONTROLLER_AXIS_LEFTY) {
+                        int16_t lx = SDL_GameControllerGetAxis(pad_, SDL_CONTROLLER_AXIS_LEFTX);
+                        int16_t ly = SDL_GameControllerGetAxis(pad_, SDL_CONTROLLER_AXIS_LEFTY);
+                        updateStick(lx, ly);
+                    }
+                }
+                if (event.type == SDL_CONTROLLERBUTTONDOWN) {
+                    markDirty();
+                    switch (event.cbutton.button) {
+                        case SDL_CONTROLLER_BUTTON_DPAD_UP:
+                            themeSelCursor_ = (themeSelCursor_ + THEME_COUNT - 1) % THEME_COUNT;
+                            theme_ = &getTheme(themeSelCursor_);
+                            break;
+                        case SDL_CONTROLLER_BUTTON_DPAD_DOWN:
+                            themeSelCursor_ = (themeSelCursor_ + 1) % THEME_COUNT;
+                            theme_ = &getTheme(themeSelCursor_);
+                            break;
+                        case SDL_CONTROLLER_BUTTON_B: // Switch A = confirm
+                            themeIndex_ = themeSelCursor_;
+                            theme_ = &getTheme(themeIndex_);
+                            saveThemeIndex(basePath_, themeIndex_);
+                            showThemeSelector_ = false;
+                            showMenu_ = false;
+                            break;
+                        case SDL_CONTROLLER_BUTTON_A: // Switch B = cancel
+                        case SDL_CONTROLLER_BUTTON_X: // Switch Y = cancel
+                            themeIndex_ = themeSelOriginal_;
+                            theme_ = &getTheme(themeIndex_);
+                            showThemeSelector_ = false;
+                            break;
+                    }
+                }
+            }
+            // Joystick repeat
+            if (stickDirY_ != 0) {
+                uint32_t now = SDL_GetTicks();
+                uint32_t delay = stickMoved_ ? STICK_REPEAT_DELAY : STICK_INITIAL_DELAY;
+                if (now - stickMoveTime_ >= delay) {
+                    themeSelCursor_ = (themeSelCursor_ + (stickDirY_ > 0 ? 1 : THEME_COUNT - 1)) % THEME_COUNT;
+                    theme_ = &getTheme(themeSelCursor_);
+                    stickMoveTime_ = now;
+                    stickMoved_ = true;
+                    markDirty();
+                }
+            }
+            if (!showThemeSelector_) continue; // dismissed — let main draw section handle it
+            if (dirty_) {
+                if (theme_ != lastTheme_) { clearTextCache(); lastTheme_ = theme_; }
+                // Draw the underlying screen, then theme popup on top
+                if (screen_ == AppScreen::ProfileSelector) drawProfileSelectorFrame();
+                else if (screen_ == AppScreen::GameSelector) {
+                    drawGameSelectorFrame();
+                    if (showGameSelMenu_) drawGameSelMenuPopup();
+                }
+                else if (screen_ == AppScreen::BankSelector) drawBankSelectorFrame();
+                else drawFrame();
+                drawThemeSelectorPopup();
+                SDL_RenderPresent(renderer_);
+                dirty_ = false;
+            }
+            SDL_Delay(16);
+            continue;
+        }
+
+        // Language selector intercepts input from any screen
+        if (showLanguageSelector_) {
+            SDL_Event event;
+            while (SDL_PollEvent(&event)) {
+                if (event.type == SDL_QUIT) { running = false; break; }
+                if (event.type == SDL_CONTROLLERAXISMOTION) {
+                    if (event.caxis.axis == SDL_CONTROLLER_AXIS_LEFTX ||
+                        event.caxis.axis == SDL_CONTROLLER_AXIS_LEFTY) {
+                        int16_t lx = SDL_GameControllerGetAxis(pad_, SDL_CONTROLLER_AXIS_LEFTX);
+                        int16_t ly = SDL_GameControllerGetAxis(pad_, SDL_CONTROLLER_AXIS_LEFTY);
+                        updateStick(lx, ly);
+                    }
+                }
+                if (event.type == SDL_CONTROLLERBUTTONDOWN) {
+                    markDirty();
+                    int langCount = (int)langList_.size();
+                    switch (event.cbutton.button) {
+                        case SDL_CONTROLLER_BUTTON_DPAD_UP:
+                            langSelCursor_ = (langSelCursor_ + langCount - 1) % langCount;
+                            break;
+                        case SDL_CONTROLLER_BUTTON_DPAD_DOWN:
+                            langSelCursor_ = (langSelCursor_ + 1) % langCount;
+                            break;
+                        case SDL_CONTROLLER_BUTTON_B: { // Switch A = confirm
+                            std::string newLang = langList_[langSelCursor_];
+                            i18n::init(newLang);
+                            clearTextCache();
+                            // Persist choice
+                            std::string path = basePath_ + "language.txt";
+                            FILE* f = std::fopen(path.c_str(), "w");
+                            if (f) { std::fputs(newLang.c_str(), f); std::fclose(f); }
+                            showLanguageSelector_ = false;
+                            showMenu_ = false;
+                            break;
+                        }
+                        case SDL_CONTROLLER_BUTTON_A: // Switch B = cancel
+                        case SDL_CONTROLLER_BUTTON_X: // Switch Y = cancel
+                            showLanguageSelector_ = false;
+                            break;
+                    }
+                }
+            }
+            // Joystick repeat
+            if (stickDirY_ != 0 && !langList_.empty()) {
+                uint32_t now = SDL_GetTicks();
+                uint32_t delay = stickMoved_ ? STICK_REPEAT_DELAY : STICK_INITIAL_DELAY;
+                if (now - stickMoveTime_ >= delay) {
+                    int langCount = (int)langList_.size();
+                    langSelCursor_ = (langSelCursor_ + (stickDirY_ > 0 ? 1 : langCount - 1)) % langCount;
+                    stickMoveTime_ = now;
+                    stickMoved_ = true;
+                    markDirty();
+                }
+            }
+            if (!showLanguageSelector_) continue;
+            if (dirty_) {
+                if (theme_ != lastTheme_) { clearTextCache(); lastTheme_ = theme_; }
+                if (screen_ == AppScreen::ProfileSelector) drawProfileSelectorFrame();
+                else if (screen_ == AppScreen::GameSelector) {
+                    drawGameSelectorFrame();
+                    if (showGameSelMenu_) drawGameSelMenuPopup();
+                }
+                else if (screen_ == AppScreen::BankSelector) drawBankSelectorFrame();
+                else drawFrame();
+                drawLanguageSelectorPopup();
+                SDL_RenderPresent(renderer_);
+                dirty_ = false;
+            }
+            SDL_Delay(16);
+            continue;
+        }
+
+        // Gen selector intercepts input from any screen (M6a)
+        if (showGenSelector_) {
+            SDL_Event event;
+            while (SDL_PollEvent(&event)) {
+                if (event.type == SDL_QUIT) { running = false; break; }
+                if (event.type == SDL_CONTROLLERAXISMOTION) {
+                    if (event.caxis.axis == SDL_CONTROLLER_AXIS_LEFTX ||
+                        event.caxis.axis == SDL_CONTROLLER_AXIS_LEFTY) {
+                        int16_t lx = SDL_GameControllerGetAxis(pad_, SDL_CONTROLLER_AXIS_LEFTX);
+                        int16_t ly = SDL_GameControllerGetAxis(pad_, SDL_CONTROLLER_AXIS_LEFTY);
+                        updateStick(lx, ly);
+                    }
+                }
+                if (event.type == SDL_CONTROLLERBUTTONDOWN) {
+                    markDirty();
+                    switch (event.cbutton.button) {
+                        case SDL_CONTROLLER_BUTTON_DPAD_UP:
+                            genSelCursor_ = (genSelCursor_ + 7 - 1) % 7;
+                            break;
+                        case SDL_CONTROLLER_BUTTON_DPAD_DOWN:
+                            genSelCursor_ = (genSelCursor_ + 1) % 7;
+                            break;
+                        case SDL_CONTROLLER_BUTTON_B: // Switch A = confirm
+                            targetGen_ = GEN_LIST[genSelCursor_];
+                            showGenSelector_ = false;
+                            showMenu_ = false;
+                            // M6 (2026-09-02): the gen selector is no longer the
+                            // conversion point. Converting here was meaningless:
+                            // whichever box the Pokemon is dropped into re-encrypts
+                            // it with that destination's own layout, so the
+                            // destination — not this menu — decides the format.
+                            // Conversion now happens on drop, in
+                            // UI::prepareForPlacement (source/ui_input.cpp).
+                            // (The old code here also never worked: it fed box
+                            // bytes to openhome_load_pkm, which only accepts real
+                            // OHPKM files, so it always took the failure branch.)
+                            if (holding_) {
+                                showMessageAndWait("Cross-Gen Transfer",
+                                    "Conversion now happens when you place the\n"
+                                    "Pokemon: dropping it into a box of another\n"
+                                    "generation converts it automatically, or\n"
+                                    "refuses if it cannot be converted.");
+                            }
+                            break;
+                        case SDL_CONTROLLER_BUTTON_A: // Switch B = cancel
+                        case SDL_CONTROLLER_BUTTON_X:
+                            showGenSelector_ = false;
+                            break;
+                    }
+                }
+            }
+            if (stickDirY_ != 0) {
+                uint32_t now = SDL_GetTicks();
+                uint32_t delay = stickMoved_ ? STICK_REPEAT_DELAY : STICK_INITIAL_DELAY;
+                if (now - stickMoveTime_ >= delay) {
+                    genSelCursor_ = (genSelCursor_ + (stickDirY_ > 0 ? 1 : 7 - 1)) % 7;
+                    stickMoveTime_ = now;
+                    stickMoved_ = true;
+                    markDirty();
+                }
+            }
+            if (!showGenSelector_) continue;
+            if (dirty_) {
+                if (theme_ != lastTheme_) { clearTextCache(); lastTheme_ = theme_; }
+                if (screen_ == AppScreen::ProfileSelector) drawProfileSelectorFrame();
+                else if (screen_ == AppScreen::GameSelector) {
+                    drawGameSelectorFrame();
+                    if (showGameSelMenu_) drawGameSelMenuPopup();
+                }
+                else if (screen_ == AppScreen::BankSelector) drawBankSelectorFrame();
+                else drawFrame();
+                drawGenSelectorPopup();
+                SDL_RenderPresent(renderer_);
+                dirty_ = false;
+            }
+            SDL_Delay(16);
+            continue;
+        }
+
+        AppScreen screenBefore = screen_;
+        if (screen_ == AppScreen::ProfileSelector) {
+            handleProfileSelectorInput(running);
+        } else if (screen_ == AppScreen::GameSelector) {
+            handleGameSelectorInput(running);
+        } else if (screen_ == AppScreen::BankSelector) {
+            handleBankSelectorInput(running);
+        } else {
+            handleInput(running);
+            if (saveNow_) {
+                if (!saveBankFiles()) {
+                    saveNow_ = false;
+                    running = true;
+                } else {
+                    if (!isDualBankMode()) {
+                        showWorking(i18n::get(StrKey::Saving));
+                        ledBlink();
+                        if (save_.isLoaded())
+                            save_.save(savePath_);
+                        account_.commitSave();
+                        ledOff();
+                    }
+                    saveNow_ = false;
+                }
+            }
+        }
+        // Screen transition always triggers redraw
+        if (screen_ != screenBefore)
+            markDirty();
+        // If a popup just activated, skip drawing here — the popup branch
+        // will handle it next iteration with dirty_ still set.
+        if (dirty_ && !showAbout_ && !showThemeSelector_ && !showLanguageSelector_) {
+            if (theme_ != lastTheme_) {
+                clearTextCache();
+                lastTheme_ = theme_;
+            }
+            if (screen_ == AppScreen::ProfileSelector) drawProfileSelectorFrame();
+            else if (screen_ == AppScreen::GameSelector) {
+                drawGameSelectorFrame();
+                if (showGameSelMenu_) drawGameSelMenuPopup();
+            }
+            else if (screen_ == AppScreen::BankSelector) drawBankSelectorFrame();
+            else drawFrame();
+            SDL_RenderPresent(renderer_);
+            dirty_ = false;
+        }
+        SDL_Delay(16);
+    }
+
+    account_.unmountSave();
+    account_.shutdown();
+}
+
+void UI::selectGame(GameType game) {
+    selectedGame_ = game;
+    invalidateAllSlotDisplays();
+    availableSpecies_.clear(); // rebuild on next species picker open
+    save_.setGameType(game);
+    bankLeft_.setGameType(game);
+
+    if (isDualBankMode()) {
+        // Reset left bank state for new game
+        leftBankName_.clear();
+        leftBankPath_.clear();
+        bankSelTarget_ = Panel::Bank;
+    }
+
+    if (!isDualBankMode()) {
+        showWorking(i18n::get(StrKey::LoadingSaveData));
+
+        if (selectedProfile_ >= 0) {
+            std::string mountPath = account_.mountSave(selectedProfile_, game);
+            if (mountPath.empty()) {
+                showMessageAndWait(i18n::get(StrKey::MountError), i18n::get(StrKey::FailedMountSave));
+                return;
+            }
+            savePath_ = mountPath + saveFileNameOf(game);
+
+            // Check space and backup save files
+            size_t saveSize = AccountManager::calculateDirSize(mountPath);
+            bool doBackup = true;
+
+            struct statvfs vfs;
+            if (statvfs("sdmc:/", &vfs) == 0) {
+                size_t freeSpace = (size_t)vfs.f_bavail * vfs.f_bsize;
+                if (freeSpace < saveSize * 2) {
+                    std::string msg = i18n::fmt(StrKey::LowStorageBody, formatSize(freeSpace), formatSize(saveSize));
+                    if (!showConfirmDialog(i18n::get(StrKey::LowStorage), msg)) {
+                        account_.unmountSave();
+                        return;
+                    }
+                    doBackup = false;
+                }
+            }
+
+            if (doBackup) {
+                std::string backupDir = buildBackupDir(game);
+                ledBlink();
+                bool ok = AccountManager::backupSaveDir(mountPath, backupDir);
+                ledOff();
+                if (!ok) {
+                    if (!showConfirmDialog(i18n::get(StrKey::BackupFailed),
+                            i18n::get(StrKey::BackupFailedBody))) {
+                        account_.unmountSave();
+                        return;
+                    }
+                }
+            }
+        } else {
+            savePath_ = basePath_ + "main";
+        }
+
+        save_.load(savePath_);
+
+        // M3 debug LGPE/FRLG: mostra esito load
+        {
+            char dbg[512];
+            std::snprintf(dbg, sizeof(dbg), "Path: %s\nLoaded: %d\nBox:%d Slots:%d\nRaw:%zu",
+                savePath_.c_str(), (int)save_.isLoaded(), save_.boxCount(), save_.slotsPerBox(), save_.rawDataSize());
+            if (!save_.isLoaded()) {
+                showMessageAndWait("Save Load Failed (LGPE/FRLG debug)", dbg);
+            } else if (isLGPE(game) || isFRLG(game)) {
+                // Mostra anche se ok per confermare LGPE/FRLG
+                // showMessageAndWait("Save Load OK", dbg);
+            }
+        }
+
+        // Debug: verify encryption round-trip (encrypt(decrypt(file)) == file)
+        if (!isBDSP(game) && !isLGPE(game) && !isFRLG(game)) {
+            std::string rtResult = save_.verifyRoundTrip();
+            if (rtResult != "OK")
+                showMessageAndWait(i18n::get(StrKey::RoundTripCheck), rtResult);
+        }
+
+        // Debug: PK vs OH per-slot box-bytes parity (SwSh + OH handle only).
+        // Silenzioso se identico (stringa vuota), dialog solo su divergenze.
+        {
+            std::string parity = save_.debugCompareEnginesParity();
+            if (!parity.empty())
+                showMessageAndWait("PK vs OH Parity", parity);
+        }
+    }
+
+    // Right-panel bank selector shows ALL banks of every game, sectioned by
+    // game (cross-gen). Dual/applet mode keeps its own "All Banks" flow.
+    if (!isDualBankMode()) {
+        bankManager_.initAll(basePath_);
+        bankRightCrossGen_ = true;
+    } else {
+        bankManager_.init(basePath_, game);
+    }
+
+    // Reset bank selector state
+    bankSelCursor_ = 0;
+    bankSelScroll_ = 0;
+
+    screen_ = AppScreen::BankSelector;
+}
+
+std::string UI::buildBackupDir(GameType game) const {
+    std::string profileName = "Unknown";
+    if (selectedProfile_ >= 0 && selectedProfile_ < account_.profileCount())
+        profileName = account_.profiles()[selectedProfile_].pathSafeName;
+
+    std::string dir = basePath_;
+    dir += "backups/";
+    dir += profileName;
+    dir += "/";
+    dir += gamePathNameOf(game);
+    dir += "/";
+
+    time_t now = time(nullptr);
+    struct tm* t = localtime(&now);
+    char timestamp[64];
+    std::snprintf(timestamp, sizeof(timestamp), "%s_%04d-%02d-%02d_%02d-%02d-%02d",
+                  profileName.c_str(),
+                  t->tm_year + 1900, t->tm_mon + 1, t->tm_mday,
+                  t->tm_hour, t->tm_min, t->tm_sec);
+    dir += timestamp;
+    dir += "/";
+    return dir;
+}
+
+bool UI::saveBankFiles() {
+    showWorking(i18n::get(StrKey::Saving));
+    ledBlink();
+    if (isDualBankMode()) {
+        if (!leftBankPath_.empty()) bankLeft_.save(leftBankPath_);
+        if (!activeBankPath_.empty()) bank_.save(activeBankPath_);
+    } else {
+        if (!activeBankPath_.empty()) bank_.save(activeBankPath_);
+    }
+    ledOff();
+    return true;
+}

@@ -1,0 +1,1144 @@
+#include "save_file.h"
+#include "save_file_ffi.h"
+#include "handler_update.h"
+#include "openhome_ffi.h"
+#include "pokedex.h"
+#include "binary_io.h"
+#include "md5.h"
+#include "debug_log.h"
+#include <fstream>
+#include <cstdio>
+#include <cstring>
+
+void SaveFile::setGameType(GameType game) {
+    gameType_ = game;
+    invalidateAllBoxCache();
+    auto& info   = gameInfo(game);
+    gapBoxSlot_  = info.saveGapSize;
+    sizeBoxSlot_ = info.saveSlotSize;
+    boxCount_    = info.boxCount;
+    slotsPerBox_ = info.slotsPerBox;
+    kbox_        = (game == GameType::LA) ? 0x47E1CEAB : 0x0d66012c;
+}
+
+bool SaveFile::isBDSPSize(size_t size) {
+    return size == 0xE9828  // v1.0
+        || size == 0xEDC20  // v1.1
+        || size == 0xEED8C  // v1.2
+        || size == 0xEF0A4; // v1.3
+}
+
+bool SaveFile::load(const std::string& path) {
+    filePath_ = path;
+    loaded_ = false;
+    boxData_ = nullptr;
+    boxLayoutData_ = nullptr;
+    invalidateAllBoxCache();
+
+    DebugLog::line("load: path=%s gameType=%d engine=%s",
+                   path.c_str(), (int)gameType_, useOpenHome() ? "OH" : "PK");
+
+    // Drop any Rust OH handle from a PREVIOUS save/game. `SaveFile` is reused
+    // across game switches; without this a stale SwSh handle would survive into
+    // a BDSP/SV/LGPE load (loadBDSP/loadLGPE/loadGBA don't touch it) and
+    // getCachedBox()/parity would read the wrong game's boxes.
+    if (saveHandleRust_)
+        saveHandleRust_.reset();
+
+    if (isFRLG(gameType_))
+        return loadGBA(path);
+    if (isBDSP(gameType_))
+        return loadBDSP(path);
+    if (isLGPE(gameType_))
+        return loadLGPE(path);
+    return loadSCBlock(path);
+}
+
+bool SaveFile::save(const std::string& path) {
+    if (!loaded_)
+        return false;
+
+    if (isFRLG(gameType_))
+        return saveGBA(path);
+    if (isBDSP(gameType_))
+        return saveBDSP(path);
+    if (isLGPE(gameType_))
+        return saveLGPE(path);
+    return saveSCBlock(path);
+}
+
+bool SaveFile::loadSCBlock(const std::string& path) {
+    std::ifstream file(path, std::ios::binary | std::ios::ate);
+    if (!file.is_open())
+        return false;
+
+    auto fileSize = file.tellg();
+    file.seekg(0);
+
+    std::vector<uint8_t> fileData(fileSize);
+    file.read(reinterpret_cast<char*>(fileData.data()), fileSize);
+    file.close();
+
+    // Save original file data for round-trip verification (decrypt modifies in-place)
+    originalFileData_ = fileData;
+
+    // Decrypt into SCBlocks (via FFI wrapper, M3a)
+    blocks_ = SaveFileFFI::decrypt(fileData.data(), fileData.size());
+
+    // Find box data block
+    SCBlock* boxBlock = SaveFileFFI::findBlock(blocks_, kbox_);
+    if (!boxBlock)
+        return false;
+    boxData_ = boxBlock->data.data();
+    boxDataLen_ = boxBlock->data.size();
+
+    // Find box layout block (box names)
+    SCBlock* layoutBlock = SaveFileFFI::findBlock(blocks_, KBOX_LAYOUT);
+    if (layoutBlock) {
+        boxLayoutData_ = layoutBlock->data.data();
+        boxLayoutLen_ = layoutBlock->data.size();
+    }
+
+    loaded_ = true;
+
+    // Create Rust save handle for OH path (used by getCachedBox).
+    // ONLY for SwSh — è l'unico formato che il core Rust legge davvero.
+    // Per gli altri (SV/BDSP/LA/LGPE/FRLG) l'handle resta nullptr e
+    // getCachedBox + il parity check usano il path PK. (openhome_load_save
+    // ritorna comunque NULL per non-SwSh, questa è la guardia esplicita.)
+    if (useOpenHome() && isSwSh(gameType_))
+        saveHandleRust_.reset(SaveFileFFI::load(path));
+
+    return true;
+}
+
+std::string SaveFile::debugCompareEnginesParity() const {
+    if (!saveHandleRust_) return std::string();
+
+    DebugLog::line("PK vs OH Parity scan started");
+
+    // Region the app actually reads/persists per slot (stored bytes, no gap).
+    const int region = sizeBoxSlot_ - gapBoxSlot_;
+    int confrontati = 0, identici = 0, differenti = 0, ohVuoti = 0;
+    std::string detail;
+
+    for (int box = 0; box < boxCount_; ++box) {
+        for (int s = 0; s < slotsPerBox_; ++s) {
+            int off = getBoxSlotOffset(box, s);
+            if (off + sizeBoxSlot_ > static_cast<int>(boxDataLen_)) continue;
+
+            Pokemon pk;
+            pk.gameType_ = gameType_;
+            pk.loadFromEncrypted(boxData_ + off, region);
+
+            PkmHandle* h = SaveFileFFI::getSlot(saveHandleRust_.get(), box, s);
+            std::vector<uint8_t> oh;
+            if (h) { oh = OpenHomeNX::getPkmBoxBytes(h); OpenHomeNX::freePkm(h); }
+
+            if (pk.isEmpty() && oh.empty()) continue;
+
+            if (oh.empty()) {
+                // PK ha un Pokémon, OH non restituisce dati (slot mancante o
+                // errore di conversione Rust) — conta come divergenza.
+                confrontati++; differenti++; ohVuoti++;
+                fprintf(stderr, "[PARITY] box %d slot %d: OH nessun dato, PK non vuoto\n", box, s);
+                DebugLog::line("b%d s%d: OH vuoto", box, s);
+                if (detail.size() < 400) {
+                    char line[64];
+                    std::snprintf(line, sizeof(line), "b%d s%d: OH vuoto\n", box, s);
+                    detail += line;
+                }
+                continue;
+            }
+
+            confrontati++;
+            size_t N = std::min(oh.size(), static_cast<size_t>(region));
+            int ndiff = 0, firstOff = -1;
+            int diffOff[8], diffOh[8], diffPk[8];
+            int nDiffs = 0;
+            for (size_t i = 0; i < N; ++i) {
+                if (oh[i] != pk.data[i]) {
+                    ndiff++;
+                    if (firstOff < 0) firstOff = static_cast<int>(i);
+                    if (nDiffs < 8) {
+                        diffOff[nDiffs] = static_cast<int>(i);
+                        diffOh[nDiffs] = oh[i];
+                        diffPk[nDiffs] = pk.data[i];
+                        nDiffs++;
+                    }
+                }
+            }
+
+            if (ndiff == 0) { identici++; continue; }
+
+            differenti++;
+            fprintf(stderr, "[PARITY] box %d slot %d: %d/%zu byte differ, primo off %d\n",
+                    box, s, ndiff, N, firstOff);
+                        DebugLog::line("b%d s%d: %d byte @%d+ (region=%d)", box, s, ndiff, firstOff, (int)N);
+            for (size_t i = 0; i < N; ++i) {
+                if (oh[i] != pk.data[i])
+                    DebugLog::line("  +0x%X OH=%02X PK=%02X", (int)i, oh[i], pk.data[i]);
+            }
+            if (detail.size() < 400) {
+                char line[128];
+                std::snprintf(line, sizeof(line), "b%d s%d: %d byte @%d+\n", box, s, ndiff, firstOff);
+                detail += line;
+                for (int d = 0; d < nDiffs; d++) {
+                    char dline[96];
+                    std::snprintf(dline, sizeof(dline), "  +0x%X OH=%02X PK=%02X\n",
+                                  diffOff[d], diffOh[d], diffPk[d]);
+                    detail += dline;
+                }
+            }
+        }
+    }
+
+    fprintf(stderr, "[PARITY] totale: %d confrontati, %d identici, %d differenti (OH vuoti: %d)\n",
+            confrontati, identici, differenti, ohVuoti);
+    DebugLog::line("totale: %d confrontati, %d identici, %d differenti (OH vuoti: %d)",
+                   confrontati, identici, differenti, ohVuoti);
+
+    if (differenti == 0) return std::string();
+    char head[192];
+    std::snprintf(head, sizeof(head),
+        "Regione %d B/slot\nConfrontati: %d\nIdentici: %d\nDifferenti: %d\n",
+        region, confrontati, identici, differenti);
+    std::string out = head;
+    out += "\nPrimi slot divergenti:\n"; out += detail;
+    return out;
+}
+
+bool SaveFile::saveSCBlock(const std::string& path) {
+    std::vector<uint8_t> encrypted = SaveFileFFI::encrypt(blocks_);
+
+    // Open for in-place writing (r+b) to avoid truncating the file.
+    // The Switch save filesystem journal can break if we truncate + rewrite.
+    // Our encrypted output is always the exact same size as the original.
+    FILE* f = std::fopen(path.c_str(), "r+b");
+    if (!f) {
+        // File doesn't exist yet — create it
+        f = std::fopen(path.c_str(), "wb");
+    }
+    if (!f)
+        return false;
+
+    size_t written = std::fwrite(encrypted.data(), 1, encrypted.size(), f);
+    std::fclose(f);
+    return written == encrypted.size();
+}
+
+bool SaveFile::loadBDSP(const std::string& path) {
+    std::ifstream file(path, std::ios::binary | std::ios::ate);
+    if (!file.is_open())
+        return false;
+
+    auto fileSize = static_cast<size_t>(file.tellg());
+    if (!isBDSPSize(fileSize))
+        return false;
+
+    file.seekg(0);
+    rawData_.resize(fileSize);
+    file.read(reinterpret_cast<char*>(rawData_.data()), fileSize);
+    file.close();
+
+    // Box data at fixed offset (party format, 0x158 per slot, 40 boxes * 30 slots)
+    size_t boxDataEnd = BDSP_BOX_OFFSET +
+        static_cast<size_t>(BDSP_BOX_COUNT) * slotsPerBox_ * PokeCrypto::SIZE_9PARTY;
+    if (boxDataEnd > rawData_.size())
+        return false;
+
+    boxData_ = rawData_.data() + BDSP_BOX_OFFSET;
+    boxDataLen_ = boxDataEnd - BDSP_BOX_OFFSET;
+
+    // Box layout at fixed offset
+    if (BDSP_LAYOUT_OFFSET + BDSP_LAYOUT_SIZE <= static_cast<int>(rawData_.size())) {
+        boxLayoutData_ = rawData_.data() + BDSP_LAYOUT_OFFSET;
+        boxLayoutLen_ = BDSP_LAYOUT_SIZE;
+    }
+
+    loaded_ = true;
+    return true;
+}
+
+bool SaveFile::saveBDSP(const std::string& path) {
+    if (rawData_.empty())
+        return false;
+
+    // Recalculate MD5 checksum
+    // Clear existing hash, compute MD5 of entire save, write hash back
+    if (rawData_.size() >= static_cast<size_t>(BDSP_HASH_OFFSET + BDSP_HASH_SIZE)) {
+        std::memset(rawData_.data() + BDSP_HASH_OFFSET, 0, BDSP_HASH_SIZE);
+        MD5::hash(rawData_.data(), rawData_.size(), rawData_.data() + BDSP_HASH_OFFSET);
+    }
+
+    // Open for in-place writing to avoid truncation issues on Switch save filesystem
+    FILE* f = std::fopen(path.c_str(), "r+b");
+    if (!f) {
+        f = std::fopen(path.c_str(), "wb");
+    }
+    if (!f)
+        return false;
+
+    size_t written = std::fwrite(rawData_.data(), 1, rawData_.size(), f);
+    std::fclose(f);
+    return written == rawData_.size();
+}
+
+const std::vector<Pokemon>& SaveFile::getCachedBox(int box) const {
+    auto it = boxCache_.find(box);
+    if (it != boxCache_.end())
+        return it->second;
+
+    DebugLog::line("getCachedBox: box=%d engine=%s", box,
+                   useOpenHome() ? "OH" : "PK");
+
+    // Evict oldest if cache is full
+    if (static_cast<int>(boxCache_.size()) >= BOX_CACHE_MAX)
+        boxCache_.clear();
+
+    std::vector<Pokemon> slots(slotsPerBox_);
+    int dataSize = sizeBoxSlot_ - gapBoxSlot_;
+
+    if (useOpenHome() && saveHandleRust_ && openhome_get_box_count(saveHandleRust_.get()) > 0) {
+        // OH path: extract stored bytes from Rust OHPKM per slot.
+        // Fallback to PK when Rust handle is Raw (SV/ZA/FRLG/LGPE/BDSP — no save loader).
+        for (int s = 0; s < slotsPerBox_; s++) {
+            PkmHandle* pkm = SaveFileFFI::getSlot(saveHandleRust_.get(), box, s);
+            if (!pkm) {
+                // Empty slot or error — leave as default-constructed Pokemon
+                continue;
+            }
+            slots[s].gameType_ = gameType_;
+            std::vector<uint8_t> bytes = OpenHomeNX::getPkmBoxBytes(pkm);
+            if (!bytes.empty() && bytes.size() <= slots[s].data.size()) {
+                std::memcpy(slots[s].data.data(), bytes.data(), bytes.size());
+            }
+            OpenHomeNX::freePkm(pkm);
+        }
+    } else {
+        // PK path: decrypt from raw save data (original behavior, invariable)
+        for (int s = 0; s < slotsPerBox_; s++) {
+            int offset = getBoxSlotOffset(box, s);
+            if (offset + sizeBoxSlot_ > static_cast<int>(boxDataLen_))
+                continue;
+            slots[s].gameType_ = gameType_;
+            slots[s].loadFromEncrypted(boxData_ + offset, dataSize);
+        }
+    }
+    return boxCache_.emplace(box, std::move(slots)).first->second;
+}
+
+Pokemon SaveFile::getBoxSlot(int box, int slot) const {
+    if (!loaded_ || !boxData_)
+        return Pokemon{};
+    if (box < 0 || box >= boxCount_ || slot < 0 || slot >= slotsPerBox_)
+        return Pokemon{};
+
+    const auto& cached = getCachedBox(box);
+    return cached[slot];
+}
+
+void SaveFile::setBoxSlot(int box, int slot, Pokemon pkm) {
+    if (!loaded_ || !boxData_)
+        return;
+
+    int offset = getBoxSlotOffset(box, slot);
+    if (offset + sizeBoxSlot_ > static_cast<int>(boxDataLen_))
+        return;
+
+    // Ensure correct game type, refresh checksum, encrypt and write
+    pkm.gameType_ = gameType_;
+
+    // Adapt handling-trainer data to this save's trainer, like PKHeX's
+    // SetPKM -> UpdateHandler does on every Pokemon written into a save
+    if (!pkm.isEmpty()) {
+        TrainerInfo trainer = getTrainerInfo();
+        if (trainer.valid)
+            updatePokemonHandler(pkm, trainer);
+    }
+
+    pkm.getEncrypted(boxData_ + offset);
+    // Zero the gap bytes (if any)
+    if (gapBoxSlot_ > 0)
+        std::memset(boxData_ + offset + (sizeBoxSlot_ - gapBoxSlot_), 0, gapBoxSlot_);
+
+    // Register in Pokedex (non-empty, non-egg Pokemon only)
+    if (!pkm.isEmpty())
+        Pokedex::registerPokemon(*this, pkm);
+
+    invalidateBoxCache(box);
+
+    // Invalidate the Rust OH handle: it was created from the original file
+    // at load time and is now stale. Subsequent getCachedBox() calls will
+    // fall back to the PK path which reads the mutated boxData_ directly.
+    if (saveHandleRust_)
+        saveHandleRust_.reset();
+}
+
+void SaveFile::clearBoxSlot(int box, int slot) {
+    if (!loaded_ || !boxData_)
+        return;
+
+    int offset = getBoxSlotOffset(box, slot);
+    if (offset + sizeBoxSlot_ > static_cast<int>(boxDataLen_))
+        return;
+
+    if (isFRLG(gameType_) || isLGPE(gameType_)) {
+        // FRLG/LGPE: empty slots are all-zero bytes (not encrypted blank).
+        std::memset(boxData_ + offset, 0, sizeBoxSlot_);
+    } else {
+        // Write encrypted blank PKM (matching PKHeX behavior) instead of raw zeros.
+        // A blank PKM has all-zero decrypted data; we encrypt it so the slot
+        // contains valid PokeCrypto-encrypted "empty" data.
+        Pokemon blank;
+        blank.gameType_ = gameType_;
+        blank.getEncrypted(boxData_ + offset);
+        // Zero the gap bytes (if any)
+        if (gapBoxSlot_ > 0)
+            std::memset(boxData_ + offset + (sizeBoxSlot_ - gapBoxSlot_), 0, gapBoxSlot_);
+    }
+
+    invalidateBoxCache(box);
+
+    // Invalidate the Rust OH handle after mutation (same as setBoxSlot).
+    if (saveHandleRust_)
+        saveHandleRust_.reset();
+}
+
+bool SaveFile::isLGPEPartySlot(int box, int slot) const {
+    if (!isLGPE(gameType_)) return false;
+    uint16_t flatIdx = static_cast<uint16_t>(box * slotsPerBox_ + slot);
+    for (int i = 0; i < 6; i++) {
+        if (lgpePartyIndices_[i] == flatIdx) return true;
+    }
+    return false;
+}
+
+int SaveFile::lgpePartyIndexOf(int box, int slot) const {
+    if (!isLGPE(gameType_)) return -1;
+    uint16_t flatIdx = static_cast<uint16_t>(box * slotsPerBox_ + slot);
+    for (int i = 0; i < 6; i++) {
+        if (lgpePartyIndices_[i] == flatIdx) return i;
+    }
+    return -1;
+}
+
+void SaveFile::setLGPEPartyPointer(int partyIdx, uint16_t flatSlot) {
+    if (partyIdx < 0 || partyIdx >= 6) return;
+    lgpePartyIndices_[partyIdx] = flatSlot;
+    // Also update rawData_ header so save compaction stays consistent
+    if (isLGPE(gameType_) && !rawData_.empty()) {
+        size_t ofs = LGPE_HEADER_OFFSET + partyIdx * 2;
+        if (ofs + 2 <= rawData_.size())
+            std::memcpy(rawData_.data() + ofs, &flatSlot, 2);
+    }
+}
+
+void SaveFile::setLGPEPartyIndices(const std::array<uint16_t, 6>& v) {
+    lgpePartyIndices_ = v;
+    if (isLGPE(gameType_) && !rawData_.empty()) {
+        for (int i = 0; i < 6; i++) {
+            size_t ofs = LGPE_HEADER_OFFSET + i * 2;
+            if (ofs + 2 <= rawData_.size())
+                std::memcpy(rawData_.data() + ofs, &v[i], 2);
+        }
+    }
+}
+
+// Gen3 English character table (same as in pokemon.cpp — G3_EN)
+static const uint16_t G3_EN_SAVE[256] = {
+    0x0020, 0x00C0, 0x00C1, 0x00C2, 0x00C7, 0x00C8, 0x00C9, 0x00CA,
+    0x00CB, 0x00CC, 0x3053, 0x00CE, 0x00CF, 0x00D2, 0x00D3, 0x00D4,
+    0x0152, 0x00D9, 0x00DA, 0x00DB, 0x00D1, 0x00DF, 0x00E0, 0x00E1,
+    0x306D, 0x00E7, 0x00E8, 0x00E9, 0x00EA, 0x00EB, 0x00EC, 0x307E,
+    0x00EE, 0x00EF, 0x00F2, 0x00F3, 0x00F4, 0x0153, 0x00F9, 0x00FA,
+    0x00FB, 0x00F1, 0x00BA, 0x00AA, 0x2469, 0x0026, 0x002B, 0x3042,
+    0x3043, 0x3045, 0x3047, 0x3049, 0x3083, 0x003D, 0x003B, 0x304C,
+    0x304E, 0x3050, 0x3052, 0x3054, 0x3056, 0x3058, 0x305A, 0x305C,
+    0x305E, 0x3060, 0x3062, 0x3065, 0x3067, 0x3069, 0x3070, 0x3073,
+    0x3076, 0x3079, 0x307C, 0x3071, 0x3074, 0x3077, 0x307A, 0x307D,
+    0x3063, 0x00BF, 0x00A1, 0x2483, 0x2484, 0x30AA, 0x30AB, 0x30AD,
+    0x30AF, 0x30B1, 0x00CD, 0x0025, 0x0028, 0x0029, 0x30BB, 0x30BD,
+    0x30BF, 0x30C1, 0x30C4, 0x30C6, 0x30C8, 0x30CA, 0x30CB, 0x30CC,
+    0x00E2, 0x30CE, 0x30CF, 0x30D2, 0x30D5, 0x30D8, 0x30DB, 0x00ED,
+    0x30DF, 0x30E0, 0x30E1, 0x30E2, 0x30E4, 0x30E6, 0x30E8, 0x30E9,
+    0x30EA, 0x2191, 0x2193, 0x2190, 0xFF0B, 0x30F2, 0x30F3, 0x30A1,
+    0x30A3, 0x30A5, 0x30A7, 0x30A9, 0x2482, 0x003C, 0x003E, 0x30AC,
+    0x30AE, 0x30B0, 0x30B2, 0x30B4, 0x30B6, 0x30B8, 0x30BA, 0x30BC,
+    0x30BE, 0x30C0, 0x30C2, 0x30C5, 0x30C7, 0x30C9, 0x30D0, 0x30D3,
+    0x30D6, 0x30D9, 0x30DC, 0x30D1, 0x30D4, 0x30D7, 0x30DA, 0x30DD,
+    0x30C3, 0x0030, 0x0031, 0x0032, 0x0033, 0x0034, 0x0035, 0x0036,
+    0x0037, 0x0038, 0x0039, 0x0021, 0x003F, 0x002E, 0x002D, 0xFF65,
+    0x246C, 0x201C, 0x201D, 0x2018, 0x0027, 0x2642, 0x2640, 0x0024,
+    0x002C, 0x2467, 0x002F, 0x0041, 0x0042, 0x0043, 0x0044, 0x0045,
+    0x0046, 0x0047, 0x0048, 0x0049, 0x004A, 0x004B, 0x004C, 0x004D,
+    0x004E, 0x004F, 0x0050, 0x0051, 0x0052, 0x0053, 0x0054, 0x0055,
+    0x0056, 0x0057, 0x0058, 0x0059, 0x005A, 0x0061, 0x0062, 0x0063,
+    0x0064, 0x0065, 0x0066, 0x0067, 0x0068, 0x0069, 0x006A, 0x006B,
+    0x006C, 0x006D, 0x006E, 0x006F, 0x0070, 0x0071, 0x0072, 0x0073,
+    0x0074, 0x0075, 0x0076, 0x0077, 0x0078, 0x0079, 0x007A, 0x25BA,
+    0x003A, 0x00C4, 0x00D6, 0x00DC, 0x00E4, 0x00F6, 0x00FC, 0x0000,
+    0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000,
+};
+
+// Gen3 Japanese character table (same as in pokemon.cpp — G3_JP)
+static const uint16_t G3_JP_SAVE[256] = {
+    0x3000, 0x3042, 0x3044, 0x3046, 0x3048, 0x304A, 0x304B, 0x304D,
+    0x304F, 0x3051, 0x3053, 0x3055, 0x3057, 0x3059, 0x305B, 0x305D,
+    0x305F, 0x3061, 0x3064, 0x3066, 0x3068, 0x306A, 0x306B, 0x306C,
+    0x306D, 0x306E, 0x306F, 0x3072, 0x3075, 0x3078, 0x307B, 0x307E,
+    0x307F, 0x3080, 0x3081, 0x3082, 0x3084, 0x3086, 0x3088, 0x3089,
+    0x308A, 0x308B, 0x308C, 0x308D, 0x308F, 0x3092, 0x3093, 0x3041,
+    0x3043, 0x3045, 0x3047, 0x3049, 0x3083, 0x3085, 0x3087, 0x304C,
+    0x304E, 0x3050, 0x3052, 0x3054, 0x3056, 0x3058, 0x305A, 0x305C,
+    0x305E, 0x3060, 0x3062, 0x3065, 0x3067, 0x3069, 0x3070, 0x3073,
+    0x3076, 0x3079, 0x307C, 0x3071, 0x3074, 0x3077, 0x307A, 0x307D,
+    0x3063, 0x30A2, 0x30A4, 0x30A6, 0x30A8, 0x30AA, 0x30AB, 0x30AD,
+    0x30AF, 0x30B1, 0x30B3, 0x30B5, 0x30B7, 0x30B9, 0x30BB, 0x30BD,
+    0x30BF, 0x30C1, 0x30C4, 0x30C6, 0x30C8, 0x30CA, 0x30CB, 0x30CC,
+    0x30CD, 0x30CE, 0x30CF, 0x30D2, 0x30D5, 0x30D8, 0x30DB, 0x30DE,
+    0x30DF, 0x30E0, 0x30E1, 0x30E2, 0x30E4, 0x30E6, 0x30E8, 0x30E9,
+    0x30EA, 0x30EB, 0x30EC, 0x30ED, 0x30EF, 0x30F2, 0x30F3, 0x30A1,
+    0x30A3, 0x30A5, 0x30A7, 0x30A9, 0x30E3, 0x30E5, 0x30E7, 0x30AC,
+    0x30AE, 0x30B0, 0x30B2, 0x30B4, 0x30B6, 0x30B8, 0x30BA, 0x30BC,
+    0x30BE, 0x30C0, 0x30C2, 0x30C5, 0x30C7, 0x30C9, 0x30D0, 0x30D3,
+    0x30D6, 0x30D9, 0x30DC, 0x30D1, 0x30D4, 0x30D7, 0x30DA, 0x30DD,
+    0x30C3, 0xFF10, 0xFF11, 0xFF12, 0xFF13, 0xFF14, 0xFF15, 0xFF16,
+    0xFF17, 0xFF18, 0xFF19, 0xFF01, 0xFF1F, 0x3002, 0x30FC, 0x30FB,
+    0x2026, 0x300E, 0x300F, 0x300C, 0x300D, 0x2642, 0x2640, 0x5186,
+    0xFF0E, 0x00D7, 0xFF0F, 0xFF21, 0xFF22, 0xFF23, 0xFF24, 0xFF25,
+    0xFF26, 0xFF27, 0xFF28, 0xFF29, 0xFF2A, 0xFF2B, 0xFF2C, 0xFF2D,
+    0xFF2E, 0xFF2F, 0xFF30, 0xFF31, 0xFF32, 0xFF33, 0xFF34, 0xFF35,
+    0xFF36, 0xFF37, 0xFF38, 0xFF39, 0xFF3A, 0xFF41, 0xFF42, 0xFF43,
+    0xFF44, 0xFF45, 0xFF46, 0xFF47, 0xFF48, 0xFF49, 0xFF4A, 0xFF4B,
+    0xFF4C, 0xFF4D, 0xFF4E, 0xFF4F, 0xFF50, 0xFF51, 0xFF52, 0xFF53,
+    0xFF54, 0xFF55, 0xFF56, 0xFF57, 0xFF58, 0xFF59, 0xFF5A, 0x25BA,
+    0xFF1A, 0x00C4, 0x00D6, 0x00DC, 0x00E4, 0x00F6, 0x00FC, 0x2191,
+    0x2193, 0x2190, 0x2192, 0xFF0B, 0x0000, 0x0000, 0x0000, 0x0000,
+};
+
+static std::string decodeGen3String(const uint8_t* p, int maxBytes, bool jp = false) {
+    std::string result;
+    const uint16_t* table = jp ? G3_JP_SAVE : G3_EN_SAVE;
+    for (int i = 0; i < maxBytes; i++) {
+        uint8_t b = p[i];
+        if (b == 0xFF) break;
+        uint16_t ch = table[b];
+        if (ch == 0) break;
+        if (ch < 0x80) {
+            result += static_cast<char>(ch);
+        } else if (ch < 0x800) {
+            result += static_cast<char>(0xC0 | (ch >> 6));
+            result += static_cast<char>(0x80 | (ch & 0x3F));
+        } else {
+            result += static_cast<char>(0xE0 | (ch >> 12));
+            result += static_cast<char>(0x80 | ((ch >> 6) & 0x3F));
+            result += static_cast<char>(0x80 | (ch & 0x3F));
+        }
+    }
+    return result;
+}
+
+std::string SaveFile::getBoxName(int box) const {
+    if (box < 0 || box >= boxCount_)
+        return "Box " + std::to_string(box + 1);
+
+    if (isFRLG(gameType_)) {
+        // FRLG: box names stored after all pokemon data in Gen3 encoding
+        if (!boxLayoutData_)
+            return "Box " + std::to_string(box + 1);
+        int nameOfs = box * GBA_BOXNAME_LEN;
+        if (nameOfs + GBA_BOXNAME_LEN > static_cast<int>(boxLayoutLen_))
+            return "Box " + std::to_string(box + 1);
+        std::string name = decodeGen3String(boxLayoutData_ + nameOfs, GBA_BOXNAME_LEN, isFRLG_JA(gameType_));
+        if (name.empty())
+            return "Box " + std::to_string(box + 1);
+        return name;
+    }
+
+    if (!boxLayoutData_)
+        return "Box " + std::to_string(box + 1);
+
+    // Box names are stored as UTF-16LE, 0x22 bytes per name
+    constexpr int NAME_SIZE = 0x22;
+    int nameOfs = box * NAME_SIZE;
+    if (nameOfs + NAME_SIZE > static_cast<int>(boxLayoutLen_)) {
+        return "Box " + std::to_string(box + 1);
+    }
+
+    // Read UTF-16LE string
+    std::string result;
+    const uint8_t* p = boxLayoutData_ + nameOfs;
+    for (int i = 0; i < NAME_SIZE / 2; i++) {
+        uint16_t ch;
+        std::memcpy(&ch, p + i * 2, 2);
+        if (ch == 0)
+            break;
+        if (ch < 0x80) {
+            result += static_cast<char>(ch);
+        } else if (ch < 0x800) {
+            result += static_cast<char>(0xC0 | (ch >> 6));
+            result += static_cast<char>(0x80 | (ch & 0x3F));
+        } else {
+            result += static_cast<char>(0xE0 | (ch >> 12));
+            result += static_cast<char>(0x80 | ((ch >> 6) & 0x3F));
+            result += static_cast<char>(0x80 | (ch & 0x3F));
+        }
+    }
+
+    if (result.empty())
+        return "Box " + std::to_string(box + 1);
+
+    return result;
+}
+
+std::string SaveFile::verifyRoundTrip() {
+    if (originalFileData_.empty())
+        return "No original data";
+
+    // Re-encrypt blocks (no modifications have been made yet)
+    std::vector<uint8_t> encrypted = SaveFileFFI::encrypt(blocks_);
+
+    std::string result;
+
+    if (encrypted.size() != originalFileData_.size()) {
+        result = "SIZE MISMATCH: encrypted=" + std::to_string(encrypted.size())
+               + " original=" + std::to_string(originalFileData_.size());
+    } else {
+        // Compare byte-by-byte
+        size_t diffCount = 0;
+        size_t firstDiff = 0;
+        for (size_t i = 0; i < encrypted.size(); i++) {
+            if (encrypted[i] != originalFileData_[i]) {
+                if (diffCount == 0)
+                    firstDiff = i;
+                diffCount++;
+            }
+        }
+
+        if (diffCount == 0) {
+            result = "OK";
+        } else {
+            // Check if the difference is only in the hash (last 32 bytes)
+            size_t hashStart = originalFileData_.size() - 32;
+            bool onlyHashDiffers = true;
+            for (size_t i = 0; i < hashStart; i++) {
+                if (encrypted[i] != originalFileData_[i]) {
+                    onlyHashDiffers = false;
+                    break;
+                }
+            }
+
+            char buf[256];
+            if (onlyHashDiffers) {
+                std::snprintf(buf, sizeof(buf),
+                    "HASH ONLY: payload matches but hash differs");
+            } else {
+                std::snprintf(buf, sizeof(buf),
+                    "DIFF: %zu bytes differ, first at 0x%zX (enc=0x%02X orig=0x%02X)",
+                    diffCount, firstDiff,
+                    encrypted[firstDiff], originalFileData_[firstDiff]);
+            }
+            result = buf;
+        }
+    }
+
+    // Free the original data
+    originalFileData_.clear();
+    originalFileData_.shrink_to_fit();
+
+    return result;
+}
+
+// --- Trainer Info (for wondercard injection) ---
+
+TrainerInfo SaveFile::getTrainerInfo() const {
+    TrainerInfo info;
+    info.valid = false;
+
+    // LGPE uses flat binary — MyStatus7b at offset 0x01000
+    if (isLGPE(gameType_)) {
+        constexpr size_t STATUS_OFF = 0x01000;
+        if (rawData_.size() < STATUS_OFF + 0x60)
+            return info;
+        const uint8_t* s = rawData_.data() + STATUS_OFF;
+
+        // ID32 at 0x00
+        std::memcpy(&info.id32, s + 0x00, 4);
+
+        // Gender at 0x05
+        info.gender = s[0x05];
+
+        // Language at 0x35
+        info.language = s[0x35];
+
+        // OT Name at 0x38 (UTF-16LE, up to 12 chars)
+        for (int i = 0; i < 12; i++) {
+            uint16_t ch;
+            std::memcpy(&ch, s + 0x38 + i * 2, 2);
+            if (ch == 0) break;
+            info.otName += static_cast<char16_t>(ch);
+        }
+
+        // Game version: GP=42, GE=43
+        info.gameVersion = (gameType_ == GameType::GP) ? 42 : 43;
+
+        info.valid = !info.otName.empty();
+        return info;
+    }
+
+    // BDSP uses flat binary (not SCBlock) — handle before SCBlock check
+    if (isBDSP(gameType_)) {
+        // MyStatus8b at raw offset 0x79BB4, ConfigSave8b at 0x79B74
+        constexpr size_t STATUS_OFF = 0x79BB4;
+        constexpr size_t CONFIG_OFF = 0x79B74;
+        if (rawData_.size() < STATUS_OFF + 0x50)
+            return info;
+        const uint8_t* s = rawData_.data() + STATUS_OFF;
+        const uint8_t* c = rawData_.data() + CONFIG_OFF;
+
+        // OT Name at MyStatus8b+0x00 (UTF-16LE, up to 13 chars)
+        for (int i = 0; i < 13; i++) {
+            uint16_t ch;
+            std::memcpy(&ch, s + i * 2, 2);
+            if (ch == 0) break;
+            info.otName += static_cast<char16_t>(ch);
+        }
+
+        // ID32 at MyStatus8b+0x1C
+        std::memcpy(&info.id32, s + 0x1C, 4);
+
+        // Gender at MyStatus8b+0x24 — raw byte is Male boolean (1=Male, 0=Female)
+        // PKHeX Gender convention: 0=Male, 1=Female — invert
+        info.gender = s[0x24] ? 0 : 1;
+
+        // Language at ConfigSave8b+0x04 (i32, but we only need low byte)
+        info.language = static_cast<uint8_t>(c[0x04]);
+
+        // Game version: BD=48, SP=49
+        info.gameVersion = (gameType_ == GameType::BD) ? 48 : 49;
+
+        info.valid = !info.otName.empty();
+        return info;
+    }
+
+    // Only for SCBlock-based games (SV, ZA, SwSh)
+    if (blocks_.empty())
+        return info;
+
+    if (gameType_ == GameType::LA) {
+        // PLA MyStatus8a block key: 0xf25c070e (same key as SWSH, different offsets)
+        const SCBlock* block = SaveFileFFI::findBlock(blocks_, 0xf25c070e);
+        if (!block || block->data.size() < 0x50)
+            return info;
+
+        const uint8_t* d = block->data.data();
+
+        // ID32 at 0x10
+        std::memcpy(&info.id32, d + 0x10, 4);
+
+        // Gender at 0x15
+        info.gender = d[0x15];
+
+        // Language at 0x17
+        info.language = d[0x17];
+
+        // OT Name at 0x20 (UTF-16LE, up to 13 chars)
+        for (int i = 0; i < 13; i++) {
+            uint16_t ch;
+            std::memcpy(&ch, d + 0x20 + i * 2, 2);
+            if (ch == 0) break;
+            info.otName += static_cast<char16_t>(ch);
+        }
+
+        info.gameVersion = 47; // PLA
+        info.valid = !info.otName.empty();
+        return info;
+    }
+
+    if (isSwSh(gameType_)) {
+        // SWSH MyStatus8 block key: 0xf25c070e
+        const SCBlock* block = SaveFileFFI::findBlock(blocks_, 0xf25c070e);
+        if (!block || block->data.size() < 0xCA)
+            return info;
+
+        const uint8_t* d = block->data.data();
+
+        // ID32 at 0xA0
+        std::memcpy(&info.id32, d + 0xA0, 4);
+
+        // Gender at 0xA5
+        info.gender = d[0xA5];
+
+        // Language at 0xA7
+        info.language = d[0xA7];
+
+        // OT Name at 0xB0 (UTF-16LE, up to 13 chars)
+        for (int i = 0; i < 13; i++) {
+            uint16_t ch;
+            std::memcpy(&ch, d + 0xB0 + i * 2, 2);
+            if (ch == 0) break;
+            info.otName += static_cast<char16_t>(ch);
+        }
+
+        // Game version: SW=44, SH=45
+        info.gameVersion = (gameType_ == GameType::Sw) ? 44 : 45;
+
+        info.valid = !info.otName.empty();
+        return info;
+    }
+
+    // SV/ZA: KMyStatus block key: 0xE3E89BD1
+    const SCBlock* block = SaveFileFFI::findBlock(blocks_, 0xE3E89BD1);
+    if (!block || block->data.size() < 0x30)
+        return info;
+
+    const uint8_t* d = block->data.data();
+
+    // ID32 at 0x00
+    std::memcpy(&info.id32, d + 0x00, 4);
+
+    // Gender at 0x05
+    info.gender = d[0x05];
+
+    // Language at 0x07
+    info.language = d[0x07];
+
+    // OT Name at 0x10 (UTF-16LE)
+    for (int i = 0; i < 13; i++) {
+        uint16_t ch;
+        std::memcpy(&ch, d + 0x10 + i * 2, 2);
+        if (ch == 0) break;
+        info.otName += static_cast<char16_t>(ch);
+    }
+
+    // Game version: ZA=52, SL=50, VL=51
+    if (gameType_ == GameType::ZA)
+        info.gameVersion = 52;
+    else
+        info.gameVersion = (gameType_ == GameType::V) ? 51 : 50;
+
+    info.valid = !info.otName.empty();
+    return info;
+}
+
+// --- CRC16NoInvert (for LGPE BEEF block checksums) ---
+
+static const uint16_t CRC16_TABLE[256] = {
+    0x0000, 0xC0C1, 0xC181, 0x0140, 0xC301, 0x03C0, 0x0280, 0xC241,
+    0xC601, 0x06C0, 0x0780, 0xC741, 0x0500, 0xC5C1, 0xC481, 0x0440,
+    0xCC01, 0x0CC0, 0x0D80, 0xCD41, 0x0F00, 0xCFC1, 0xCE81, 0x0E40,
+    0x0A00, 0xCAC1, 0xCB81, 0x0B40, 0xC901, 0x09C0, 0x0880, 0xC841,
+    0xD801, 0x18C0, 0x1980, 0xD941, 0x1B00, 0xDBC1, 0xDA81, 0x1A40,
+    0x1E00, 0xDEC1, 0xDF81, 0x1F40, 0xDD01, 0x1DC0, 0x1C80, 0xDC41,
+    0x1400, 0xD4C1, 0xD581, 0x1540, 0xD701, 0x17C0, 0x1680, 0xD641,
+    0xD201, 0x12C0, 0x1380, 0xD341, 0x1100, 0xD1C1, 0xD081, 0x1040,
+    0xF001, 0x30C0, 0x3180, 0xF141, 0x3300, 0xF3C1, 0xF281, 0x3240,
+    0x3600, 0xF6C1, 0xF781, 0x3740, 0xF501, 0x35C0, 0x3480, 0xF441,
+    0x3C00, 0xFCC1, 0xFD81, 0x3D40, 0xFF01, 0x3FC0, 0x3E80, 0xFE41,
+    0xFA01, 0x3AC0, 0x3B80, 0xFB41, 0x3900, 0xF9C1, 0xF881, 0x3840,
+    0x2800, 0xE8C1, 0xE981, 0x2940, 0xEB01, 0x2BC0, 0x2A80, 0xEA41,
+    0xEE01, 0x2EC0, 0x2F80, 0xEF41, 0x2D00, 0xEDC1, 0xEC81, 0x2C40,
+    0xE401, 0x24C0, 0x2580, 0xE541, 0x2700, 0xE7C1, 0xE681, 0x2640,
+    0x2200, 0xE2C1, 0xE381, 0x2340, 0xE101, 0x21C0, 0x2080, 0xE041,
+    0xA001, 0x60C0, 0x6180, 0xA141, 0x6300, 0xA3C1, 0xA281, 0x6240,
+    0x6600, 0xA6C1, 0xA781, 0x6740, 0xA501, 0x65C0, 0x6480, 0xA441,
+    0x6C00, 0xACC1, 0xAD81, 0x6D40, 0xAF01, 0x6FC0, 0x6E80, 0xAE41,
+    0xAA01, 0x6AC0, 0x6B80, 0xAB41, 0x6900, 0xA9C1, 0xA881, 0x6840,
+    0x7800, 0xB8C1, 0xB981, 0x7940, 0xBB01, 0x7BC0, 0x7A80, 0xBA41,
+    0xBE01, 0x7EC0, 0x7F80, 0xBF41, 0x7D00, 0xBDC1, 0xBC81, 0x7C40,
+    0xB401, 0x74C0, 0x7580, 0xB541, 0x7700, 0xB7C1, 0xB681, 0x7640,
+    0x7200, 0xB2C1, 0xB381, 0x7340, 0xB101, 0x71C0, 0x7080, 0xB041,
+    0x5000, 0x90C1, 0x9181, 0x5140, 0x9301, 0x53C0, 0x5280, 0x9241,
+    0x9601, 0x56C0, 0x5780, 0x9741, 0x5500, 0x95C1, 0x9481, 0x5440,
+    0x9C01, 0x5CC0, 0x5D80, 0x9D41, 0x5F00, 0x9FC1, 0x9E81, 0x5E40,
+    0x5A00, 0x9AC1, 0x9B81, 0x5B40, 0x9901, 0x59C0, 0x5880, 0x9841,
+    0x8801, 0x48C0, 0x4980, 0x8941, 0x4B00, 0x8BC1, 0x8A81, 0x4A40,
+    0x4E00, 0x8EC1, 0x8F81, 0x4F40, 0x8D01, 0x4DC0, 0x4C80, 0x8C41,
+    0x4400, 0x84C1, 0x8581, 0x4540, 0x8701, 0x47C0, 0x4680, 0x8641,
+    0x8201, 0x42C0, 0x4380, 0x8341, 0x4100, 0x81C1, 0x8081, 0x4040,
+};
+
+uint16_t SaveFile::crc16NoInvert(const uint8_t* data, size_t len) {
+    uint16_t chk = 0;
+    for (size_t i = 0; i < len; i++)
+        chk = CRC16_TABLE[(uint8_t)(data[i] ^ chk)] ^ (chk >> 8);
+    return chk;
+}
+
+// --- LGPE save format (flat binary with BEEF block checksums) ---
+
+bool SaveFile::loadLGPE(const std::string& path) {
+    std::ifstream file(path, std::ios::binary | std::ios::ate);
+    if (!file.is_open())
+        return false;
+
+    auto fileSize = static_cast<size_t>(file.tellg());
+    if (fileSize != LGPE_SAVE_SIZE)
+        return false;
+
+    file.seekg(0);
+    rawData_.resize(fileSize);
+    file.read(reinterpret_cast<char*>(rawData_.data()), fileSize);
+    file.close();
+
+    // Box data at fixed offset (party format, 0x104 per slot, 40 boxes * 25 slots)
+    size_t boxDataEnd = LGPE_BOX_OFFSET + LGPE_BOX_SIZE;
+    if (boxDataEnd > rawData_.size())
+        return false;
+
+    boxData_ = rawData_.data() + LGPE_BOX_OFFSET;
+    boxDataLen_ = LGPE_BOX_SIZE;
+
+    // LGPE has no custom box names
+    boxLayoutData_ = nullptr;
+    boxLayoutLen_ = 0;
+
+    // Parse party pointers from PokeListHeader (6 x u16)
+    lgpePartyCount_ = 0;
+    for (int i = 0; i < 6; i++) {
+        uint16_t idx;
+        std::memcpy(&idx, rawData_.data() + LGPE_HEADER_OFFSET + i * 2, 2);
+        lgpePartyIndices_[i] = idx;
+        if (idx < 1000) lgpePartyCount_++;
+    }
+
+    loaded_ = true;
+    return true;
+}
+
+bool SaveFile::saveLGPE(const std::string& path) {
+    if (rawData_.empty())
+        return false;
+
+    // --- CompressStorage ---
+    // LGPE stores Pokemon as a sequential flat list; gaps are not legal.
+    // Pack all occupied slots to the beginning (matching PKHeX CompressStorage).
+    int totalSlots = LGPE_BOX_COUNT * LGPE_SLOTS_PER_BOX;
+    int slotSize = PokeCrypto::SIZE_6PARTY;
+
+    // Build old→new index mapping for pointer updates
+    std::vector<int> oldToNew(totalSlots, -1);
+    int writeIdx = 0;
+
+    for (int i = 0; i < totalSlots; i++) {
+        int offset = i * slotSize;
+        if (offset + slotSize > static_cast<int>(boxDataLen_))
+            break;
+
+        // EC (first 4 bytes) is unencrypted; EC==0 means empty slot
+        uint32_t ec;
+        std::memcpy(&ec, boxData_ + offset, 4);
+        if (ec == 0)
+            continue;
+
+        oldToNew[i] = writeIdx;
+        if (writeIdx != i) {
+            int dstOffset = writeIdx * slotSize;
+            std::memmove(boxData_ + dstOffset, boxData_ + offset, slotSize);
+        }
+        writeIdx++;
+    }
+
+    // Zero remaining slots after the last occupied one
+    for (int i = writeIdx; i < totalSlots; i++) {
+        int offset = i * slotSize;
+        if (offset + slotSize <= static_cast<int>(boxDataLen_))
+            std::memset(boxData_ + offset, 0, slotSize);
+    }
+
+    // --- Update PokeListHeader ---
+    // Layout: 6 party pointers (u16) + 1 starter pointer (u16) + count (u16)
+    // Update party and starter pointers using the index mapping
+    for (int i = 0; i < 7; i++) {
+        size_t ptrOfs = LGPE_HEADER_OFFSET + i * 2;
+        if (ptrOfs + 2 > rawData_.size())
+            break;
+
+        uint16_t oldIdx;
+        std::memcpy(&oldIdx, rawData_.data() + ptrOfs, 2);
+
+        if (oldIdx < static_cast<uint16_t>(totalSlots) && oldToNew[oldIdx] >= 0) {
+            uint16_t newIdx = static_cast<uint16_t>(oldToNew[oldIdx]);
+            std::memcpy(rawData_.data() + ptrOfs, &newIdx, 2);
+            // Keep in-memory party indices in sync (first 6 entries are party)
+            if (i < 6) lgpePartyIndices_[i] = newIdx;
+        }
+    }
+
+    // Update count
+    uint16_t count = static_cast<uint16_t>(writeIdx);
+    size_t countOfs = LGPE_HEADER_OFFSET + 7 * 2;
+    if (countOfs + 2 <= rawData_.size())
+        std::memcpy(rawData_.data() + countOfs, &count, 2);
+
+    // Recalculate CRC16NoInvert checksums for all 21 blocks
+    for (int i = 0; i < LGPE_NUM_BLOCKS; i++) {
+        uint16_t chk = crc16NoInvert(
+            rawData_.data() + LGPE_BLOCKS[i].offset,
+            LGPE_BLOCKS[i].length);
+        // Checksum stored at: BLOCK_INFO_OFS + 0x14 + i*8 + 6
+        size_t chkOffset = LGPE_BLOCK_INFO_OFS + 0x14 + i * 8 + 6;
+        if (chkOffset + 2 <= rawData_.size())
+            std::memcpy(rawData_.data() + chkOffset, &chk, 2);
+    }
+
+    // Write in-place (like BDSP)
+    FILE* f = std::fopen(path.c_str(), "r+b");
+    if (!f) {
+        f = std::fopen(path.c_str(), "wb");
+    }
+    if (!f)
+        return false;
+
+    size_t written = std::fwrite(rawData_.data(), 1, rawData_.size(), f);
+    std::fclose(f);
+    return written == rawData_.size();
+}
+
+// --- GBA save format (sector-based, for FRLG) ---
+
+uint16_t SaveFile::checkSum32GBA(const uint8_t* data, size_t len) {
+    uint32_t chk = 0;
+    for (size_t i = 0; i + 3 < len; i += 4) {
+        uint32_t v;
+        std::memcpy(&v, data + i, 4);
+        chk += v;
+    }
+    return static_cast<uint16_t>(chk + (chk >> 16));
+}
+
+bool SaveFile::loadGBA(const std::string& path) {
+    std::ifstream file(path, std::ios::binary | std::ios::ate);
+    if (!file.is_open())
+        return false;
+
+    auto fileSize = static_cast<size_t>(file.tellg());
+    if (fileSize != GBA_SAVE_SIZE)
+        return false;
+
+    file.seekg(0);
+    rawData_.resize(GBA_SAVE_SIZE);
+    file.read(reinterpret_cast<char*>(rawData_.data()), GBA_SAVE_SIZE);
+    file.close();
+
+    // Determine active save slot by comparing save counters at sector 0
+    // Each slot = 14 sectors of 0x1000 bytes
+    uint32_t counter[2] = {0, 0};
+    bool valid[2] = {false, false};
+
+    for (int slot = 0; slot < 2; slot++) {
+        int slotBase = slot * GBA_SECTOR_COUNT * GBA_SECTOR_SIZE;
+        int bitTrack = 0;
+        for (int i = 0; i < GBA_SECTOR_COUNT; i++) {
+            int sectorOfs = slotBase + i * GBA_SECTOR_SIZE;
+            uint16_t id = readU16LE(rawData_.data() + sectorOfs + GBA_OFS_SECTOR_ID);
+            if (id < GBA_SECTOR_COUNT)
+                bitTrack |= (1 << id);
+            if (id == 0)
+                counter[slot] = readU32LE(rawData_.data() + sectorOfs + GBA_OFS_SAVE_INDEX);
+        }
+        valid[slot] = (bitTrack == 0x3FFF); // all 14 sectors present
+    }
+
+    if (!valid[0] && !valid[1])
+        return false;
+    if (!valid[0]) gbaActiveSlot_ = 1;
+    else if (!valid[1]) gbaActiveSlot_ = 0;
+    else gbaActiveSlot_ = (counter[1] > counter[0]) ? 1 : 0;
+
+    // Build contiguous storage buffer from sectors 5-13 of active slot
+    gbaStorage_.resize(GBA_STORAGE_SECTORS * GBA_SECTOR_USED);
+    std::memset(gbaStorage_.data(), 0, gbaStorage_.size());
+
+    int slotBase = gbaActiveSlot_ * GBA_SECTOR_COUNT * GBA_SECTOR_SIZE;
+    for (int i = 0; i < GBA_SECTOR_COUNT; i++) {
+        int sectorOfs = slotBase + i * GBA_SECTOR_SIZE;
+        uint16_t id = readU16LE(rawData_.data() + sectorOfs + GBA_OFS_SECTOR_ID);
+        if (id >= GBA_STORAGE_FIRST && id <= GBA_STORAGE_LAST) {
+            int storageIdx = id - GBA_STORAGE_FIRST;
+            std::memcpy(gbaStorage_.data() + storageIdx * GBA_SECTOR_USED,
+                        rawData_.data() + sectorOfs,
+                        GBA_SECTOR_USED);
+        }
+    }
+
+    // Box data starts at offset 4 in storage (first 4 bytes = current box index)
+    boxData_ = gbaStorage_.data() + 4;
+    boxDataLen_ = gbaStorage_.size() - 4;
+
+    // Box names start after all pokemon data:
+    // 14 boxes * 30 slots * 80 bytes = 33600 bytes from boxData_
+    int boxNameOfs = GBA_BOX_COUNT * GBA_SLOTS_PER_BOX * PokeCrypto::SIZE_3STORED;
+    if (boxNameOfs + GBA_BOX_COUNT * GBA_BOXNAME_LEN <= static_cast<int>(boxDataLen_)) {
+        boxLayoutData_ = boxData_ + boxNameOfs;
+        boxLayoutLen_ = GBA_BOX_COUNT * GBA_BOXNAME_LEN;
+    } else {
+        boxLayoutData_ = nullptr;
+        boxLayoutLen_ = 0;
+    }
+
+    loaded_ = true;
+    return true;
+}
+
+bool SaveFile::saveGBA(const std::string& path) {
+    if (rawData_.empty() || gbaStorage_.empty())
+        return false;
+
+    // Write modified storage back to sectors in BOTH save slots
+    for (int slot = 0; slot < 2; slot++) {
+        int slotBase = slot * GBA_SECTOR_COUNT * GBA_SECTOR_SIZE;
+
+        // Copy sector structure from active slot if writing to the other slot
+        if (slot != gbaActiveSlot_) {
+            int activeBase = gbaActiveSlot_ * GBA_SECTOR_COUNT * GBA_SECTOR_SIZE;
+            std::memcpy(rawData_.data() + slotBase,
+                        rawData_.data() + activeBase,
+                        GBA_SECTOR_COUNT * GBA_SECTOR_SIZE);
+        }
+
+        // Write storage data back to sectors 5-13
+        for (int i = 0; i < GBA_SECTOR_COUNT; i++) {
+            int sectorOfs = slotBase + i * GBA_SECTOR_SIZE;
+            uint16_t id = readU16LE(rawData_.data() + sectorOfs + GBA_OFS_SECTOR_ID);
+            if (id >= GBA_STORAGE_FIRST && id <= GBA_STORAGE_LAST) {
+                int storageIdx = id - GBA_STORAGE_FIRST;
+                std::memcpy(rawData_.data() + sectorOfs,
+                            gbaStorage_.data() + storageIdx * GBA_SECTOR_USED,
+                            GBA_SECTOR_USED);
+            }
+        }
+
+        // Recalculate checksums for all 14 sectors
+        for (int i = 0; i < GBA_SECTOR_COUNT; i++) {
+            int sectorOfs = slotBase + i * GBA_SECTOR_SIZE;
+            uint16_t chk = checkSum32GBA(rawData_.data() + sectorOfs, GBA_SECTOR_USED);
+            writeU16LE(rawData_.data() + sectorOfs + GBA_OFS_CHECKSUM, chk);
+        }
+    }
+
+    // Write in-place
+    FILE* f = std::fopen(path.c_str(), "r+b");
+    if (!f)
+        f = std::fopen(path.c_str(), "wb");
+    if (!f)
+        return false;
+
+    size_t written = std::fwrite(rawData_.data(), 1, rawData_.size(), f);
+    std::fclose(f);
+    return written == rawData_.size();
+}
+
+uint8_t* SaveFile::findGbaSectorData(int sectionId) {
+    if (rawData_.size() < GBA_SAVE_SIZE)
+        return nullptr;
+    int slotBase = gbaActiveSlot_ * GBA_SECTOR_COUNT * GBA_SECTOR_SIZE;
+    for (int i = 0; i < GBA_SECTOR_COUNT; i++) {
+        int sectorOfs = slotBase + i * GBA_SECTOR_SIZE;
+        uint16_t id = readU16LE(rawData_.data() + sectorOfs + GBA_OFS_SECTOR_ID);
+        if (id == static_cast<uint16_t>(sectionId))
+            return rawData_.data() + sectorOfs;
+    }
+    return nullptr;
+}

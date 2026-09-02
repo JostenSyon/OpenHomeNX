@@ -1,0 +1,19 @@
+# Build artifacts
+/build/
+/rust/target/
+OpenHomeNX.elf
+OpenHomeNX.nro
+OpenHomeNX.nacp
+*.o
+*.map
+
+# OS / editor
+.DS_Store
+
+# Runtime / logs / scratch
+debug.log
+__pycache__/
+*.pyc
+
+# vendored reference clone (not built) — re-clone from github.com/Insektaure/pkHouse
+/pkHouse/

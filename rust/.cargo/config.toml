@@ -1,0 +1,5 @@
+[target.aarch64-unknown-none]
+rustflags = ["-C", "linker=aarch64-none-elf-gcc", "-C", "relocation-model=pic"]
+
+[build]
+target = "aarch64-unknown-none"

@@ -1,0 +1,40 @@
+[package]
+name = "pkm_rs_types"
+version = "1.16.0"
+edition = "2024"
+description = "Types and helper code for the pkm_rs crate"
+repository = "https://github.com/andrewbenington/OpenHome"
+license = "GPL-3.0+"
+
+[dependencies]
+pkm_rs_derive = {path = "../pkm_rs_derive"}
+serde = { version = "1.0.229", default-features = false, features = ["derive", "alloc"] }
+static_assertions = "1.1.0"
+wasm-bindgen = { version = "0.2.127", optional = true }
+js-sys = { version = "0.3.104", optional = true }
+serde-wasm-bindgen = { version = "0.6.5", optional = true }
+getrandom = { version = "0.4.3", optional = true }
+strum = { version = "0.28.0", default-features = false, features = ["derive"] }
+strum_macros = "0.28.0"
+time = { version = "0.3.55", default-features = false, features = ["alloc"], optional = true }
+arbitrary-int = "2.1.1"
+rand = { version = "0.10.2", optional = true }
+tsify = { version = "0.5.6", optional = true }
+num_enum = { version = "0.7.6", default-features = false }
+chrono = { version = "0.4.45", default-features = false, features = ["alloc"], optional = true }
+pastey = "0.2.3"
+
+[lib]
+name = "pkm_rs_types"
+path = "src/lib.rs"
+crate-type = ["cdylib", "rlib"]
+
+[lints.clippy]
+missing_const_for_fn = "warn"
+
+[features]
+default = ["alloc"]
+std = ["serde/std", "chrono/std", "time/std", "strum/std", "num_enum/std", "getrandom/std", "tsify", "time/formatting", "time/parsing", "chrono/clock"]
+wasm = ["wasm-bindgen", "js-sys", "serde-wasm-bindgen", "getrandom/wasm_js", "tsify"]
+randomize = ["rand"]
+alloc = ["serde/alloc", "chrono/alloc", "time/alloc"]

@@ -1,0 +1,675 @@
+extern crate alloc;
+#[cfg(not(feature = "std"))] use alloc::{string::{String, ToString}, vec::Vec, boxed::Box, collections::{BTreeMap, BTreeSet}, borrow::ToOwned};
+#[cfg(not(feature = "std"))] use alloc::format;
+#[cfg(not(feature = "std"))] use alloc::vec;
+use assert_json_diff::{CompareMode, Config, assert_json_matches_no_panic};
+
+use crate::convert_strategy::ConvertStrategy;
+use crate::ohpkm::{OhpkmConvert, OhpkmV2};
+use crate::result::Error;
+use crate::traits::Pkm;
+use pretty_assertions::assert_eq;
+use pretty_hex::pretty_hex;
+use core::fmt::{Debug, Display};
+use core::fs::File;
+use core::io::{self, Read};
+use core::ops::RangeInclusive;
+use core::path::{Path, PathBuf};
+
+pub fn saves_path() -> PathBuf {
+    Path::new("test-files").join("save-files")
+}
+
+pub fn save_bytes_from_file(filename: &Path) -> crate::result::Result<Vec<u8>> {
+    let mut filename = filename.to_path_buf();
+
+    if !filename.starts_with(saves_path()) {
+        filename = saves_path().join(&filename);
+    }
+
+    let mut file = File::open(&filename)
+        .map_err(|e| Error::other(&alloc::format!("error opening {filename:?}: {e}")))?;
+
+    let mut contents = Vec::new();
+    file.read_to_end(&mut contents)
+        .map_err(|e| e.to_string())
+        .unwrap();
+
+    Ok(contents)
+}
+
+fn pkm_path() -> PathBuf {
+    Path::new("test-files").join("pkm-files")
+}
+
+pub fn pkm_from_file<PKM: Pkm>(filename: &Path) -> crate::result::Result<(PKM, Vec<u8>)> {
+    let mut filename = filename.to_path_buf();
+
+    if !filename.starts_with(pkm_path()) {
+        filename = pkm_path().join(&filename);
+    }
+
+    let mut file = File::open(filename).map_err(|e| Error::other(&e.to_string()))?;
+
+    let mut contents = Vec::new();
+    file.read_to_end(&mut contents)
+        .map_err(|e| e.to_string())
+        .unwrap();
+
+    let pkm = PKM::from_bytes(&contents)?;
+
+    Ok((pkm, contents))
+}
+
+pub fn to_from_bytes_all_in_dir<PKM: Pkm + Debug>(dir: &Path) -> TestResult<()> {
+    let pkm_files = core::fs::read_dir(dir).map_err(|e| TestError::dir_read(e, dir))?;
+
+    for dir_entry in pkm_files {
+        match dir_entry {
+            Err(e) => #[cfg(feature="std")] println!("directory entry error: {e}"),
+            Ok(dir_entry) => {
+                if dir_entry.file_name().to_string_lossy().starts_with(".") {
+                    continue;
+                }
+                let path = dir.join(dir_entry.file_name());
+                find_inconsistencies_from_file::<PKM>(&path)?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+pub fn from_to_ohpkm_all_in_dir<PKM: OhpkmConvert>() -> TestResult<()> {
+    let ohpkm_dir = &Path::new("test-files").join("pkm-files").join("ohpkm");
+    let ohpkm_files =
+        core::fs::read_dir(ohpkm_dir).map_err(|e| TestError::dir_read(e, ohpkm_dir))?;
+
+    for dir_entry in ohpkm_files {
+        match dir_entry {
+            Err(e) => #[cfg(feature="std")] println!("directory entry error: {e}"),
+            Ok(dir_entry) => {
+                if dir_entry.file_name().to_string_lossy().starts_with(".") {
+                    continue;
+                }
+                let path = ohpkm_dir.join(dir_entry.file_name());
+                find_inconsistencies_from_to_ohpkm::<PKM>(pkm_from_file(&path)?.0, Some(path))?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+type PathAndBytes = (PathBuf, Box<[u8]>);
+
+pub fn all_file_bytes_in_dir(
+    dir: &Path,
+) -> TestResult<impl Iterator<Item = TestResult<PathAndBytes>>> {
+    use core::fs;
+
+    let dir_entries = fs::read_dir(dir)
+        .map_err(|e| TestError::dir_read(e, dir))?
+        .filter_map(|result| result.ok());
+
+    let successful_pkm = dir_entries
+        .filter(|dir_entry| !dir_entry.file_name().to_string_lossy().starts_with("."))
+        .map(|dir_entry| {
+            fs::read(dir.join(dir_entry.file_name()))
+                .map(|bytes| (dir.join(dir_entry.file_name()), bytes.into_boxed_slice()))
+                .map_err(|e| {
+                    TestError::message_with_path(&alloc::format!("read error: {e}"), &dir_entry.path())
+                })
+        });
+
+    Ok(successful_pkm)
+}
+
+pub struct PkmDirEntry<PKM: Pkm> {
+    pub path: PathBuf,
+    pub mon: PKM,
+    pub bytes: Vec<u8>,
+}
+
+pub type PkmDirEntryResult<PKM> = Result<PkmDirEntry<PKM>, Error>;
+
+pub fn all_pkm_and_bytes_in_dir<PKM: Pkm>(
+    dir: &Path,
+) -> TestResult<impl Iterator<Item = PkmDirEntryResult<PKM>>> {
+    let mut dir_path = dir.to_path_buf();
+
+    if !dir_path.starts_with(pkm_path()) {
+        dir_path = pkm_path().join(&dir_path);
+    }
+
+    let dir_entries = core::fs::read_dir(&dir_path)
+        .map_err(|e| TestError::dir_read(e, &dir_path))?
+        .filter_map(|result| result.ok());
+
+    let successful_pkm = dir_entries
+        .filter(|dir_entry| !dir_entry.file_name().to_string_lossy().starts_with("."))
+        .map(|dir_entry| {
+            let (mon, bytes) = pkm_from_file::<PKM>(&dir.join(dir_entry.file_name()))?;
+            Ok(PkmDirEntry {
+                path: dir_entry.path(),
+                mon,
+                bytes,
+            })
+        });
+
+    Ok(successful_pkm)
+}
+
+pub fn all_pkm_in_dir<PKM: Pkm>(
+    dir: &Path,
+) -> TestResult<impl Iterator<Item = Result<PKM, Error>>> {
+    all_pkm_and_bytes_in_dir::<PKM>(dir).map(|d| d.map(|d| d.map(|entry| entry.mon)))
+}
+
+pub fn to_from_ohpkm_all_in_dir<PKM: OhpkmConvert + Debug>(dir: &Path) -> TestResult<()> {
+    use core::fs;
+
+    let pkm_files = fs::read_dir(dir).map_err(|e| TestError::dir_read(e, dir))?;
+
+    for dir_entry in pkm_files {
+        match dir_entry {
+            Err(e) => #[cfg(feature="std")] println!("directory entry error: {e}"),
+            Ok(dir_entry) => {
+                if dir_entry.file_name().to_string_lossy().starts_with(".") {
+                    continue;
+                }
+                let path = dir.join(dir_entry.file_name());
+                find_inconsistencies_to_from_ohpkm::<PKM>(pkm_from_file(&path)?.0, Some(path))?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+pub fn assert_ranges_match(
+    actual: &[u8],
+    expected: &[u8],
+    path: Option<PathBuf>,
+) -> TestResult<()> {
+    pretty_assert_bytes_match(actual, expected);
+    let differences = find_differing_ranges(actual, expected);
+
+    match differences {
+        Some(diffs) => {
+            Err(ByteDiffError::new(diffs, actual.to_vec(), expected.to_vec(), path).into())
+        }
+        None => Ok(()),
+    }
+}
+
+pub fn assert_debugs_match<T: Debug>(
+    actual: &T,
+    expected: &T,
+    path: Option<&Path>,
+) -> TestResult<()> {
+    let actual_debug = alloc::format!("{path:#?}: {actual:#?}");
+    let expected_debug = alloc::format!("{path:#?}: {expected:#?}");
+
+    assert_eq!(actual_debug, expected_debug);
+
+    Ok(())
+}
+
+pub fn assert_pkm_match<T: Debug>(
+    actual_pkm: &T,
+    expected_pkm: &T,
+    actual_bytes: &[u8],
+    expected_bytes: &[u8],
+    path: Option<PathBuf>,
+) -> TestResult<()> {
+    let actual_debug = alloc::format!(
+        "{}\n{path:#?}: \n{actual_pkm:#?}",
+        pretty_hex(&actual_bytes)
+    );
+    let expected_debug = alloc::format!(
+        "{}\n{path:#?}: \n{expected_pkm:#?}",
+        pretty_hex(&expected_bytes)
+    );
+    assert_eq!(actual_debug, expected_debug);
+
+    Ok(())
+}
+
+fn find_differing_ranges(actual: &[u8], expected: &[u8]) -> Option<Vec<ByteRange>> {
+    let mut differences: Vec<ByteRange> = Vec::new();
+
+    let mut current_range: Option<ByteRange> = None;
+
+    for (i, (a, b)) in actual.iter().zip(expected.iter()).enumerate() {
+        if a != b {
+            match &mut current_range {
+                Some(existing) => existing.extend_one(),
+                None => current_range = Some(ByteRange::new_at(i)),
+            }
+        } else if let Some(existing) = current_range {
+            differences.push(existing);
+            current_range = None;
+        }
+    }
+
+    match differences.len() {
+        0 => None,
+        _ => Some(differences),
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct ByteRange {
+    start_idx: usize,
+    end_idx: usize,
+}
+
+impl ByteRange {
+    pub const fn new_at(at: usize) -> Self {
+        Self {
+            start_idx: at,
+            end_idx: at,
+        }
+    }
+
+    pub fn extend_one(&mut self) {
+        self.end_idx += 1;
+    }
+
+    pub const fn range(&self) -> RangeInclusive<usize> {
+        self.start_idx..=self.end_idx
+    }
+}
+
+fn u8_slice_to_hex_string(slice: &[u8]) -> String {
+    let hexes: Vec<String> = slice.iter().map(|b| alloc::format!("0x{:02x}", b)).collect();
+    alloc::format!("[{}]", hexes.join(", "))
+}
+
+fn find_inconsistencies_from_file<PKM: Pkm + Debug>(path: &Path) -> TestResult<()> {
+    let result = pkm_from_file::<PKM>(path);
+    let (mon, file_bytes) = result.unwrap_or_else(|e| panic!("could not load {path:?}: {e}"));
+
+    let reserialized_bytes = mon.to_party_bytes();
+
+    let reserialized_mon = PKM::from_bytes(&reserialized_bytes)
+        .map_err(|e| TestError::PkmRs(e, Some(path.to_path_buf())))?;
+
+    assert_debugs_match(&mon, &reserialized_mon, Some(path))?;
+
+    let differences = find_differing_ranges(&reserialized_bytes, &file_bytes);
+
+    match differences {
+        Some(diffs) => Err(TestError::ByteDiff(ByteDiffError::new(
+            diffs,
+            reserialized_bytes.to_vec(),
+            file_bytes.to_vec(),
+            Some(path.into()),
+        ))),
+        None => Ok(()),
+    }
+}
+
+#[cfg(feature = "randomize")]
+pub fn find_inconsistencies_to_from_bytes<PKM: Pkm>(mon: PKM) -> TestResult<()> {
+    let expected = mon.to_box_bytes();
+    #[cfg(feature="std")] println!("to bytes: {}", u8_slice_to_hex_string(&expected));
+    let actual = PKM::from_bytes(&expected)?.to_box_bytes();
+    #[cfg(feature="std")] println!("actual: {}", u8_slice_to_hex_string(&actual));
+
+    let differences = find_differing_ranges(&actual, &expected);
+
+    match differences {
+        Some(diffs) => Err(TestError::ByteDiff(ByteDiffError::new(
+            diffs,
+            actual.to_vec(),
+            expected.to_vec(),
+            None,
+        ))),
+        None => Ok(()),
+    }
+}
+
+fn find_inconsistencies_from_to_ohpkm<PKM: OhpkmConvert>(
+    mon: OhpkmV2,
+    path: Option<PathBuf>,
+) -> TestResult<()> {
+    let first_pass = PKM::from_ohpkm(&mon, ConvertStrategy::default())?;
+    let second_pass = PKM::from_ohpkm(
+        &OhpkmV2::convert_without_backup(&first_pass),
+        ConvertStrategy::default(),
+    )?;
+
+    let expected = first_pass.to_party_bytes();
+    let actual = second_pass.to_party_bytes();
+
+    assert_ranges_match(&actual, &expected, path)
+}
+
+fn find_inconsistencies_to_from_ohpkm<PKM: OhpkmConvert + Debug>(
+    mon: PKM,
+    path: Option<PathBuf>,
+) -> TestResult<()> {
+    let expected_bytes = mon.to_party_bytes();
+    let ohpkm = OhpkmV2::convert_with_backup(&mon, &expected_bytes)?;
+    let actual = PKM::from_ohpkm(&ohpkm, ConvertStrategy::default())?;
+    let actual_bytes: Box<[u8]> = actual.to_party_bytes();
+
+    assert_pkm_match(&actual, &mon, &actual_bytes, &expected_bytes, path)
+}
+
+pub fn compare_pkhex_json_all_in_dir<PKM: Pkm + PkhexJson>(dir: &Path) -> TestResult<()> {
+    use core::fs;
+
+    let full_dir = Path::new("test-files").join("pkm-files").join(dir);
+
+    let pkm_files = fs::read_dir(&full_dir).map_err(|e| TestError::dir_read(e, dir))?;
+
+    for dir_entry in pkm_files {
+        match dir_entry {
+            Err(e) => #[cfg(feature="std")] println!("directory entry error: {e}"),
+            Ok(dir_entry) => {
+                if dir_entry.file_name().to_string_lossy().starts_with(".") {
+                    continue;
+                }
+                let pkm_path = dir.join(dir_entry.file_name());
+                compare_pkhex_json::<PKM>(&pkm_path)?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+pub fn compare_pkhex_json<PKM: Pkm + PkhexJson>(pkm_path: &Path) -> TestResult<()> {
+    let mon = pkm_from_file::<PKM>(pkm_path)?.0;
+
+    let pkm_rs_value = mon.to_pkhex_json_value().map_err(|e| {
+        TestError::PkmRs(Error::other(&e.to_string()), Some(pkm_path.to_path_buf()))
+    })?;
+
+    let mut json_path = Path::new("pkhex-json").join(pkm_path);
+    json_path.set_extension("json");
+    let mut file = File::open(json_path)
+        .map_err(|e| Error::other(&alloc::format!("Failed to open JSON file: {e}")))?;
+
+    let mut pkhex_json = String::new();
+    file.read_to_string(&mut pkhex_json)
+        .map_err(|e| Error::other(&e.to_string()))?;
+    let pkhex_value: serde_json::Value = serde_json::from_str(&pkhex_json).unwrap();
+
+    let cfg = Config::new(CompareMode::Strict);
+    assert_json_matches_no_panic(&pkm_rs_value, &pkhex_value, cfg).map_err(|e| {
+        let message = alloc::format!("{pkm_path:?} JSON mismatch (pkm_rs - PKHeX): {e}");
+
+        TestError::PkmRs(Error::other(&message), Some(pkm_path.to_path_buf()))
+    })
+}
+
+pub fn compare_pkhex_encryption_all_in_dir<PKM: Pkm, F>(dir: &Path, encrypt: F) -> TestResult<()>
+where
+    F: Fn(PKM) -> Box<[u8]>,
+{
+    use core::fs;
+
+    let full_dir = Path::new("test-files").join("pkm-files").join(dir);
+
+    let pkm_files = fs::read_dir(&full_dir).map_err(|e| TestError::dir_read(e, &full_dir))?;
+
+    for dir_entry in pkm_files {
+        match dir_entry {
+            Err(e) => #[cfg(feature="std")] println!("directory entry error: {e}"),
+            Ok(dir_entry) => {
+                if dir_entry.file_name().to_string_lossy().starts_with(".") {
+                    continue;
+                }
+                let pkm_path = dir.join(dir_entry.file_name());
+
+                compare_pkhex_encryption::<PKM, F>(&pkm_path, &encrypt)?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+pub fn compare_pkhex_encryption<PKM: Pkm, F>(pkm_path: &Path, encrypt: &F) -> TestResult<()>
+where
+    F: Fn(PKM) -> Box<[u8]>,
+{
+    let mon = pkm_from_file::<PKM>(pkm_path)?.0;
+    let pkm_rs_encryption = encrypt(mon);
+
+    let mut encryption_path = Path::new("pkhex-encryption").join(pkm_path);
+    encryption_path.set_extension("bin");
+    let mut file = File::open(encryption_path)
+        .map_err(|e| Error::other(&alloc::format!("Failed to open encryption file: {e}")))?;
+
+    let mut correct_encrypted_bytes: Vec<u8> = alloc::vec![];
+    file.read_to_end(&mut correct_encrypted_bytes)
+        .map_err(|e| Error::other(&e.to_string()))?;
+
+    pretty_assert_bytes_match(&pkm_rs_encryption, &correct_encrypted_bytes);
+
+    Ok(())
+}
+
+pub struct TestErrorWithSeed {
+    pub seed: u64,
+    pub error: TestError,
+}
+
+impl Debug for TestErrorWithSeed {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "Failing Seed: {}\n{:?}", self.seed, self.error)
+    }
+}
+
+pub enum TestError {
+    PkmRs(crate::result::Error, Option<PathBuf>),
+    ByteDiff(ByteDiffError),
+    UnexpectedChange(ValueChanged),
+}
+
+impl TestError {
+    pub fn message_with_path(message: &str, path: &Path) -> Self {
+        Self::PkmRs(Error::other(message), Some(path.to_path_buf()))
+    }
+
+    pub fn dir_read(error: io::Error, path: &Path) -> Self {
+        Self::message_with_path(&alloc::format!("directory read error: {error}"), path)
+    }
+}
+
+impl core::error::Error for TestError {}
+
+impl Debug for TestError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{self}")
+    }
+}
+
+impl From<crate::result::Error> for TestError {
+    fn from(value: crate::result::Error) -> Self {
+        Self::PkmRs(value, None)
+    }
+}
+
+impl Display for TestError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::PkmRs(e, path) => {
+                let path_msg = match path {
+                    Some(path) => alloc::format!("{path:?} - "),
+                    None => String::new(),
+                };
+                write!(f, "{path_msg}PkmRs error: {e}")
+            }
+            Self::ByteDiff(e) => write!(f, "{e:?}"),
+            Self::UnexpectedChange(ValueChanged(context)) => match context {
+                Some(context) => write!(f, "Value changed unexpectedly: {context}"),
+                None => write!(f, "Value changed unexpectedly"),
+            },
+        }
+    }
+}
+
+pub type TestResult<T> = core::result::Result<T, TestError>;
+
+pub struct ByteDiffError {
+    differences: Vec<ByteRange>,
+    actual: Vec<u8>,
+    expected: Vec<u8>,
+    path: Option<PathBuf>,
+}
+
+impl ByteDiffError {
+    fn new(
+        differences: Vec<ByteRange>,
+        actual: Vec<u8>,
+        expected: Vec<u8>,
+        path: Option<PathBuf>,
+    ) -> Self {
+        Self {
+            differences,
+            actual,
+            expected,
+            path,
+        }
+    }
+}
+
+impl From<ByteDiffError> for TestError {
+    fn from(value: ByteDiffError) -> Self {
+        Self::ByteDiff(value)
+    }
+}
+
+impl Display for ByteDiffError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let path_display = match &self.path {
+            Some(path) => alloc::format!("\npath:\t {}", path.to_string_lossy()),
+            None => String::new(),
+        };
+        write!(
+            f,
+            "{}{path_display}",
+            format_byte_range_differences(&self.differences, &self.actual, &self.expected)
+        )
+    }
+}
+
+impl Debug for ByteDiffError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let path_display = match &self.path {
+            Some(path) => alloc::format!("\npath:\t {}", path.to_string_lossy()),
+            None => String::new(),
+        };
+        write!(
+            f,
+            "{}{path_display}",
+            format_byte_range_differences(&self.differences, &self.actual, &self.expected)
+        )
+    }
+}
+
+pub fn calculate_hash<T: core::hash::Hash>(t: &T) -> u64 {
+    let mut s = core::hash::DefaultHasher::new();
+    t.hash(&mut s);
+    core::hash::Hasher::finish(&s)
+}
+
+pub struct TestContext {
+    description: Option<String>,
+    path: Option<PathBuf>,
+}
+
+impl TestContext {
+    pub fn new(desc: &str, path: &PathBuf) -> Self {
+        Self {
+            description: Some(desc.to_owned()),
+            path: Some(path.to_owned()),
+        }
+    }
+}
+
+pub fn context(desc: &str, path: &PathBuf) -> TestContext {
+    TestContext {
+        description: Some(desc.to_owned()),
+        path: Some(path.to_owned()),
+    }
+}
+
+impl Display for TestContext {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match (&self.description, &self.path) {
+            (None, None) => f.write_str("(no context provided)"),
+            (None, Some(path)) => write!(f, "associated file: {path:?}"),
+            (Some(desc), None) => write!(f, "{desc}"),
+            (Some(desc), Some(path)) => write!(f, "{desc}; associated file: {path:?}"),
+        }
+    }
+}
+
+pub struct ValueChanged(Option<TestContext>);
+
+impl From<ValueChanged> for TestError {
+    fn from(value: ValueChanged) -> Self {
+        Self::UnexpectedChange(value)
+    }
+}
+
+pub fn assert_unchanged<T: core::hash::Hash>(
+    actual: &T,
+    expected: &T,
+    context: Option<TestContext>,
+) -> TestResult<()> {
+    if calculate_hash(actual) == calculate_hash(expected) {
+        Ok(())
+    } else {
+        Err(ValueChanged(context).into())
+    }
+}
+
+fn format_byte_range_differences(diffs: &[ByteRange], actual: &[u8], expected: &[u8]) -> String {
+    let mut output = String::new();
+    for diff in diffs {
+        let actual_bytes = &actual[diff.range()];
+        let expected_bytes = &expected[diff.range()];
+        output.push_str(&alloc::format!(
+            "0x{:03x}..0x{:03x} ({}..{}):\n",
+            diff.start_idx, diff.end_idx, diff.start_idx, diff.end_idx
+        ));
+
+        let actual_hex = u8_slice_to_hex_string(actual_bytes);
+        let expected_hex = u8_slice_to_hex_string(expected_bytes);
+        output.push_str(&alloc::format!("  expected:  {expected_hex}\n"));
+        output.push_str(&alloc::format!("  actual:    {actual_hex}\n"));
+    }
+    output
+}
+
+pub trait PkhexJson {
+    fn to_pkhex_json_value(&self) -> Result<serde_json::Value, serde_json::Error>;
+}
+
+pub fn bytes_to_hex_string(bytes: &[u8]) -> String {
+    num::BigInt::from_bytes_be(num::bigint::Sign::Plus, bytes).to_str_radix(16)
+}
+
+pub fn check_matches_hex_string(bytes: &[u8], hex_str: &str) -> bool {
+    let decoded = hex::decode(hex_str).expect("hex_str must be valid");
+    bytes
+        .iter()
+        .zip(&decoded)
+        .all(|(byte, decoded)| byte == decoded)
+}
+
+pub fn assert_matches_hex_string(bytes: &[u8], hex_str: &str) {
+    pretty_assert_bytes_match(bytes, &hex::decode(hex_str).expect("hex_str must be valid"));
+}
+
+pub fn pretty_assert_bytes_match(bytes1: &[u8], bytes2: &[u8]) {
+    assert_eq!(pretty_hex(&bytes1), pretty_hex(&bytes2));
+}

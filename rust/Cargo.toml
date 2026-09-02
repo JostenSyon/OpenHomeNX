@@ -1,0 +1,9 @@
+[workspace]
+members = ["openhome_switch", "pkm_rs", "pkm_rs_types", "pkm_rs_resources", "pkm_rs_derive", "openhome_core"]
+resolver = "2"
+
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true
+panic = "abort"

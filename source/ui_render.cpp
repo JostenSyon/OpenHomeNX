@@ -1,0 +1,2084 @@
+#include "ui.h"
+#include "i18n.h"
+#include "crypto_engine.h"
+#include "debug_log.h"
+#include "species_converter.h"
+#include "move_types.h"
+#include <algorithm>
+#include <cmath>
+#include <cstdio>
+#include <sstream>
+
+// --- Sprites ---
+
+static uint32_t spriteKey(uint16_t id, uint8_t form) {
+    return uint32_t(id) | (uint32_t(form) << 16);
+}
+
+static SDL_Texture* loadSprite(const char* dir, uint16_t nationalId, uint8_t form,
+                               SDL_Renderer* renderer) {
+    char filename[64];
+    // Try form-specific sprite first (e.g. 019-1.png)
+    if (form != 0) {
+        std::snprintf(filename, sizeof(filename), "%03d-%d.png", nationalId, form);
+        std::string path;
+        path = std::string("romfs:/") + dir + "/" + filename;
+        SDL_Surface* surf = IMG_Load(path.c_str());
+        if (surf) {
+            SDL_Texture* tex = SDL_CreateTextureFromSurface(renderer, surf);
+            SDL_FreeSurface(surf);
+            return tex;
+        }
+    }
+
+    // Fall back to base sprite (e.g. 019.png)
+    std::snprintf(filename, sizeof(filename), "%03d.png", nationalId);
+    std::string path;
+    path = std::string("romfs:/") + dir + "/" + filename;
+    SDL_Surface* surf = IMG_Load(path.c_str());
+    if (!surf) return nullptr;
+    SDL_Texture* tex = SDL_CreateTextureFromSurface(renderer, surf);
+    SDL_FreeSurface(surf);
+    return tex;
+}
+
+SDL_Texture* UI::getSprite(uint16_t nationalId, uint8_t form) {
+    uint32_t key = spriteKey(nationalId, form);
+    auto it = spriteCache_.find(key);
+    if (it != spriteCache_.end())
+        return it->second;
+
+    SDL_Texture* tex = loadSprite("sprites", nationalId, form, renderer_);
+    spriteCache_[key] = tex;
+    return tex;
+}
+
+SDL_Texture* UI::getShinySprite(uint16_t nationalId, uint8_t form) {
+    uint32_t key = spriteKey(nationalId, form);
+    auto it = shinySpriteCache_.find(key);
+    if (it != shinySpriteCache_.end())
+        return it->second;
+
+    SDL_Texture* tex = loadSprite("sprites_shiny", nationalId, form, renderer_);
+    shinySpriteCache_[key] = tex;
+    return tex;
+}
+
+void UI::freeSprites() {
+    for (auto& [id, tex] : spriteCache_) {
+        if (tex)
+            SDL_DestroyTexture(tex);
+    }
+    spriteCache_.clear();
+    for (auto& [id, tex] : shinySpriteCache_) {
+        if (tex)
+            SDL_DestroyTexture(tex);
+    }
+    shinySpriteCache_.clear();
+    for (auto& [name, tex] : ribbonSpriteCache_) {
+        if (tex)
+            SDL_DestroyTexture(tex);
+    }
+    ribbonSpriteCache_.clear();
+    for (auto& [id, tex] : ballSpriteCache_) {
+        if (tex)
+            SDL_DestroyTexture(tex);
+    }
+    ballSpriteCache_.clear();
+    for (auto& [id, tex] : typeSpriteCache_) {
+        if (tex)
+            SDL_DestroyTexture(tex);
+    }
+    typeSpriteCache_.clear();
+    if (iconShiny_)      { SDL_DestroyTexture(iconShiny_);      iconShiny_ = nullptr; }
+    if (iconAlpha_)      { SDL_DestroyTexture(iconAlpha_);      iconAlpha_ = nullptr; }
+    if (iconShinyAlpha_) { SDL_DestroyTexture(iconShinyAlpha_); iconShinyAlpha_ = nullptr; }
+    if (iconBoxFull_)     { SDL_DestroyTexture(iconBoxFull_);     iconBoxFull_ = nullptr; }
+    if (iconBoxEmpty_)    { SDL_DestroyTexture(iconBoxEmpty_);    iconBoxEmpty_ = nullptr; }
+    if (iconBoxNonEmpty_) { SDL_DestroyTexture(iconBoxNonEmpty_); iconBoxNonEmpty_ = nullptr; }
+}
+
+SDL_Texture* UI::getRibbonSprite(const std::string& filename) {
+    auto it = ribbonSpriteCache_.find(filename);
+    if (it != ribbonSpriteCache_.end())
+        return it->second;
+
+    std::string path;
+    path = "romfs:/ribbons/" + filename + ".png";
+    SDL_Texture* tex = IMG_LoadTexture(renderer_, path.c_str());
+    ribbonSpriteCache_[filename] = tex; // cache even if null
+    return tex;
+}
+
+SDL_Texture* UI::getBallSprite(uint8_t ballId) {
+    auto it = ballSpriteCache_.find(ballId);
+    if (it != ballSpriteCache_.end())
+        return it->second;
+
+    std::string path;
+    path = "romfs:/balls/_ball" + std::to_string(ballId) + ".png";
+    SDL_Texture* tex = IMG_LoadTexture(renderer_, path.c_str());
+    ballSpriteCache_[ballId] = tex;
+    return tex;
+}
+
+SDL_Texture* UI::getTypeSprite(uint8_t typeId) {
+    auto it = typeSpriteCache_.find(typeId);
+    if (it != typeSpriteCache_.end())
+        return it->second;
+
+    char filename[32];
+    std::snprintf(filename, sizeof(filename), "type_icon_s_%02d.png", typeId);
+    std::string path;
+    path = std::string("romfs:/types/") + filename;
+    SDL_Texture* tex = IMG_LoadTexture(renderer_, path.c_str());
+    typeSpriteCache_[typeId] = tex;
+    return tex;
+}
+
+// --- Rendering ---
+
+void UI::drawRect(int x, int y, int w, int h, SDL_Color color) {
+    SDL_SetRenderDrawColor(renderer_, color.r, color.g, color.b, color.a);
+    SDL_Rect r = {x, y, w, h};
+    SDL_RenderFillRect(renderer_, &r);
+}
+
+void UI::drawRectOutline(int x, int y, int w, int h, SDL_Color color, int thickness) {
+    SDL_SetRenderDrawColor(renderer_, color.r, color.g, color.b, color.a);
+    for (int t = 0; t < thickness; t++) {
+        SDL_Rect r = {x + t, y + t, w - 2*t, h - 2*t};
+        SDL_RenderDrawRect(renderer_, &r);
+    }
+}
+
+static uint32_t packColor(SDL_Color c) {
+    return (uint32_t(c.r) << 24) | (uint32_t(c.g) << 16) | (uint32_t(c.b) << 8) | c.a;
+}
+
+const UI::TextCacheEntry& UI::getTextEntry(const std::string& text, TTF_Font* f, SDL_Color color) {
+    TextCacheKey key{text, f, packColor(color)};
+    auto it = textCache_.find(key);
+    if (it != textCache_.end())
+        return it->second;
+
+    // Cap cache size to limit GPU memory on Switch
+    if (textCache_.size() >= 512)
+        clearTextCache();
+
+    SDL_Surface* surf = TTF_RenderUTF8_Blended(f, text.c_str(), color);
+    TextCacheEntry entry{};
+    if (surf) {
+        entry.tex = SDL_CreateTextureFromSurface(renderer_, surf);
+        entry.w = surf->w;
+        entry.h = surf->h;
+        SDL_FreeSurface(surf);
+    }
+    return textCache_.emplace(std::move(key), entry).first->second;
+}
+
+void UI::clearTextCache() {
+    for (auto& [k, e] : textCache_) {
+        if (e.tex)
+            SDL_DestroyTexture(e.tex);
+    }
+    textCache_.clear();
+}
+
+void UI::drawText(const std::string& text, int x, int y, SDL_Color color, TTF_Font* f) {
+    if (!f || text.empty()) return;
+    const auto& entry = getTextEntry(text, f, color);
+    if (!entry.tex) return;
+    SDL_Rect dst = {x, y, entry.w, entry.h};
+    SDL_RenderCopy(renderer_, entry.tex, nullptr, &dst);
+}
+
+void UI::drawTextCentered(const std::string& text, int cx, int cy, SDL_Color color, TTF_Font* f) {
+    if (!f || text.empty()) return;
+    const auto& entry = getTextEntry(text, f, color);
+    if (!entry.tex) return;
+    SDL_Rect dst = {cx - entry.w/2, cy - entry.h/2, entry.w, entry.h};
+    SDL_RenderCopy(renderer_, entry.tex, nullptr, &dst);
+}
+
+void UI::drawStatusBar(const std::string& msg) {
+    drawRect(0, SCREEN_H - 35, SCREEN_W, 35, T().statusBarBg);
+    drawText(msg, 15, SCREEN_H - 26, T().statusText, fontSmall_);
+}
+
+const std::vector<UI::SlotDisplay>& UI::getSlotDisplays(Panel panel, int box) {
+    BoxDisplayKey key{panel, box};
+    auto it = slotDisplayCache_.find(key);
+    if (it != slotDisplayCache_.end())
+        return it->second;
+
+    // Cap cache size
+    if (slotDisplayCache_.size() >= 8)
+        slotDisplayCache_.clear();
+
+    int slots = maxSlots();
+    std::vector<SlotDisplay> displays(slots);
+    for (int s = 0; s < slots; s++) {
+        Pokemon pkm = getPokemonAt(box, s, panel);
+        auto& sd = displays[s];
+        if (pkm.isEmpty()) {
+            sd.empty = true;
+            continue;
+        }
+        sd.empty   = false;
+        sd.egg     = pkm.isEgg();
+        sd.shiny   = pkm.isShiny();
+        sd.alpha   = pkm.isAlpha();
+        sd.gender  = pkm.gender();
+        sd.species = pkm.species();
+        sd.form    = pkm.form();
+        sd.level   = pkm.level();
+        sd.name    = pkm.displayName();
+        if (sd.name.length() > 10)
+            sd.name = sd.name.substr(0, 9) + ".";
+    }
+    return slotDisplayCache_.emplace(key, std::move(displays)).first->second;
+}
+
+void UI::invalidateSlotDisplay(Panel panel, int box) {
+    slotDisplayCache_.erase(BoxDisplayKey{panel, box});
+}
+
+void UI::drawSlot(int x, int y, const SlotDisplay& sd, bool isCursor, int selectOrder,
+                  int highlightState, bool isParty) {
+    SDL_Color bgColor;
+    if (sd.empty) {
+        bgColor = T().slotEmpty;
+    } else if (sd.egg) {
+        bgColor = T().slotEgg;
+    } else {
+        bgColor = T().slotFull;
+    }
+
+    // Slot background
+    drawRect(x, y, CELL_W, CELL_H, bgColor);
+
+    // LGPE party member outline
+    if (isParty)
+        drawRectOutline(x + 1, y + 1, CELL_W - 2, CELL_H - 2, T().partyMark, 2);
+
+    // Search match outline (drawn early so it frames the slot content)
+    if (highlightState == 1)
+        drawRectOutline(x + 1, y + 1, CELL_W - 2, CELL_H - 2, T().searchMatch, 2);
+
+    // Selection outline (drawn before cursor so cursor overlays it)
+    if (selectOrder > 0) {
+        SDL_Color selColor = positionPreserve_ ? T().selectedPos : T().selected;
+        drawRectOutline(x + 1, y + 1, CELL_W - 2, CELL_H - 2, selColor, 2);
+    }
+
+    // Cursor highlight
+    if (isCursor)
+        drawRectOutline(x, y, CELL_W, CELL_H, T().cursor, 3);
+
+    if (!sd.empty) {
+        // Draw sprite centered in top portion of cell (form-aware, shiny variant if available)
+        SDL_Texture* sprite = nullptr;
+        if (sd.egg) {
+            sprite = getSprite(0);
+        } else if (sd.shiny) {
+            sprite = getShinySprite(sd.species, sd.form);
+            if (!sprite) sprite = getSprite(sd.species, sd.form);
+        } else {
+            sprite = getSprite(sd.species, sd.form);
+        }
+
+        if (sprite) {
+            int texW, texH;
+            SDL_QueryTexture(sprite, nullptr, nullptr, &texW, &texH);
+
+            int dstW, dstH;
+            if (texW > 0 && texH > 0) {
+                float scale = std::min(static_cast<float>(SPRITE_SIZE) / texW,
+                                       static_cast<float>(SPRITE_SIZE) / texH);
+                dstW = static_cast<int>(texW * scale);
+                dstH = static_cast<int>(texH * scale);
+            } else {
+                dstW = SPRITE_SIZE;
+                dstH = SPRITE_SIZE;
+            }
+
+            int sprX = x + (CELL_W - dstW) / 2;
+            int sprY = y + 4 + (SPRITE_SIZE - dstH) / 2;
+            SDL_Rect dst = {sprX, sprY, dstW, dstH};
+            SDL_RenderCopy(renderer_, sprite, nullptr, &dst);
+        }
+
+        // Species name below sprite
+        SDL_Color nameColor = sd.shiny ? T().shiny : T().text;
+        drawTextCentered(sd.name, x + CELL_W / 2, y + SPRITE_SIZE + 10, nameColor, fontSmall_);
+
+        // Level at the bottom
+        if (!sd.egg) {
+            std::string lvlStr = i18n::get(StrKey::LvPrefix) + std::to_string(sd.level);
+            drawTextCentered(lvlStr, x + CELL_W / 2, y + CELL_H - 12, T().textDim, fontSmall_);
+        }
+
+        // Gender indicator (top-right corner)
+        if (sd.gender == 0)
+            drawText("\xe2\x99\x82", x + CELL_W - 16, y + 2, T().genderMale, fontSmall_);
+        else if (sd.gender == 1)
+            drawText("\xe2\x99\x80", x + CELL_W - 16, y + 2, T().genderFemale, fontSmall_);
+
+        // Shiny / Alpha icon (top-left corner)
+        SDL_Texture* statusIcon = nullptr;
+        if (sd.shiny && sd.alpha)
+            statusIcon = iconShinyAlpha_;
+        else if (sd.shiny)
+            statusIcon = iconShiny_;
+        else if (sd.alpha)
+            statusIcon = iconAlpha_;
+
+        if (statusIcon) {
+            SDL_Rect iconDst = {x + 2, y + 2, 14, 14};
+            SDL_RenderCopy(renderer_, statusIcon, nullptr, &iconDst);
+        }
+    }
+
+    // Numbered badge on top of everything
+    if (selectOrder > 0) {
+        std::string num = std::to_string(selectOrder);
+        auto& numEntry = getTextEntry(num, font_, positionPreserve_ ? T().selectedPos : T().selected);
+        int tw = numEntry.w, th = numEntry.h;
+        int badgeR = std::max(tw, th) / 2 + 6;
+        int cx = x + CELL_W / 2;
+        int cy = y + CELL_H / 2;
+
+        SDL_Color badgeColor = positionPreserve_ ? T().selectedPos : T().selected;
+        SDL_SetRenderDrawColor(renderer_, badgeColor.r, badgeColor.g, badgeColor.b, 220);
+        for (int dy2 = -badgeR; dy2 <= badgeR; dy2++) {
+            int dx2 = static_cast<int>(std::sqrt(badgeR * badgeR - dy2 * dy2));
+            SDL_RenderDrawLine(renderer_, cx - dx2, cy + dy2, cx + dx2, cy + dy2);
+        }
+        drawTextCentered(num, cx, cy, T().textOnBadge, font_);
+    }
+
+    // Search dim overlay (drawn last so it covers everything)
+    if (highlightState == -1)
+        drawRect(x, y, CELL_W, CELL_H, T().searchDim);
+}
+
+void UI::drawPanel(int panelX, const std::string& boxName, int boxIdx,
+                   int totalBoxes, bool isActive, SaveFile* save, Bank* bank, int box,
+                   Panel panelId) {
+    // Panel background
+    drawRect(panelX, 0, PANEL_W, SCREEN_H - 35, T().panelBg);
+
+    // Box name header with arrows
+    SDL_Color hdrColor = isActive ? T().boxName : T().textDim;
+    drawTextCentered("<", panelX + 20, BOX_HDR_Y + BOX_HDR_H / 2, T().arrow, font_);
+    std::string hdrText = boxName + " (" + std::to_string(boxIdx + 1) + "/" + std::to_string(totalBoxes) + ")";
+    // Truncate if too wide for panel (leave room for arrows)
+    int maxHdrW = PANEL_W - 80;
+    int tw = getTextEntry(hdrText, font_, hdrColor).w;
+    if (tw > maxHdrW) {
+        while (hdrText.size() > 5 && tw > maxHdrW) {
+            hdrText = hdrText.substr(0, hdrText.size() - 5) + "(..)";
+            tw = getTextEntry(hdrText, font_, hdrColor).w;
+        }
+    }
+    drawTextCentered(hdrText, panelX + PANEL_W / 2, BOX_HDR_Y + BOX_HDR_H / 2, hdrColor, font_);
+    drawTextCentered(">", panelX + PANEL_W - 20, BOX_HDR_Y + BOX_HDR_H / 2, T().arrow, font_);
+
+    // Grid: dynamic columns x 5 rows
+    int cols = gridCols();
+    int gridStartX = panelX + (PANEL_W - (cols * (CELL_W + CELL_PAD) - CELL_PAD)) / 2;
+    int gridStartY = GRID_Y;
+
+    const auto& displays = getSlotDisplays(panelId, box);
+
+    for (int row = 0; row < 5; row++) {
+        for (int col = 0; col < cols; col++) {
+            int slot = row * cols + col;
+            int cellX = gridStartX + col * (CELL_W + CELL_PAD);
+            int cellY = gridStartY + row * (CELL_H + CELL_PAD);
+
+            const auto& sd = displays[slot];
+
+            bool isCursor = isActive && cursor_.col == col && cursor_.row == row;
+            int selOrder = 0;
+            if (!selectedSlots_.empty()
+                && panelId == selectedPanel_ && box == selectedBox_) {
+                for (int i = 0; i < (int)selectedSlots_.size(); i++) {
+                    if (selectedSlots_[i] == slot) {
+                        selOrder = i + 1;
+                        break;
+                    }
+                }
+            }
+            int hlState = 0;
+            if (searchHighlightActive_ && !sd.empty)
+                hlState = isSearchMatch(panelId, box, slot) ? 1 : -1;
+            bool partySlot = save && save->isLGPEPartySlot(box, slot);
+            drawSlot(cellX, cellY, sd, isCursor, selOrder, hlState, partySlot);
+        }
+    }
+}
+
+void UI::drawFrame() {
+    // Clear screen
+    SDL_SetRenderDrawColor(renderer_, T().bg.r, T().bg.g, T().bg.b, 255);
+    SDL_RenderClear(renderer_);
+
+    // Sync cursor box to the active panel
+    if (cursor_.panel == Panel::Game)
+        gameBox_ = cursor_.box;
+    else
+        bankBox_ = cursor_.box;
+
+    auto truncName = [](const std::string& s, size_t max) -> std::string {
+        if (s.size() <= max) return s;
+        return s.substr(0, max - 3) + "(..)";
+
+    };
+
+    if (isDualBankMode()) {
+        // Dual-bank mode: two bank panels side by side
+        bool leftActive = (cursor_.panel == Panel::Game);
+        bool rightActive = (cursor_.panel == Panel::Bank);
+
+        // Left panel: left bank
+        std::string leftBoxName;
+        if (!leftBankName_.empty())
+            leftBoxName = truncName(leftBankName_, 16) + " - " + bankLeft_.getBoxName(gameBox_);
+        else
+            leftBoxName = i18n::get(StrKey::NoBankLoaded);
+        drawPanel(PANEL_X_L, leftBoxName, gameBox_,
+                  leftBankName_.empty() ? 1 : bankLeft_.boxCount(),
+                  leftActive, nullptr,
+                  leftBankName_.empty() ? nullptr : &bankLeft_,
+                  gameBox_, Panel::Game);
+
+        // Right panel: right bank
+        std::string rightBoxName = truncName(activeBankName_, 16) + " - " + bank_.getBoxName(bankBox_);
+        drawPanel(PANEL_X_R, rightBoxName, bankBox_, bank_.boxCount(),
+                  rightActive, nullptr, &bank_, bankBox_, Panel::Bank);
+    } else {
+        // Normal mode: save + bank
+        bool leftActive = (cursor_.panel == Panel::Game);
+        std::string gameBoxName = save_.getBoxName(gameBox_);
+        drawPanel(PANEL_X_L, gameBoxName, gameBox_, save_.boxCount(),
+                  leftActive, &save_, nullptr, gameBox_, Panel::Game);
+
+        bool rightActive = (cursor_.panel == Panel::Bank);
+        std::string bankBoxName = truncName(activeBankName_, 16) + " - " + bank_.getBoxName(bankBox_);
+        drawPanel(PANEL_X_R, bankBoxName, bankBox_, bank_.boxCount(),
+                  rightActive, nullptr, &bank_, bankBox_, Panel::Bank);
+    }
+
+    // Status bar
+    std::string statusMsg = i18n::get(StrKey::StatusMain);
+    if (searchHighlightActive_ && !holding_ && selectedSlots_.empty() && !yHeld_) {
+        statusMsg = i18n::fmt(StrKey::StatusSearch, std::to_string(searchResults_.size()));
+    } else if (holding_ && !heldMulti_.empty()) {
+        statusMsg = i18n::fmt(StrKey::StatusHoldingMulti, std::to_string(heldMulti_.size()),
+                    positionPreserve_ ? i18n::get(StrKey::KeepPositions) : "");
+    } else if (holding_) {
+        std::string heldName = heldPkm_.displayName();
+        if (!heldName.empty()) {
+            statusMsg = i18n::fmt(StrKey::StatusHoldingSingle, heldName, std::to_string(heldPkm_.level()));
+        }
+    } else if (yHeld_ && yDragActive_) {
+        statusMsg = i18n::fmt(StrKey::StatusDrag, std::to_string(selectedSlots_.size()));
+    } else if (!selectedSlots_.empty()) {
+        statusMsg = i18n::fmt(StrKey::StatusSelected, std::to_string(selectedSlots_.size()),
+                    positionPreserve_ ? i18n::get(StrKey::KeepPositions) : "");
+    }
+    drawStatusBar(statusMsg);
+
+    // Profile | Game name | Core (bottom right, gold)
+    {
+        std::string label;
+        if (allBanksMode_)
+            label = i18n::get(StrKey::LabelAllBanks);
+        else if (isDualBankMode())
+            label = i18n::get(StrKey::LabelDualBank);
+        else if (selectedProfile_ >= 0 && selectedProfile_ < account_.profileCount())
+            label = account_.profiles()[selectedProfile_].nickname + " | ";
+        label += gameDisplayNameOf(selectedGame_);
+        label += " | ";
+        label += useOpenHome() ? "OH" : "PK";
+        if (DebugLog::enabled())
+            label += " | DBG";
+        const auto& entry = getTextEntry(label, fontSmall_, T().goldLabel);
+        if (entry.tex)
+            drawText(label, SCREEN_W - entry.w - 15, SCREEN_H - 26, T().goldLabel, fontSmall_);
+    }
+
+    // Held Pokemon overlay (draw on top of panels, under popups)
+    if (holding_)
+        drawHeldOverlay();
+
+    // Detail popup overlay
+    if (showDetail_) {
+        Pokemon pkm = getPokemonAt(cursor_.box, cursor_.slot(gridCols()), cursor_.panel);
+        if (pkm.isEmpty()) {
+            showDetail_ = false;
+        } else {
+            drawDetailPopup(pkm);
+        }
+    }
+
+    // Menu popup overlay
+    if (showMenu_) {
+        drawMenuPopup();
+    }
+
+    // Box view overlay
+    if (showBoxView_) {
+        drawBoxViewOverlay();
+    }
+
+    // Search popups
+    if (showSearchFilter_) {
+        drawSearchFilterPopup();
+    }
+    if (showSearchResults_) {
+        drawSearchResultsPopup();
+    }
+
+    // Species picker overlays (drawn on top of search filter)
+    if (showSpeciesLetterPicker_) {
+        drawSpeciesLetterPicker();
+    }
+    if (showSpeciesListPicker_) {
+        drawSpeciesListPicker();
+    }
+
+    // Wondercard list popup
+    if (showWondercardList_) {
+        drawWondercardListPopup();
+    }
+}
+
+// --- Polygon rendering helpers for radar charts ---
+// Unit vectors for a regular hexagon (top, top-right, bottom-right, bottom, bottom-left, top-left)
+static constexpr double HEX_COS[6] = { 0.0,  0.866025,  0.866025, 0.0, -0.866025, -0.866025 };
+static constexpr double HEX_SIN[6] = {-1.0, -0.5,       0.5,      1.0,  0.5,      -0.5      };
+
+namespace {
+
+void fillConvexPolygon(SDL_Renderer* renderer, const SDL_Point pts[], int count, SDL_Color color) {
+    if (count < 3) return;
+    SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
+    SDL_SetRenderDrawColor(renderer, color.r, color.g, color.b, color.a);
+
+    int minY = pts[0].y, maxY = pts[0].y;
+    for (int i = 1; i < count; i++) {
+        if (pts[i].y < minY) minY = pts[i].y;
+        if (pts[i].y > maxY) maxY = pts[i].y;
+    }
+
+    for (int y = minY; y <= maxY; y++) {
+        int minX = 99999, maxX = -99999;
+        for (int i = 0; i < count; i++) {
+            int j = (i + 1) % count;
+            int y0 = pts[i].y, y1 = pts[j].y;
+            if ((y0 <= y && y1 > y) || (y1 <= y && y0 > y)) {
+                int x = pts[i].x + (int)((long long)(y - y0) * (pts[j].x - pts[i].x) / (y1 - y0));
+                if (x < minX) minX = x;
+                if (x > maxX) maxX = x;
+            }
+        }
+        if (minX <= maxX)
+            SDL_RenderDrawLine(renderer, minX, y, maxX, y);
+    }
+}
+
+void drawPolygonOutline(SDL_Renderer* renderer, const SDL_Point pts[], int count, SDL_Color color) {
+    if (count < 2) return;
+    SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
+    SDL_SetRenderDrawColor(renderer, color.r, color.g, color.b, color.a);
+    for (int i = 0; i < count; i++) {
+        int j = (i + 1) % count;
+        SDL_RenderDrawLine(renderer, pts[i].x, pts[i].y, pts[j].x, pts[j].y);
+    }
+}
+
+} // anonymous namespace
+
+void UI::drawRadarChart(int cx, int cy, int radius, const int values[6], int maxVal) {
+    const std::string labels[6] = {i18n::get(StrKey::StatHP), i18n::get(StrKey::StatAtk),
+        i18n::get(StrKey::StatDef), i18n::get(StrKey::StatSpe), i18n::get(StrKey::StatSpD), i18n::get(StrKey::StatSpA)};
+    constexpr int N = 6;
+    constexpr int LABEL_MARGIN = 12;
+
+    // Compute hex vertices (starting from top, clockwise)
+    SDL_Point outer[N];
+    for (int i = 0; i < N; i++) {
+        outer[i].x = cx + static_cast<int>(radius * HEX_COS[i]);
+        outer[i].y = cy + static_cast<int>(radius * HEX_SIN[i]);
+    }
+
+    // Guide lines from center to each vertex
+    SDL_Color guide = {T().textDim.r, T().textDim.g, T().textDim.b, 50};
+    SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_BLEND);
+    SDL_SetRenderDrawColor(renderer_, guide.r, guide.g, guide.b, guide.a);
+    for (int i = 0; i < N; i++)
+        SDL_RenderDrawLine(renderer_, cx, cy, outer[i].x, outer[i].y);
+
+    // Intermediate ring at 50%
+    SDL_Point mid[N];
+    for (int i = 0; i < N; i++) {
+        mid[i].x = cx + static_cast<int>(radius * 0.5 * HEX_COS[i]);
+        mid[i].y = cy + static_cast<int>(radius * 0.5 * HEX_SIN[i]);
+    }
+    drawPolygonOutline(renderer_, mid, N, guide);
+
+    // Outer hex border
+    drawPolygonOutline(renderer_, outer, N, T().textDim);
+
+    // Compute data polygon vertices
+    SDL_Point data[N];
+    for (int i = 0; i < N; i++) {
+        double frac = maxVal > 0 ? std::min(1.0, static_cast<double>(values[i]) / maxVal) : 0.0;
+        double r = radius * frac;
+        data[i].x = cx + static_cast<int>(r * HEX_COS[i]);
+        data[i].y = cy + static_cast<int>(r * HEX_SIN[i]);
+    }
+
+    // Fill data polygon using triangle fan from center (handles concave shapes)
+    SDL_Color fill = {T().cursor.r, T().cursor.g, T().cursor.b, 60};
+    for (int i = 0; i < N; i++) {
+        int j = (i + 1) % N;
+        SDL_Point tri[3] = {{cx, cy}, data[i], data[j]};
+        fillConvexPolygon(renderer_, tri, 3, fill);
+    }
+
+    // Data polygon outline
+    SDL_Color outline = {T().cursor.r, T().cursor.g, T().cursor.b, 200};
+    drawPolygonOutline(renderer_, data, N, outline);
+
+    // Small dots at each data vertex
+    SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_BLEND);
+    SDL_SetRenderDrawColor(renderer_, outline.r, outline.g, outline.b, outline.a);
+    for (int i = 0; i < N; i++) {
+        SDL_Rect dot = {data[i].x - 2, data[i].y - 2, 5, 5};
+        SDL_RenderFillRect(renderer_, &dot);
+    }
+
+    // Labels and values around the chart
+    for (int i = 0; i < N; i++) {
+        int lx = cx + static_cast<int>((radius + LABEL_MARGIN) * HEX_COS[i]);
+        int ly = cy + static_cast<int>((radius + LABEL_MARGIN) * HEX_SIN[i]);
+
+        const std::string& name = labels[i];
+        std::string valStr = std::to_string(values[i]);
+
+        SDL_Color nameColor = T().goldLabel;
+        SDL_Color valColor = (values[i] >= maxVal) ? T().shiny
+                           : (values[i] == 0)      ? T().textDim
+                           :                          T().text;
+
+        auto& ne = getTextEntry(name, fontSmall_, nameColor);
+        int nw = ne.w, nh = ne.h;
+        auto& ve = getTextEntry(valStr, fontSmall_, valColor);
+        int vw = ve.w, vh = ve.h;
+
+        if (i == 0) { // Top: centered, name then value downward
+            drawText(name, lx - nw / 2, ly - nh * 2 - 2, nameColor, fontSmall_);
+            drawText(valStr, lx - vw / 2, ly - vh, valColor, fontSmall_);
+        } else if (i == 3) { // Bottom: centered, value then name downward
+            drawText(valStr, lx - vw / 2, ly, valColor, fontSmall_);
+            drawText(name, lx - nw / 2, ly + vh + 2, nameColor, fontSmall_);
+        } else if (i == 1 || i == 2) { // Right: left-aligned
+            drawText(name, lx + 4, ly - nh, nameColor, fontSmall_);
+            drawText(valStr, lx + 4, ly + 2, valColor, fontSmall_);
+        } else { // Left (4, 5): right-aligned
+            drawText(name, lx - nw - 4, ly - nh, nameColor, fontSmall_);
+            drawText(valStr, lx - vw - 4, ly + 2, valColor, fontSmall_);
+        }
+    }
+}
+
+void UI::drawDetailPopup(const Pokemon& pkm) {
+    // Semi-transparent dark overlay
+    drawRect(0, 0, SCREEN_W, SCREEN_H, T().overlay);
+
+    // Popup rect centered. Grow by one line when the optional HT row is shown
+    // so the Moves/Ribbons region keeps the same layout as the no-HT case.
+    constexpr int POP_W = 900;
+    const int POP_H = 550 + (pkm.hasHandlingTrainer() ? 28 : 0);
+    int popX = (SCREEN_W - POP_W) / 2;
+    int popY = (SCREEN_H - POP_H) / 2;
+
+    drawRect(popX, popY, POP_W, POP_H, T().panelBg);
+    drawRectOutline(popX, popY, POP_W, POP_H, T().cursor, 2);
+
+    // Large sprite (128x128) top-left
+    constexpr int LARGE_SPRITE = 128;
+    int sprX = popX + 20;
+    int sprY = popY + 20;
+
+    SDL_Texture* sprite = nullptr;
+    uint8_t pkmForm = pkm.form();
+    if (pkm.isEgg()) {
+        sprite = getSprite(0);
+    } else if (pkm.isShiny()) {
+        sprite = getShinySprite(pkm.species(), pkmForm);
+        if (!sprite) sprite = getSprite(pkm.species(), pkmForm);
+    } else {
+        sprite = getSprite(pkm.species(), pkmForm);
+    }
+    if (sprite) {
+        int texW, texH;
+        SDL_QueryTexture(sprite, nullptr, nullptr, &texW, &texH);
+        int dstW, dstH;
+        if (texW > 0 && texH > 0) {
+            float scale = std::min(static_cast<float>(LARGE_SPRITE) / texW,
+                                   static_cast<float>(LARGE_SPRITE) / texH);
+            dstW = static_cast<int>(texW * scale);
+            dstH = static_cast<int>(texH * scale);
+        } else {
+            dstW = LARGE_SPRITE;
+            dstH = LARGE_SPRITE;
+        }
+        int dx = sprX + (LARGE_SPRITE - dstW) / 2;
+        int dy = sprY + (LARGE_SPRITE - dstH) / 2;
+        SDL_Rect dst = {dx, dy, dstW, dstH};
+        SDL_RenderCopy(renderer_, sprite, nullptr, &dst);
+    }
+
+    // Shiny/Alpha icon next to sprite
+    SDL_Texture* statusIcon = nullptr;
+    if (pkm.isShiny() && pkm.isAlpha())
+        statusIcon = iconShinyAlpha_;
+    else if (pkm.isShiny())
+        statusIcon = iconShiny_;
+    else if (pkm.isAlpha())
+        statusIcon = iconAlpha_;
+    if (statusIcon) {
+        SDL_Rect iconDst = {sprX + LARGE_SPRITE + 4, sprY, 20, 20};
+        SDL_RenderCopy(renderer_, statusIcon, nullptr, &iconDst);
+    }
+
+    // --- Left column info (next to sprite) ---
+    int infoX = sprX + LARGE_SPRITE + 30;
+    int infoY = sprY + 4;
+
+    // Ball icon + Species name + level + gender
+    constexpr int BALL_SZ = 24;
+    int nameStartX = infoX;
+    uint8_t ballId = pkm.ball();
+    if (ballId > 0) {
+        SDL_Texture* ballTex = getBallSprite(ballId);
+        if (ballTex) {
+            int textH = TTF_FontHeight(font_);
+            int by = infoY + (textH - BALL_SZ) / 2;
+            SDL_Rect ballDst = {infoX, by, BALL_SZ, BALL_SZ};
+            SDL_RenderCopy(renderer_, ballTex, nullptr, &ballDst);
+            nameStartX += BALL_SZ + 4;
+        }
+    }
+    std::string specName = SpeciesName::get(pkm.species());
+    SDL_Color nameColor = pkm.isShiny() ? T().shiny : T().text;
+    drawText(specName, nameStartX, infoY, nameColor, font_);
+
+    std::string lvlStr = "  " + i18n::get(StrKey::LvPrefix) + std::to_string(pkm.level());
+    int nameW = getTextEntry(specName, font_, nameColor).w;
+    drawText(lvlStr, nameStartX + nameW, infoY, T().text, font_);
+
+    // Gender symbol
+    uint8_t g = pkm.gender();
+    int afterLvl = nameStartX + nameW;
+    int lvlW = getTextEntry(lvlStr, font_, T().text).w;
+    afterLvl += lvlW + 4;
+    if (g == 0)
+        drawText("\xe2\x99\x82", afterLvl, infoY, T().genderMale, font_);
+    else if (g == 1)
+        drawText("\xe2\x99\x80", afterLvl, infoY, T().genderFemale, font_);
+
+    infoY += 30;
+
+    // National dex ID
+    std::string idStr = i18n::get(StrKey::NationalDexPrefix) + std::to_string(pkm.species());
+    drawText(idStr, infoX, infoY, T().textDim, font_);
+    infoY += 28;
+
+    // OT + TID/SID
+    std::string otStr = i18n::get(StrKey::OTPrefix) + pkm.otName() + " | " + i18n::get(StrKey::TIDPrefix) + std::to_string(pkm.displayTid())
+                        + " | " + i18n::get(StrKey::SIDPrefix) + std::to_string(pkm.displaySid());
+    drawText(otStr, infoX, infoY, T().textDim, font_);
+    infoY += 28;
+
+    // HT (handling trainer) — only for formats that store one
+    if (pkm.hasHandlingTrainer()) {
+        std::string ht = pkm.htName();
+        std::string htStr = i18n::get(StrKey::HTPrefix) +
+                            (ht.empty() ? i18n::get(StrKey::NoneItem) : ht);
+        drawText(htStr, infoX, infoY, T().textDim, font_);
+        infoY += 28;
+    }
+
+    // Nature
+    std::string natureStr = i18n::get(StrKey::NaturePrefix) + NatureName::get(pkm.nature());
+    drawText(natureStr, infoX, infoY, T().textDim, font_);
+    infoY += 28;
+
+    // Ability
+    std::string abilityStr = i18n::get(StrKey::AbilityPrefix) + AbilityName::get(pkm.ability());
+    drawText(abilityStr, infoX, infoY, T().textDim, font_);
+    infoY += 28;
+
+    // Held item
+    uint16_t item = pkm.heldItem();
+    std::string itemStr = i18n::get(StrKey::HeldItemPrefix) + (item != 0 ? ItemName::get(item) : i18n::get(StrKey::NoneItem));
+    drawText(itemStr, infoX, infoY, T().textDim, font_);
+    int infoBottom = infoY + 28; // baseline below the last info line
+
+    // --- Below sprite: Moves ---
+    // Start below whichever extends lower: the sprite or the info column.
+    // The optional HT line can push the info column past the sprite's bottom.
+    int movesX = popX + 30;
+    int movesY = std::max(sprY + LARGE_SPRITE + 46, infoBottom);
+
+    drawText(i18n::get(StrKey::Moves), movesX, movesY, T().text, font_);
+    movesY += 30;
+
+    constexpr int TYPE_ICON_W = 25;
+    constexpr int TYPE_ICON_H = 25;
+    constexpr int MOVE_ROW_H = 28;
+    constexpr int MOVE_COL_W = 230;
+    int textH = TTF_FontHeight(font_);
+    uint16_t moves[4] = {pkm.move1(), pkm.move2(), pkm.move3(), pkm.move4()};
+    for (int i = 0; i < 4; i++) {
+        int col = i % 2;
+        int row = i / 2;
+        int mx = movesX + 10 + col * MOVE_COL_W;
+        int my = movesY + row * MOVE_ROW_H;
+        int iconY = my + (MOVE_ROW_H - TYPE_ICON_H) / 2;
+        int txtY  = my + (MOVE_ROW_H - textH) / 2;
+        if (moves[i] != 0) {
+            uint8_t mtype = getMoveType(moves[i], selectedGame_);
+            SDL_Texture* typeTex = getTypeSprite(mtype);
+            if (typeTex) {
+                SDL_Rect typeDst = {mx, iconY, TYPE_ICON_W, TYPE_ICON_H};
+                SDL_RenderCopy(renderer_, typeTex, nullptr, &typeDst);
+            }
+            drawText(MoveName::get(moves[i]), mx + TYPE_ICON_W + 6, txtY, T().textDim, font_);
+        } else {
+            drawText("---", mx + TYPE_ICON_W + 6, txtY, T().textDim, font_);
+        }
+    }
+    movesY += MOVE_ROW_H * 2;
+
+    // --- Ribbons & Marks below moves ---
+    auto ribbons = pkm.getRibbonsAndMarks();
+    if (!ribbons.empty()) {
+        movesY += 16;
+        std::string ribTitle = i18n::fmt(StrKey::RibbonsMarks, std::to_string(ribbons.size()));
+        drawText(ribTitle, movesX, movesY, T().text, font_);
+        movesY += 30;
+
+        // Two columns, small font with sprite icons
+        int col1X = movesX + 4;
+        int col2X = movesX + 230;
+        int ribbonY = movesY;
+        constexpr int RIB_ROW_H = 26;
+        constexpr int ICON_SZ = 18;
+        constexpr int ICON_PAD = 4;
+        int maxY = popY + POP_H - 74;
+        int col = 0;
+
+        for (size_t i = 0; i < ribbons.size(); i++) {
+            int x = (col == 0) ? col1X : col2X;
+            if (ribbonY + RIB_ROW_H > maxY) {
+                int remaining = static_cast<int>(ribbons.size() - i);
+                drawText(i18n::fmt(StrKey::MoreRibbons, std::to_string(remaining)), x, ribbonY, T().textDim, font_);
+                break;
+            }
+
+            // Center both icon and text vertically within the row
+            int textH = TTF_FontHeight(font_);
+            int contentH = std::max(ICON_SZ, textH);
+            int baseY = ribbonY + (RIB_ROW_H - contentH) / 2;
+            int iconY = baseY + (contentH - ICON_SZ) / 2;
+            int textY = baseY + (contentH - textH) / 2;
+
+            SDL_Texture* ribTex = getRibbonSprite(ribbons[i].filename);
+            if (ribTex) {
+                SDL_Rect dst = {x, iconY, ICON_SZ, ICON_SZ};
+                SDL_RenderCopy(renderer_, ribTex, nullptr, &dst);
+            }
+
+            drawText(ribbons[i].name, x + ICON_SZ + ICON_PAD, textY, T().textDim, font_);
+
+            col++;
+            if (col >= 2) {
+                col = 0;
+                ribbonY += RIB_ROW_H;
+            }
+        }
+    }
+
+    // --- Right column: IV and EV radar charts ---
+    // Order: HP, Atk, Def, Spe, SpD, SpA (clockwise from top)
+    int chartCX = popX + POP_W * 3 / 4;
+    constexpr int CHART_RADIUS = 65;
+
+    // IVs radar chart
+    drawTextCentered(i18n::get(StrKey::IVs), chartCX, popY + 18, T().text, font_);
+    int ivsRadar[] = {pkm.ivHp(), pkm.ivAtk(), pkm.ivDef(), pkm.ivSpe(), pkm.ivSpD(), pkm.ivSpA()};
+    drawRadarChart(chartCX, popY + 150, CHART_RADIUS, ivsRadar, 31);
+
+    // EVs radar chart
+    drawTextCentered(i18n::get(StrKey::EVs), chartCX, popY + 283, T().text, font_);
+    int evsRadar[] = {pkm.evHp(), pkm.evAtk(), pkm.evDef(), pkm.evSpe(), pkm.evSpD(), pkm.evSpA()};
+    drawRadarChart(chartCX, popY + 415, CHART_RADIUS, evsRadar, 252);
+
+    // PID, EC, ID, TSV (bottom-left, small font, two lines)
+    uint16_t tsv = (pkm.tid() ^ pkm.sid()) >> 4;
+    char techBuf1[64], techBuf2[64];
+    snprintf(techBuf1, sizeof(techBuf1), "PID: %08X   EC: %08X",
+             pkm.pid(), pkm.encryptionConstant());
+    snprintf(techBuf2, sizeof(techBuf2), "ID: %05u/%05u   TSV: %04u",
+             pkm.tid(), pkm.sid(), tsv);
+    drawText(techBuf1, popX + 20, popY + POP_H - 66, T().textDim, fontSmall_);
+    drawText(techBuf2, popX + 20, popY + POP_H - 50, T().textDim, fontSmall_);
+
+    // Close hint at bottom
+    drawTextCentered(i18n::get(StrKey::DetailFooter), popX + POP_W / 2, popY + POP_H - 20, T().textDim, fontSmall_);
+}
+
+int UI::menuVisibleCount() const {
+    // Layout voci: vedi labelsNormal/labelsApplet in drawMenuPopup().
+    // Indice 5 = Wondercard (solo se il gioco le supporta),
+    // indice 6 = Export Selected (solo se ci sono slot selezionati).
+    bool hasWC = gameInfo(selectedGame_).hasWondercards;
+    bool hasExport = !selectedSlots_.empty();
+    int allCount = isDualBankMode() ? 12 : 11;
+    int count = 0;
+    for (int i = 0; i < allCount; i++) {
+        if (!hasWC && i == 5) continue;
+        if (!hasExport && i == 6) continue;
+        count++;
+    }
+    return count;
+}
+
+void UI::drawMenuPopup() {
+    // Semi-transparent dark overlay
+    drawRect(0, 0, SCREEN_W, SCREEN_H, T().overlay);
+
+    // Menu items differ by mode and game
+    // SV/SwSh games get a "Wondercard" item after Search — +1 Crypto (M3d) +1 Gen (M6a)
+    bool hasWC = gameInfo(selectedGame_).hasWondercards;
+    bool hasExport = !selectedSlots_.empty();
+
+    static char exportBuf[64];
+    if (hasExport)
+        std::snprintf(exportBuf, sizeof(exportBuf), "%s", i18n::fmt(StrKey::MenuExportSelected, std::to_string((int)selectedSlots_.size())).c_str());
+    static char cryptoBuf[32];
+    std::snprintf(cryptoBuf, sizeof(cryptoBuf), "Crypto: %s", useOpenHome() ? "OpenHome" : "pkHouse");
+    static char genBuf[32];
+    std::snprintf(genBuf, sizeof(genBuf), "Target Gen: %d", targetGen_);
+
+    const std::string labelsNormal[] = {
+        i18n::get(StrKey::MenuTheme),
+        i18n::get(StrKey::MenuLanguage),
+        cryptoBuf,
+        genBuf,
+        i18n::get(StrKey::MenuSearch),
+        i18n::get(StrKey::MenuWondercard),
+        exportBuf,
+        i18n::get(StrKey::MenuSwitchBank),
+        i18n::get(StrKey::MenuChangeGame),
+        i18n::get(StrKey::MenuSaveQuit),
+        i18n::get(StrKey::MenuQuitNoSave)
+    };
+    const std::string labelsApplet[] = {
+        i18n::get(StrKey::MenuTheme),
+        i18n::get(StrKey::MenuLanguage),
+        cryptoBuf,
+        genBuf,
+        i18n::get(StrKey::MenuSearch),
+        i18n::get(StrKey::MenuWondercard),
+        exportBuf,
+        i18n::get(StrKey::MenuSwitchLeft),
+        i18n::get(StrKey::MenuSwitchRight),
+        i18n::get(StrKey::MenuChangeGame),
+        i18n::get(StrKey::MenuSaveBanks),
+        i18n::get(StrKey::MenuQuit)
+    };
+    // Build label list, skipping conditional items — menuCount = vi
+    std::string visibleLabels[14];
+    const std::string* allLabels = isDualBankMode() ? labelsApplet : labelsNormal;
+    int allCount = isDualBankMode() ? 12 : 11;
+    int vi = 0;
+    for (int i = 0; i < allCount; i++) {
+        if (!hasWC && i == 5) continue;
+        if (!hasExport && i == 6) continue;
+        visibleLabels[vi++] = allLabels[i];
+    }
+    int menuCount = vi;
+
+    constexpr int POP_W = 380;
+    int POP_H = 50 + menuCount * 36 + 30;
+    int popX = (SCREEN_W - POP_W) / 2;
+    int popY = (SCREEN_H - POP_H) / 2;
+
+    drawRect(popX, popY, POP_W, POP_H, T().panelBg);
+    drawRectOutline(popX, popY, POP_W, POP_H, T().cursor, 2);
+
+    drawTextCentered(i18n::get(StrKey::MenuTitle), popX + POP_W / 2, popY + 22, T().text, font_);
+
+    int rowH = 36;
+    int startY = popY + 50;
+
+    // Clamp selezione se menuCount è cambiato (es. hasExport)
+    if (menuSelection_ >= menuCount) menuSelection_ = menuCount - 1;
+    if (menuSelection_ < 0) menuSelection_ = menuCount - 1;
+
+    for (int i = 0; i < menuCount; i++) {
+        int rowY = startY + i * rowH;
+        if (i == menuSelection_) {
+            drawRect(popX + 20, rowY, POP_W - 40, rowH - 4, T().menuHighlight);
+            drawRectOutline(popX + 20, rowY, POP_W - 40, rowH - 4, T().cursor, 2);
+        }
+        drawTextCentered(visibleLabels[i], popX + POP_W / 2, rowY + (rowH - 4) / 2, T().text, font_);
+    }
+
+    drawTextCentered(i18n::get(StrKey::AConfirmBCancelMenu), popX + POP_W / 2, popY + POP_H - 18, T().textDim, fontSmall_);
+}
+
+void UI::drawThemeSelectorPopup() {
+    drawRect(0, 0, SCREEN_W, SCREEN_H, T().overlay);
+
+    constexpr int POP_W = 380;
+    int POP_H = 50 + THEME_COUNT * 36 + 30;
+    int popX = (SCREEN_W - POP_W) / 2;
+    int popY = (SCREEN_H - POP_H) / 2;
+
+    drawRect(popX, popY, POP_W, POP_H, T().panelBg);
+    drawRectOutline(popX, popY, POP_W, POP_H, T().cursor, 2);
+
+    drawTextCentered(i18n::get(StrKey::SelectTheme), popX + POP_W / 2, popY + 22, T().text, font_);
+
+    int rowH = 36;
+    int startY = popY + 50;
+
+    for (int i = 0; i < THEME_COUNT; i++) {
+        int rowY = startY + i * rowH;
+        if (i == themeSelCursor_) {
+            drawRect(popX + 20, rowY, POP_W - 40, rowH - 4, T().menuHighlight);
+            drawRectOutline(popX + 20, rowY, POP_W - 40, rowH - 4, T().cursor, 2);
+        }
+        std::string label = getThemeName(i);
+        if (i == themeSelOriginal_) label = "* " + label + " *";
+        drawTextCentered(label, popX + POP_W / 2, rowY + (rowH - 4) / 2, T().text, font_);
+    }
+
+    drawTextCentered(i18n::get(StrKey::ASelectBCancel), popX + POP_W / 2, popY + POP_H - 18, T().textDim, fontSmall_);
+}
+
+void UI::drawLanguageSelectorPopup() {
+    drawRect(0, 0, SCREEN_W, SCREEN_H, T().overlay);
+
+    int langCount = (int)langList_.size();
+    constexpr int POP_W = 380;
+    int POP_H = 50 + langCount * 36 + 30;
+    int popX = (SCREEN_W - POP_W) / 2;
+    int popY = (SCREEN_H - POP_H) / 2;
+
+    drawRect(popX, popY, POP_W, POP_H, T().panelBg);
+    drawRectOutline(popX, popY, POP_W, POP_H, T().cursor, 2);
+
+    drawTextCentered(i18n::get(StrKey::SelectLanguage), popX + POP_W / 2, popY + 22, T().text, font_);
+
+    int rowH = 36;
+    int startY = popY + 50;
+
+    for (int i = 0; i < langCount; i++) {
+        int rowY = startY + i * rowH;
+        if (i == langSelCursor_) {
+            drawRect(popX + 20, rowY, POP_W - 40, rowH - 4, T().menuHighlight);
+            drawRectOutline(popX + 20, rowY, POP_W - 40, rowH - 4, T().cursor, 2);
+        }
+        std::string label = langDisplayName(langList_[i]);
+        if (langList_[i] == i18n::currentLang()) label = "* " + label + " *";
+        drawTextCentered(label, popX + POP_W / 2, rowY + (rowH - 4) / 2, T().text, font_);
+    }
+
+    drawTextCentered(i18n::get(StrKey::ASelectBCancel), popX + POP_W / 2, popY + POP_H - 18, T().textDim, fontSmall_);
+}
+
+void UI::drawGenSelectorPopup() {
+    drawRect(0, 0, SCREEN_W, SCREEN_H, T().overlay);
+
+    constexpr int POP_W = 380;
+    constexpr int GEN_COUNT = 7;
+    int POP_H = 50 + GEN_COUNT * 36 + 30;
+    int popX = (SCREEN_W - POP_W) / 2;
+    int popY = (SCREEN_H - POP_H) / 2;
+
+    drawRect(popX, popY, POP_W, POP_H, T().panelBg);
+    drawRectOutline(popX, popY, POP_W, POP_H, T().cursor, 2);
+
+    drawTextCentered("Target Generation", popX + POP_W / 2, popY + 22, T().text, font_);
+
+    int rowH = 36;
+    int startY = popY + 50;
+
+    for (int i = 0; i < GEN_COUNT; i++) {
+        int rowY = startY + i * rowH;
+        if (i == genSelCursor_) {
+            drawRect(popX + 20, rowY, POP_W - 40, rowH - 4, T().menuHighlight);
+            drawRectOutline(popX + 20, rowY, POP_W - 40, rowH - 4, T().cursor, 2);
+        }
+        char buf[16];
+        std::snprintf(buf, sizeof(buf), "Gen %d", GEN_LIST[i]);
+        std::string label = buf;
+        if (GEN_LIST[i] == targetGen_) label = "* " + label + " *";
+        drawTextCentered(label, popX + POP_W / 2, rowY + (rowH - 4) / 2, T().text, font_);
+    }
+
+    drawTextCentered(i18n::get(StrKey::ASelectBCancel), popX + POP_W / 2, popY + POP_H - 18, T().textDim, fontSmall_);
+}
+
+void UI::drawSearchFilterPopup() {
+    drawRect(0, 0, SCREEN_W, SCREEN_H, T().overlay);
+
+    bool hasAlpha = gameInfo(selectedGame_).hasAlphaForms;
+    int rowCount = hasAlpha ? 12 : 11;
+
+    constexpr int POP_W = 600;
+    constexpr int ROW_H = 36;
+    int POP_H = 50 + rowCount * ROW_H + 30;
+    int popX = (SCREEN_W - POP_W) / 2;
+    int popY = (SCREEN_H - POP_H) / 2;
+
+    drawRect(popX, popY, POP_W, POP_H, T().panelBg);
+    drawRectOutline(popX, popY, POP_W, POP_H, T().cursor, 2);
+
+    drawTextCentered(i18n::get(StrKey::SearchFilter), popX + POP_W / 2, popY + 22, T().text, font_);
+
+    int startY = popY + 50;
+    int labelX = popX + 30;
+    int valueX = popX + 230;
+
+    int visualRow = 0;
+    for (int i = 0; i < 12; i++) {
+        if (i == 4 && !hasAlpha) continue;
+
+        int rowY = startY + visualRow * ROW_H;
+
+        if (i == searchFilterCursor_) {
+            drawRect(popX + 20, rowY, POP_W - 40, ROW_H - 4, T().menuHighlight);
+            drawRectOutline(popX + 20, rowY, POP_W - 40, ROW_H - 4, T().cursor, 2);
+        }
+
+        int textY = rowY + (ROW_H - 4) / 2 - 9;
+
+        switch (i) {
+            case 0: {
+                drawText(i18n::get(StrKey::FilterSpecies), labelX, textY, T().text, font_);
+                if (searchFilter_.speciesId > 0) {
+                    SDL_Texture* spr = getSprite(searchFilter_.speciesId);
+                    if (spr) {
+                        int sprSize = ROW_H - 6;
+                        SDL_Rect dst = { valueX, rowY + 2, sprSize, sprSize };
+                        SDL_RenderCopy(renderer_, spr, nullptr, &dst);
+                        drawText(searchFilter_.speciesName, valueX + sprSize + 6, textY, T().text, font_);
+                    } else {
+                        drawText(searchFilter_.speciesName, valueX, textY, T().text, font_);
+                    }
+                } else {
+                    drawText(i18n::get(StrKey::FilterAny), valueX, textY, T().textDim, font_);
+                }
+                break;
+            }
+            case 1:
+                drawText(i18n::get(StrKey::FilterOT), labelX, textY, T().text, font_);
+                drawText(searchFilter_.otName.empty() ? i18n::get(StrKey::FilterAny) : searchFilter_.otName,
+                         valueX, textY, searchFilter_.otName.empty() ? T().textDim : T().text, font_);
+                break;
+            case 2:
+                drawText(i18n::get(StrKey::FilterShiny), labelX, textY, T().text, font_);
+                drawText(searchFilter_.filterShiny ? i18n::get(StrKey::FilterYes) : i18n::get(StrKey::FilterOff),
+                         valueX, textY, searchFilter_.filterShiny ? T().shiny : T().textDim, font_);
+                break;
+            case 3:
+                drawText(i18n::get(StrKey::FilterEgg), labelX, textY, T().text, font_);
+                drawText(searchFilter_.filterEgg ? i18n::get(StrKey::FilterYes) : i18n::get(StrKey::FilterOff),
+                         valueX, textY, searchFilter_.filterEgg ? T().text : T().textDim, font_);
+                break;
+            case 4:
+                drawText(i18n::get(StrKey::FilterAlpha), labelX, textY, T().text, font_);
+                drawText(searchFilter_.filterAlpha ? i18n::get(StrKey::FilterYes) : i18n::get(StrKey::FilterOff),
+                         valueX, textY, searchFilter_.filterAlpha ? T().text : T().textDim, font_);
+                break;
+            case 5: {
+                drawText(i18n::get(StrKey::FilterGender), labelX, textY, T().text, font_);
+                const char* g = i18n::get(StrKey::GenderAny).c_str();
+                if (searchFilter_.gender == GenderFilter::Male)        g = i18n::get(StrKey::GenderMale).c_str();
+                else if (searchFilter_.gender == GenderFilter::Female)  g = i18n::get(StrKey::GenderFemale).c_str();
+                else if (searchFilter_.gender == GenderFilter::Genderless) g = i18n::get(StrKey::GenderGenderless).c_str();
+                drawText(g, valueX, textY, T().text, font_);
+                break;
+            }
+            case 6: {
+                drawText(i18n::get(StrKey::FilterLevel), labelX, textY, T().text, font_);
+                std::string minStr = searchFilter_.levelMin > 0 ? std::to_string(searchFilter_.levelMin) : "-";
+                std::string maxStr = searchFilter_.levelMax > 0 ? std::to_string(searchFilter_.levelMax) : "-";
+                SDL_Color minC = (searchFilterCursor_ == 6 && searchLevelFocus_ == 0) ? T().cursor : T().text;
+                SDL_Color maxC = (searchFilterCursor_ == 6 && searchLevelFocus_ == 1) ? T().cursor : T().text;
+                drawText("[" + minStr + "]", valueX, textY, minC, font_);
+                drawText("-", valueX + 60, textY, T().textDim, font_);
+                drawText("[" + maxStr + "]", valueX + 80, textY, maxC, font_);
+                break;
+            }
+            case 7: {
+                drawText(i18n::get(StrKey::FilterPerfectIVs), labelX, textY, T().text, font_);
+                const char* iv = i18n::get(StrKey::FilterOff).c_str();
+                if (searchFilter_.perfectIVs == PerfectIVFilter::AtLeastOne) iv = i18n::get(StrKey::IVOnePlus).c_str();
+                else if (searchFilter_.perfectIVs == PerfectIVFilter::All6)  iv = i18n::get(StrKey::IVSix).c_str();
+                drawText(iv, valueX, textY, T().text, font_);
+                break;
+            }
+            case 8: {
+                drawText(i18n::get(StrKey::FilterRibbons), labelX, textY, T().text, font_);
+                const char* rf = i18n::get(StrKey::FilterOff).c_str();
+                if (searchFilter_.ribbonFilter == RibbonFilter::HasRibbon) rf = i18n::get(StrKey::RibbonHasRibbon).c_str();
+                else if (searchFilter_.ribbonFilter == RibbonFilter::HasMark) rf = i18n::get(StrKey::RibbonHasMark).c_str();
+                else if (searchFilter_.ribbonFilter == RibbonFilter::HasAny)  rf = i18n::get(StrKey::RibbonHasAny).c_str();
+                drawText(rf, valueX, textY,
+                         searchFilter_.ribbonFilter != RibbonFilter::Off ? T().text : T().textDim, font_);
+                break;
+            }
+            case 9: {
+                drawText(i18n::get(StrKey::FilterMode), labelX, textY, T().text, font_);
+                bool isList = (searchFilter_.mode == SearchMode::List);
+                drawText(isList ? i18n::get(StrKey::ModeListOn) : i18n::get(StrKey::ModeListOff),
+                         valueX, textY, isList ? T().text : T().textDim, font_);
+                drawText(!isList ? i18n::get(StrKey::ModeHighlightOn) : i18n::get(StrKey::ModeHighlightOff),
+                         valueX + 100, textY, !isList ? T().searchMatch : T().textDim, font_);
+                break;
+            }
+            case 10:
+                drawTextCentered(i18n::get(StrKey::FilterReset), popX + POP_W / 2, rowY + (ROW_H - 4) / 2, T().textDim, font_);
+                break;
+            case 11:
+                drawTextCentered(i18n::get(StrKey::FilterSearch), popX + POP_W / 2, rowY + (ROW_H - 4) / 2, T().text, font_);
+                break;
+        }
+        visualRow++;
+    }
+
+    drawTextCentered(i18n::get(StrKey::FilterFooter), popX + POP_W / 2, popY + POP_H - 18, T().textDim, fontSmall_);
+}
+
+void UI::drawSearchResultsPopup() {
+    drawRect(0, 0, SCREEN_W, SCREEN_H, T().overlay);
+
+    constexpr int POP_W = 900;
+    constexpr int POP_H = 550;
+    int popX = (SCREEN_W - POP_W) / 2;
+    int popY = (SCREEN_H - POP_H) / 2;
+
+    drawRect(popX, popY, POP_W, POP_H, T().panelBg);
+    drawRectOutline(popX, popY, POP_W, POP_H, T().cursor, 2);
+
+    std::string title = i18n::fmt(StrKey::SearchResultsTitle, std::to_string(searchResults_.size()));
+    drawTextCentered(title, popX + POP_W / 2, popY + 22, T().text, font_);
+
+    if (searchResults_.empty()) {
+        drawTextCentered(i18n::get(StrKey::NoPokemonFound), popX + POP_W / 2, popY + POP_H / 2, T().textDim, font_);
+    } else {
+        constexpr int ROW_H = 36;
+        int listY = popY + 50;
+        int listBottom = popY + POP_H - 40;
+        int visibleRows = (listBottom - listY) / ROW_H;
+        int listX = popX + 20;
+        int listW = POP_W - 40;
+
+        int maxScroll = std::max(0, (int)searchResults_.size() - visibleRows);
+        if (searchResultScroll_ > maxScroll) searchResultScroll_ = maxScroll;
+
+        if (searchResultScroll_ > 0)
+            drawTextCentered("^", popX + POP_W / 2, listY - 12, T().arrow, fontSmall_);
+        if (searchResultScroll_ + visibleRows < (int)searchResults_.size())
+            drawTextCentered("v", popX + POP_W / 2, listBottom + 2, T().arrow, fontSmall_);
+
+        for (int i = 0; i < visibleRows && (searchResultScroll_ + i) < (int)searchResults_.size(); i++) {
+            int idx = searchResultScroll_ + i;
+            const auto& r = searchResults_[idx];
+            int rowY = listY + i * ROW_H;
+
+            if (idx == searchResultCursor_) {
+                drawRect(listX, rowY, listW, ROW_H - 4, T().menuHighlight);
+                drawRectOutline(listX, rowY, listW, ROW_H - 4, T().cursor, 2);
+            }
+
+            int textY = rowY + (ROW_H - 4) / 2 - 9;
+            int x = listX + 10;
+
+            // Status badges (fixed-width area for up to three badges)
+            {
+                int bx = x;
+                if (r.isShiny) { drawText(i18n::get(StrKey::BadgeShiny), bx, textY, T().shiny, font_); bx += 35; }
+                if (r.isAlpha) { drawText(i18n::get(StrKey::BadgeAlpha), bx, textY, T().text, font_); bx += 35; }
+                if (r.isEgg)   { drawText(i18n::get(StrKey::BadgeEgg), bx, textY, T().textDim, font_); }
+            }
+            x += 105;
+
+            // Species name
+            std::string name = r.isEgg ? i18n::get(StrKey::Egg) : r.speciesName;
+            if (name.length() > 14) name = name.substr(0, 13) + ".";
+            drawText(name, x, textY, r.isShiny ? T().shiny : T().text, font_);
+            x += 170;
+
+            // Level
+            std::string lvlStr = r.isEgg ? i18n::get(StrKey::Egg) : i18n::get(StrKey::LvPrefix) + std::to_string(r.level);
+            drawText(lvlStr, x, textY, T().textDim, font_);
+            x += 70;
+
+            // Gender
+            if (r.gender == 0)
+                drawText("\xe2\x99\x82", x, textY, T().genderMale, font_);
+            else if (r.gender == 1)
+                drawText("\xe2\x99\x80", x, textY, T().genderFemale, font_);
+            x += 30;
+
+            // Location
+            std::string loc;
+            if (isDualBankMode())
+                loc = (r.panel == Panel::Game ? i18n::get(StrKey::LocLeft) : i18n::get(StrKey::LocRight));
+            else
+                loc = (r.panel == Panel::Game ? i18n::get(StrKey::LocSave) : i18n::get(StrKey::LocBank));
+            loc += " " + i18n::get(StrKey::BoxLabel) + " " + std::to_string(r.box + 1) + " " + i18n::get(StrKey::SlotLabel) + " " + std::to_string(r.slot + 1);
+            drawText(loc, x, textY, T().textDim, font_);
+        }
+    }
+
+    std::string footer = searchResults_.empty()
+        ? i18n::get(StrKey::ResultsFooterEmpty)
+        : i18n::get(StrKey::ResultsFooter);
+    drawTextCentered(footer, popX + POP_W / 2, popY + POP_H - 18, T().textDim, fontSmall_);
+}
+
+void UI::drawSpeciesLetterPicker() {
+    drawRect(0, 0, SCREEN_W, SCREEN_H, T().overlay);
+
+    constexpr int POP_W = 1080;
+    constexpr int POP_H = 620;
+    int popX = (SCREEN_W - POP_W) / 2;
+    int popY = (SCREEN_H - POP_H) / 2;
+
+    drawRect(popX, popY, POP_W, POP_H, T().panelBg);
+    drawRectOutline(popX, popY, POP_W, POP_H, T().cursor, 2);
+
+    drawTextCentered(i18n::get(StrKey::SelectLetter), popX + POP_W / 2, popY + 22, T().text, font_);
+
+    constexpr int COLS = 2;
+    constexpr int TOTAL_ITEMS = 27; // "-" + A-Z
+    constexpr int ROW_H = 56;
+    constexpr int COL_W = 500;
+    constexpr int PAD = 6;
+    int gridX = popX + (POP_W - COLS * COL_W) / 2;
+    int gridY = popY + 50;
+    int gridH = POP_H - 50 - 30;
+    int visibleRows = gridH / ROW_H;
+    int totalRows = (TOTAL_ITEMS + COLS - 1) / COLS;
+
+    // Auto-scroll to keep cursor visible
+    int cursorRow = speciesLetterCursor_ / COLS;
+    if (cursorRow < speciesLetterScroll_)
+        speciesLetterScroll_ = cursorRow;
+    if (cursorRow >= speciesLetterScroll_ + visibleRows)
+        speciesLetterScroll_ = cursorRow - visibleRows + 1;
+
+    // Draw scrollbar
+    if (totalRows > visibleRows) {
+        int sbX = popX + POP_W - 20;
+        int sbH = gridH;
+        int thumbH = std::max(20, sbH * visibleRows / totalRows);
+        int thumbY = gridY + (sbH - thumbH) * speciesLetterScroll_ / (totalRows - visibleRows);
+        drawRect(sbX, gridY, 6, sbH, T().textDim);
+        drawRect(sbX, thumbY, 6, thumbH, T().text);
+    }
+
+    for (int r = 0; r < visibleRows && (speciesLetterScroll_ + r) < totalRows; r++) {
+        int row = speciesLetterScroll_ + r;
+        for (int c = 0; c < COLS; c++) {
+            int idx = row * COLS + c;
+            if (idx >= TOTAL_ITEMS) break;
+
+            int cellX = gridX + c * COL_W + PAD;
+            int cellY = gridY + r * ROW_H + PAD;
+            int cellW = COL_W - PAD * 2;
+            int cellH = ROW_H - PAD * 2;
+
+            bool hasSpecies = letterHasSpecies(idx);
+
+            if (idx == speciesLetterCursor_) {
+                drawRect(cellX, cellY, cellW, cellH, T().menuHighlight);
+                drawRectOutline(cellX, cellY, cellW, cellH, T().cursor, 2);
+            } else if (hasSpecies) {
+                // Light background for available letters
+                SDL_Color bg = T().panelBg;
+                bg.r = std::min(255, bg.r + 15);
+                bg.g = std::min(255, bg.g + 15);
+                bg.b = std::min(255, bg.b + 15);
+                drawRect(cellX, cellY, cellW, cellH, bg);
+            } else {
+                // Dimmed background for unavailable letters
+                drawRect(cellX, cellY, cellW, cellH, T().panelBg);
+            }
+
+            std::string label = (idx == 0) ? "-" : std::string(1, 'A' + idx - 1);
+            drawText(label, cellX + 20, cellY + cellH / 2 - 9,
+                     hasSpecies ? T().text : T().textDim, font_);
+        }
+    }
+
+    drawTextCentered(i18n::get(StrKey::ASelectBBack), popX + POP_W / 2, popY + POP_H - 18, T().textDim, fontSmall_);
+}
+
+void UI::drawSpeciesListPicker() {
+    drawRect(0, 0, SCREEN_W, SCREEN_H, T().overlay);
+
+    constexpr int POP_W = 1080;
+    constexpr int POP_H = 620;
+    int popX = (SCREEN_W - POP_W) / 2;
+    int popY = (SCREEN_H - POP_H) / 2;
+
+    drawRect(popX, popY, POP_W, POP_H, T().panelBg);
+    drawRectOutline(popX, popY, POP_W, POP_H, T().cursor, 2);
+
+    char letter = 'A' + (speciesLetterCursor_ - 1);
+    std::string title = i18n::fmt(StrKey::SpeciesDashLetter, std::string(1, letter));
+    drawTextCentered(title, popX + POP_W / 2, popY + 22, T().text, font_);
+
+    if (speciesPickerList_.empty()) {
+        drawTextCentered(i18n::get(StrKey::NoSpeciesFound), popX + POP_W / 2, popY + POP_H / 2, T().textDim, font_);
+    } else {
+        constexpr int COLS = 3;
+        constexpr int ROW_H = 56;
+        constexpr int PAD = 4;
+        int total = static_cast<int>(speciesPickerList_.size());
+        int totalRows = (total + COLS - 1) / COLS;
+        int COL_W = (POP_W - 40) / COLS;
+        int gridX = popX + 20;
+        int gridY = popY + 50;
+        int gridH = POP_H - 50 - 30;
+        int visibleRows = gridH / ROW_H;
+
+        // Auto-scroll to keep cursor visible
+        int cursorRow = speciesListCursor_ / COLS;
+        if (cursorRow < speciesListScroll_)
+            speciesListScroll_ = cursorRow;
+        if (cursorRow >= speciesListScroll_ + visibleRows)
+            speciesListScroll_ = cursorRow - visibleRows + 1;
+
+        // Draw scrollbar
+        if (totalRows > visibleRows) {
+            int sbX = popX + POP_W - 20;
+            int sbH = gridH;
+            int thumbH = std::max(20, sbH * visibleRows / totalRows);
+            int thumbY = gridY + (sbH - thumbH) * speciesListScroll_ / (totalRows - visibleRows);
+            drawRect(sbX, gridY, 6, sbH, T().textDim);
+            drawRect(sbX, thumbY, 6, thumbH, T().text);
+        }
+
+        constexpr int SPRITE_SZ = 40;
+
+        for (int r = 0; r < visibleRows && (speciesListScroll_ + r) < totalRows; r++) {
+            int row = speciesListScroll_ + r;
+            for (int c = 0; c < COLS; c++) {
+                int idx = row * COLS + c;
+                if (idx >= total) break;
+
+                uint16_t specId = speciesPickerList_[idx];
+                const std::string& name = SpeciesName::get(specId);
+
+                int cellX = gridX + c * COL_W + PAD;
+                int cellY = gridY + r * ROW_H + PAD;
+                int cellW = COL_W - PAD * 2;
+                int cellH = ROW_H - PAD * 2;
+
+                if (idx == speciesListCursor_) {
+                    drawRect(cellX, cellY, cellW, cellH, T().menuHighlight);
+                    drawRectOutline(cellX, cellY, cellW, cellH, T().cursor, 2);
+                } else {
+                    SDL_Color bg = T().panelBg;
+                    bg.r = std::min(255, bg.r + 15);
+                    bg.g = std::min(255, bg.g + 15);
+                    bg.b = std::min(255, bg.b + 15);
+                    drawRect(cellX, cellY, cellW, cellH, bg);
+                }
+
+                // Draw sprite (aspect-ratio preserved)
+                SDL_Texture* spr = getSprite(specId);
+                if (spr) {
+                    int texW, texH;
+                    SDL_QueryTexture(spr, nullptr, nullptr, &texW, &texH);
+                    int dstW = SPRITE_SZ, dstH = SPRITE_SZ;
+                    if (texW > 0 && texH > 0 && (texW != texH)) {
+                        float scale = std::min(static_cast<float>(SPRITE_SZ) / texW,
+                                               static_cast<float>(SPRITE_SZ) / texH);
+                        dstW = static_cast<int>(texW * scale);
+                        dstH = static_cast<int>(texH * scale);
+                    }
+                    int sprX = cellX + 6 + (SPRITE_SZ - dstW) / 2;
+                    int sprY = cellY + (cellH - dstH) / 2;
+                    SDL_Rect dst = { sprX, sprY, dstW, dstH };
+                    SDL_RenderCopy(renderer_, spr, nullptr, &dst);
+                }
+
+                // Draw name (truncated if needed)
+                std::string displayName = name;
+                if (displayName.length() > 14) displayName = displayName.substr(0, 13) + ".";
+                drawText(displayName, cellX + 6 + SPRITE_SZ + 6, cellY + cellH / 2 - 9, T().text, font_);
+            }
+        }
+    }
+
+    drawTextCentered(i18n::get(StrKey::ASelectBBack), popX + POP_W / 2, popY + POP_H - 18, T().textDim, fontSmall_);
+}
+
+void UI::drawWondercardListPopup() {
+    drawRect(0, 0, SCREEN_W, SCREEN_H, T().overlay);
+
+    constexpr int POP_W = 900;
+    constexpr int POP_H = 550;
+    int popX = (SCREEN_W - POP_W) / 2;
+    int popY = (SCREEN_H - POP_H) / 2;
+
+    drawRect(popX, popY, POP_W, POP_H, T().panelBg);
+    drawRectOutline(popX, popY, POP_W, POP_H, T().cursor, 2);
+
+    std::string title = i18n::fmt(StrKey::WondercardsTitle, std::to_string(wcList_.size()));
+    drawTextCentered(title, popX + POP_W / 2, popY + 22, T().text, font_);
+
+    if (wcList_.empty()) {
+        drawTextCentered(i18n::get(StrKey::NoWCFound), popX + POP_W / 2, popY + POP_H / 2 - 20, T().textDim, font_);
+        std::string hint = i18n::fmt(StrKey::PlaceFilesIn, std::string(gameInfo(selectedGame_).wcExtensionHint));
+        drawTextCentered(hint, popX + POP_W / 2, popY + POP_H / 2 + 10, T().textDim, fontSmall_);
+        std::string path = basePath_ + "wondercards/" + std::string(bankFolderNameOf(selectedGame_)) + "/";
+        drawTextCentered(path, popX + POP_W / 2, popY + POP_H / 2 + 30, T().textDim, fontSmall_);
+    } else {
+        constexpr int ROW_H = 36;
+        int listY = popY + 50;
+        int listBottom = popY + POP_H - 40;
+        int visibleRows = (listBottom - listY) / ROW_H;
+        int listX = popX + 20;
+        int listW = POP_W - 40;
+
+        int maxScroll = std::max(0, (int)wcList_.size() - visibleRows);
+        if (wcListScroll_ > maxScroll) wcListScroll_ = maxScroll;
+
+        if (wcListScroll_ > 0)
+            drawTextCentered("^", popX + POP_W / 2, listY - 12, T().arrow, fontSmall_);
+        if (wcListScroll_ + visibleRows < (int)wcList_.size())
+            drawTextCentered("v", popX + POP_W / 2, listBottom + 2, T().arrow, fontSmall_);
+
+        for (int i = 0; i < visibleRows && (wcListScroll_ + i) < (int)wcList_.size(); i++) {
+            int idx = wcListScroll_ + i;
+            const auto& wc = wcList_[idx];
+            int rowY = listY + i * ROW_H;
+
+            if (idx == wcListCursor_) {
+                drawRect(listX, rowY, listW, ROW_H - 4, T().menuHighlight);
+                drawRectOutline(listX, rowY, listW, ROW_H - 4, T().cursor, 2);
+            }
+
+            int textY = rowY + (ROW_H - 4) / 2 - 9;
+            int x = listX + 10;
+
+            if (!wc.valid) {
+                // Invalid entry — show filename and marker
+                drawText(i18n::get(StrKey::BadgeInvalid), x, textY, T().genderFemale, font_);
+                x += 110;
+                std::string fn = wc.filename;
+                if (fn.length() > 40) fn = fn.substr(0, 39) + ".";
+                drawText(fn, x, textY, T().textDim, font_);
+            } else {
+                // Shiny indicator
+                if (wc.isShiny) {
+                    drawText(i18n::get(StrKey::BadgeShiny), x, textY, T().shiny, font_);
+                }
+                x += 40;
+
+                // Sprite (shiny variant if wondercard is shiny)
+                SDL_Texture* sprite = nullptr;
+                if (wc.isShiny) {
+                    sprite = getShinySprite(wc.species);
+                    if (!sprite) sprite = getSprite(wc.species);
+                } else {
+                    sprite = getSprite(wc.species);
+                }
+                if (sprite) {
+                    int tw = 0, th = 0;
+                    SDL_QueryTexture(sprite, nullptr, nullptr, &tw, &th);
+                    int maxH = ROW_H - 6;
+                    float scale = std::min(static_cast<float>(maxH) / tw,
+                                           static_cast<float>(maxH) / th);
+                    int dw = static_cast<int>(tw * scale);
+                    int dh = static_cast<int>(th * scale);
+                    SDL_Rect dst = {x + (maxH - dw) / 2, rowY + 2 + (maxH - dh) / 2, dw, dh};
+                    SDL_RenderCopy(renderer_, sprite, nullptr, &dst);
+                }
+                x += ROW_H;
+
+                // Species name
+                const std::string& name = SpeciesName::get(wc.species);
+                std::string displayName = name;
+                if (displayName.length() > 14) displayName = displayName.substr(0, 13) + ".";
+                drawText(displayName, x, textY, wc.isShiny ? T().shiny : T().text, font_);
+                x += 170;
+
+                // Level
+                drawText(i18n::get(StrKey::LvPrefix) + std::to_string(wc.level), x, textY, T().textDim, font_);
+                x += 70;
+
+                // Player OT tag
+                if (!wc.hasOT) {
+                    drawText(i18n::get(StrKey::PlayerOTTag), x, textY, T().genderFemale, font_);
+                }
+                x += 120;
+
+                // Filename (truncate to fit)
+                int maxW = listX + listW - x - 5;
+                std::string fn = wc.filename;
+                while (fn.size() > 4) {
+                    int tw = getTextEntry(fn, fontSmall_, T().textDim).w;
+                    if (tw <= maxW) break;
+                    fn = fn.substr(0, fn.size() - 5) + "..";
+                }
+                drawText(fn, x, textY, T().textDim, fontSmall_);
+            }
+        }
+    }
+
+    std::string footer = wcList_.empty()
+        ? i18n::get(StrKey::BClose)
+        : i18n::get(StrKey::WCFooter);
+    drawTextCentered(footer, popX + POP_W / 2, popY + POP_H - 18, T().textDim, fontSmall_);
+}
+
+void UI::drawAboutPopup() {
+    drawRect(0, 0, SCREEN_W, SCREEN_H, T().overlayDark);
+
+    constexpr int POP_W = 700;
+    constexpr int POP_H = 600;
+    int px = (SCREEN_W - POP_W) / 2;
+    int py = (SCREEN_H - POP_H) / 2;
+
+    drawRect(px, py, POP_W, POP_H, T().panelBg);
+    drawRectOutline(px, py, POP_W, POP_H, T().popupBorder, 2);
+
+    int cx = px + POP_W / 2;
+    int y = py + 25;
+
+    // Title
+    drawTextCentered(i18n::get(StrKey::AboutTitle), cx, y, T().shiny, fontLarge_);
+    y += 38;
+
+    // Version / author (GitHub URLs moved to Basato su section)
+    drawTextCentered("v" APP_VERSION " - Developed by " APP_AUTHOR, cx, y, T().textDim, fontSmall_);
+    y += 20;
+
+    // Divider
+    SDL_SetRenderDrawColor(renderer_, T().popupBorder.r, T().popupBorder.g, T().popupBorder.b, T().popupBorder.a);
+    SDL_RenderDrawLine(renderer_, px + 30, y, px + POP_W - 30, y);
+    y += 18;
+
+    // Description - wrapped to stay inside popup ( AboutDesc2 was overflowing )
+    constexpr int MAX_W = POP_W - 60;
+    auto drawWrappedCentered = [&](const std::string& text, TTF_Font* f, SDL_Color col, int maxW, int lineH, int& yRef) {
+        if (text.empty()) return;
+        std::vector<std::string> words;
+        std::istringstream iss(text);
+        std::string w;
+        while (iss >> w) words.push_back(w);
+        std::vector<std::string> lines;
+        std::string cur;
+        for (auto &word : words) {
+            std::string cand = cur.empty() ? word : cur + " " + word;
+            int cw = getTextEntry(cand, f, col).w;
+            if (cw <= maxW) {
+                cur = cand;
+            } else {
+                if (!cur.empty()) lines.push_back(cur);
+                if (getTextEntry(word, f, col).w > maxW) {
+                    std::string part;
+                    for (size_t i = 0; i < word.size();) {
+                        size_t len = 1;
+                        unsigned char c = static_cast<unsigned char>(word[i]);
+                        if ((c & 0x80) == 0) len = 1;
+                        else if ((c & 0xE0) == 0xC0) len = 2;
+                        else if ((c & 0xF0) == 0xE0) len = 3;
+                        else if ((c & 0xF8) == 0xF0) len = 4;
+                        std::string ch = word.substr(i, len);
+                        std::string cand2 = part + ch;
+                        if (!part.empty() && getTextEntry(cand2, f, col).w > maxW) {
+                            lines.push_back(part);
+                            part = ch;
+                        } else {
+                            part = cand2;
+                        }
+                        i += len;
+                    }
+                    cur = part;
+                } else {
+                    cur = word;
+                }
+            }
+        }
+        if (!cur.empty()) lines.push_back(cur);
+        for (auto &ln : lines) {
+            drawTextCentered(ln, cx, yRef, col, f);
+            yRef += lineH;
+        }
+    };
+
+    drawWrappedCentered(i18n::get(StrKey::AboutDesc1), font_, T().text, MAX_W, 20, y);
+    y += 4;
+    // AboutDesc2 uses smaller font and wrapping to avoid going off-screen (it.json is very long)
+    drawWrappedCentered(i18n::get(StrKey::AboutDesc2), fontSmall_, T().text, MAX_W, 18, y);
+    y += 8;
+
+    drawTextCentered(i18n::get(StrKey::SupportedGames), cx, y, T().selected, font_);
+    y += 22;
+    drawTextCentered(i18n::get(StrKey::SupportedLGPE), cx, y, T().textDim, fontSmall_);
+    y += 18;
+    drawTextCentered(i18n::get(StrKey::SupportedSwSh), cx, y, T().textDim, fontSmall_);
+    y += 18;
+    drawTextCentered(i18n::get(StrKey::SupportedSVZA), cx, y, T().textDim, fontSmall_);
+    y += 18;
+    drawTextCentered(i18n::get(StrKey::SupportedFRLG), cx, y, T().textDim, fontSmall_);
+    y += 14;
+
+    // Divider
+    SDL_SetRenderDrawColor(renderer_, T().popupBorder.r, T().popupBorder.g, T().popupBorder.b, T().popupBorder.a);
+    SDL_RenderDrawLine(renderer_, px + 30, y, px + POP_W - 30, y);
+    y += 14;
+
+    // Basato su / Based on - ordered: pkHouse grafica/UI, OpenHome cross-gen, PKHeX, libnx, devkitPro
+    drawTextCentered(i18n::get(StrKey::AboutBasedOn), cx, y, T().selected, font_);
+    y += 20;
+    drawTextCentered(i18n::get(StrKey::AboutBasedPKHouse), cx, y, T().textDim, fontSmall_);
+    y += 18;
+    drawTextCentered(i18n::get(StrKey::AboutBasedOpenHome), cx, y, T().textDim, fontSmall_);
+    y += 18;
+    drawTextCentered(i18n::get(StrKey::AboutBasedPKHeX), cx, y, T().textDim, fontSmall_);
+    y += 18;
+    drawTextCentered(i18n::get(StrKey::AboutBasedLibnx), cx, y, T().textDim, fontSmall_);
+    y += 18;
+    drawTextCentered(i18n::get(StrKey::AboutBasedDevkitPro), cx, y, T().textDim, fontSmall_);
+    y += 18;
+
+    // Divider before controls
+    SDL_SetRenderDrawColor(renderer_, T().popupBorder.r, T().popupBorder.g, T().popupBorder.b, T().popupBorder.a);
+    SDL_RenderDrawLine(renderer_, px + 30, y, px + POP_W - 30, y);
+    y += 14;
+
+    // Controls - fixed y increments and POP_H to avoid overlap
+    drawTextCentered(i18n::get(StrKey::Controls), cx, y, T().selected, font_);
+    y += 22;
+    drawText(i18n::get(StrKey::ControlsLine1), px + 50, y, T().textDim, fontSmall_);
+    y += 18;
+    drawText(i18n::get(StrKey::ControlsLine2), px + 50, y, T().textDim, fontSmall_);
+    y += 10;
+
+    // Footer (anchored to bottom of popup, no longer overlapping controls)
+    drawTextCentered(i18n::get(StrKey::PressMinusBClose), cx, py + POP_H - 18, T().textDim, fontSmall_);
+}
+
+void UI::drawBoxViewOverlay() {
+    // Full-screen dark overlay
+    drawRect(0, 0, SCREEN_W, SCREEN_H, T().overlay);
+
+    int totalBoxes;
+    if (boxViewPanel_ == Panel::Game)
+        totalBoxes = (isDualBankMode()) ? bankLeft_.boxCount() : save_.boxCount();
+    else
+        totalBoxes = bank_.boxCount();
+    int usedRows = (totalBoxes + BV_COLS - 1) / BV_COLS;
+
+    // Popup dimensions
+    int gridW = BV_COLS * BV_CELL_W + (BV_COLS - 1) * BV_CELL_PAD;
+    int gridH = usedRows * BV_CELL_H + (usedRows - 1) * BV_CELL_PAD;
+    int popW = gridW + 40;
+    int popH = gridH + 100;
+
+    int popX = (SCREEN_W - popW) / 2;
+    int popY = (SCREEN_H - popH) / 2;
+
+    // Popup background
+    drawRect(popX, popY, popW, popH, T().panelBg);
+    drawRectOutline(popX, popY, popW, popH, T().cursor, 2);
+
+    // Title
+    const std::string& title2 = (boxViewPanel_ == Panel::Game)
+        ? (isDualBankMode() ? i18n::get(StrKey::BoxViewLeft) : i18n::get(StrKey::BoxViewSave))
+        : i18n::get(StrKey::BoxViewBank);
+    const char* title = title2.c_str();
+    drawTextCentered(title, popX + popW / 2, popY + 15, T().text, font_);
+
+    // Subtitle: bank file name or profile | game
+    std::string subtitle;
+    if (boxViewPanel_ == Panel::Game) {
+        if (isDualBankMode())
+            subtitle = leftBankName_;
+        else if (selectedProfile_ >= 0 && selectedProfile_ < account_.profileCount())
+            subtitle = account_.profiles()[selectedProfile_].nickname + " | " + gameDisplayNameOf(selectedGame_);
+        else
+            subtitle = gameDisplayNameOf(selectedGame_);
+    } else {
+        subtitle = activeBankName_;
+    }
+    if (!subtitle.empty())
+        drawTextCentered(subtitle, popX + popW / 2, popY + 38, T().textDim, fontSmall_);
+
+    // Grid of box cells
+    int gridStartX = popX + 20;
+    int gridStartY = popY + 55;
+    int activeBox = (boxViewPanel_ == Panel::Game) ? gameBox_ : bankBox_;
+
+    int cursorCellX = 0, cursorCellY = 0;
+
+    for (int i = 0; i < totalBoxes; i++) {
+        int col = i % BV_COLS;
+        int row = i / BV_COLS;
+        int cellX = gridStartX + col * (BV_CELL_W + BV_CELL_PAD);
+        int cellY = gridStartY + row * (BV_CELL_H + BV_CELL_PAD);
+
+        // Cell background — highlight the currently-active box
+        SDL_Color bg = (i == activeBox) ? T().slotFull : T().slotEmpty;
+        drawRect(cellX, cellY, BV_CELL_W, BV_CELL_H, bg);
+
+        // Search highlight: outline boxes that contain matches
+        if (searchHighlightActive_) {
+            bool hasMatch = false;
+            int slots = maxSlots();
+            for (int s = 0; s < slots && !hasMatch; s++)
+                hasMatch = isSearchMatch(boxViewPanel_, i, s);
+            if (hasMatch)
+                drawRectOutline(cellX + 1, cellY + 1, BV_CELL_W - 2, BV_CELL_H - 2, T().searchMatch, 2);
+        }
+
+        // Cursor outline
+        if (i == boxViewCursor_) {
+            drawRectOutline(cellX, cellY, BV_CELL_W, BV_CELL_H, T().cursor, 2);
+            cursorCellX = cellX;
+            cursorCellY = cellY;
+        }
+
+        // Box label
+        std::string boxName;
+        if (boxViewPanel_ == Panel::Game)
+            boxName = (isDualBankMode()) ? bankLeft_.getBoxName(i) : save_.getBoxName(i);
+        else
+            boxName = bank_.getBoxName(i);
+
+        std::string label = boxName;
+        if (label.length() > 16)
+            label = label.substr(0, 15) + ".";
+
+        // Box-state icon on the left of the label
+        const auto& disp = getSlotDisplays(boxViewPanel_, i);
+        int filled = 0;
+        for (const auto& sd : disp) if (!sd.empty) ++filled;
+        int slots = maxSlots();
+        SDL_Texture* stateIcon = iconBoxEmpty_;
+        if (filled >= slots && slots > 0) stateIcon = iconBoxFull_;
+        else if (filled > 0)              stateIcon = iconBoxNonEmpty_;
+
+        const int iconSize = 22;
+        const int iconPadX = 6;
+        int iconX = cellX + iconPadX;
+        int iconY = cellY + (BV_CELL_H - iconSize) / 2;
+        if (stateIcon) {
+            SDL_Rect dst{ iconX, iconY, iconSize, iconSize };
+            SDL_RenderCopy(renderer_, stateIcon, nullptr, &dst);
+        }
+
+        int textLeft = iconX + iconSize + 4;
+        int textRight = cellX + BV_CELL_W - 4;
+        drawTextCentered(label, (textLeft + textRight) / 2, cellY + BV_CELL_H / 2,
+                         T().text, fontSmall_);
+    }
+
+    // Footer hint
+    bool canRename = isDualBankMode() || (boxViewPanel_ == Panel::Bank);
+    const std::string& footerStr = canRename
+        ? i18n::get(StrKey::BoxViewFooterRename)
+        : i18n::get(StrKey::BoxViewFooter);
+    const char* footer = footerStr.c_str();
+    drawTextCentered(footer, popX + popW / 2, popY + popH - 15, T().textDim, fontSmall_);
+
+    // Box preview for cursor box (drawn last so it appears on top)
+    drawBoxPreview(boxViewCursor_, cursorCellX, cursorCellY);
+}
+
+void UI::drawBoxPreview(int boxIdx, int anchorX, int anchorY) {
+    int cols = gridCols();
+    int rows = 5;
+
+    // Preview panel dimensions
+    int previewInnerW = cols * BV_MINI_CELL + (cols - 1) * BV_MINI_PAD;
+    int previewInnerH = rows * BV_MINI_CELL + (rows - 1) * BV_MINI_PAD;
+    int previewW = previewInnerW + 2 * BV_PREVIEW_PAD;
+    int previewH = previewInnerH + 2 * BV_PREVIEW_PAD + BV_PREVIEW_HDR;
+
+    // Position: prefer below the cell
+    int prevX = anchorX;
+    int prevY = anchorY + BV_CELL_H + 6;
+
+    // Clamp to screen bounds
+    if (prevX + previewW > SCREEN_W - 4)
+        prevX = SCREEN_W - 4 - previewW;
+    if (prevX < 4)
+        prevX = 4;
+    if (prevY + previewH > SCREEN_H - 4)
+        prevY = anchorY - previewH - 6; // flip above
+    if (prevY < 4)
+        prevY = 4;
+
+    // Background
+    drawRect(prevX, prevY, previewW, previewH, T().boxPreviewBg);
+    drawRectOutline(prevX, prevY, previewW, previewH, T().textDim, 1);
+
+    // Box name header
+    std::string boxName;
+    if (boxViewPanel_ == Panel::Game)
+        boxName = (isDualBankMode()) ? bankLeft_.getBoxName(boxIdx) : save_.getBoxName(boxIdx);
+    else
+        boxName = bank_.getBoxName(boxIdx);
+    drawTextCentered(boxName, prevX + previewW / 2,
+                     prevY + BV_PREVIEW_HDR / 2 + 2, T().boxName, fontSmall_);
+
+    // Mini sprite grid
+    int gridX = prevX + BV_PREVIEW_PAD;
+    int gridY = prevY + BV_PREVIEW_HDR;
+
+    const auto& prevDisplays = getSlotDisplays(boxViewPanel_, boxIdx);
+
+    for (int r = 0; r < rows; r++) {
+        for (int c = 0; c < cols; c++) {
+            int slot = r * cols + c;
+            int sx = gridX + c * (BV_MINI_CELL + BV_MINI_PAD);
+            int sy = gridY + r * (BV_MINI_CELL + BV_MINI_PAD);
+
+            const auto& psd = prevDisplays[slot];
+
+            if (psd.empty) {
+                drawRect(sx, sy, BV_MINI_CELL, BV_MINI_CELL, T().miniCellEmpty);
+            } else {
+                drawRect(sx, sy, BV_MINI_CELL, BV_MINI_CELL, T().miniCellFull);
+
+                SDL_Texture* sprite = nullptr;
+                if (psd.egg) {
+                    sprite = getSprite(0);
+                } else if (psd.shiny) {
+                    sprite = getShinySprite(psd.species, psd.form);
+                    if (!sprite) sprite = getSprite(psd.species, psd.form);
+                } else {
+                    sprite = getSprite(psd.species, psd.form);
+                }
+                if (sprite) {
+                    int texW, texH;
+                    SDL_QueryTexture(sprite, nullptr, nullptr, &texW, &texH);
+                    float scale = std::min(float(BV_MINI_SPRITE) / texW,
+                                           float(BV_MINI_SPRITE) / texH);
+                    int dstW = static_cast<int>(texW * scale);
+                    int dstH = static_cast<int>(texH * scale);
+                    SDL_Rect dst = {
+                        sx + (BV_MINI_CELL - dstW) / 2,
+                        sy + (BV_MINI_CELL - dstH) / 2,
+                        dstW, dstH
+                    };
+                    SDL_RenderCopy(renderer_, sprite, nullptr, &dst);
+                }
+
+                // Search highlight on mini slots
+                if (searchHighlightActive_) {
+                    if (isSearchMatch(boxViewPanel_, boxIdx, slot))
+                        drawRectOutline(sx, sy, BV_MINI_CELL, BV_MINI_CELL, T().searchMatch, 1);
+                    else
+                        drawRect(sx, sy, BV_MINI_CELL, BV_MINI_CELL, T().searchDim);
+                }
+            }
+        }
+    }
+}
+
+void UI::drawHeldOverlay() {
+    if (!holding_)
+        return;
+
+    // Determine which Pokemon sprite to show
+    const Pokemon& pkm = heldMulti_.empty() ? heldPkm_ : heldMulti_[0];
+    uint16_t species = pkm.species();
+    if (species == 0)
+        return;
+
+    uint8_t heldForm = pkm.form();
+    SDL_Texture* sprite = nullptr;
+    if (pkm.isEgg()) {
+        sprite = getSprite(0);
+    } else if (pkm.isShiny()) {
+        sprite = getShinySprite(species, heldForm);
+        if (!sprite) sprite = getSprite(species, heldForm);
+    } else {
+        sprite = getSprite(species, heldForm);
+    }
+    if (!sprite)
+        return;
+
+    // Compute cursor cell screen position (same formula as drawPanel)
+    int panelX = (cursor_.panel == Panel::Game) ? PANEL_X_L : PANEL_X_R;
+    int cols = gridCols();
+    int gridStartX = panelX + (PANEL_W - (cols * (CELL_W + CELL_PAD) - CELL_PAD)) / 2;
+    int gridStartY = GRID_Y;
+    int cellX = gridStartX + cursor_.col * (CELL_W + CELL_PAD);
+    int cellY = gridStartY + cursor_.row * (CELL_H + CELL_PAD);
+
+    // Offset to create "dragging" effect
+    constexpr int DRAG_OFS = 8;
+    int baseX = cellX + DRAG_OFS;
+    int baseY = cellY + DRAG_OFS;
+
+    // Scale sprite to fit SPRITE_SIZE
+    int texW, texH;
+    SDL_QueryTexture(sprite, nullptr, nullptr, &texW, &texH);
+    int dstW = SPRITE_SIZE, dstH = SPRITE_SIZE;
+    if (texW > 0 && texH > 0) {
+        float scale = std::min(static_cast<float>(SPRITE_SIZE) / texW,
+                               static_cast<float>(SPRITE_SIZE) / texH);
+        dstW = static_cast<int>(texW * scale);
+        dstH = static_cast<int>(texH * scale);
+    }
+
+    int sprX = baseX + (CELL_W - dstW) / 2;
+    int sprY = baseY + 4 + (SPRITE_SIZE - dstH) / 2;
+
+    // Draw semi-transparent
+    SDL_SetTextureAlphaMod(sprite, 180);
+    SDL_Rect dst = {sprX, sprY, dstW, dstH};
+    SDL_RenderCopy(renderer_, sprite, nullptr, &dst);
+    SDL_SetTextureAlphaMod(sprite, 255);
+
+    // Multi-hold: draw count badge
+    if (!heldMulti_.empty() && heldMulti_.size() > 1) {
+        std::string num = std::to_string(heldMulti_.size());
+        auto& numE = getTextEntry(num, font_, T().textOnBadge);
+        int tw = numE.w, th = numE.h;
+        int badgeR = std::max(tw, th) / 2 + 6;
+        int cx = cellX + CELL_W / 2;
+        int cy = cellY + CELL_H / 2;
+
+        SDL_SetRenderDrawColor(renderer_, T().selected.r, T().selected.g, T().selected.b, 220);
+        for (int dy = -badgeR; dy <= badgeR; dy++) {
+            int dx = static_cast<int>(std::sqrt(badgeR * badgeR - dy * dy));
+            SDL_RenderDrawLine(renderer_, cx - dx, cy + dy, cx + dx, cy + dy);
+        }
+        drawTextCentered(num, cx, cy, T().textOnBadge, font_);
+    }
+}

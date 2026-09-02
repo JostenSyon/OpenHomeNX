@@ -1,0 +1,64 @@
+pub mod form_metadata;
+mod metadata;
+mod types;
+
+pub use metadata::*;
+use pkm_rs_types::NationalDex;
+pub use types::*;
+
+#[cfg(feature = "wasm")]
+use wasm_bindgen::prelude::*;
+
+#[cfg_attr(feature = "wasm", wasm_bindgen(js_name = MetadataSummaryLookup))]
+pub fn metadata_lookup(national_dex: u16, form_index: u16) -> Option<FormMetadata> {
+    match national_dex {
+        0 => None,
+        1.. => ALL_SPECIES
+            .get(national_dex as usize - 1)
+            .and_then(|s| s.forms.get(form_index as usize))
+            .cloned(),
+    }
+}
+
+#[cfg_attr(feature = "wasm", wasm_bindgen(js_name = SpeciesLookup))]
+pub fn species_lookup(national_dex: u16) -> Option<SpeciesMetadata> {
+    match national_dex {
+        0 => None,
+        1.. => ALL_SPECIES.get(national_dex as usize - 1).cloned(),
+    }
+}
+
+pub mod form {
+    pub const PICHU_SPIKY_EARED: u16 = 1;
+    pub const UNOWN_QUESTION: u16 = 26;
+    pub const CASTFORM_SNOWY: u16 = 3;
+    pub const DEOXYS_SPEED: u16 = 3;
+    pub const BURMY_TRASH: u16 = 2;
+    pub const WORMADAM_TRASH: u16 = 2;
+    pub const MOTHIM_TRASH: u16 = 2;
+    pub const CHERRIM_SUNSHINE: u16 = 1;
+    pub const SHELLOS_EAST_SEA: u16 = 1;
+    pub const GASTRODON_EAST_SEA: u16 = 1;
+    pub const ROTOM_MOW: u16 = 5;
+    pub const ARCEUS_CURSE_GEN4: u16 = 9;
+    pub const ARCEUS_DARK_GEN4: u16 = 17;
+    pub const ARCEUS_LEGEND: u16 = 18;
+}
+
+pub trait GetSpeciesMetadata {
+    fn get_species_metadata(&self) -> &'static SpeciesMetadata;
+}
+
+impl GetSpeciesMetadata for pkm_rs_types::NationalDex {
+    fn get_species_metadata(&self) -> &'static SpeciesMetadata {
+        &ALL_SPECIES[(*self as usize) - 1]
+    }
+}
+
+pub const fn get_species_metadata(national_dex: u16) -> &'static SpeciesMetadata {
+    &ALL_SPECIES[(national_dex - 1) as usize]
+}
+
+pub const fn get_ndex_species_metadata(national_dex: NationalDex) -> &'static SpeciesMetadata {
+    get_species_metadata(national_dex as u16)
+}

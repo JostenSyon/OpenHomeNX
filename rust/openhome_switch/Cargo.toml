@@ -1,0 +1,26 @@
+[package]
+name = "openhome_switch"
+version = "0.1.0"
+edition = "2021"
+description = "OpenHomeNX - OpenHome port for Nintendo Switch"
+
+[lib]
+crate-type = ["staticlib"]
+
+[dependencies]
+pkm_rs = { path = "../pkm_rs", default-features = false, features = ["alloc"], optional = true }
+
+[dev-dependencies]
+pkm_rs_types = { path = "../pkm_rs_types", features = ["std"] }
+pkm_rs_resources = { path = "../pkm_rs_resources", features = ["std"] }
+
+[features]
+default = ["alloc"]
+std = ["pkm_rs/std"]
+alloc = ["pkm_rs/alloc"]
+
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true
+panic = "abort"
