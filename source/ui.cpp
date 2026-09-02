@@ -12,6 +12,9 @@
 #include <sys/statvfs.h>
 
 #include <switch.h>
+#ifdef OH_USB_UPDATE
+#include <usbhsfs.h>
+#endif
 
 bool UI::init() {
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER) < 0)
@@ -618,6 +621,22 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
             SDL_Delay(16);
             continue;
         }
+
+#ifdef OH_USB_UPDATE
+        // Hotplug: a USB drive inserted while on the game selector auto-runs the
+        // update check. Cheap count poll, rising edge only.
+        if (screen_ == AppScreen::GameSelector && !showGameSelMenu_) {
+            static u32 s_lastUsbCount = 0;
+            u32 usbCount = usbHsFsGetMountedDeviceCount();
+            if (usbCount > s_lastUsbCount) {
+                s_lastUsbCount = usbCount;
+                if (checkForUpdate()) { running = false; break; }
+                markDirty();
+            } else {
+                s_lastUsbCount = usbCount;
+            }
+        }
+#endif
 
         AppScreen screenBefore = screen_;
         if (screen_ == AppScreen::ProfileSelector) {

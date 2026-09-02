@@ -42,12 +42,20 @@ private:
     //   [8 bytes]  Magic: "PKHOUSE\0"
     //   [4 bytes]  Version (u32 LE): 1 = 32 boxes, 2 = 40 boxes
     //   [4 bytes]  Reserved
-    //   [N bytes]  totalSlots * SIZE_9PARTY decrypted data
+    //   [N bytes]  totalSlots * slotSize_ decrypted data
+    //   [M bytes]  boxCount_ * 16  box names (null-padded)
+    //   [optional] "OHBKP\0\0\0" + u32 count + count * { u32 slotIdx, u32 len,
+    //              <len bytes ohBackup_ blob = [tag u16 LE][record]] }
+    //   The OHBKP section is only written when at least one slot carries an
+    //   OHPKM OriginalBackup; older readers stop after the box names and ignore
+    //   it, so the version field is left unchanged.
     static constexpr int HEADER_SIZE   = 16;
     static constexpr int SLOT_SIZE     = PokeCrypto::SIZE_9PARTY;
     static constexpr int BOX_NAME_SIZE = 16;
 
     static constexpr char MAGIC[8] = {'P','K','H','O','U','S','E','\0'};
+    static constexpr char OHBKP_MAGIC[8] = {'O','H','B','K','P','\0','\0','\0'};
+    static constexpr uint32_t OHBKP_MAX_BLOB = 512; // tag(2) + largest record
     static constexpr uint32_t VERSION_32BOX = 1;
     static constexpr uint32_t VERSION_40BOX = 2;
     static constexpr uint32_t VERSION_LA    = 3;

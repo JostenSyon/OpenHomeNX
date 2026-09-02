@@ -3,6 +3,9 @@
 #include "crypto_engine.h"
 #include "debug_log.h"
 #include "nro_version.h"
+#ifdef OH_USB_UPDATE
+#include <usbhsfs.h>
+#endif
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
@@ -726,11 +729,23 @@ bool UI::checkForUpdate() {
         "0.0.0";
 #endif
 
-    // Candidate NRO locations, checked in order. USB devices are prepended when
-    // built with OH_USB_UPDATE (libusbhsfs); the SD "update/" folder always works.
+    // Candidate NRO locations, checked in order. USB drives (FAT/exFAT) come
+    // first when built with OH_USB_UPDATE; the SD "update/" folder always works.
     std::vector<std::string> candidates;
 #ifdef OH_USB_UPDATE
-    appendUsbUpdateCandidates(candidates); // fills <ums>:/... paths
+    {
+        u32 n = usbHsFsGetMountedDeviceCount();
+        if (n > 0) {
+            if (n > 8) n = 8;
+            std::vector<UsbHsFsDevice> devs(n);
+            u32 got = usbHsFsListMountedDevices(devs.data(), n);
+            for (u32 i = 0; i < got; i++) {
+                std::string mnt = devs[i].name; // e.g. "ums0:"
+                candidates.push_back(mnt + "/OpenHomeNX.nro");
+                candidates.push_back(mnt + "/switch/OpenHomeNX/OpenHomeNX.nro");
+            }
+        }
+    }
 #endif
     candidates.push_back(basePath_ + "update/OpenHomeNX.nro");
     candidates.push_back("sdmc:/switch/OpenHomeNX/update/OpenHomeNX.nro");

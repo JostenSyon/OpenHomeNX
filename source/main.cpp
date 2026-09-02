@@ -11,8 +11,19 @@
 #include <cstdio>
 #include <sys/stat.h>
 
+#ifdef OH_USB_UPDATE
+#include <usbhsfs.h>
+#endif
+
 int main(int argc, char* argv[]) {
     romfsInit();
+
+#ifdef OH_USB_UPDATE
+    // USB Mass Storage host: lets "Check for update" scan an inserted USB drive
+    // for a newer OpenHomeNX.nro. FAT/exFAT only (ISC build). Spawns one bg
+    // thread; failure is non-fatal (the SD update/ folder still works).
+    usbHsFsInitialize(0);
+#endif
 
     // Determine base path — everything (banks/, save mount "main", crypto.cfg,
     // debug.enable, themes, language.txt, update/) lives next to the NRO, so it
@@ -118,6 +129,10 @@ int main(int argc, char* argv[]) {
     // Cleanup
     ui.shutdown();
     ledExit();
+
+#ifdef OH_USB_UPDATE
+    usbHsFsExit();
+#endif
 
     romfsExit();
     return 0;

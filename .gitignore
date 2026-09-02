@@ -17,3 +17,6 @@ __pycache__/
 
 # vendored reference clone (not built) — re-clone from github.com/Insektaure/pkHouse
 /pkHouse/
+
+# vendored USB FS lib clone (FAT-only ISC build in ./libusbhsfs/lib) — its own git repo
+/libusbhsfs/

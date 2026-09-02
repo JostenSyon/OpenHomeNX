@@ -11,7 +11,7 @@ include $(DEVKITPRO)/libnx/switch_rules
 
 #---------------------------------------------------------------------------------
 APP_TITLE	:=	OpenHomeNX
-APP_VERSION :=	0.1.5
+APP_VERSION :=	0.1.6
 APP_AUTHOR	:=	JostenSyon
 
 TARGET		:=	OpenHomeNX
@@ -40,6 +40,16 @@ ifneq ($(DEBUG_LOG),0)
 CFLAGS	+=	-DOH_DEBUG_LOG
 endif
 
+# USB update: cerca un NRO più recente su drive USB (libusbhsfs, vendorizzata in
+# ./libusbhsfs — build FAT-only ISC). Disattiva con: make USB_UPDATE=0
+USBHSFS_DIR := $(TOPDIR)/libusbhsfs
+ifneq ($(USB_UPDATE),0)
+ifneq ($(wildcard $(USBHSFS_DIR)/lib/libusbhsfs.a),)
+CFLAGS	+=	-DOH_USB_UPDATE -I$(USBHSFS_DIR)/include
+USBHSFS_LIBS := -L$(USBHSFS_DIR)/lib -lusbhsfs
+endif
+endif
+
 CXXFLAGS	:= $(CFLAGS) -fno-exceptions -ffunction-sections -fdata-sections -std=c++20
 
 ASFLAGS	:=	-g $(ARCH)
@@ -48,6 +58,7 @@ LDFLAGS	=	-specs=$(DEVKITPRO)/libnx/switch.specs -g $(ARCH) -Wl,-Map,$(notdir $*
 LIBS	:=	-lSDL2_image -lSDL2_ttf -lSDL2 \
 			-lfreetype -lharfbuzz -lpng16 -ljpeg -lwebp -lz -lbz2 \
 			-lEGL -lGLESv2 -lglapi -ldrm_nouveau \
+			$(USBHSFS_LIBS) \
 			-lnx
 
 LIBPATHS	:=	-L$(shell dirname $(RUST_LIB)) \
