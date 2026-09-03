@@ -797,17 +797,32 @@ void UI::finalizePendingUpdate() {
         return;
     }
 
+    // Is the canonical .nro already this build? (happens when a previous
+    // finalize succeeded but the .new file was left behind.)
+    std::string nroVer;
+    bool nroReadable = readNroDisplayVersion(runningNro, nroVer);
+    if (nroReadable && nroVer == pendVer) {
+        DebugLog::line("update: canonical already v%s, dropping leftover %s",
+                       nroVer.c_str(), pending.c_str());
+        std::remove(pending.c_str());
+        if (envHasNextLoad()) envSetNextLoad("", "");
+        return;
+    }
+
     if (copyFileTo(pending, runningNro)) {
         DebugLog::line("update: finalized pending %s -> %s v%s (copy)",
                        pending.c_str(), runningNro.c_str(), pendVer.c_str());
         std::remove(pending.c_str());
+        if (envHasNextLoad()) envSetNextLoad("", "");
     } else {
-        DebugLog::line("update: finalize copy failed %s -> %s (will retry next boot)",
-                       pending.c_str(), runningNro.c_str());
+        // We are running from the canonical .nro (hbloader ignored the
+        // nextLoad, or the user relaunched from hbmenu), so it is in use and
+        // can't be overwritten. Re-arm the nextLoad so the next restart lands
+        // on .new, where the boot-time finalize can consolidate it. Keep .new.
+        DebugLog::line("update: canonical %s in use, re-arming nextLoad -> %s",
+                       runningNro.c_str(), pending.c_str());
+        if (envHasNextLoad()) envSetNextLoad(pending.c_str(), pending.c_str());
     }
-    // Clear the residual nextLoad in every case: exiting now returns to the
-    // launcher instead of relaunching .new (which we just consumed).
-    if (envHasNextLoad()) envSetNextLoad("", "");
 }
 
 bool UI::checkForUpdate() {

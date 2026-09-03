@@ -643,7 +643,11 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
             bool rising = (usbCount > s_lastUsbCount);
             s_lastUsbCount = usbCount;
             s_lastUsbPhys  = usbPhys;
-            if (rising) {
+            // Only once per session: a drive being re-seated shouldn't keep
+            // re-entering the full update flow (dialogs + possible restart).
+            static bool s_didHotplugCheck = false;
+            if (rising && !s_didHotplugCheck) {
+                s_didHotplugCheck = true;
                 DebugLog::line("usb hotplug: running update check");
                 if (checkForUpdate()) { running = false; break; }
                 markDirty();
