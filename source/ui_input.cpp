@@ -1271,8 +1271,21 @@ void UI::actionCancel() {
     }
 
     // Nothing to cancel (not holding, no selection, no search): B in the box
-    // view saves everything and returns to the game selector.
+    // view saves everything and leaves. When we got here through "View All
+    // Banks", step back to that list instead of jumping past it to the game
+    // selector.
     if (!holding_) {
+        if (allBanksMode_) {
+            if (!saveBankFiles()) return;
+            activeBankName_.clear();
+            activeBankPath_.clear();
+            leftBankName_.clear();
+            leftBankPath_.clear();
+            enterAllBanksMode();  // re-inits the list + cursor, screen = BankSelector
+            if (screen_ == AppScreen::MainView)  // list came back empty
+                returnToGameSelector();
+            return;
+        }
         returnToGameSelector();
         return;
     }

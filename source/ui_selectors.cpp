@@ -186,6 +186,16 @@ void UI::loadGameIcons() {
     std::string cacheDir = basePath_ + "cache/";
     mkdir(cacheDir.c_str(), 0755);
 
+    if (DebugLog::enabled()) {
+        std::string tags;
+        for (GameType game : availableGames_) {
+            tags += gameInfo(game).gameTag;
+            tags += " ";
+        }
+        DebugLog::line("icons: %zu available game(s): %s",
+            availableGames_.size(), tags.c_str());
+    }
+
     bool needSystem = false;
     for (GameType game : availableGames_) {
         // Try loading from cache first
@@ -197,9 +207,18 @@ void UI::loadGameIcons() {
         if (surf) {
             SDL_Texture* tex = SDL_CreateTextureFromSurface(renderer_, surf);
             SDL_FreeSurface(surf);
-            if (tex)
+            if (tex) {
                 gameIconCache_[game] = tex;
-            continue;
+                continue;
+            }
+        }
+        // A file that exists but won't decode is a truncated/corrupt cache
+        // entry from an earlier failed fetch — drop it so we re-fetch cleanly.
+        struct stat st;
+        if (stat(cachePath.c_str(), &st) == 0) {
+            DebugLog::line("icons: %s stale cache (%s, %lld B) -> removing",
+                gameInfo(game).gameTag, cachePath.c_str(), (long long)st.st_size);
+            remove(cachePath.c_str());
         }
         needSystem = true;
     }
@@ -214,10 +233,34 @@ void UI::loadGameIcons() {
             NsApplicationControlData ctrlData;
             std::memset(&ctrlData, 0, sizeof(ctrlData));
             uint64_t controlSize = 0;
-            Result rc = nsGetApplicationControlData(NsApplicationControlSource_Storage,
-                            titleIdOf(game), &ctrlData, sizeof(ctrlData), &controlSize);
-            if (R_FAILED(rc) || controlSize <= sizeof(NacpStruct))
+            Result rc = 1;
+            // Official software uses _Storage (cache, then storage). Some titles
+            // — e.g. a game whose control-data NCA isn't in the NS cache — only
+            // resolve via _StorageOnly or the home-menu _CacheOnly copy, so try
+            // all three before giving up.
+            const NsApplicationControlSource kSources[] = {
+                NsApplicationControlSource_Storage,
+                NsApplicationControlSource_StorageOnly,
+                NsApplicationControlSource_CacheOnly,
+            };
+            for (NsApplicationControlSource src : kSources) {
+                controlSize = 0;
+                std::memset(&ctrlData, 0, sizeof(ctrlData));
+                rc = nsGetApplicationControlData(src, titleIdOf(game),
+                        &ctrlData, sizeof(ctrlData), &controlSize);
+                if (R_SUCCEEDED(rc) && controlSize > sizeof(NacpStruct)) {
+                    if (src != NsApplicationControlSource_Storage)
+                        DebugLog::line("icons: %s resolved via source %d",
+                            gameInfo(game).gameTag, (int)src);
+                    break;
+                }
+            }
+            if (R_FAILED(rc) || controlSize <= sizeof(NacpStruct)) {
+                DebugLog::line("icons: %s (%016lX) no control data: rc=0x%08X size=%llu",
+                    gameInfo(game).gameTag, titleIdOf(game), (unsigned)rc,
+                    (unsigned long long)controlSize);
                 continue;
+            }
 
             size_t iconSize = controlSize - sizeof(NacpStruct);
 
@@ -227,8 +270,13 @@ void UI::loadGameIcons() {
             std::string cachePath = cacheDir + hexId + ".jpg";
             FILE* f = std::fopen(cachePath.c_str(), "wb");
             if (f) {
-                std::fwrite(ctrlData.icon, 1, iconSize, f);
+                size_t wrote = std::fwrite(ctrlData.icon, 1, iconSize, f);
                 std::fclose(f);
+                if (wrote != iconSize) {
+                    DebugLog::line("icons: %s cache write short (%zu/%zu) -> removing",
+                        gameInfo(game).gameTag, wrote, iconSize);
+                    remove(cachePath.c_str());
+                }
             }
 
             // Decode and create texture
@@ -236,12 +284,18 @@ void UI::loadGameIcons() {
             if (!rw)
                 continue;
             SDL_Surface* surf = IMG_Load_RW(rw, 1);
-            if (!surf)
+            if (!surf) {
+                DebugLog::line("icons: %s icon decode failed (%zu B): %s",
+                    gameInfo(game).gameTag, iconSize, IMG_GetError());
                 continue;
+            }
             SDL_Texture* tex = SDL_CreateTextureFromSurface(renderer_, surf);
             SDL_FreeSurface(surf);
-            if (tex)
+            if (tex) {
                 gameIconCache_[game] = tex;
+                DebugLog::line("icons: %s loaded from system (%zu B)",
+                    gameInfo(game).gameTag, iconSize);
+            }
         }
         nsExit();
     }
