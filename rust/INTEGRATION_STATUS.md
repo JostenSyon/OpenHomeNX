@@ -1,5 +1,12 @@
 # Integrazione pkHouse ↔ OpenHome Rust — Stato Attuale
 
+> **2026-09-03 (Sessione 8-9):** aggiunte le 3 gen Switch mancanti al cross-gen
+> OH — **LA** (PA8, FFI id 10), **LZA** (PA9, id 11), **BDSP** (PB8, id 12).
+> Read/write dei save di quei giochi resta sul **path PK C++** (invariato); il
+> nuovo codice Rust serve solo `openhome_transfer_pkm` / la banca cross-gen.
+> Dettaglio in `../GenPorting.md` + `../SESSION_LOG.md`. Il corpo qui sotto è
+> pre-2026-09-03 e descrive ancora solo gen 3/7/8/9.
+
 **Ultimo aggiornamento**: 2026-09-02 (Sessione 6+)
 **Argomento**: write-path OH operativo gen 3/7/8/9; M6 cablato ma non raggiungibile; parity check PK vs OH sempre attivo e silenzioso quando pulito.
 **HW test 2026-09-02:** PK apre tutti i save senza errori (LGPE Pikachu = nessun save presente). OH: LGPE Eevee OK, Sword OK. `saveHandleRust_` ora **solo SwSh** (fix load_save→NULL + guardia `isSwSh`) → BDSP/SV/LGPE aprono via PK puliti, niente dialog parity falso.

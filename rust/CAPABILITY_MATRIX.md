@@ -1,5 +1,11 @@
 # Capability Matrix — openhome_switch (target: `aarch64-unknown-none`, feature `alloc`)
 
+> **2026-09-03:** arco Switch chiuso. Gen 8a **LA** (FFI id 10), 9 **LZA**
+> (id 11), 8 **BDSP** (id 12) ora COLLEGATE: `pa8`/`pa9`/`pb8` + `OhpkmConvert`
+> + `convert_to_pa8/pa9/pb8` in `openhome_switch`. Le righe qui sotto (pre-2026-09-03)
+> non le elencano — per lo stato gen aggiornato vedi `../GenPorting.md` e
+> `../SESSION_LOG.md` (Sessione 9). Gen 1/2/4/5/6 restano MANCANTI/parcheggiate.
+
 Stato: snapshot di ricognizione. Aggiornare ad ogni step completato.
 Scopo: non rifare la ricognizione da capo; sapere cosa è già collegato,
 cosa è presente-ma-disattivo, cosa va portato dai riferimenti.
