@@ -788,12 +788,17 @@ void UI::finalizePendingUpdate() {
     if (stat(pending.c_str(), &st) != 0)
         return;                         // nothing pending
 
+    // NOTE: never call envSetNextLoad("", "") to "clear" a pending nextLoad.
+    // hbloader consumes the nextLoad the moment it chainloads .new, so by the
+    // time we run there is nothing left to clear — and setting it to an empty
+    // path makes hbloader try to chainload "" on the next exit, which is the
+    // fatal-error ("ugly crash") screen the user saw. Just don't set one.
+
     std::string pendVer;
     if (!readNroDisplayVersion(pending, pendVer)) {
         // Unreadable .new — drop it so it can't wedge the boot forever.
         DebugLog::line("update: pending %s unreadable -> removing", pending.c_str());
         std::remove(pending.c_str());
-        if (envHasNextLoad()) envSetNextLoad("", "");
         return;
     }
 
@@ -805,7 +810,6 @@ void UI::finalizePendingUpdate() {
         DebugLog::line("update: canonical already v%s, dropping leftover %s",
                        nroVer.c_str(), pending.c_str());
         std::remove(pending.c_str());
-        if (envHasNextLoad()) envSetNextLoad("", "");
         return;
     }
 
@@ -813,7 +817,6 @@ void UI::finalizePendingUpdate() {
         DebugLog::line("update: finalized pending %s -> %s v%s (copy)",
                        pending.c_str(), runningNro.c_str(), pendVer.c_str());
         std::remove(pending.c_str());
-        if (envHasNextLoad()) envSetNextLoad("", "");
     } else {
         // We are running from the canonical .nro (hbloader ignored the
         // nextLoad, or the user relaunched from hbmenu), so it is in use and
