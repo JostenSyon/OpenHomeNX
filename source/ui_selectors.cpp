@@ -887,6 +887,14 @@ bool UI::checkForUpdate() {
     // SD root (richiesta utente: butta direttamente in sdmc:/)
     candidates.push_back("sdmc:/OpenHomeNX.nro");
     candidates.push_back("sdmc:/OpenHomeNX/update.nro");
+    // Dedup (basePath_ è spesso già sdmc:/switch/OpenHomeNX/) e mai il file in uso.
+    {
+        std::vector<std::string> uniq;
+        for (auto& c : candidates)
+            if (c != runningNro && std::find(uniq.begin(), uniq.end(), c) == uniq.end())
+                uniq.push_back(c);
+        candidates.swap(uniq);
+    }
 
     std::string foundPath, foundVer;
     int foundCmp = 0;
@@ -934,6 +942,17 @@ bool UI::checkForUpdate() {
         std::remove(tmp.c_str());
         showMessageAndWait("Update", "Copy failed. The current app is untouched.");
         return false;
+    }
+
+    // Consume-once: an update dropped somewhere on the SD (root or an update/
+    // folder) is removed now that its bytes are safe in the pending .new file,
+    // so it doesn't re-trigger the prompt on every boot. Never touch the
+    // running NRO itself, nor files on a USB drive (external master copy).
+    if (foundPath != runningNro && foundPath.rfind("sdmc:/", 0) == 0) {
+        if (std::remove(foundPath.c_str()) == 0)
+            DebugLog::line("update: consumed source %s (removed)", foundPath.c_str());
+        else
+            DebugLog::line("update: could not remove source %s", foundPath.c_str());
     }
     // Se hbloader supporta next-load, non toccare il file in uso: basta
     // puntare al .new e riavviare. Evita il fail "rename while in use" visto
