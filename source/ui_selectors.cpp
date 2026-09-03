@@ -818,13 +818,59 @@ bool UI::checkForUpdate() {
     std::vector<std::string> candidates;
 #ifdef OH_USB_UPDATE
     {
+        // Event-driven: libusbhsfs enumera in background; una singola query
+        // sincrona subito dopo il boot dà 0. Aspettiamo l'evento di status change.
+        UEvent* ev = usbHsFsGetStatusChangeUserEvent();
         u32 phys = usbHsFsGetPhysicalDeviceCount();
         u32 n = usbHsFsGetMountedDeviceCount();
-        DebugLog::line("update: USB physical=%u mounted=%u", phys, n);
+        DebugLog::line("update: USB physical=%u mounted=%u (initial)", phys, n);
+        if (n == 0 && ev) {
+            // Attesa enumerazione: 10 iterazioni da 1s = ~10s totali.
+            // Timeout lungo per dare tempo all'enclosure NVMe di inizializzarsi; hbmenu/DBI fanno lo stesso wait via UEvent.
+            showWorking("Scanning USB…");
+            for (int i = 0; i < 10 && n == 0; ++i) {
+                waitSingle(waiterForUEvent(ev), 1000000000ULL); // 1s per iterazione
+                phys = usbHsFsGetPhysicalDeviceCount();
+                n = usbHsFsGetMountedDeviceCount();
+                DebugLog::line("update: USB wait %d: physical=%u mounted=%u", i, phys, n);
+            }
+            // Diagnosi: phys>0 & mounted==0 => drive visto ma non montato
+            // (filesystem non supportato da questa build FAT/exFAT-only, es. NTFS/ext4).
+            // phys==0 => non visto affatto (alimentazione/enclosure/contesto usb:hs).
+            if (n == 0) {
+                DebugLog::line("update: USB give up after 10s (physical=%u) — %s",
+                               phys, phys > 0 ? "seen but not mounted (fs?)" : "not seen at all");
+            }
+            // Prompt per riscansione se ancora 0: l'utente può inserire ora il drive.
+            if (n == 0) {
+                const char* body = phys > 0
+                    ? "USB drive seen but not mounted.\nFilesystem must be FAT32 or exFAT.\nA = scan again   B = continue with SD."
+                    : "No USB drive detected.\nInsert USB now and press A to scan again,\nB to continue with SD.";
+                if (showConfirmDialog("USB not found", body)) {
+                    // Riscansione immediata dopo prompt (l'utente ha premuto A)
+                    phys = usbHsFsGetPhysicalDeviceCount();
+                    n = usbHsFsGetMountedDeviceCount();
+                    DebugLog::line("update: USB rescan after prompt physical=%u mounted=%u", phys, n);
+                    if (n == 0 && ev) {
+                        // Un ultimo wait breve dopo l'inserimento
+                        waitSingle(waiterForUEvent(ev), 2000000000ULL); // 2s
+                        phys = usbHsFsGetPhysicalDeviceCount();
+                        n = usbHsFsGetMountedDeviceCount();
+                        DebugLog::line("update: USB post-prompt wait physical=%u mounted=%u", phys, n);
+                    }
+                }
+            }
+        }
         if (n > 0) {
             if (n > 8) n = 8;
             std::vector<UsbHsFsDevice> devs(n);
             u32 got = usbHsFsListMountedDevices(devs.data(), n);
+            // Retry se List ne ritorna meno di n (race enumerazione)
+            if (got < n && ev) {
+                waitSingle(waiterForUEvent(ev), 200000000ULL); // 200ms breve
+                got = usbHsFsListMountedDevices(devs.data(), n);
+                DebugLog::line("update: USB List retry got=%u (expected %u)", got, n);
+            }
             for (u32 i = 0; i < got; i++) {
                 DebugLog::line("update: UMS[%u] name='%s' fs=%u cap=%llu",
                                i, devs[i].name, (unsigned)devs[i].fs_type,
