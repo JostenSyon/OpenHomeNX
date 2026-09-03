@@ -747,25 +747,58 @@ Pokemon UI::getPokemonAt(int box, int slot, Panel panel) const {
     if (bank_.isCrossGen()) {
         const std::vector<uint8_t>& blob = bank_.ohpkmAt(box, slot);
         if (blob.empty()) return Pokemon{};
-        // Materialize a PK9 preview for rendering; keep the OHPKM on the mon so
-        // a later placement converts straight from it (lossless via its backup).
+        // The OHPKM blob is the source of truth; attach it FIRST so the mon is
+        // never "lost" even if every preview conversion below fails.
         Pokemon p{};
+        p.ohpkmBlob_ = blob;
+
         PkmHandle* h = OpenHomeNX::loadOhpkm(blob);
         if (h) {
-            std::vector<uint8_t> pk9 = OpenHomeNX::getPkmBoxBytesForGen(h, 9);
-            OpenHomeNX::freePkm(h);
-            if (!pk9.empty() && pk9.size() <= p.data.size()) {
-                std::memcpy(p.data.data(), pk9.data(), pk9.size());
-                p.gameType_ = GameType::S;
-            } else {
-                DebugLog::line("xbank view: b%d s%d blob=%zu -> pk9 %zu (preview fail)",
-                               box, slot, blob.size(), pk9.size());
+            // Materialize a preview in the first format the C++ offset tables
+            // can actually render. PK9 alone is wrong: a dex-cut species (e.g.
+            // Pidgey, not in the Paldea dex) fails PK9 conversion and the slot
+            // would render as empty even though the mon is safely stored.
+            static const struct { uint32_t gen; GameType gt; } kPreviewFmts[] = {
+                {9, GameType::S},  {8, GameType::Sw}, {13, GameType::GP},
+                {10, GameType::LA}, {12, GameType::BD}, {11, GameType::ZA},
+                {3, GameType::FR},
+            };
+            bool rendered = false;
+            for (const auto& f : kPreviewFmts) {
+                std::vector<uint8_t> b = OpenHomeNX::getPkmBoxBytesForGen(h, f.gen);
+                if (b.empty() || b.size() > p.data.size()) continue;
+                p.data.fill(0);
+                std::memcpy(p.data.data(), b.data(), b.size());
+                p.gameType_ = f.gt;
+                rendered = true;
+                break;
             }
+            if (!rendered) {
+                // No target dex accepted it. Fall back to a minimal PK9-shaped
+                // stub from the raw OHPKM header so the slot stays visible and
+                // the user can still move it out (the move uses ohpkmBlob_).
+                uint16_t sp = OpenHomeNX::ohpkmSpecies(h);
+                if (sp != 0) {
+                    p.data.fill(0);
+                    p.data[0] = 1; // non-zero EC so isEmpty() is false
+                    p.data[8] = static_cast<uint8_t>(sp & 0xFF);
+                    p.data[9] = static_cast<uint8_t>(sp >> 8);
+                    uint16_t fm = OpenHomeNX::ohpkmForm(h);
+                    p.data[0x18] = static_cast<uint8_t>(fm & 0xFF);
+                    p.data[0x19] = static_cast<uint8_t>((fm >> 8) & 0x01);
+                    p.gameType_ = GameType::S;
+                    DebugLog::line("xbank view: b%d s%d blob=%zu spc=%u -> stub preview",
+                                   box, slot, blob.size(), sp);
+                } else {
+                    DebugLog::line("xbank view: b%d s%d blob=%zu -> preview fail (no species)",
+                                   box, slot, blob.size());
+                }
+            }
+            OpenHomeNX::freePkm(h);
         } else {
             DebugLog::line("xbank view: b%d s%d blob=%zu -> loadOhpkm NULL",
                            box, slot, blob.size());
         }
-        p.ohpkmBlob_ = blob;
         return p;
     }
     return bank_.getSlot(box, slot);
