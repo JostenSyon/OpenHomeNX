@@ -19,6 +19,7 @@ mod pk9;
 
 use crate::ohpkm::v2_sections::SwordShieldData;
 use crate::ohpkm::v2_sections::pkm_bytes::StoredPkmBytes;
+use crate::ohpkm::v2_sections::LegendsArceusData;
 use crate::result::Result;
 use crate::traits::Pkm;
 use crate::{convert_strategy::ConvertStrategy, ohpkm::v2_sections::ScarletVioletData};
@@ -37,6 +38,10 @@ pub trait OhpkmConvert: Pkm {
     }
 
     fn to_sv_data(&self) -> Option<ScarletVioletData> {
+        None
+    }
+
+    fn to_la_data(&self) -> Option<LegendsArceusData> {
         None
     }
 
