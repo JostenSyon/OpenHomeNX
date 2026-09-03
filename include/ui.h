@@ -468,6 +468,7 @@ private:
     // built with OH_USB_UPDATE), copy it over the running NRO and queue a
     // relaunch. Returns true if the app should quit now (relaunch queued).
     bool checkForUpdate();
+    void finalizePendingUpdate();
     void toggleSelect();
     void clearSelection();
     void beginYPress();

@@ -330,6 +330,11 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
     basePath_ = basePath;
     savePath_ = savePath;
 
+    // Consolidate a pending self-update before anything else, so a launch from
+    // hbmenu/forwarder always ends up on the freshly installed .nro and the
+    // stale nextLoad is cleared (no more "double restart" / old build).
+    finalizePendingUpdate();
+
     // Load persisted theme
     themeIndex_ = loadThemeIndex(basePath_);
     theme_ = &getTheme(themeIndex_);

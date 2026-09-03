@@ -774,36 +774,45 @@ void UI::enterAllBanksMode() {
     screen_ = AppScreen::BankSelector;
 }
 
+// Consolidate an update left as OpenHomeNX.nro.new by the previous run.
+// After envSetNextLoad(.new) + restart we are executing from .new, so the
+// canonical .nro is not in use and can be overwritten with a plain copy
+// (a rename of the in-use file is what failed before). MUST run at every
+// boot, not only when the user opens "Check for update" — otherwise .nro
+// stays stale (hbmenu keeps launching the old build) and the residual
+// nextLoad keeps relaunching .new, which looks like a double restart.
+void UI::finalizePendingUpdate() {
+    const std::string runningNro = basePath_ + "OpenHomeNX.nro";
+    const std::string pending = runningNro + ".new";
+    struct stat st;
+    if (stat(pending.c_str(), &st) != 0)
+        return;                         // nothing pending
+
+    std::string pendVer;
+    if (!readNroDisplayVersion(pending, pendVer)) {
+        // Unreadable .new — drop it so it can't wedge the boot forever.
+        DebugLog::line("update: pending %s unreadable -> removing", pending.c_str());
+        std::remove(pending.c_str());
+        if (envHasNextLoad()) envSetNextLoad("", "");
+        return;
+    }
+
+    if (copyFileTo(pending, runningNro)) {
+        DebugLog::line("update: finalized pending %s -> %s v%s (copy)",
+                       pending.c_str(), runningNro.c_str(), pendVer.c_str());
+        std::remove(pending.c_str());
+    } else {
+        DebugLog::line("update: finalize copy failed %s -> %s (will retry next boot)",
+                       pending.c_str(), runningNro.c_str());
+    }
+    // Clear the residual nextLoad in every case: exiting now returns to the
+    // launcher instead of relaunching .new (which we just consumed).
+    if (envHasNextLoad()) envSetNextLoad("", "");
+}
+
 bool UI::checkForUpdate() {
     const std::string runningNro = basePath_ + "OpenHomeNX.nro";
-    // Finalizza update pendente lasciato da envSetNextLoad(.new) al giro precedente.
-    // Dopo il restart via nextLoad siamo in esecuzione da .new, quindi l'originale non è in uso e si può sovrascrivere con copy (non rename di file in uso).
-    {
-        const std::string pending = runningNro + ".new";
-        struct stat st;
-        if (stat(pending.c_str(), &st) == 0) {
-            std::string pendVer;
-            if (readNroDisplayVersion(pending, pendVer)) {
-                std::string curVerTmp =
-#ifdef APP_VERSION
-                    APP_VERSION;
-#else
-                    "0.0.0";
-#endif
-                if (pendVer == curVerTmp) {
-                    // Siamo appena stati rilanciati da .new (stessa versione). Consolidiamo l'update copiando .new -> originale.
-                    if (copyFileTo(pending, runningNro)) {
-                        DebugLog::line("update: finalized pending %s -> %s v%s (copy)", pending.c_str(), runningNro.c_str(), pendVer.c_str());
-                        std::remove(pending.c_str());
-                        // Pulisci il nextLoad residuo per evitare il doppio restart su + -> Exit
-                        if (envHasNextLoad()) envSetNextLoad("", "");
-                    } else {
-                        DebugLog::line("update: finalize copy failed %s -> %s", pending.c_str(), runningNro.c_str());
-                    }
-                }
-            }
-        }
-    }
+    finalizePendingUpdate();
     const std::string curVer =
 #ifdef APP_VERSION
         APP_VERSION;
