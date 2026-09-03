@@ -1286,6 +1286,21 @@ void UI::actionCancel() {
                 returnToGameSelector();
             return;
         }
+        if (appletMode_) {
+            // Applet/dual browsing: B from an open bank steps back to this
+            // game's bank list, not all the way out to the game selector.
+            if (!saveBankFiles()) return;
+            activeBankName_.clear();
+            activeBankPath_.clear();
+            leftBankName_.clear();
+            leftBankPath_.clear();
+            bankManager_.init(basePath_, selectedGame_);
+            bankSelTarget_ = Panel::Bank;
+            bankSelCursor_ = 0;
+            bankSelScroll_ = 0;
+            screen_ = AppScreen::BankSelector;
+            return;
+        }
         returnToGameSelector();
         return;
     }

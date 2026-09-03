@@ -353,20 +353,44 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
         GameType::FR_JA, GameType::LG_JA
     };
 
+    // Fill availableGames_ with only the games actually present on the console
+    // (installed, or with account savedata). Applet mode / the no-profile
+    // fallback used to list all 22 GameType entries, so uninstalled titles
+    // (all 12 FireRed/LeafGreen locales, Legends Z-A) showed up as icon-less
+    // phantom rows. If enumeration returns nothing, fall back to listing all.
+    auto fillPresentGames = [&]() {
+        std::set<uint64_t> present = account_.presentApplications();
+        availableGames_.clear();
+        if (present.empty()) {
+            availableGames_.assign(std::begin(allGames), std::end(allGames));
+        } else {
+            for (GameType g : allGames)
+                if (present.count(titleIdOf(g)))
+                    availableGames_.push_back(g);
+            if (availableGames_.empty())
+                availableGames_.assign(std::begin(allGames), std::end(allGames));
+        }
+    };
+
     if (appletMode_) {
         // Applet mode: skip profile, bank-only access
         screen_ = AppScreen::GameSelector;
-        availableGames_.assign(std::begin(allGames), std::end(allGames));
+        fillPresentGames();
         refreshBankCounts();
         showWorking(i18n::get(StrKey::LoadingGameIcons));
         loadGameIcons();
+        showMessageAndWait("Applet mode",
+            "Save read/write is unavailable in applet mode.\n"
+            "To load a game's save, relaunch OpenHomeNX as an\n"
+            "application (hold R on a game in the HOME menu).\n\n"
+            "Bank browsing and cross-gen work here.");
     } else {
         showWorking(i18n::get(StrKey::LoadingProfiles));
         if (account_.init() && account_.loadProfiles(renderer_)) {
             screen_ = AppScreen::ProfileSelector;
         } else {
             screen_ = AppScreen::GameSelector;
-            availableGames_.assign(std::begin(allGames), std::end(allGames));
+            fillPresentGames();
             refreshBankCounts();
             showWorking(i18n::get(StrKey::LoadingGameIcons));
             loadGameIcons();
@@ -716,9 +740,14 @@ void UI::selectGame(GameType game) {
     bankLeft_.setGameType(game);
 
     if (isDualBankMode()) {
-        // Reset left bank state for new game
+        // Switching game in dual/applet browsing: no bank is open for the new
+        // game. Clearing both sides is what stops a stale activeBankName_ from
+        // a previous game from tripping the "already open" check (and from
+        // making B in the bank list jump to the main view).
         leftBankName_.clear();
         leftBankPath_.clear();
+        activeBankName_.clear();
+        activeBankPath_.clear();
         bankSelTarget_ = Panel::Bank;
     }
 

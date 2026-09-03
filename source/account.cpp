@@ -123,6 +123,49 @@ void AccountManager::populateSaveCache(AccountUid uid) const {
     DebugLog::line("games: %zu account save(s) for this profile", cachedAppIds_.size());
 }
 
+std::set<uint64_t> AccountManager::presentApplications() const {
+    std::set<uint64_t> out;
+
+    // (a) every account savedata on the console, any user.
+    FsSaveDataInfoReader reader;
+    if (R_SUCCEEDED(fsOpenSaveDataInfoReader(&reader, FsSaveDataSpaceId_User))) {
+        constexpr s64 BATCH = 64;
+        FsSaveDataInfo infos[BATCH];
+        for (;;) {
+            s64 read = 0;
+            if (R_FAILED(fsSaveDataInfoReaderRead(&reader, infos, BATCH, &read)) || read <= 0)
+                break;
+            for (s64 i = 0; i < read; i++)
+                if (infos[i].save_data_type == FsSaveDataType_Account && infos[i].application_id)
+                    out.insert(infos[i].application_id);
+            if (read < BATCH)
+                break;
+        }
+        fsSaveDataInfoReaderClose(&reader);
+    }
+
+    // (b) every installed application.
+    if (R_SUCCEEDED(nsInitialize())) {
+        constexpr s32 BATCH = 32;
+        NsApplicationRecord recs[BATCH];
+        s32 offset = 0;
+        for (;;) {
+            s32 count = 0;
+            if (R_FAILED(nsListApplicationRecord(recs, BATCH, offset, &count)) || count <= 0)
+                break;
+            for (s32 i = 0; i < count; i++)
+                out.insert(recs[i].application_id);
+            offset += count;
+            if (count < BATCH)
+                break;
+        }
+        nsExit();
+    }
+
+    DebugLog::line("games: %zu present application(s)", out.size());
+    return out;
+}
+
 bool AccountManager::hasSaveData(int profileIndex, GameType game) const {
     if (profileIndex < 0 || profileIndex >= (int)users_.size())
         return false;

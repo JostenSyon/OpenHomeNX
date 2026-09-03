@@ -25,6 +25,12 @@ public:
     // Check if a profile has save data for a given game.
     bool hasSaveData(int profileIndex, GameType game) const;
 
+    // Application ids that are "present" on the console: any account savedata
+    // (any user) plus every installed application. Used to filter the game
+    // list in applet mode, where there is no selected profile and per-title
+    // save probes give false positives.
+    std::set<uint64_t> presentApplications() const;
+
     // Mount save filesystem for profile + game. Returns "save:/" on success, "" on failure.
     std::string mountSave(int profileIndex, GameType game);
     void unmountSave();
