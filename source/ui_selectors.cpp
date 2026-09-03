@@ -776,6 +776,34 @@ void UI::enterAllBanksMode() {
 
 bool UI::checkForUpdate() {
     const std::string runningNro = basePath_ + "OpenHomeNX.nro";
+    // Finalizza update pendente lasciato da envSetNextLoad(.new) al giro precedente.
+    // Dopo il restart via nextLoad siamo in esecuzione da .new, quindi l'originale non è in uso e si può sovrascrivere con copy (non rename di file in uso).
+    {
+        const std::string pending = runningNro + ".new";
+        struct stat st;
+        if (stat(pending.c_str(), &st) == 0) {
+            std::string pendVer;
+            if (readNroDisplayVersion(pending, pendVer)) {
+                std::string curVerTmp =
+#ifdef APP_VERSION
+                    APP_VERSION;
+#else
+                    "0.0.0";
+#endif
+                if (pendVer == curVerTmp) {
+                    // Siamo appena stati rilanciati da .new (stessa versione). Consolidiamo l'update copiando .new -> originale.
+                    if (copyFileTo(pending, runningNro)) {
+                        DebugLog::line("update: finalized pending %s -> %s v%s (copy)", pending.c_str(), runningNro.c_str(), pendVer.c_str());
+                        std::remove(pending.c_str());
+                        // Pulisci il nextLoad residuo per evitare il doppio restart su + -> Exit
+                        if (envHasNextLoad()) envSetNextLoad("", "");
+                    } else {
+                        DebugLog::line("update: finalize copy failed %s -> %s", pending.c_str(), runningNro.c_str());
+                    }
+                }
+            }
+        }
+    }
     const std::string curVer =
 #ifdef APP_VERSION
         APP_VERSION;
@@ -810,33 +838,48 @@ bool UI::checkForUpdate() {
 #endif
     candidates.push_back(basePath_ + "update/OpenHomeNX.nro");
     candidates.push_back("sdmc:/switch/OpenHomeNX/update/OpenHomeNX.nro");
+    // SD root (richiesta utente: butta direttamente in sdmc:/)
+    candidates.push_back("sdmc:/OpenHomeNX.nro");
+    candidates.push_back("sdmc:/OpenHomeNX/update.nro");
 
     std::string foundPath, foundVer;
+    int foundCmp = 0;
     for (const auto& c : candidates) {
         std::string v;
         bool ok = readNroDisplayVersion(c, v);
         int cmp = ok ? compareVersionStrings(v, curVer) : 0;
         DebugLog::line("update: try '%s' -> read=%d ver='%s' cmp=%d",
                        c.c_str(), (int)ok, ok ? v.c_str() : "", cmp);
-        if (ok && cmp > 0) {
+        if (ok) {
             foundPath = c;
             foundVer = v;
-            break;
+            foundCmp = cmp;
+            if (cmp > 0) break; // prefer newer, ma tieni anche older per prompt
         }
     }
-    DebugLog::line("update: result found='%s' v%s",
+    DebugLog::line("update: result found='%s' v%s cmp=%d",
                    foundPath.empty() ? "(none)" : foundPath.c_str(),
-                   foundVer.c_str());
+                   foundVer.c_str(), foundCmp);
 
     if (foundPath.empty()) {
-        showMessageAndWait("Update", "No newer build found.\nCurrent version: v" + curVer +
-            "\n\nDrop OpenHomeNX.nro into the 'update' folder next to this app.");
+        showMessageAndWait("Update", "No build found.\nCurrent version: v" + curVer +
+            "\n\nDrop OpenHomeNX.nro into sdmc:/, sdmc:/switch/OpenHomeNX/update/ or USB.");
         return false;
     }
 
-    if (!showConfirmDialog("Update available",
-            "Found v" + foundVer + " (running v" + curVer + ").\nInstall and restart?"))
-        return false;
+    if (foundCmp > 0) {
+        if (!showConfirmDialog("Update available",
+                "Found v" + foundVer + " (running v" + curVer + ")\nFrom: " + foundPath + "\nInstall and restart?"))
+            return false;
+    } else if (foundCmp == 0) {
+        if (!showConfirmDialog("Same version",
+                "Found v" + foundVer + " (same as running v" + curVer + ")\nFrom: " + foundPath + "\nInstall anyway?"))
+            return false;
+    } else {
+        if (!showConfirmDialog("Downgrade?",
+                "Found v" + foundVer + " (older than running v" + curVer + ")\nFrom: " + foundPath + "\nInstall anyway?"))
+            return false;
+    }
 
     showWorking("Updating...");
     const std::string tmp = runningNro + ".new";
@@ -846,16 +889,19 @@ bool UI::checkForUpdate() {
         showMessageAndWait("Update", "Copy failed. The current app is untouched.");
         return false;
     }
-    std::remove(runningNro.c_str());
-    if (std::rename(tmp.c_str(), runningNro.c_str()) != 0) {
-        showMessageAndWait("Update", "Could not replace the app file.");
-        return false;
-    }
-
+    // Se hbloader supporta next-load, non toccare il file in uso: basta
+    // puntare al .new e riavviare. Evita il fail "rename while in use" visto
+    // in debug.log (copiato con .new ma rename fallito).
     if (envHasNextLoad()) {
-        envSetNextLoad(runningNro.c_str(), runningNro.c_str());
+        envSetNextLoad(tmp.c_str(), tmp.c_str());
+        DebugLog::line("update: nextLoad -> %s", tmp.c_str());
         showMessageAndWait("Update", "Installed v" + foundVer + ".\nRestarting...");
         return true; // caller stops the loop -> main() returns -> hbloader relaunches
+    }
+    std::remove(runningNro.c_str());
+    if (std::rename(tmp.c_str(), runningNro.c_str()) != 0) {
+        showMessageAndWait("Update", "Could not replace the app file (in use?).\nTry closing the app first.");
+        return false;
     }
     showMessageAndWait("Update", "Installed v" + foundVer +
         ".\nClose and reopen the app to use it.");
