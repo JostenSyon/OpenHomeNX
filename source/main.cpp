@@ -49,6 +49,16 @@ int main(int argc, char* argv[]) {
     ledInitWithPath(basePath.c_str());
     DebugLog::init(basePath);
 
+    // A pending self-update leaves OpenHomeNX.nro.new next to the NRO. When it
+    // is present this boot only exists to consolidate + bounce into the real
+    // .nro, so skip the cold-boot extras (USB probe wait, splash fade) that
+    // otherwise stutter on this throw-away pass.
+    bool pendingUpdate = false;
+    {
+        struct stat pst;
+        pendingUpdate = (stat((basePath + "OpenHomeNX.nro.new").c_str(), &pst) == 0);
+    }
+
 #ifdef OH_USB_UPDATE
     // USB Mass Storage host: lets "Check for update" scan an inserted USB drive
     // for a newer OpenHomeNX.nro. FAT/exFAT only (ISC build). Spawns one bg
@@ -58,7 +68,7 @@ int main(int argc, char* argv[]) {
     // Diagnostica a boot (solo con debug attivo, così non rallenta l'avvio
     // normale): log immediato + un retry a +2s per vedere se l'interfaccia UMS
     // si popola da sola senza intervento utente.
-    if (DebugLog::enabled()) {
+    if (DebugLog::enabled() && !pendingUpdate) {
         u32 phys = usbHsFsGetPhysicalDeviceCount();
         u32 n = usbHsFsGetMountedDeviceCount();
         DebugLog::line("boot USB physical=%u mounted=%u", phys, n);
@@ -129,8 +139,11 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    // Show splash screen while loading
-    ui.showSplash();
+    // Show splash screen while loading — but skip it when a self-update is
+    // pending: this boot only exists to consolidate the update and bounce, and
+    // the splash fade stutters against that. run() shows "Updating..." instead.
+    if (!pendingUpdate)
+        ui.showSplash();
 
     // Detect applet mode on Switch — bank-only access without save data
     {

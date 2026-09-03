@@ -159,8 +159,14 @@ int BankManager::countOccupied(const std::string& filePath) {
     int count = 0;
     for (int box = 0; box < temp.boxCount(); box++) {
         for (int slot = 0; slot < temp.slotsPerBox(); slot++) {
-            if (!temp.getSlot(box, slot).isEmpty())
+            // Cross-gen banks keep OHPKM blobs, not decrypted PK records —
+            // getSlot() is always empty for them, so count the blobs instead.
+            if (temp.isCrossGen()) {
+                if (!temp.ohpkmAt(box, slot).empty())
+                    count++;
+            } else if (!temp.getSlot(box, slot).isEmpty()) {
                 count++;
+            }
         }
     }
     return count;

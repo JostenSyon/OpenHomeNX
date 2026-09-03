@@ -110,6 +110,12 @@ bool Bank::load(const std::string& path) {
     uint32_t version = 0;
     file.read(reinterpret_cast<char*>(&version), 4);
 
+    // This Bank object is reused across opens. Reset the cross-gen state up
+    // front so a normal bank loaded right after a cross-gen one is not still
+    // treated as OHPKM storage (which rendered every later bank empty / 0/960).
+    crossGen_ = false;
+    ohpkmSlots_.clear();
+
     if (version == VERSION_CROSSGEN) {
         crossGen_    = true;
         gameType_    = GameType::S;
