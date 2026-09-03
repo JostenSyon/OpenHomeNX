@@ -819,6 +819,12 @@ void UI::setPokemonAt(int box, int slot, Panel panel, const Pokemon& pkm) {
             bank_.clearOhpkmAt(box, slot);
         else if (!pkm.ohpkmBlob_.empty())
             bank_.setOhpkmAt(box, slot, pkm.ohpkmBlob_);
+        else
+            // Non-empty mon with no OHPKM blob reaching this point is a bug in
+            // the placement pipeline (prepareForPlacement should have filled it
+            // or refused). Do NOT touch the slot; leave a loud trace instead.
+            DebugLog::line("xbank in: BUG b%d s%d non-empty mon spc=%u but ohpkmBlob_ empty -> slot left as-is",
+                           box, slot, pkm.species());
     } else {
         bank_.setSlot(box, slot, pkm);
     }

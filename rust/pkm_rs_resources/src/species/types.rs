@@ -728,7 +728,17 @@ impl SpeciesForm {
     }
 
     pub const fn get_forme_metadata(&self) -> &'static FormMetadata {
-        &self.get_species_metadata().forms[self.form_index as usize]
+        // Never index out of range: a bogus form_index (e.g. from a cross-gen
+        // conversion where form meaning shifts) would otherwise panic, and the
+        // Switch build is `panic = "abort"` — a panic here kills the app and
+        // loses unsaved boxes. Fall back to the base form instead.
+        let forms = self.get_species_metadata().forms;
+        let idx = self.form_index as usize;
+        if idx < forms.len() {
+            &forms[idx]
+        } else {
+            &forms[0]
+        }
     }
 
     pub fn get_base_stats_from(&self, source: MetadataSource) -> Option<BaseStats> {
