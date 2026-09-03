@@ -1,4 +1,5 @@
 #include "account.h"
+#include "debug_log.h"
 #include <SDL2/SDL_image.h>
 #include <cstring>
 #include <ctime>
@@ -89,22 +90,48 @@ std::string AccountManager::sanitizeForPath(const char* nickname) {
     return result;
 }
 
+// Enumerate every account savedata that exists for `uid` and cache the set of
+// application ids. One pass, standard batched FsSaveDataInfoReader loop.
+void AccountManager::populateSaveCache(AccountUid uid) const {
+    cachedAppIds_.clear();
+    cachedUid_ = uid;
+    saveCachePopulated_ = true;
+
+    FsSaveDataInfoReader reader;
+    if (R_FAILED(fsOpenSaveDataInfoReader(&reader, FsSaveDataSpaceId_User))) {
+        DebugLog::line("games: fsOpenSaveDataInfoReader failed");
+        return;
+    }
+
+    constexpr s64 BATCH = 64;
+    FsSaveDataInfo infos[BATCH];
+    for (;;) {
+        s64 read = 0;
+        if (R_FAILED(fsSaveDataInfoReaderRead(&reader, infos, BATCH, &read)) || read <= 0)
+            break;
+        for (s64 i = 0; i < read; i++) {
+            if (infos[i].save_data_type != FsSaveDataType_Account)
+                continue;
+            if (std::memcmp(&infos[i].uid, &uid, sizeof(AccountUid)) != 0)
+                continue;
+            cachedAppIds_.insert(infos[i].application_id);
+        }
+        if (read < BATCH)
+            break;
+    }
+    fsSaveDataInfoReaderClose(&reader);
+    DebugLog::line("games: %zu account save(s) for this profile", cachedAppIds_.size());
+}
+
 bool AccountManager::hasSaveData(int profileIndex, GameType game) const {
     if (profileIndex < 0 || profileIndex >= (int)users_.size())
         return false;
 
-    FsSaveDataAttribute attr{};
-    attr.application_id = titleIdOf(game);
-    attr.uid = users_[profileIndex].uid;
-    attr.save_data_type = FsSaveDataType_Account;
+    const AccountUid uid = users_[profileIndex].uid;
+    if (!saveCachePopulated_ || std::memcmp(&cachedUid_, &uid, sizeof(AccountUid)) != 0)
+        populateSaveCache(uid);
 
-    FsFileSystem tempFs;
-    Result rc = fsOpenSaveDataFileSystem(&tempFs, FsSaveDataSpaceId_User, &attr);
-    if (R_SUCCEEDED(rc)) {
-        fsFsClose(&tempFs);
-        return true;
-    }
-    return false;
+    return cachedAppIds_.count(titleIdOf(game)) > 0;
 }
 
 std::string AccountManager::mountSave(int profileIndex, GameType game) {

@@ -4,6 +4,7 @@
 #include <switch.h>
 #include <string>
 #include <vector>
+#include <set>
 #include <cstdint>
 
 struct UserProfile {
@@ -47,6 +48,16 @@ private:
     bool mounted_ = false;
 
     FsFileSystem saveFs_{};
+
+    // hasSaveData() probed one fake title id at a time with
+    // fsOpenSaveDataFileSystem, which gives false positives under hbloader's
+    // title-override context (games that aren't installed showed up) and false
+    // negatives from a forwarder. Instead we enumerate the account savedata
+    // that actually exists for the profile once and cache the application ids.
+    mutable std::set<uint64_t> cachedAppIds_;
+    mutable AccountUid cachedUid_{};
+    mutable bool saveCachePopulated_ = false;
+    void populateSaveCache(AccountUid uid) const;
 
     bool loadProfile(AccountUid uid, SDL_Renderer* renderer, UserProfile& out);
     static std::string sanitizeForPath(const char* nickname);
