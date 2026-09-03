@@ -10,7 +10,16 @@ struct BankInfo {
     int occupiedSlots;      // 0..960
     GameType game = GameType::ZA;  // which game this bank belongs to
     bool valid = true;      // false = stray .bin that isn't a real bank file
+    bool crossGen = false;  // OHPKM universal-storage bank (VERSION_CROSSGEN)
 };
+
+// Grouping key for the sectioned bank selector: all cross-gen banks form one
+// "Cross-gen" section, the rest group by game.
+inline bool bankSameSection(const BankInfo& a, const BankInfo& b) {
+    if (a.crossGen != b.crossGen) return false;
+    if (a.crossGen) return true;
+    return a.game == b.game;
+}
 
 class BankManager {
 public:

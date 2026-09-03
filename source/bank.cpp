@@ -80,6 +80,19 @@ bool Bank::isValidFile(const std::string& path) {
     }
 }
 
+bool Bank::isCrossGenFile(const std::string& path) {
+    std::ifstream file(path, std::ios::binary);
+    if (!file.is_open())
+        return false;
+    char magic[8];
+    if (!file.read(magic, 8) || std::memcmp(magic, MAGIC, 8) != 0)
+        return false;
+    uint32_t version = 0;
+    if (!file.read(reinterpret_cast<char*>(&version), 4))
+        return false;
+    return version == VERSION_CROSSGEN;
+}
+
 bool Bank::load(const std::string& path) {
     std::ifstream file(path, std::ios::binary);
     if (!file.is_open()) {

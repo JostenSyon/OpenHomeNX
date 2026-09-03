@@ -34,6 +34,9 @@ public:
     // that users drop into the bank folder.
     static bool isValidFile(const std::string& path);
 
+    // True if the file's header version is VERSION_CROSSGEN. Cheap header read.
+    static bool isCrossGenFile(const std::string& path);
+
     // Save bank to file.
     bool save(const std::string& path);
 
@@ -78,7 +81,7 @@ private:
     static constexpr uint32_t VERSION_LGPE   = 4;
     static constexpr uint32_t VERSION_FRLG   = 5;
     static constexpr uint32_t VERSION_CROSSGEN = 6; // slots = len-prefixed OHPKM
-    static constexpr uint32_t OHPKM_MAX_BLOB   = 1024;
+    static constexpr uint32_t OHPKM_MAX_BLOB   = 8192; // serialized OhpkmV2 upper bound
 
     GameType gameType_ = GameType::ZA;
     int boxCount_ = 32;

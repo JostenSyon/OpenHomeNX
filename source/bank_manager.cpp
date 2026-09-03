@@ -57,6 +57,7 @@ bool BankManager::initAll(const std::string& basePath) {
             info.name = name.substr(0, name.size() - 4);
             info.fullPath = fullPath;
             info.valid = Bank::isValidFile(fullPath);
+            info.crossGen = info.valid && Bank::isCrossGenFile(fullPath);
             info.occupiedSlots = info.valid ? countOccupied(fullPath) : 0;
             info.game = g;
             bankList_.push_back(info);
@@ -77,8 +78,11 @@ bool BankManager::initAll(const std::string& basePath) {
         return 7;
     };
     std::sort(bankList_.begin(), bankList_.end(), [&](const BankInfo& a, const BankInfo& b) {
-        int oa = gameOrder(a.game), ob = gameOrder(b.game);
-        if (oa != ob) return oa < ob;
+        if (a.crossGen != b.crossGen) return a.crossGen; // Cross-gen section first
+        if (!a.crossGen) {
+            int oa = gameOrder(a.game), ob = gameOrder(b.game);
+            if (oa != ob) return oa < ob;
+        }
         std::string la = a.name, lb = b.name;
         std::transform(la.begin(), la.end(), la.begin(), ::tolower);
         std::transform(lb.begin(), lb.end(), lb.begin(), ::tolower);
@@ -127,6 +131,7 @@ void BankManager::refresh() {
         info.name = stem;
         info.fullPath = fullPath;
         info.valid = Bank::isValidFile(fullPath);
+        info.crossGen = info.valid && Bank::isCrossGenFile(fullPath);
         info.occupiedSlots = info.valid ? countOccupied(fullPath) : 0;
         info.game = game_;
         bankList_.push_back(info);
@@ -285,7 +290,7 @@ int BankManager::bankToVisualRow(int bankIdx) const {
     if (!allMode_ || bankList_.empty()) return bankIdx;
     int headers = 0;
     for (int i = 0; i <= bankIdx && i < (int)bankList_.size(); i++) {
-        if (i == 0 || bankList_[i].game != bankList_[i - 1].game)
+        if (i == 0 || !bankSameSection(bankList_[i], bankList_[i - 1]))
             headers++;
     }
     return bankIdx + headers;
@@ -295,7 +300,7 @@ int BankManager::totalVisualRows() const {
     if (!allMode_ || bankList_.empty()) return (int)bankList_.size();
     int headers = 0;
     for (int i = 0; i < (int)bankList_.size(); i++) {
-        if (i == 0 || bankList_[i].game != bankList_[i - 1].game)
+        if (i == 0 || !bankSameSection(bankList_[i], bankList_[i - 1]))
             headers++;
     }
     return (int)bankList_.size() + headers;

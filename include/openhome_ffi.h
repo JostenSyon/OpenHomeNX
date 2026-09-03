@@ -102,7 +102,9 @@ inline std::vector<uint8_t> getPkmOriginalBackup(PkmHandle* pkm_handle) {
 }
 // OHPKM universal storage (bank cross-gen) — same style as getPkmBoxBytesForGen / loadPkmFromGen
 inline std::vector<uint8_t> getOhpkmBytes(PkmHandle* handle) {
-    uint8_t buf[512];
+    // A serialized OhpkmV2 (all sections + up to two ~378-byte backup blobs)
+    // comfortably exceeds 512 bytes; 8 KiB matches the Rust-side test buffer.
+    static uint8_t buf[8192];
     uint32_t written = openhome_get_ohpkm_bytes(handle, buf, sizeof(buf));
     if (written == 0) return {};
     return std::vector<uint8_t>(buf, buf + written);

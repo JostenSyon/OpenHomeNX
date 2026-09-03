@@ -750,7 +750,13 @@ Pokemon UI::getPokemonAt(int box, int slot, Panel panel) const {
             if (!pk9.empty() && pk9.size() <= p.data.size()) {
                 std::memcpy(p.data.data(), pk9.data(), pk9.size());
                 p.gameType_ = GameType::S;
+            } else {
+                DebugLog::line("xbank view: b%d s%d blob=%zu -> pk9 %zu (preview fail)",
+                               box, slot, blob.size(), pk9.size());
             }
+        } else {
+            DebugLog::line("xbank view: b%d s%d blob=%zu -> loadOhpkm NULL",
+                           box, slot, blob.size());
         }
         p.ohpkmBlob_ = blob;
         return p;
@@ -766,23 +772,13 @@ void UI::setPokemonAt(int box, int slot, Panel panel, const Pokemon& pkm) {
         } else
             save_.setBoxSlot(box, slot, pkm);
     } else if (bank_.isCrossGen()) {
-        if (pkm.isEmpty()) {
+        // prepareForPlacement() has already put the OHPKM on pkm.ohpkmBlob_ (or
+        // refused). Only write when we actually have a record — never clear a
+        // slot on an empty blob, so a mon can't silently vanish here.
+        if (pkm.isEmpty())
             bank_.clearOhpkmAt(box, slot);
-        } else {
-            std::vector<uint8_t> blob = pkm.ohpkmBlob_;
-            if (blob.empty()) {
-                // Native mon dropped in — build its OHPKM once here.
-                int g = ohSourceGenFor(pkm.gameType_);
-                int sz = ohRecordBytesFor(g);
-                if (g && sz > 0) {
-                    std::vector<uint8_t> src(pkm.data.begin(), pkm.data.begin() + sz);
-                    PkmHandle* h = OpenHomeNX::loadPkmFromGen(src, static_cast<uint32_t>(g));
-                    if (h) { blob = OpenHomeNX::getOhpkmBytes(h); OpenHomeNX::freePkm(h); }
-                }
-            }
-            if (!blob.empty())
-                bank_.setOhpkmAt(box, slot, std::move(blob));
-        }
+        else if (!pkm.ohpkmBlob_.empty())
+            bank_.setOhpkmAt(box, slot, pkm.ohpkmBlob_);
     } else {
         bank_.setSlot(box, slot, pkm);
     }
@@ -815,21 +811,40 @@ bool UI::prepareForPlacement(Pokemon& pkm, Panel panel, std::string& whyNot) con
         return false;
     }
 
-    // Cross-gen bank destination: slots hold OHPKM, no per-format conversion on
-    // the way in. setPokemonAt() builds the OHPKM (from pkm.ohpkmBlob_ if the
-    // mon came from another cross-gen bank, else from its native record).
+    // Cross-gen bank destination: slots hold OHPKM. Build the OHPKM HERE so a
+    // failure refuses the drop (the mon stays in hand) instead of vanishing.
     if (destIsCrossGenBank(panel)) {
         if (!pkm.ohpkmBlob_.empty())
-            return true; // already OHPKM, just move it
+            return true; // already OHPKM (from another cross-gen bank) — just move it
         if (!useOpenHome()) {
             whyNot = "Cross-gen bank needs the OpenHome core (menu -> Crypto: OpenHome).";
             return false;
         }
-        if (ohSourceGenFor(pkm.gameType_) == 0) {
+        const int g = ohSourceGenFor(pkm.gameType_);
+        if (g == 0) {
             whyNot = std::string("OpenHome cannot read a ")
                    + gameDisplayNameOf(pkm.gameType_) + " Pokemon yet.";
             return false;
         }
+        int sz = ohRecordBytesFor(g);
+        if (sz <= 0 || sz > (int)pkm.data.size()) sz = (int)pkm.data.size();
+        std::vector<uint8_t> src(pkm.data.begin(), pkm.data.begin() + sz);
+        PkmHandle* h = OpenHomeNX::loadPkmFromGen(src, static_cast<uint32_t>(g));
+        if (!h) {
+            DebugLog::line("xbank in: %s g%d recBytes=%d loadPkmFromGen -> NULL",
+                           gameDisplayNameOf(pkm.gameType_), g, sz);
+            whyNot = "Could not read this Pokemon as a Gen " + std::to_string(g) + " record.";
+            return false;
+        }
+        std::vector<uint8_t> blob = OpenHomeNX::getOhpkmBytes(h);
+        OpenHomeNX::freePkm(h);
+        DebugLog::line("xbank in: %s g%d -> OHPKM %zu B",
+                       gameDisplayNameOf(pkm.gameType_), g, blob.size());
+        if (blob.empty()) {
+            whyNot = "Could not build the OHPKM record for this Pokemon.";
+            return false;
+        }
+        pkm.ohpkmBlob_ = std::move(blob);
         return true;
     }
 

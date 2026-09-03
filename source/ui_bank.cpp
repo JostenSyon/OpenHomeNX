@@ -103,12 +103,12 @@ void UI::drawBankSelectorFrame() {
         int visiblePixels = LIST_BOTTOM - LIST_Y;
 
         // Build visual row list: headers interleaved with bank entries
-        struct VisualRow { bool isHeader; int bankIdx; GameType game; };
+        struct VisualRow { bool isHeader; int bankIdx; GameType game; bool crossGen; };
         std::vector<VisualRow> vrows;
         for (int i = 0; i < (int)banks.size(); i++) {
-            if (i == 0 || banks[i].game != banks[i - 1].game)
-                vrows.push_back({true, -1, banks[i].game});
-            vrows.push_back({false, i, banks[i].game});
+            if (i == 0 || !bankSameSection(banks[i], banks[i - 1]))
+                vrows.push_back({true, -1, banks[i].game, banks[i].crossGen});
+            vrows.push_back({false, i, banks[i].game, banks[i].crossGen});
         }
 
         // Find visual row of cursor
@@ -161,8 +161,9 @@ void UI::drawBankSelectorFrame() {
             if (rowY >= LIST_BOTTOM) break;        // below visible area
 
             if (vrows[r].isHeader) {
-                // Group header: game name with separator line
-                std::string gameName = bankGroupNameOf(vrows[r].game);
+                // Group header: "Cross-gen" or the game name, with separator line
+                std::string gameName = vrows[r].crossGen ? "Cross-gen"
+                                                         : bankGroupNameOf(vrows[r].game);
                 drawText(gameName, LIST_X + 10, rowY + HDR_H / 2 - 7,
                          T().text, fontSmall_);
                 // Separator line after the text
@@ -253,7 +254,9 @@ void UI::drawBankSelectorFrame() {
     }
 
     // Status bar
-    if (bankManager_.isAllMode())
+    if (bankRightCrossGen_)
+        drawStatusBar("A: Open   X: New bank   Y: Rename   +: Delete   B: Back");
+    else if (bankManager_.isAllMode())
         drawStatusBar(i18n::get(StrKey::StatusBankAll));
     else
         drawStatusBar(i18n::get(StrKey::StatusBankNormal));
