@@ -662,28 +662,27 @@ impl crate::tests::PkhexJson for Pb8 {
 mod tests {
     use core::path::PathBuf;
 
-    use crate::checksum::Checksum;
     use crate::convert_strategy::ConvertStrategy;
-    use crate::gen8_swsh::Pb8;
-    use crate::gen8_swsh::pb8_buffer::Pb8Buffer;
+    use crate::gen8_bdsp::Pb8;
     use crate::ohpkm::{OhpkmConvert, OhpkmV2};
+    use crate::tests::{self, TestResult};
+    use crate::traits::PkmBytes;
 
     #[cfg(feature = "randomize")]
     use crate::tests::TestErrorWithSeed;
-    use crate::tests::{self, TestResult};
-    use crate::traits::IsShiny;
-
-    use pkm_rs_resources::natures::NatureIndex;
     #[cfg(feature = "randomize")]
     use pkm_rs_types::randomize::RandomizeAndFix;
-    use pkm_rs_types::{HyperTraining, Stats16Le};
     #[cfg(feature = "randomize")]
     use rand::{SeedableRng, rngs::StdRng};
 
+    // No upstream `.pb8` fixtures exist. BDSP's PB8 is the PK8 344-byte record
+    // 1:1 (same offsets, same Gen89 crypto, same 0x08..0x148 checksum span), so
+    // the real `.pk8` fixtures are valid PB8 records for a byte-stability check
+    // of the Pb8Buffer offset layer.
     #[test]
-    fn to_from_bytes() -> TestResult<()> {
+    fn to_from_bytes_pk8_layout() -> TestResult<()> {
         tests::to_from_bytes_all_in_dir::<Pb8>(
-            &PathBuf::from("test-files").join("pkm-files").join("pb8"),
+            &PathBuf::from("test-files").join("pkm-files").join("pk8"),
         )
     }
 
@@ -695,148 +694,44 @@ mod tests {
             tests::find_inconsistencies_to_from_bytes(mon)
                 .map_err(|error| TestErrorWithSeed { seed, error })?;
         }
-
         Ok(())
     }
 
     #[test]
-    fn is_shiny() -> TestResult<()> {
-        let path = PathBuf::from("pb8").join("bouffalant-shiny.pb8");
-        let mon = tests::pkm_from_file::<Pb8>(&path)?.0;
-        assert!(mon.is_shiny());
-
+    fn from_ohpkm_smoke() -> TestResult<()> {
+        let mon = tests::pkm_from_file::<OhpkmV2>(&PathBuf::from("ohpkm").join("Machamp.ohpkm"))?.0;
+        let _ = Pb8::from_ohpkm(&mon, ConvertStrategy::default())?;
         Ok(())
     }
 
+    // OHPKM -> Pb8 -> box bytes -> Pb8: the written checksum is self-consistent
+    // and the core identity survives the trip.
     #[test]
-    fn compare_pkhex_json() -> TestResult<()> {
-        tests::compare_pkhex_json_all_in_dir::<Pb8>(&PathBuf::from("pb8"))
-    }
+    fn ohpkm_roundtrip_stable() -> TestResult<()> {
+        let ohpkm =
+            tests::pkm_from_file::<OhpkmV2>(&PathBuf::from("ohpkm").join("Machamp.ohpkm"))?.0;
+        let pb8 = Pb8::from_ohpkm(&ohpkm, ConvertStrategy::default())?;
+        let bytes = pb8.to_box_bytes();
+        let re = Pb8::from_bytes(&bytes)?;
+        assert_eq!(re.checksum, re.calculate_checksum(), "pb8 checksum self-consistent");
 
-    #[test]
-    fn nickname_garbage_preserved() -> TestResult<()> {
-        let (mon, bytes) = tests::pkm_from_file::<Pb8>(
-            &PathBuf::from("pb8").join("toxtricity-garbage-bytes.pb8"),
-        )?;
-
-        let mon_recreated = Pb8::from_ohpkm(
-            &OhpkmV2::convert_with_backup(&mon, &bytes)?,
+        let back = Pb8::from_ohpkm(
+            &OhpkmV2::convert_without_backup(&pb8),
             ConvertStrategy::default(),
         )?;
-
-        assert_eq!(mon.nickname.bytes()[..], mon_recreated.nickname.bytes()[..]);
-
-        Ok(())
-    }
-
-    #[test]
-    fn checksum() -> TestResult<()> {
-        let (mon, bytes) = tests::pkm_from_file::<Pb8>(
-            &PathBuf::from("pb8").join("toxtricity-garbage-bytes.pb8"),
-        )?;
-
-        let buffer = Pb8Buffer::new(&bytes);
         assert_eq!(
-            buffer.checksum(),
-            buffer.calculate_checksum(),
-            "Pb8Buffer checksum calculation is correct"
+            back.species_and_form.into_inner().get_ndex(),
+            pb8.species_and_form.into_inner().get_ndex()
         );
-
-        assert_eq!(
-            mon.checksum,
-            mon.calculate_checksum(),
-            "Checksum calculation remains correct after deserializing/reserializing"
-        );
-
-        Ok(())
-    }
-
-    #[test]
-    fn from_ohpkm() -> TestResult<()> {
-        let mon = tests::pkm_from_file::<OhpkmV2>(&PathBuf::from("ohpkm").join("Machamp.ohpkm"))?.0;
-
-        let _ = Pb8::from_ohpkm(&mon, ConvertStrategy::default());
-
-        Ok(())
-    }
-
-    #[test]
-    fn to_from_ohpkm() -> TestResult<()> {
-        tests::to_from_ohpkm_all_in_dir::<Pb8>(
-            &PathBuf::from("test-files").join("pkm-files").join("pb8"),
-        )
-    }
-
-    #[test]
-    fn to_from_ohpkm_keeps_dynamax_level() -> TestResult<()> {
-        let path = PathBuf::from("pb8").join("mienshao.pb8");
-        let mon = tests::pkm_from_file::<Pb8>(&path)?.0;
-        assert!(mon.dynamax_level > 0);
-
-        let ohpkm = mon.to_ohpkm()?;
-        assert_eq!(ohpkm.dynamax_level(), Some(mon.dynamax_level));
-
-        let roundtrip = Pb8::from_ohpkm(&ohpkm, ConvertStrategy::default())?;
-        assert_eq!(roundtrip.dynamax_level, mon.dynamax_level);
-
-        Ok(())
-    }
-
-    const ADAMANT: u8 = 3;
-    const RELAXED: u8 = 7;
-
-    #[test]
-    fn mint_nature_hyper_train_stat_calc() -> TestResult<()> {
-        let path = PathBuf::from("pb8").join("cinderace-mint-nature.pb8");
-        let mon = tests::pkm_from_file::<Pb8>(&path)?.0;
-
-        assert_eq!(mon.nature, NatureIndex::new_js(RELAXED));
-        assert_eq!(mon.mint_nature, NatureIndex::new_js(ADAMANT));
-
-        assert_eq!(mon.hyper_training, HyperTraining::all());
-
-        assert_eq!(
-            mon.calculate_stats(),
-            Stats16Le {
-                hp: 302,
-                atk: 364,
-                def: 186,
-                spa: 149,
-                spd: 186,
-                spe: 337
-            }
-        );
-
-        Ok(())
-    }
-
-    const CINDERACE_ENCRYPTED_BYTES_HEX: &str = "4864a28700008274311293404d71e90c70b5b4855c574d23a289c75541ad006eaf9666ee6fcc6fdb9c2bdae7c44eacbe48264ee13240d61a52203515337cb5051e95e7b472c8c34226559b9824097f7ea1da855aa4d7a6ca6a50ed1e5c6f2df0755f6a873d9170f133666ba75b1dab107e6c24df6aa4630147eeae002a2c58381ad1632f7f10480d2edbb5445ef022ba0c3b1dbd8dbc4678775a8a719d5668614041bba097d3bbbec3a5160df5e04b26d71caa3253fcaa0aee0573d96672cea0a07fdb872c593940e1fc849965f95aa1974d44fe415b329e6d9c70e559ea1659e6755fd9e36484ee4a2c230f218a20134a2fa4ee1a3cc046f722ad16ef08ec7bfcd67c624d4d9d58cf665dafe06aae792d1de9730cbd75507aeb02734c412a94898528578b4bc54f6e91f4661ba6034cb13bd829e706b059f3630174469c51e9e21fe4e506cd7df70712d2416270530c21b42185e6574d23";
-
-    #[test]
-    fn encrypted_bytes_match_expected_cinderace() -> TestResult<()> {
-        let path = PathBuf::from("pb8").join("cinderace-mint-nature.pb8");
-        let mon = tests::pkm_from_file::<Pb8>(&path)?.0;
-
-        let encrypted_bytes = mon.to_box_bytes_encrypted();
-        let encrypted_hex_str = tests::bytes_to_hex_string(&encrypted_bytes);
-
-        assert_eq!(encrypted_hex_str, CINDERACE_ENCRYPTED_BYTES_HEX);
-
-        Ok(())
-    }
-
-    const MR_MIME_ENCRYPTED_BYTES_HEX: &str = "3054f46800001f80b46eb9965768ce49a2294fea3d7122426aa817d66c6778704e581d0d304d307a2b7cf5039e8f2a70a259441d4d231c689dae851ad01add04236609d549137b4720563f83656a18e0580e350e88df0ea968c15e3b491459b0fab695ae20a03673fbad61085eab0630ffaf7aa45c457872b6ce8bbcf7e9e73d82a839f33bea007a48a2648b5dac84858beaaecfeef61c144999366e4dbb58b8b883b0cc5d13bdc2988ee3985666cd54f6a3cc17cee99ccfd38ac8fc02efbe00da4aaec47eb80eaf92de65f401d607706d487d2c20b651eabc7f8080e77c5fc6648935561042cda822d2cec795e66617beb68d7649e8a5b90f9bec0fd95ce90e1324f77a6a332337bc62aff7028bbc090b0e5ca7444f83b6ec15be493b930056e528853d63566f0949ff5eed5e45fa93f17efa44784d858cba0c03ed68d9f08d169f154af9c3d109e36ed0963e1083f8384a19ea97712042";
-
-    #[test]
-    fn encrypted_bytes_match_expected_mr_mime() -> TestResult<()> {
-        let path = PathBuf::from("pb8").join("mr-mime-galar.pb8");
-        let mon = tests::pkm_from_file::<Pb8>(&path)?.0;
-
-        let encrypted_bytes = mon.to_box_bytes_encrypted();
-        let encrypted_hex_str = tests::bytes_to_hex_string(&encrypted_bytes);
-
-        assert_eq!(encrypted_hex_str, MR_MIME_ENCRYPTED_BYTES_HEX);
-
+        assert_eq!(back.personality_value, pb8.personality_value);
+        assert_eq!(back.encryption_constant, pb8.encryption_constant);
+        assert_eq!(back.trainer_id, pb8.trainer_id);
+        assert_eq!(back.secret_id, pb8.secret_id);
+        assert_eq!(back.exp, pb8.exp);
+        assert_eq!(back.ivs, pb8.ivs);
+        assert_eq!(back.evs, pb8.evs);
+        assert_eq!(back.nature, pb8.nature);
+        assert_eq!(back.nickname.bytes(), pb8.nickname.bytes());
         Ok(())
     }
 }

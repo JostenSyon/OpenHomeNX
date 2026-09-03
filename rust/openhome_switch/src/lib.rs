@@ -336,6 +336,17 @@ pub extern "C" fn openhome_load_pkm_from_gen(
             },
             Err(_) => return core::ptr::null_mut(),
         },
+        // 12 = PB8 (BDSP). PK8-shaped 344-byte record; distinct stored format.
+        12 => match pkm_rs::gen8_bdsp::Pb8::from_bytes(slice) {
+            Ok(pk) => match pkm_rs::ohpkm::OhpkmV2::convert_with_backup(
+                &pk,
+                &pkm_rs::traits::PkmBytes::to_party_bytes(&pk),
+            ) {
+                Ok(o) => o,
+                Err(_) => return core::ptr::null_mut(),
+            },
+            Err(_) => return core::ptr::null_mut(),
+        },
         _ => return core::ptr::null_mut(),
     };
 
@@ -501,6 +512,11 @@ pub extern "C" fn openhome_transfer_pkm(
             Ok(ohpkm) => ohpkm,
             Err(_) => return core::ptr::null_mut(),
         },
+        // 12 = PB8 (BDSP).
+        12 => match convert_to_pb8(&pkm.ohpkm) {
+            Ok(ohpkm) => ohpkm,
+            Err(_) => return core::ptr::null_mut(),
+        },
         // All other target generations are not yet implemented in the Switch
         // build (Gen 4, 5, 6). Explicitly fail instead of producing a fake cross-gen.
         _ => return core::ptr::null_mut(),
@@ -607,6 +623,26 @@ fn convert_to_pa9(
     let strategy = pkm_rs::convert_strategy::ConvertStrategy::default();
     let pa9 = Pa9::from_ohpkm(ohpkm, strategy)?;
     let mut new_ohpkm = OhpkmV2::convert_without_backup(&pa9);
+    new_ohpkm.set_sv_data(ohpkm.sv_data());
+    if let Some(backup) = existing_backup {
+        new_ohpkm.set_original_data_bytes(backup);
+    }
+    Ok(new_ohpkm)
+}
+
+#[cfg(any(feature = "alloc", feature = "std"))]
+fn convert_to_pb8(
+    ohpkm: &pkm_rs::ohpkm::OhpkmV2,
+) -> core::result::Result<pkm_rs::ohpkm::OhpkmV2, pkm_rs::result::Error> {
+    use pkm_rs::gen8_bdsp::Pb8;
+    use pkm_rs::ohpkm::OhpkmConvert;
+    use pkm_rs::ohpkm::OhpkmV2;
+
+    let existing_backup = ohpkm.original_data_bytes();
+    let strategy = pkm_rs::convert_strategy::ConvertStrategy::default();
+    let pb8 = Pb8::from_ohpkm(ohpkm, strategy)?;
+    // Pb8::to_swsh_data() already carries gigantamax/dynamax/palma/tr_flags.
+    let mut new_ohpkm = OhpkmV2::convert_without_backup(&pb8);
     new_ohpkm.set_sv_data(ohpkm.sv_data());
     if let Some(backup) = existing_backup {
         new_ohpkm.set_original_data_bytes(backup);
@@ -754,6 +790,13 @@ pub extern "C" fn openhome_get_pkm_box_bytes_for_gen(
         }
         11 => {
             let pk = match pkm_rs::gen9_lza::Pa9::from_ohpkm(&pkm.ohpkm, strategy) {
+                Ok(p) => p,
+                Err(_) => return 0,
+            };
+            pk.to_box_bytes().to_vec()
+        }
+        12 => {
+            let pk = match pkm_rs::gen8_bdsp::Pb8::from_ohpkm(&pkm.ohpkm, strategy) {
                 Ok(p) => p,
                 Err(_) => return 0,
             };
@@ -1048,6 +1091,7 @@ mod tests {
     use pkm_rs::gen7_alola::Pk7;
     use pkm_rs::gen8_swsh::Pk8;
     use pkm_rs::gen8_la::Pa8;
+    use pkm_rs::gen8_bdsp::Pb8;
     use pkm_rs::ohpkm::{OhpkmConvert, OhpkmV2};
     use pkm_rs::traits::{HasSpeciesAndForm, PkmBytes};
     use pkm_rs::convert_strategy::ConvertStrategy;
@@ -2495,5 +2539,53 @@ mod tests {
         assert_eq!(back.inner.nature, mon.inner.nature);
         assert_eq!(back.inner.gender, mon.inner.gender);
         assert_eq!(back.inner.nickname.bytes(), mon.inner.nickname.bytes());
+    }
+
+    // -------------------------------------------------------------------
+    // BDSP (PB8) — no upstream .pb8 fixture exists, so validate the
+    // PB8 <-> OHPKM conversion is stable/lossless from a synthesised mon.
+    // -------------------------------------------------------------------
+    #[test]
+    fn pb8_ohpkm_round_trip_is_stable() {
+        let ohpkm = make_test_ohpkm(OriginGame::BrilliantDiamond, test_moves());
+        let pb8 = pkm_rs::gen8_bdsp::Pb8::from_ohpkm(&ohpkm, ConvertStrategy::default())
+            .expect("ohpkm -> pb8");
+
+        // pb8 -> box bytes -> pb8: 344-byte record, checksum self-consistent.
+        let box_bytes = pb8.to_box_bytes();
+        assert_eq!(box_bytes.len(), 344);
+        let re = pkm_rs::gen8_bdsp::Pb8::from_bytes(&box_bytes).expect("re-parse pb8");
+        assert_eq!(re.checksum, re.calculate_checksum(), "pb8 checksum self-consistent");
+
+        // pb8 -> ohpkm -> pb8: core identity preserved.
+        let ohpkm2 = OhpkmV2::convert_without_backup(&pb8);
+        let back = pkm_rs::gen8_bdsp::Pb8::from_ohpkm(&ohpkm2, ConvertStrategy::default())
+            .expect("pb8 -> ohpkm -> pb8");
+
+        assert_eq!(
+            back.species_and_form.into_inner().get_ndex(),
+            pb8.species_and_form.into_inner().get_ndex()
+        );
+        assert_eq!(back.personality_value, pb8.personality_value);
+        assert_eq!(back.encryption_constant, pb8.encryption_constant);
+        assert_eq!(back.trainer_id, pb8.trainer_id);
+        assert_eq!(back.secret_id, pb8.secret_id);
+        assert_eq!(back.exp, pb8.exp);
+        assert_eq!(back.ivs, pb8.ivs);
+        assert_eq!(back.evs, pb8.evs);
+        assert_eq!(back.nature, pb8.nature);
+        assert_eq!(back.gender, pb8.gender);
+        assert_eq!(back.nickname.bytes(), pb8.nickname.bytes());
+        let move_ids = |m: pkm_rs_resources::moves::MoveSlots| {
+            let mut v = [0u16; 4];
+            for (s, d) in m.into_iter().zip(v.iter_mut()) {
+                *d = u16::from(s.move_index);
+            }
+            v
+        };
+        assert_eq!(move_ids(back.moves), move_ids(pb8.moves));
+        assert_eq!(back.met_level, pb8.met_level);
+        assert_eq!(back.can_gigantamax, pb8.can_gigantamax);
+        assert_eq!(back.dynamax_level, pb8.dynamax_level);
     }
 }
