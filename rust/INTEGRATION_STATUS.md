@@ -145,7 +145,16 @@ Dialog = slot divergenti da analizzare.
 
 ---
 
-## Cross-gen transfer (M6) — cablato ma NON RAGGIUNGIBILE
+## Cross-gen transfer (M6) — RISOLTO (2026-09-03)
+
+> **RISOLTO Sessione 8-9.** La banca cross-gen (approccio B, OHPKM universal
+> storage) è in piedi: `Bank` `crossGen_` + `ohpkmSlots_`, il selettore banca
+> "Tutte le banche" mostra ogni banca sezionata per gioco, e
+> `prepareForPlacement` / `destIsCrossGenBank` instradano in/out con
+> `ohSourceGenFor`/`ohTargetGenFor`/`ohRecordBytesFor` (che ora coprono anche
+> 10/11/12 = LA/ZA/BDSP). C1 (backup in memoria) + C2 (persistenza `OHBKP` in
+> `Bank::save`) garantiscono i round-trip lossless. Il testo sotto è la
+> diagnosi originale, tenuta solo come storico.
 
 > **Scoperta 2026-09-02 (Sessione 6).** La macchina di conversione e'
 > completa e collegata, ma **nessun flusso utente la attiva**: l'app forza
