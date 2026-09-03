@@ -16,7 +16,7 @@ use pkm_rs_resources::metadata_source::MetadataSource;
 use pkm_rs_resources::moves::MoveSlots;
 use pkm_rs_resources::natures::NatureIndex;
 use pkm_rs_resources::ribbons::{ModernRibbon, ModernRibbonSet};
-use pkm_rs_resources::species::{FormMetadata, SpeciesMetadata};
+use pkm_rs_resources::species::{FormMetadata, SpeciesForm, SpeciesMetadata};
 use pkm_rs_types::strings::SizedUtf16String;
 use pkm_rs_types::{
     AbilityNumber, BinaryGender, ContestStats, FlagSet, Gender, Ivs, Language,

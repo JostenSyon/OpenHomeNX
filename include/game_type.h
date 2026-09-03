@@ -196,6 +196,7 @@ inline int ohTargetGenFor(GameType g) {
     if (isSwSh(g)) return 8;
     if (isSV(g))   return 9;
     if (isFRLG(g)) return 3;
+    if (g == GameType::LA) return 10; // PA8 (Legends: Arceus)
     return 0;
 }
 
@@ -209,6 +210,7 @@ inline int ohSourceGenFor(GameType g) {
     if (isSwSh(g)) return 8;
     if (isSV(g))   return 9;
     if (isFRLG(g)) return 3;
+    if (g == GameType::LA) return 10; // PA8 (Legends: Arceus)
     return 0;
 }
 
@@ -220,6 +222,7 @@ inline int ohRecordBytesFor(int gen) {
         case 3:  return 80;   // Pk3
         case 8:  return 344;  // Pk8  (box == party)
         case 9:  return 344;  // Pk9  (Rust core: box == party == 344)
+        case 10: return 360;  // Pa8  (box; PKHeX party record is 376)
         default: return 0;
     }
 }
@@ -232,6 +235,7 @@ inline int ohBackupTagForGen(int gen) {
         case 3:  return 3;   // Tag::Pk3
         case 8:  return 9;   // Tag::Pk8
         case 9:  return 12;  // Tag::Pk9
+        case 10: return 10;  // Tag::Pa8
         default: return 0;
     }
 }

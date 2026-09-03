@@ -15,7 +15,7 @@ use pkm_rs_resources::species::SpeciesForm;
 use pkm_rs_types::strings::SizedUtf16String;
 use pkm_rs_types::{
     AbilityNumber, BinaryGender, ContestStats, Gender, Ivs, Language,
-    MarkingsSixShapesColors, OriginGame, PokeDate, Pokerus, Stats8, Stats16Le, read_u64_le,
+    MarkingsSixShapesColors, OriginGame, PokeDate, Pokerus, Stats8, read_u64_le,
 };
 use pkm_rs_types::{read_u16_le, read_u32_le};
 

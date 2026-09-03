@@ -312,6 +312,19 @@ pub extern "C" fn openhome_load_pkm_from_gen(
             },
             Err(_) => return core::ptr::null_mut(),
         },
+        // 10 = PA8 (Legends: Arceus). Not a bare generation number: PA8 shares
+        // gen 8 but is a distinct stored format, so it gets its own id here and
+        // in the C++ ohSourceGenFor/ohTargetGenFor helpers.
+        10 => match pkm_rs::gen8_la::Pa8::from_bytes(slice) {
+            Ok(pk) => match pkm_rs::ohpkm::OhpkmV2::convert_with_backup(
+                &pk,
+                &pkm_rs::traits::PkmBytes::to_party_bytes(&pk),
+            ) {
+                Ok(o) => o,
+                Err(_) => return core::ptr::null_mut(),
+            },
+            Err(_) => return core::ptr::null_mut(),
+        },
         _ => return core::ptr::null_mut(),
     };
 
@@ -467,6 +480,11 @@ pub extern "C" fn openhome_transfer_pkm(
             Ok(ohpkm) => ohpkm,
             Err(_) => return core::ptr::null_mut(),
         },
+        // 10 = PA8 (Legends: Arceus).
+        10 => match convert_to_pa8(&pkm.ohpkm) {
+            Ok(ohpkm) => ohpkm,
+            Err(_) => return core::ptr::null_mut(),
+        },
         // All other target generations are not yet implemented in the Switch
         // build (Gen 4, 5, 6). Explicitly fail instead of producing a fake cross-gen.
         _ => return core::ptr::null_mut(),
@@ -534,6 +552,27 @@ fn convert_to_pk9(
     let strategy = pkm_rs::convert_strategy::ConvertStrategy::default();
     let pk9 = Pk9::from_ohpkm(ohpkm, strategy)?;
     let mut new_ohpkm = OhpkmV2::convert_without_backup(&pk9);
+    if let Some(backup) = existing_backup {
+        new_ohpkm.set_original_data_bytes(backup);
+    }
+    Ok(new_ohpkm)
+}
+
+#[cfg(any(feature = "alloc", feature = "std"))]
+fn convert_to_pa8(
+    ohpkm: &pkm_rs::ohpkm::OhpkmV2,
+) -> core::result::Result<pkm_rs::ohpkm::OhpkmV2, pkm_rs::result::Error> {
+    use pkm_rs::gen8_la::Pa8;
+    use pkm_rs::ohpkm::OhpkmConvert;
+    use pkm_rs::ohpkm::OhpkmV2;
+
+    let existing_backup = ohpkm.original_data_bytes();
+    let strategy = pkm_rs::convert_strategy::ConvertStrategy::default();
+    let pa8 = Pa8::from_ohpkm(ohpkm, strategy)?;
+    let mut new_ohpkm = OhpkmV2::convert_without_backup(&pa8);
+    // Carry gen-8/9 sections PA8 does not itself hold, so a later hop back to
+    // SwSh / SV is not lossy.
+    new_ohpkm.set_sv_data(ohpkm.sv_data());
     if let Some(backup) = existing_backup {
         new_ohpkm.set_original_data_bytes(backup);
     }
@@ -666,6 +705,13 @@ pub extern "C" fn openhome_get_pkm_box_bytes_for_gen(
         }
         9 => {
             let pk = match pkm_rs::gen9_sv::Pk9::from_ohpkm(&pkm.ohpkm, strategy) {
+                Ok(p) => p,
+                Err(_) => return 0,
+            };
+            pk.to_box_bytes().to_vec()
+        }
+        10 => {
+            let pk = match pkm_rs::gen8_la::Pa8::from_ohpkm(&pkm.ohpkm, strategy) {
                 Ok(p) => p,
                 Err(_) => return 0,
             };
