@@ -325,6 +325,17 @@ pub extern "C" fn openhome_load_pkm_from_gen(
             },
             Err(_) => return core::ptr::null_mut(),
         },
+        // 11 = PA9 (Legends: Z-A). Shares the PK9 record; distinct stored format.
+        11 => match pkm_rs::gen9_lza::Pa9::from_bytes(slice) {
+            Ok(pk) => match pkm_rs::ohpkm::OhpkmV2::convert_with_backup(
+                &pk,
+                &pkm_rs::traits::PkmBytes::to_party_bytes(&pk),
+            ) {
+                Ok(o) => o,
+                Err(_) => return core::ptr::null_mut(),
+            },
+            Err(_) => return core::ptr::null_mut(),
+        },
         _ => return core::ptr::null_mut(),
     };
 
@@ -485,6 +496,11 @@ pub extern "C" fn openhome_transfer_pkm(
             Ok(ohpkm) => ohpkm,
             Err(_) => return core::ptr::null_mut(),
         },
+        // 11 = PA9 (Legends: Z-A).
+        11 => match convert_to_pa9(&pkm.ohpkm) {
+            Ok(ohpkm) => ohpkm,
+            Err(_) => return core::ptr::null_mut(),
+        },
         // All other target generations are not yet implemented in the Switch
         // build (Gen 4, 5, 6). Explicitly fail instead of producing a fake cross-gen.
         _ => return core::ptr::null_mut(),
@@ -572,6 +588,25 @@ fn convert_to_pa8(
     let mut new_ohpkm = OhpkmV2::convert_without_backup(&pa8);
     // Carry gen-8/9 sections PA8 does not itself hold, so a later hop back to
     // SwSh / SV is not lossy.
+    new_ohpkm.set_sv_data(ohpkm.sv_data());
+    if let Some(backup) = existing_backup {
+        new_ohpkm.set_original_data_bytes(backup);
+    }
+    Ok(new_ohpkm)
+}
+
+#[cfg(any(feature = "alloc", feature = "std"))]
+fn convert_to_pa9(
+    ohpkm: &pkm_rs::ohpkm::OhpkmV2,
+) -> core::result::Result<pkm_rs::ohpkm::OhpkmV2, pkm_rs::result::Error> {
+    use pkm_rs::gen9_lza::Pa9;
+    use pkm_rs::ohpkm::OhpkmConvert;
+    use pkm_rs::ohpkm::OhpkmV2;
+
+    let existing_backup = ohpkm.original_data_bytes();
+    let strategy = pkm_rs::convert_strategy::ConvertStrategy::default();
+    let pa9 = Pa9::from_ohpkm(ohpkm, strategy)?;
+    let mut new_ohpkm = OhpkmV2::convert_without_backup(&pa9);
     new_ohpkm.set_sv_data(ohpkm.sv_data());
     if let Some(backup) = existing_backup {
         new_ohpkm.set_original_data_bytes(backup);
@@ -712,6 +747,13 @@ pub extern "C" fn openhome_get_pkm_box_bytes_for_gen(
         }
         10 => {
             let pk = match pkm_rs::gen8_la::Pa8::from_ohpkm(&pkm.ohpkm, strategy) {
+                Ok(p) => p,
+                Err(_) => return 0,
+            };
+            pk.to_box_bytes().to_vec()
+        }
+        11 => {
+            let pk = match pkm_rs::gen9_lza::Pa9::from_ohpkm(&pkm.ohpkm, strategy) {
                 Ok(p) => p,
                 Err(_) => return 0,
             };
@@ -2396,5 +2438,62 @@ mod tests {
         assert_eq!(back.is_alpha, mon.is_alpha);
         assert_eq!(back.nickname.bytes(), mon.nickname.bytes());
         assert_eq!(back.gvs, mon.gvs);
+    }
+
+    // Tatsugiri, real PKHeX .pa9 export (LZA), 344-byte box == party record.
+    const TATSUGIRI_PA9: &str = "740c11890000bfaab803000073220832e6ba00001701020000000000f4c021cd1111020002000000000000000000000000000000000000000000000000000000000000000000000000004c00000000000000000000000000540061007400730075006700690072006900000000000000000066000d015501fa000a140f0f0000000000000000000000006400c1aca03700000000000000000000000000000000000000000000000042006f0062006500720074000000000000000000000000000000000201000000320000000000340000000000ff020000000200000010001000000000880000410000000000000000000000000022000052006f004300000000000000000000000000000000000000000032000000000000000000190c0d2600001101022600000000000000000000000000000000000000000000000000000000000000000000260064002d0036003c00740057000000";
+
+    #[test]
+    fn pa9_box_bytes_round_trip() {
+        let raw = hex_to_vec(TATSUGIRI_PA9);
+        assert_eq!(raw.len(), 344, "PKHeX pa9 export is the 344-byte record");
+        let mon = pkm_rs::gen9_lza::Pa9::from_bytes(&raw).expect("parse real pa9");
+        let out = mon.to_box_bytes();
+        assert_eq!(out.len(), 344);
+        // Regions the Pk9-wrapping v1 does not reproduce byte-for-byte:
+        //  - 0x04..0x08: sanity placeholder + checksum, recomputed by to_box_bytes.
+        //  - 0x8a..0x8c: currentHP — a party field the box serializer drops.
+        //  - 0xd6..0xf7: LZA "plus move" mastery block C. Not modeled by the Pk9
+        //    wrapper; an LZA->LZA move keeps it only via the OriginalBackup
+        //    (see GenPorting.md, PA9 v1 caveat).
+        //  - 0x148..0x156: level + party stats, recomputed by the game on load.
+        let excluded = |i: usize| {
+            (0x04..0x08).contains(&i)
+                || (0x8a..0x8c).contains(&i)
+                || (0xd6..0xf7).contains(&i)
+                || (0x148..0x156).contains(&i)
+        };
+        let diffs: Vec<usize> =
+            (0..344).filter(|&i| !excluded(i)).filter(|&i| out[i] != raw[i]).collect();
+        assert!(diffs.is_empty(), "pa9 box bytes differ at {:?}", diffs);
+
+        let re = pkm_rs::gen9_lza::Pa9::from_bytes(&out).expect("re-parse written pa9");
+        assert_eq!(
+            re.inner.checksum,
+            re.inner.calculate_checksum(),
+            "pa9 written checksum is self-consistent"
+        );
+    }
+
+    // is_alpha and the LZA plus-move flags are intentionally NOT round-tripped
+    // through OHPKM in v1 (they survive an LZA->LZA move only via the
+    // OriginalBackup) — so this only asserts the PK9-shared core identity.
+    #[test]
+    fn pa9_ohpkm_round_trip_preserves_core_fields() {
+        let raw = hex_to_vec(TATSUGIRI_PA9);
+        let mon = pkm_rs::gen9_lza::Pa9::from_bytes(&raw).expect("parse");
+        let ohpkm = OhpkmV2::convert_with_backup(&mon, &raw).expect("to ohpkm");
+        let back = pkm_rs::gen9_lza::Pa9::from_ohpkm(&ohpkm, ConvertStrategy::default()).expect("from ohpkm");
+        assert_eq!(back.inner.species_and_form.into_inner().get_ndex(), mon.inner.species_and_form.into_inner().get_ndex());
+        assert_eq!(back.inner.personality_value, mon.inner.personality_value);
+        assert_eq!(back.inner.encryption_constant, mon.inner.encryption_constant);
+        assert_eq!(back.inner.trainer_id, mon.inner.trainer_id);
+        assert_eq!(back.inner.secret_id, mon.inner.secret_id);
+        assert_eq!(back.inner.exp, mon.inner.exp);
+        assert_eq!(back.inner.ivs, mon.inner.ivs);
+        assert_eq!(back.inner.evs, mon.inner.evs);
+        assert_eq!(back.inner.nature, mon.inner.nature);
+        assert_eq!(back.inner.gender, mon.inner.gender);
+        assert_eq!(back.inner.nickname.bytes(), mon.inner.nickname.bytes());
     }
 }

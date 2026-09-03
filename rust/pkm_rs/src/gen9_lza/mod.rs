@@ -6,6 +6,8 @@ use pkm_rs_resources::{
 };
 use pkm_rs_types::FlagSet;
 
+pub(crate) const PKM_DATA_SIZE: usize = 344;
+
 pub const LZA_BASE_TM_BYTES: usize = 25;
 pub const LZA_DLC_TM_BYTES: usize = 13;
 pub const LZA_PLUS_MOVES_BLOCK_C_BYTES: usize = 33;
@@ -195,3 +197,5 @@ impl PlusMoveFlags {
         self == other
     }
 }
+mod pa9;
+pub use pa9::*;

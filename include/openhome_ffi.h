@@ -87,6 +87,7 @@ inline std::vector<uint8_t> getPkmBoxBytesForGen(PkmHandle* pkm_handle, uint32_t
     else if (gen == 7) max_len = 232;
     else if (gen == 9) max_len = 344;
     else if (gen == 10) max_len = 360; // Pa8 (Legends: Arceus)
+    else if (gen == 11) max_len = 344; // Pa9 (Legends: Z-A, shares Pk9 record)
     std::vector<uint8_t> buf(max_len);
     uint32_t written = openhome_get_pkm_box_bytes_for_gen(pkm_handle, gen, buf.data(), buf.size());
     if (written == 0) return {};
