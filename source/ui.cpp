@@ -331,9 +331,15 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
     savePath_ = savePath;
 
     // Consolidate a pending self-update before anything else, so a launch from
-    // hbmenu/forwarder always ends up on the freshly installed .nro and the
-    // stale nextLoad is cleared (no more "double restart" / old build).
-    finalizePendingUpdate();
+    // hbmenu/forwarder always ends up on the freshly installed .nro. When it
+    // returns true we are running from the throw-away .nro.new and the real
+    // .nro has just been written: bounce straight into it (one quick
+    // "Updating…" frame) instead of letting the user touch the .new instance.
+    if (finalizePendingUpdate()) {
+        showWorking("Updating...");
+        SDL_Delay(700);
+        return;  // main() cleans up -> libnx exit chainloads nextLoad (the real .nro)
+    }
 
     // Load persisted theme
     themeIndex_ = loadThemeIndex(basePath_);

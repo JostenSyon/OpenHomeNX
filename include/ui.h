@@ -468,7 +468,11 @@ private:
     // built with OH_USB_UPDATE), copy it over the running NRO and queue a
     // relaunch. Returns true if the app should quit now (relaunch queued).
     bool checkForUpdate();
-    void finalizePendingUpdate();
+    // Consolidate a pending OpenHomeNX.nro.new from a self-update. Returns true
+    // when it just wrote the new bytes onto the canonical .nro while running
+    // from the throw-away .new — the caller should then bounce straight into
+    // the real .nro instead of showing the app from the .new instance.
+    bool finalizePendingUpdate();
     void toggleSelect();
     void clearSelection();
     void beginYPress();

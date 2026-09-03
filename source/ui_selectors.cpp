@@ -781,12 +781,12 @@ void UI::enterAllBanksMode() {
 // boot, not only when the user opens "Check for update" — otherwise .nro
 // stays stale (hbmenu keeps launching the old build) and the residual
 // nextLoad keeps relaunching .new, which looks like a double restart.
-void UI::finalizePendingUpdate() {
+bool UI::finalizePendingUpdate() {
     const std::string runningNro = basePath_ + "OpenHomeNX.nro";
     const std::string pending = runningNro + ".new";
     struct stat st;
     if (stat(pending.c_str(), &st) != 0)
-        return;                         // nothing pending
+        return false;                   // nothing pending
 
     // NOTE: never call envSetNextLoad("", "") to "clear" a pending nextLoad.
     // hbloader consumes the nextLoad the moment it chainloads .new, so by the
@@ -799,7 +799,7 @@ void UI::finalizePendingUpdate() {
         // Unreadable .new — drop it so it can't wedge the boot forever.
         DebugLog::line("update: pending %s unreadable -> removing", pending.c_str());
         std::remove(pending.c_str());
-        return;
+        return false;
     }
 
     // Is the canonical .nro already this build? (happens when a previous
@@ -810,22 +810,31 @@ void UI::finalizePendingUpdate() {
         DebugLog::line("update: canonical already v%s, dropping leftover %s",
                        nroVer.c_str(), pending.c_str());
         std::remove(pending.c_str());
-        return;
+        return false;
     }
 
     if (copyFileTo(pending, runningNro)) {
         DebugLog::line("update: finalized pending %s -> %s v%s (copy)",
                        pending.c_str(), runningNro.c_str(), pendVer.c_str());
         std::remove(pending.c_str());
-    } else {
-        // We are running from the canonical .nro (hbloader ignored the
-        // nextLoad, or the user relaunched from hbmenu), so it is in use and
-        // can't be overwritten. Re-arm the nextLoad so the next restart lands
-        // on .new, where the boot-time finalize can consolidate it. Keep .new.
-        DebugLog::line("update: canonical %s in use, re-arming nextLoad -> %s",
-                       runningNro.c_str(), pending.c_str());
-        if (envHasNextLoad()) envSetNextLoad(pending.c_str(), pending.c_str());
+        // We are running from the throw-away .new and the canonical .nro now
+        // holds the new build. Tell run() to bounce straight into it: one
+        // quick "Updating…" screen, no interaction with this .new instance.
+        if (envHasNextLoad()) {
+            envSetNextLoad(runningNro.c_str(), runningNro.c_str());
+            return true;
+        }
+        return false;
     }
+
+    // We are running from the canonical .nro (hbloader ignored the nextLoad,
+    // or the user relaunched from hbmenu), so it is in use and can't be
+    // overwritten. Re-arm the nextLoad so the next restart lands on .new,
+    // where this boot-time finalize can consolidate it. Keep .new.
+    DebugLog::line("update: canonical %s in use, re-arming nextLoad -> %s",
+                   runningNro.c_str(), pending.c_str());
+    if (envHasNextLoad()) envSetNextLoad(pending.c_str(), pending.c_str());
+    return false;
 }
 
 bool UI::checkForUpdate() {
