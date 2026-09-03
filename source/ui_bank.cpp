@@ -472,12 +472,19 @@ void UI::openSelectedBank() {
         return;
 
     // Cross-gen right panel: the box grid is shared and gridCols() keys off
-    // selectedGame_ (LGPE = 5 columns, every other game = 6). Refuse a bank
-    // whose column layout would not line up rather than misrender it.
+    // selectedGame_ (LGPE = 5 columns / 25 slots, every other game = 6 / 30).
+    // A Let's Go save can't show a 30-slot bank (or vice-versa) in the shared
+    // grid without hiding slots, so refuse that one combination. This is NOT
+    // an "already open" case -- use a plain error title and say why.
     if (bankRightCrossGen_
         && isLGPE(banks[bankSelCursor_].game) != isLGPE(selectedGame_)) {
-        showMessageAndWait(i18n::get(StrKey::AlreadyOpen),
-            "That bank uses a different box layout (Let's Go).");
+        showMessageAndWait(i18n::get(StrKey::Error),
+            isLGPE(selectedGame_)
+              ? "A Let's Go save uses a 25-slot box layout and can't open a\n"
+                "30-slot bank side by side yet. Open this bank from a\n"
+                "Sword/Shield, BDSP, Legends or Scarlet/Violet save instead."
+              : "This is a Let's Go bank (25-slot boxes) and can't be opened\n"
+                "next to a 30-slot save yet.");
         return;
     }
 
