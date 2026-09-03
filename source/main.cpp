@@ -55,6 +55,21 @@ int main(int argc, char* argv[]) {
     // thread; failure is non-fatal (the SD update/ folder still works).
     Result usbRc = usbHsFsInitialize(0);
     DebugLog::line("usbHsFsInitialize -> 0x%08X", (unsigned)usbRc);
+    // Diagnostica a boot (solo con debug attivo, così non rallenta l'avvio
+    // normale): log immediato + un retry a +2s per vedere se l'interfaccia UMS
+    // si popola da sola senza intervento utente.
+    if (DebugLog::enabled()) {
+        u32 phys = usbHsFsGetPhysicalDeviceCount();
+        u32 n = usbHsFsGetMountedDeviceCount();
+        DebugLog::line("boot USB physical=%u mounted=%u", phys, n);
+        if (n == 0) {
+            UEvent* ev = usbHsFsGetStatusChangeUserEvent();
+            if (ev) waitSingle(waiterForUEvent(ev), 2000000000ULL); // 2s
+            phys = usbHsFsGetPhysicalDeviceCount();
+            n = usbHsFsGetMountedDeviceCount();
+            DebugLog::line("boot USB +2s physical=%u mounted=%u", phys, n);
+        }
+    }
 #endif
 
     std::string savePath = basePath + "main";
