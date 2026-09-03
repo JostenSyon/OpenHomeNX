@@ -8,8 +8,8 @@ use pkm_rs_resources::abilities::AbilityIndexWasm;
 use pkm_rs_resources::moves::MoveIndex;
 use pkm_rs_resources::species::{FormMetadata, SpeciesForm, SpeciesMetadata};
 use pkm_rs_types::strings::SizedUtf16String;
-use pkm_rs_types::{Gender, PokeDate};
-use pkm_rs_types::{HyperTraining, MarkingsSixShapesColors, Stats8, Stats16Le};
+use pkm_rs_types::{Gender, PokeDate, Pokerus};
+use pkm_rs_types::{HyperTraining, Ivs, MarkingsSixShapesColors, Stats8, Stats16Le};
 use pkm_rs_types::{read_u16_le, read_u32_le};
 use serde::Serialize;
 
@@ -47,7 +47,7 @@ pub struct Pb7 {
     pub move_pp: [u8; 4],
     pub move_pp_ups: [u8; 4],
     pub relearn_moves: [MoveIndex; 4],
-    pub ivs: Stats8,
+    pub ivs: Ivs,
     pub is_egg: bool,
     pub is_nicknamed: bool,
     pub handler_name: SizedUtf16String<24>,
@@ -89,6 +89,19 @@ pub struct Pb7 {
 }
 
 impl Pb7 {
+    /// 16-bit little-endian sum over the stored region `0x08..0xE8`, matching
+    /// OpenHome's `PB7.calculateChecksum()` (`get16BitChecksumLittleEndian(..,
+    /// 0x08, 0xe8)`). The 0xE8..0x104 tail (party/battle stats) is not covered.
+    pub fn calculate_checksum(&self) -> u16 {
+        let mut bytes = [0u8; Self::BOX_SIZE];
+        self.write_box_bytes(&mut bytes);
+        crate::checksum::checksum_u16_le(&bytes[0x08..0xE8])
+    }
+
+    pub fn refresh_checksum(&mut self) {
+        self.checksum = self.calculate_checksum();
+    }
+
     pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
         let size = bytes.len();
         if size < Pb7::BOX_SIZE {
@@ -100,7 +113,7 @@ impl Pb7 {
             checksum: read_u16_le!(bytes, 6),
             species_and_form: SpeciesForm::new(
                 read_u16_le!(bytes, 8),
-                util::read_uint5_from_bits(bytes[29], 3).into(),
+                pkm_rs_types::read_uint5_from_bits(bytes[29], 3).into(),
             )?,
             held_item_index: read_u16_le!(bytes, 10),
             trainer_id: read_u16_le!(bytes, 12),
@@ -117,7 +130,7 @@ impl Pb7 {
             evs: Stats8::from_bytes(bytes[30..36].try_into().unwrap()),
             avs: Stats8::from_bytes(bytes[36..42].try_into().unwrap()),
             resort_event_status: bytes[42],
-            pokerus: bytes[43],
+            pokerus: Pokerus::from_byte(bytes[43]),
             height_absolute_bytes: bytes[44..48].try_into().unwrap(),
             height: bytes[58],
             weight: bytes[59],
@@ -137,7 +150,7 @@ impl Pb7 {
                 MoveIndex::from(read_u16_le!(bytes, 110)),
                 MoveIndex::from(read_u16_le!(bytes, 112)),
             ],
-            ivs: Stats8::from_30_bits(bytes[116..120].try_into().unwrap()),
+            ivs: Ivs::from_30_bits(bytes[116..120].try_into().unwrap()),
             is_egg: util::get_flag(bytes, 116, 30),
             is_nicknamed: util::get_flag(bytes, 116, 31),
             handler_name: SizedUtf16String::<24>::from_bytes(bytes[120..144].try_into().unwrap()),
@@ -205,7 +218,7 @@ impl PkmBytes for Pb7 {
 
         self.gender.set_bits_1_2(&mut bytes[29]);
         util::set_flag(bytes, 29, 0, self.is_fateful_encounter);
-        util::write_uint5_to_bits(
+        pkm_rs_types::write_uint5_to_bits(
             self.species_and_form.get_forme_index() as u8,
             &mut bytes[29],
             3,
@@ -214,7 +227,7 @@ impl PkmBytes for Pb7 {
         bytes[30..36].copy_from_slice(&self.evs.to_bytes());
         bytes[36..42].copy_from_slice(&self.avs.to_bytes());
         bytes[42] = self.resort_event_status;
-        bytes[43] = self.pokerus;
+        bytes[43] = self.pokerus.to_byte();
         bytes[44..48].copy_from_slice(&self.height_absolute_bytes);
         bytes[58] = self.height;
         bytes[59] = self.weight;
@@ -290,14 +303,14 @@ impl PkmBytes for Pb7 {
         self.write_box_bytes(bytes);
     }
 
-    fn to_box_bytes(&self) -> Vec<u8> {
+    fn to_box_bytes(&self) -> Box<[u8]> {
         let mut bytes = [0; Self::BOX_SIZE];
         self.write_box_bytes(&mut bytes);
 
-        Vec::from(bytes)
+        Box::new(bytes)
     }
 
-    fn to_party_bytes(&self) -> Vec<u8> {
+    fn to_party_bytes(&self) -> Box<[u8]> {
         self.to_box_bytes()
     }
 }

@@ -199,6 +199,7 @@ inline int ohTargetGenFor(GameType g) {
     if (g == GameType::LA) return 10; // PA8 (Legends: Arceus)
     if (g == GameType::ZA) return 11; // PA9 (Legends: Z-A)
     if (isBDSP(g))         return 12; // PB8 (BDSP)
+    if (isLGPE(g))         return 13; // PB7 (Let's Go)
     return 0;
 }
 
@@ -215,6 +216,7 @@ inline int ohSourceGenFor(GameType g) {
     if (g == GameType::LA) return 10; // PA8 (Legends: Arceus)
     if (g == GameType::ZA) return 11; // PA9 (Legends: Z-A)
     if (isBDSP(g))         return 12; // PB8 (BDSP)
+    if (isLGPE(g))         return 13; // PB7 (Let's Go)
     return 0;
 }
 
@@ -229,6 +231,7 @@ inline int ohRecordBytesFor(int gen) {
         case 10: return 360;  // Pa8  (box; PKHeX party record is 376)
         case 11: return 344;  // Pa9  (shares the Pk9 record: box == party == 344)
         case 12: return 344;  // Pb8  (PK8-shaped: box == party == 344)
+        case 13: return 260;  // Pb7  (LGPE: box == party == 260)
         default: return 0;
     }
 }
@@ -244,6 +247,7 @@ inline int ohBackupTagForGen(int gen) {
         case 10: return 10;  // Tag::Pa8
         case 11: return 13;  // Tag::Pa9
         case 12: return 11;  // Tag::Pb8
+        case 13: return 8;   // Tag::Pb7
         default: return 0;
     }
 }

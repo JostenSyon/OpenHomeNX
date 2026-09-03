@@ -347,6 +347,17 @@ pub extern "C" fn openhome_load_pkm_from_gen(
             },
             Err(_) => return core::ptr::null_mut(),
         },
+        // 13 = PB7 (Let's Go). 260-byte record.
+        13 => match pkm_rs::gen7_lgpe::Pb7::from_bytes(slice) {
+            Ok(pk) => match pkm_rs::ohpkm::OhpkmV2::convert_with_backup(
+                &pk,
+                &pkm_rs::traits::PkmBytes::to_party_bytes(&pk),
+            ) {
+                Ok(o) => o,
+                Err(_) => return core::ptr::null_mut(),
+            },
+            Err(_) => return core::ptr::null_mut(),
+        },
         _ => return core::ptr::null_mut(),
     };
 
@@ -517,6 +528,11 @@ pub extern "C" fn openhome_transfer_pkm(
             Ok(ohpkm) => ohpkm,
             Err(_) => return core::ptr::null_mut(),
         },
+        // 13 = PB7 (Let's Go).
+        13 => match convert_to_pb7(&pkm.ohpkm) {
+            Ok(ohpkm) => ohpkm,
+            Err(_) => return core::ptr::null_mut(),
+        },
         // All other target generations are not yet implemented in the Switch
         // build (Gen 4, 5, 6). Explicitly fail instead of producing a fake cross-gen.
         _ => return core::ptr::null_mut(),
@@ -624,6 +640,33 @@ fn convert_to_pa9(
     let pa9 = Pa9::from_ohpkm(ohpkm, strategy)?;
     let mut new_ohpkm = OhpkmV2::convert_without_backup(&pa9);
     new_ohpkm.set_sv_data(ohpkm.sv_data());
+    if let Some(backup) = existing_backup {
+        new_ohpkm.set_original_data_bytes(backup);
+    }
+    Ok(new_ohpkm)
+}
+
+#[cfg(any(feature = "alloc", feature = "std"))]
+fn convert_to_pb7(
+    ohpkm: &pkm_rs::ohpkm::OhpkmV2,
+) -> core::result::Result<pkm_rs::ohpkm::OhpkmV2, pkm_rs::result::Error> {
+    use pkm_rs::gen7_lgpe::Pb7;
+    use pkm_rs::ohpkm::OhpkmConvert;
+    use pkm_rs::ohpkm::OhpkmV2;
+
+    let existing_backup = ohpkm.original_data_bytes();
+    let strategy = pkm_rs::convert_strategy::ConvertStrategy::default();
+    let pb7 = Pb7::from_ohpkm(ohpkm, strategy)?;
+    let mut new_ohpkm = OhpkmV2::convert_without_backup(&pb7);
+
+    // Propagate the Gen8/9 sections Pb7 cannot itself represent, so a later hop
+    // back to SwSh / BDSP / SV / Legends is not lossy (mirrors convert_to_pk7).
+    new_ohpkm.set_dynamax_level(ohpkm.dynamax_level());
+    new_ohpkm.set_can_gigantamax(ohpkm.can_gigantamax());
+    new_ohpkm.set_palma(ohpkm.palma());
+    new_ohpkm.set_tr_flags_swsh(ohpkm.tr_flags_swsh());
+    new_ohpkm.set_sv_data(ohpkm.sv_data());
+
     if let Some(backup) = existing_backup {
         new_ohpkm.set_original_data_bytes(backup);
     }
@@ -797,6 +840,13 @@ pub extern "C" fn openhome_get_pkm_box_bytes_for_gen(
         }
         12 => {
             let pk = match pkm_rs::gen8_bdsp::Pb8::from_ohpkm(&pkm.ohpkm, strategy) {
+                Ok(p) => p,
+                Err(_) => return 0,
+            };
+            pk.to_box_bytes().to_vec()
+        }
+        13 => {
+            let pk = match pkm_rs::gen7_lgpe::Pb7::from_ohpkm(&pkm.ohpkm, strategy) {
                 Ok(p) => p,
                 Err(_) => return 0,
             };
@@ -2587,5 +2637,87 @@ mod tests {
         assert_eq!(back.met_level, pb8.met_level);
         assert_eq!(back.can_gigantamax, pb8.can_gigantamax);
         assert_eq!(back.dynamax_level, pb8.dynamax_level);
+    }
+
+    #[test]
+    fn pb7_box_bytes_round_trip() {
+        // No upstream .pb7 fixture exists; synthesise a minimal LGPE mon (Pikachu) and validate box-bytes round-trip.
+        // Pb7::BOX_SIZE = 260, PARTY_SIZE = 260, Tag::Pb7 = 8. Only checksum 0x06..0x08 is recomputed.
+        use pkm_rs::gen7_lgpe::Pb7;
+        use pkm_rs_resources::species::SpeciesForm;
+        let mut mon = Pb7 {
+            species_and_form: SpeciesForm::new(25, 0).unwrap(),
+            personality_value: 0x12345678,
+            encryption_constant: 0x12345678,
+            trainer_id: 0x1234,
+            secret_id: 0x5678,
+            exp: 50000,
+            ..Default::default()
+        };
+        mon.nickname = pkm_rs_types::strings::SizedUtf16String::<26>::from("Pikachu");
+        let raw = mon.to_box_bytes();
+        assert_eq!(raw.len(), 260, "Pb7 box size");
+        let parsed = Pb7::from_bytes(&raw).expect("parse synthesised pb7");
+        let out = parsed.to_box_bytes();
+        assert_eq!(out.len(), 260);
+        let diffs: Vec<usize> = (0..260).filter(|&i| !(0x06..0x08).contains(&i)).filter(|&i| out[i] != raw[i]).collect();
+        assert!(diffs.is_empty(), "pb7 box bytes differ outside 0x06..0x08 at {:?}", diffs);
+        // Re-parse and check that the bytes are self-consistent (no checksum field to validate for Pb7, just that re-parse succeeds)
+        let re = Pb7::from_bytes(&out).expect("re-parse pb7");
+        assert_eq!(re.species_and_form.get_ndex(), 25);
+    }
+
+    #[test]
+    fn pb7_ohpkm_round_trip_preserves_core_fields() {
+        // Exercises the real OhpkmConvert for Pb7 (not a stub): Pb7 -> OHPKM ->
+        // Pb7 must keep species / PID / EC / IDs / exp / IVs / EVs / AVs /
+        // nature / gender / nickname / met level, and produce a valid checksum.
+        use pkm_rs::gen7_lgpe::Pb7;
+        use pkm_rs::ohpkm::{OhpkmConvert, OhpkmV2};
+        use pkm_rs_resources::species::SpeciesForm;
+        use pkm_rs_types::{Gender, Ivs, Stat, Stats8};
+
+        let mut ivs = Ivs::default();
+        for s in [Stat::Hp, Stat::Atk, Stat::Def, Stat::Spa, Stat::Spd, Stat::Spe] {
+            ivs.set(s, 31);
+        }
+        let evs = Stats8::new(4, 252, 0, 0, 0, 252);
+        let avs = Stats8::new(200, 0, 0, 0, 0, 150);
+
+        let mut mon = Pb7 {
+            species_and_form: SpeciesForm::new(25, 0).unwrap(),
+            personality_value: 0xABCD_1234,
+            encryption_constant: 0x1122_3344,
+            trainer_id: 0x1234,
+            secret_id: 0x5678,
+            exp: 125_000,
+            nature: 3,
+            gender: Gender::Female,
+            ivs,
+            evs,
+            avs,
+            met_level: 5,
+            ..Default::default()
+        };
+        mon.nickname = pkm_rs_types::strings::SizedUtf16String::<26>::from("Sparky");
+        mon.refresh_checksum();
+
+        let ohpkm = OhpkmV2::convert_with_backup(&mon, &mon.to_box_bytes()).expect("pb7 -> ohpkm");
+        let back = Pb7::from_ohpkm(&ohpkm, ConvertStrategy::default()).expect("ohpkm -> pb7");
+
+        assert_eq!(back.species_and_form.get_ndex(), 25);
+        assert_eq!(back.personality_value, mon.personality_value);
+        assert_eq!(back.encryption_constant, mon.encryption_constant);
+        assert_eq!(back.trainer_id, mon.trainer_id);
+        assert_eq!(back.secret_id, mon.secret_id);
+        assert_eq!(back.exp, mon.exp);
+        assert_eq!(back.ivs, mon.ivs);
+        assert_eq!(back.evs, mon.evs);
+        assert_eq!(back.avs, mon.avs);
+        assert_eq!(back.nature, mon.nature);
+        assert_eq!(back.gender, mon.gender);
+        assert_eq!(back.met_level, mon.met_level);
+        assert_eq!(back.nickname.to_string(), "Sparky");
+        assert_eq!(back.checksum, back.calculate_checksum(), "pb7 checksum self-consistent");
     }
 }

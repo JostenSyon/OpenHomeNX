@@ -17,6 +17,8 @@ mod pk8;
 #[cfg(any(feature = "wasm", feature = "alloc"))]
 mod pa8;
 #[cfg(any(feature = "wasm", feature = "alloc"))]
+mod pb7;
+#[cfg(any(feature = "wasm", feature = "alloc"))]
 mod pb8;
 #[cfg(any(feature = "wasm", feature = "alloc"))]
 mod pa9;

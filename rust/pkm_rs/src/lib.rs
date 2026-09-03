@@ -26,7 +26,8 @@ pub mod gen5;
 pub mod gen6;
 #[cfg(any(feature = "wasm", feature = "alloc"))]
 pub mod gen7_alola;
-// pub mod gen7_lgpe; // Disabled: LGPE save loader has 22 compilation errors with alloc gate
+#[cfg(any(feature = "wasm", feature = "alloc"))]
+pub mod gen7_lgpe;
 #[cfg(any(feature = "wasm", feature = "alloc"))]
 pub mod gen8_la;
 pub mod gen8_swsh;
