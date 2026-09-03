@@ -15,6 +15,8 @@ mod pk7;
 #[cfg(any(feature = "wasm", feature = "alloc"))]
 mod pk8;
 #[cfg(any(feature = "wasm", feature = "alloc"))]
+mod pa8;
+#[cfg(any(feature = "wasm", feature = "alloc"))]
 mod pk9;
 
 use crate::ohpkm::v2_sections::SwordShieldData;

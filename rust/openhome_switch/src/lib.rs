@@ -959,6 +959,7 @@ mod tests {
     use super::*;
     use pkm_rs::gen7_alola::Pk7;
     use pkm_rs::gen8_swsh::Pk8;
+    use pkm_rs::gen8_la::Pa8;
     use pkm_rs::ohpkm::{OhpkmConvert, OhpkmV2};
     use pkm_rs::traits::{HasSpeciesAndForm, PkmBytes};
     use pkm_rs::convert_strategy::ConvertStrategy;
@@ -2294,4 +2295,60 @@ mod tests {
         unsafe { openhome_free_pkm(loaded) };
     }
 
+    // -------------------------------------------------------------------
+    // Legends Arceus (PA8) — real PKHeX exports, party size (0x178).
+    // -------------------------------------------------------------------
+    fn hex_to_vec(s: &str) -> Vec<u8> {
+        (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap()).collect()
+    }
+
+    // Oshawott, PKHeX pa8 export.
+    const OSHAWOTT_PA8: &str = "5348728100001370f50100003cc25588870000004300010000000000f2530f791111000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000007f7f7f0021000000000000001e0000004f0073006800610077006f00740074000000000000000000000000000000000000000000000000000000000000000000000040003073422b0000000000000000000000000000000000000000d8d7474245a16b42000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000002f000000020000000000ff000000000000000000000000000000000000000000000052006f0043000000000000000000000000000000000000000000320000000000000000001601171c00000600000500000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000";
+
+    #[test]
+    fn pa8_box_bytes_round_trip() {
+        let raw = hex_to_vec(OSHAWOTT_PA8);
+        assert_eq!(raw.len(), 376, "PKHeX pa8 export is party size");
+        let mon = Pa8::from_bytes(&raw).expect("parse real pa8");
+        let out = mon.to_box_bytes();
+        assert_eq!(out.len(), 360);
+        // Round-trip the box portion. Byte 0x06-0x07 is the checksum, recomputed
+        // by to_box_bytes(); it must still match the original.
+        let want = &raw[..360];
+        // Excluded from the comparison, same as OpenHome's own PA8:
+        //  - 0xAC..0xB4: heightAbsolute/weightAbsolute (f32), recalculated by
+        //    the game from the height/weight scalars; not part of identity.
+        //  - 0x06..0x08: the checksum, which follows from the bytes above.
+        let diffs: Vec<usize> = (0..360)
+            .filter(|&i| !(0xAC..0xB4).contains(&i) && !(0x06..0x08).contains(&i))
+            .filter(|&i| out[i] != want[i])
+            .collect();
+        assert!(diffs.is_empty(), "pa8 box bytes differ at {:?}", diffs);
+
+        // The written checksum must be self-consistent with the written data.
+        let re = Pa8::from_bytes(&out).expect("re-parse written pa8");
+        assert_eq!(re.checksum, re.calculate_checksum(), "pa8 checksum self-consistent");
+    }
+
+    #[test]
+    fn pa8_ohpkm_round_trip_preserves_core_fields() {
+        let raw = hex_to_vec(OSHAWOTT_PA8);
+        let mon = Pa8::from_bytes(&raw).expect("parse");
+        let ohpkm = OhpkmV2::convert_with_backup(&mon, &raw).expect("to ohpkm");
+        let back = Pa8::from_ohpkm(&ohpkm, ConvertStrategy::default()).expect("from ohpkm");
+
+        assert_eq!(back.species_and_form.into_inner().get_ndex(), mon.species_and_form.into_inner().get_ndex());
+        assert_eq!(back.personality_value, mon.personality_value);
+        assert_eq!(back.encryption_constant, mon.encryption_constant);
+        assert_eq!(back.trainer_id, mon.trainer_id);
+        assert_eq!(back.secret_id, mon.secret_id);
+        assert_eq!(back.exp, mon.exp);
+        assert_eq!(back.ivs, mon.ivs);
+        assert_eq!(back.evs, mon.evs);
+        assert_eq!(back.nature, mon.nature);
+        assert_eq!(back.gender, mon.gender);
+        assert_eq!(back.is_alpha, mon.is_alpha);
+        assert_eq!(back.nickname.bytes(), mon.nickname.bytes());
+        assert_eq!(back.gvs, mon.gvs);
+    }
 }
