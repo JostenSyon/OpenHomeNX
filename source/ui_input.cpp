@@ -702,6 +702,13 @@ void UI::moveCursor(int dx, int dy) {
         }
     }
 
+    // Panels can be different widths (25-slot Let's Go save = 5 wide, a
+    // 30-slot bank / the cross-gen bank = 6). After a panel cross, re-clamp
+    // the column to the panel we actually landed in.
+    int destMaxCol = gridColsFor(cursor_.panel) - 1;
+    if (cursor_.col > destMaxCol) cursor_.col = destMaxCol;
+    if (cursor_.col < 0)          cursor_.col = 0;
+
     if (cursor_.panel != prevPanel)
         clearSelection();
 }
@@ -1748,8 +1755,8 @@ void UI::handleSearchResultsInput(const SDL_Event& event) {
         const auto& r = searchResults_[searchResultCursor_];
         cursor_.panel = r.panel;
         cursor_.box = r.box;
-        cursor_.col = r.slot % gridCols();
-        cursor_.row = r.slot / gridCols();
+        cursor_.col = r.slot % gridColsFor(r.panel);
+        cursor_.row = r.slot / gridColsFor(r.panel);
         if (r.panel == Panel::Game)
             gameBox_ = r.box;
         else

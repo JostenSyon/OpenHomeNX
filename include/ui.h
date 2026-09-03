@@ -496,9 +496,20 @@ private:
     void openBoxView(Panel panel);
     void closeBoxView(bool navigate);
 
-    // Dynamic grid: LGPE has 5 columns (5x5), others have 6 (6x5)
-    int gridCols() const { return isLGPE(selectedGame_) ? 5 : 6; }
-    int maxSlots() const { return gridCols() * 5; }
+    // Dynamic grid. Each panel sizes its box grid from its OWN source, so a
+    // 30-slot bank (including the universal cross-gen bank) can sit next to a
+    // 25-slot Let's Go save. Always 5 rows; columns = slots-per-box / 5.
+    int gridColsFor(Panel p) const {
+        int spb;
+        if (p == Panel::Bank)        spb = bank_.slotsPerBox();
+        else if (isDualBankMode())   spb = bankLeft_.slotsPerBox();
+        else                         spb = isLGPE(selectedGame_) ? 25 : 30;
+        return spb <= 25 ? 5 : 6;
+    }
+    int maxSlotsFor(Panel p) const { return gridColsFor(p) * 5; }
+    // Legacy call sites: they always operated on the cursor's panel.
+    int gridCols() const { return gridColsFor(cursor_.panel); }
+    int maxSlots() const { return gridColsFor(cursor_.panel) * 5; }
 
     // Get pokemon at cursor from the appropriate source
     Pokemon getPokemonAt(int box, int slot, Panel panel) const;

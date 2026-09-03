@@ -939,9 +939,25 @@ bool UI::checkForUpdate() {
         else
             DebugLog::line("update: could not remove source %s", foundPath.c_str());
     }
-    // Se hbloader supporta next-load, non toccare il file in uso: basta
-    // puntare al .new e riavviare. Evita il fail "rename while in use" visto
-    // in debug.log (copiato con .new ma rename fallito).
+    // Preferred path: overwrite the canonical .nro *in place* from the good
+    // copy we just wrote. fopen("wb") truncates+rewrites the same directory
+    // entry, so it works even while a forwarder holds the file open — unlike
+    // rename()/remove(), which return EBUSY on FAT for the in-use NRO. The
+    // running code is already in RAM, so truncating the on-disk file is safe.
+    // This gives a SINGLE restart: exit -> forwarder relaunches its target
+    // .nro, now the new build. No .new sidecar left to trip a second restart.
+    if (copyFileTo(tmp, runningNro)) {
+        DebugLog::line("update: overwrote %s in place -> v%s", runningNro.c_str(), foundVer.c_str());
+        std::remove(tmp.c_str());
+        if (envHasNextLoad()) envSetNextLoad(runningNro.c_str(), runningNro.c_str());
+        showMessageAndWait("Update", "Installed v" + foundVer + ".\nRestarting...");
+        return true;
+    }
+
+    // Fallback: in-place overwrite refused. Chainload the .new sidecar and let
+    // the boot-time finalizePendingUpdate() consolidate .nro on the next run.
+    // On a forwarder this may cost a second restart, but the update still lands.
+    DebugLog::line("update: in-place overwrite of %s failed, using .new sidecar", runningNro.c_str());
     if (envHasNextLoad()) {
         envSetNextLoad(tmp.c_str(), tmp.c_str());
         DebugLog::line("update: nextLoad -> %s", tmp.c_str());

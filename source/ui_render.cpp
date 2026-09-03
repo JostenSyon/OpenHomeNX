@@ -216,7 +216,7 @@ const std::vector<UI::SlotDisplay>& UI::getSlotDisplays(Panel panel, int box) {
     if (slotDisplayCache_.size() >= 8)
         slotDisplayCache_.clear();
 
-    int slots = maxSlots();
+    int slots = maxSlotsFor(panel);
     std::vector<SlotDisplay> displays(slots);
     for (int s = 0; s < slots; s++) {
         Pokemon pkm = getPokemonAt(box, s, panel);
@@ -385,8 +385,8 @@ void UI::drawPanel(int panelX, const std::string& boxName, int boxIdx,
     drawTextCentered(hdrText, panelX + PANEL_W / 2, BOX_HDR_Y + BOX_HDR_H / 2, hdrColor, font_);
     drawTextCentered(">", panelX + PANEL_W - 20, BOX_HDR_Y + BOX_HDR_H / 2, T().arrow, font_);
 
-    // Grid: dynamic columns x 5 rows
-    int cols = gridCols();
+    // Grid: dynamic columns x 5 rows, sized from THIS panel's own source.
+    int cols = gridColsFor(panelId);
     int gridStartX = panelX + (PANEL_W - (cols * (CELL_W + CELL_PAD) - CELL_PAD)) / 2;
     int gridStartY = GRID_Y;
 
@@ -1856,7 +1856,7 @@ void UI::drawBoxViewOverlay() {
         // Search highlight: outline boxes that contain matches
         if (searchHighlightActive_) {
             bool hasMatch = false;
-            int slots = maxSlots();
+            int slots = maxSlotsFor(boxViewPanel_);
             for (int s = 0; s < slots && !hasMatch; s++)
                 hasMatch = isSearchMatch(boxViewPanel_, i, s);
             if (hasMatch)
@@ -1885,7 +1885,7 @@ void UI::drawBoxViewOverlay() {
         const auto& disp = getSlotDisplays(boxViewPanel_, i);
         int filled = 0;
         for (const auto& sd : disp) if (!sd.empty) ++filled;
-        int slots = maxSlots();
+        int slots = maxSlotsFor(boxViewPanel_);
         SDL_Texture* stateIcon = iconBoxEmpty_;
         if (filled >= slots && slots > 0) stateIcon = iconBoxFull_;
         else if (filled > 0)              stateIcon = iconBoxNonEmpty_;
@@ -1918,7 +1918,7 @@ void UI::drawBoxViewOverlay() {
 }
 
 void UI::drawBoxPreview(int boxIdx, int anchorX, int anchorY) {
-    int cols = gridCols();
+    int cols = gridColsFor(boxViewPanel_);
     int rows = 5;
 
     // Preview panel dimensions
