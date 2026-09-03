@@ -30,6 +30,7 @@ pub mod gen7_alola;
 #[cfg(any(feature = "wasm", feature = "alloc"))]
 pub mod gen8_la;
 pub mod gen8_swsh;
+pub mod gen8_bdsp;
 #[cfg(any(feature = "wasm", feature = "alloc"))]
 pub mod gen9_lza;
 #[cfg(any(feature = "wasm", feature = "alloc"))]
