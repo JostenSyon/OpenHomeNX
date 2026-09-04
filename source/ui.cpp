@@ -840,7 +840,7 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
             markDirty();
         // If a popup just activated, skip drawing here — the popup branch
         // will handle it next iteration with dirty_ still set.
-        if (dirty_ && !showAbout_ && !showThemeSelector_ && !showLanguageSelector_) {
+        if (dirty_ && !showAbout_ && !showThemeSelector_ && !showLanguageSelector_ && !showImportSettings_) {
             if (theme_ != lastTheme_) {
                 clearTextCache();
                 lastTheme_ = theme_;
