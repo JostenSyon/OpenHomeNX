@@ -291,16 +291,19 @@ void UI::showWorking(const std::string& msg) {
         }
     }
 
-    // Dark card behind gear + message
+    // Dark card behind gear + message — same box for every showWorking() state
+    // (plain message, gear, and download progress) so the update flow doesn't
+    // resize the popup between steps.
     constexpr int POP_W = 400;
-    const int POP_H = (pct >= 0) ? 200 : 160;
+    constexpr int POP_H = 160;
     int popX = (SCREEN_W - POP_W) / 2;
     int popY = (SCREEN_H - POP_H) / 2;
     drawRect(popX, popY, POP_W, POP_H, T().panelBg);
     drawRectOutline(popX, popY, POP_W, POP_H, T().textDim, 2);
 
     if (pct >= 0) {
-        // "Downloading\n  45% ..." -> titolo sopra, barra in mezzo, stats sotto
+        // "Downloading\n  45% ..." -> title / bar / stats, laid out to fit the
+        // same 160px card as the plain popup.
         std::string title = msg, stats;
         size_t nl = msg.find('\n');
         if (nl != std::string::npos) {
@@ -309,15 +312,15 @@ void UI::showWorking(const std::string& msg) {
             size_t f = stats.find_first_not_of(" \t");
             if (f != std::string::npos) stats = stats.substr(f);
         }
-        drawTextCentered(title, SCREEN_W / 2, popY + 52, T().text, font_);
+        drawTextCentered(title, SCREEN_W / 2, popY + 44, T().text, font_);
         constexpr int BAR_W = 300, BAR_H = 16;
         int barX = (SCREEN_W - BAR_W) / 2;
-        int barY = popY + 92;
+        int barY = popY + 78;
         drawRect(barX, barY, BAR_W, BAR_H, T().textDim);
         if (pct > 0)
             drawRect(barX + 2, barY + 2, (BAR_W - 4) * pct / 100, BAR_H - 4, T().arrow);
         if (!stats.empty())
-            drawTextCentered(stats, SCREEN_W / 2, popY + 150, T().textDim, fontSmall_);
+            drawTextCentered(stats, SCREEN_W / 2, popY + 124, T().textDim, fontSmall_);
         SDL_RenderPresent(renderer_);
         return;
     }
