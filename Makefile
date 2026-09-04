@@ -11,7 +11,7 @@ include $(DEVKITPRO)/libnx/switch_rules
 
 #---------------------------------------------------------------------------------
 APP_TITLE	:=	OpenHomeNX
-APP_VERSION :=	0.1.42
+APP_VERSION :=	0.1.43
 APP_AUTHOR	:=	JostenSyon
 
 TARGET		:=	OpenHomeNX
@@ -46,11 +46,16 @@ endif
 
 # USB update: cerca un NRO più recente su drive USB (libusbhsfs, vendorizzata in
 # ./libusbhsfs — build FAT-only ISC). Disattiva con: make USB_UPDATE=0
+# Diagnosi "physical=0 mounted=0" (2026-09): make USB_LIB_DEBUG=1 collega la
+# variante debug (libusbhsfsd.a, già vendorizzata) che logga i fallimenti di
+# mount che l'API release non espone. SOLO per una build di diagnosi — non
+# usarla per una release.
 USBHSFS_DIR := $(TOPDIR)/libusbhsfs
+USBHSFS_LIBNAME := $(if $(filter 1,$(USB_LIB_DEBUG)),usbhsfsd,usbhsfs)
 ifneq ($(USB_UPDATE),0)
-ifneq ($(wildcard $(USBHSFS_DIR)/lib/libusbhsfs.a),)
+ifneq ($(wildcard $(USBHSFS_DIR)/lib/lib$(USBHSFS_LIBNAME).a),)
 CFLAGS	+=	-DOH_USB_UPDATE -I$(USBHSFS_DIR)/include
-USBHSFS_LIBS := -L$(USBHSFS_DIR)/lib -lusbhsfs
+USBHSFS_LIBS := -L$(USBHSFS_DIR)/lib -l$(USBHSFS_LIBNAME)
 endif
 endif
 

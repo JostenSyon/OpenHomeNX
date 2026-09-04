@@ -99,12 +99,19 @@ int main(int argc, char* argv[]) {
         u32 phys = usbHsFsGetPhysicalDeviceCount();
         u32 n = usbHsFsGetMountedDeviceCount();
         DebugLog::line("boot USB physical=%u mounted=%u", phys, n);
-        if (n == 0) {
-            UEvent* ev = usbHsFsGetStatusChangeUserEvent();
-            if (ev) waitSingle(waiterForUEvent(ev), 2000000000ULL); // 2s
+        // A single fixed 2s wait wasn't enough for slower devices (e.g. an
+        // NVMe enclosure doing link training + SCSI init): the library's own
+        // example uses a 3s settle + an indefinite event wait, never one fixed
+        // timeout. Retry up to 3x3s, bailing out early the moment something
+        // mounts, so a fast drive still shows up in ~0-3s and a slow one gets
+        // up to 9s total instead of being declared "not there" after 2s.
+        UEvent* ev = usbHsFsGetStatusChangeUserEvent();
+        for (int attempt = 1; n == 0 && ev && attempt <= 3; attempt++) {
+            waitSingle(waiterForUEvent(ev), 3000000000ULL); // 3s
             phys = usbHsFsGetPhysicalDeviceCount();
             n = usbHsFsGetMountedDeviceCount();
-            DebugLog::line("boot USB +2s physical=%u mounted=%u", phys, n);
+            DebugLog::line("boot USB +%ds (retry %d/3) physical=%u mounted=%u",
+                           attempt * 3, attempt, phys, n);
         }
     }
 #endif
