@@ -18,8 +18,10 @@ void UI::drawBankSelectorFrame() {
 
     // Show split view: bank selector on one side, other panel visible
     // - Normal mode: save on left, selector on right (when save is loaded)
-    // - Applet/All-banks mode: other bank on opposite side (when a bank is loaded)
-    bool splitView = isDualBankMode() ? !activeBankName_.empty() : save_.isLoaded();
+    // - Applet/All-banks mode: other bank on opposite side (when EITHER bank
+    //   is loaded — the second pick must stay split, not go fullscreen)
+    bool splitView = isDualBankMode() ? (!activeBankName_.empty() || !leftBankName_.empty())
+                                      : save_.isLoaded();
 
     // Determine selector area
     int selCenterX = SCREEN_W / 2;
@@ -35,9 +37,14 @@ void UI::drawBankSelectorFrame() {
                 t += "(..)";
                 return t;
             };
-            std::string rightBoxName = truncName(activeBankName_, 16) + " - " + bank_.getBoxName(bankBox_);
-            drawPanel(PANEL_X_R, rightBoxName, bankBox_, bank_.boxCount(),
-                      false, nullptr, &bank_, bankBox_, Panel::Bank);
+            if (!activeBankName_.empty()) {
+                std::string rightBoxName = truncName(activeBankName_, 16) + " - " + bank_.getBoxName(bankBox_);
+                drawPanel(PANEL_X_R, rightBoxName, bankBox_, bank_.boxCount(),
+                          false, nullptr, &bank_, bankBox_, Panel::Bank);
+            } else {
+                drawPanel(PANEL_X_R, i18n::get(StrKey::NoBankLoaded), 0, 1,
+                          false, nullptr, nullptr, 0, Panel::Bank);
+            }
         } else {
             // Normal mode or dual switching right bank: selector on right
             selCenterX = PANEL_X_R + PANEL_W / 2;
@@ -360,6 +367,8 @@ void UI::handleBankSelectorInput(bool& running) {
                         openSelectedBank();
                     break;
                 case SDL_CONTROLLER_BUTTON_A: // Switch B = back
+                    DebugLog::line("bank: B in selector activeBank=%d allMode=%d",
+                        !activeBankName_.empty(), (int)allBanksMode_);
                     if (!activeBankName_.empty()) {
                         // B in banca torna sempre a TUTTE le banche con header per-gioco.
                         activeBankName_.clear();
@@ -504,7 +513,13 @@ void UI::openSelectedBank() {
         invalidateAllSlotDisplays();
     }
 
-    showWorking(i18n::get(StrKey::LoadingBank));
+    // No fullscreen modal when opening from an already-composed split view
+    // (save left + list right): it would wipe the screen for a fraction of a
+    // second. Keep it for fullscreen transitions (game -> grid).
+    bool fromSplit = isDualBankMode() ? (!activeBankName_.empty() || !leftBankName_.empty())
+                                      : save_.isLoaded();
+    if (!fromSplit)
+        showWorking(i18n::get(StrKey::LoadingBank));
 
     if (isDualBankMode() && bankSelTarget_ == Panel::Game) {
         leftBankPath_ = bankManager_.loadBank(name, bankLeft_);
@@ -517,12 +532,12 @@ void UI::openSelectedBank() {
     }
 
     // In dual mode, after loading the right bank, chain to left bank selector
-    // (only if there's at least one other bank to choose from)
+    // (only if there's at least one other bank to choose from). The list stays
+    // on ALL banks for the second pick too: narrowing to one game hid the other
+    // banks (and single-bank folders skipped dual entirely, landing on MainView
+    // with an empty left side).
     if (isDualBankMode() && bankSelTarget_ == Panel::Bank && leftBankName_.empty()) {
-        // In all-banks mode, switch to game-specific bank list for second bank
-        if (allBanksMode_)
-            bankManager_.init(basePath_, selectedGame_);
-
+        DebugLog::line("bank: dual chain right->left, list=%d", (int)bankManager_.list().size());
         if ((int)bankManager_.list().size() > 1) {
             bankSelTarget_ = Panel::Game;
             bankSelCursor_ = 0;
@@ -593,7 +608,10 @@ void UI::handleDeleteConfirmEvent(const SDL_Event& event) {
             showMessageAndWait(i18n::get(StrKey::CannotDelete), i18n::get(StrKey::BankCurrentlyLoaded));
             return;
         }
-        showWorking(i18n::get(StrKey::DeletingBank));
+        // Same split-view rule as openSelectedBank: no fullscreen flash when
+        // the save is already composed on the left panel.
+        if (!(isDualBankMode() ? (!activeBankName_.empty() || !leftBankName_.empty()) : save_.isLoaded()))
+            showWorking(i18n::get(StrKey::DeletingBank));
         bankManager_.deleteBank(name);
         int newCount = (int)bankManager_.list().size();
         if (bankSelCursor_ >= newCount && newCount > 0)
@@ -711,7 +729,8 @@ void UI::commitTextInput(const std::string& text) {
             newBankCrossGen_ = false;
             return;
         }
-        showWorking(i18n::get(StrKey::CreatingBank));
+        if (!(isDualBankMode() ? (!activeBankName_.empty() || !leftBankName_.empty()) : save_.isLoaded()))
+            showWorking(i18n::get(StrKey::CreatingBank));
         bool cross = newBankCrossGen_;
         newBankCrossGen_ = false;
         if (bankManager_.createBank(text, cross)) {
@@ -732,7 +751,8 @@ void UI::commitTextInput(const std::string& text) {
                 i18n::get(StrKey::BankNameExistsBody));
             return;
         }
-        showWorking(i18n::get(StrKey::RenamingBank));
+        if (!(isDualBankMode() ? (!activeBankName_.empty() || !leftBankName_.empty()) : save_.isLoaded()))
+            showWorking(i18n::get(StrKey::RenamingBank));
         if (bankManager_.renameBank(renamingBankName_, text)) {
             // Select the renamed bank
             const auto& banks = bankManager_.list();

@@ -68,7 +68,9 @@ struct Theme {
     SDL_Color partyMark;
 };
 
-inline constexpr int THEME_COUNT = 7;
+inline constexpr int THEME_COUNT = 9;
+// Default for fresh installs (existing theme.cfg choices are preserved).
+inline constexpr int DEFAULT_THEME_INDEX = 8; // OH
 
 const Theme& getTheme(int index);
 const char*  getThemeName(int index);

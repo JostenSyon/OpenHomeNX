@@ -764,6 +764,7 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
         }
         SDL_Delay(16);
     }
+    DebugLog::line("run loop exit (clean)");
 
     account_.unmountSave();
     account_.shutdown();

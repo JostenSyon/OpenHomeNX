@@ -11,7 +11,7 @@ include $(DEVKITPRO)/libnx/switch_rules
 
 #---------------------------------------------------------------------------------
 APP_TITLE	:=	OpenHomeNX
-APP_VERSION :=	0.1.37
+APP_VERSION :=	0.1.42
 APP_AUTHOR	:=	JostenSyon
 
 TARGET		:=	OpenHomeNX
@@ -176,8 +176,8 @@ VERSION_HDR := $(TOPDIR)/include/app_version.h
 # Rigenera include/app_version.h solo se il contenuto cambia (niente rebuild
 # inutili). I sorgenti che mostrano/confrontano la versione lo #include-ano.
 genversion:
-	@printf '#pragma once\n#define APP_VERSION "%s"\n#define APP_AUTHOR "%s"\n' \
-	  '$(APP_VERSION)' '$(APP_AUTHOR)' > $(VERSION_HDR).tmp
+	@printf '#pragma once\n#define APP_VERSION "%s"\n#define APP_AUTHOR "%s"\n#define BUILD_SHA "%s%s"\n' \
+	  '$(APP_VERSION)' '$(APP_AUTHOR)' '$(shell git -C $(TOPDIR) rev-parse --short=7 HEAD 2>/dev/null || echo nogit)' '$(shell [ -z "$$(git -C $(TOPDIR) status --porcelain 2>/dev/null)" ] || echo -dirty)' > $(VERSION_HDR).tmp
 	@if cmp -s $(VERSION_HDR).tmp $(VERSION_HDR) 2>/dev/null; then rm -f $(VERSION_HDR).tmp; \
 	 else mv -f $(VERSION_HDR).tmp $(VERSION_HDR); echo "genversion -> v$(APP_VERSION)"; fi
 

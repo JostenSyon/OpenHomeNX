@@ -187,7 +187,7 @@ private:
     static constexpr int BV_PREVIEW_HDR  = 22;
 
     // Theme
-    int themeIndex_ = 0;
+    int themeIndex_ = DEFAULT_THEME_INDEX;
     const Theme* theme_ = nullptr;
     const Theme* lastTheme_ = nullptr; // tracks theme changes for text cache invalidation
     const Theme& T() const { return *theme_; }

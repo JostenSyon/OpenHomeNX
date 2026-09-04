@@ -39,11 +39,18 @@ void openLogFile() {
     if (!s_file) return;
     char buf[1024];
     std::snprintf(buf, sizeof(buf),
-        "===== RUN %s v%s =====",
+        "===== RUN %s v%s (%s) =====",
         currentDateTime().c_str(),
 #ifdef APP_VERSION
         APP_VERSION
 #else
+        "?"
+#endif
+#ifdef BUILD_SHA
+        ,
+        BUILD_SHA
+#else
+        ,
         "?"
 #endif
     );

@@ -267,6 +267,86 @@ static const Theme themes[THEME_COUNT] = {
         .searchDim       = {60, 40, 10, 100},
         .partyMark       = {50, 130, 220, 255},
     },
+
+    // ===== 7: OH dark (OpenHome desktop dark palette, App.css) =====
+    {
+        .name            = "OH dark",
+        .bg              = {0x08, 0x17, 0x21, 255},     // navy-900
+        .panelBg         = {0x08, 0x17, 0x21, 255},     // navy-900 (cards)
+        .statusBarBg     = {0x05, 0x0E, 0x15, 255},     // navy-900 darker
+        .slotEmpty       = {0x14, 0x2E, 0x3A, 255},     // dark slate-teal
+        .slotFull        = {0x4A, 0x6C, 0x70, 255},     // teal-700
+        .slotEgg         = {0x6E, 0x62, 0x54, 255},
+        .cursor          = {0x7D, 0xCE, 0xAB, 255},     // teal-400 (brand)
+        .selected        = {0x7D, 0x9A, 0x9C, 255},     // teal-500
+        .selectedPos     = {0x53, 0xB4, 0xA5, 255},     // teal-450
+        .text            = {0xF0, 0xF0, 0xF0, 255},     // gray-50 dark
+        .textDim         = {0xA8, 0xA8, 0xA8, 255},     // gray-700 dark
+        .textOnBadge     = {0, 0, 0, 255},
+        .boxName         = {0xD8, 0xD8, 0xD8, 255},
+        .arrow           = {0xA0, 0xDA, 0xC2, 255},     // teal-300
+        .statusText      = {0x53, 0xB4, 0xA5, 255},     // teal-450
+        .red             = {0xF0, 0x7A, 0x6E, 255},     // red-dark approx, verify HW
+        .shiny           = {0xFC, 0xCB, 0x59, 255},     // hyper-train-color
+        .goldLabel       = {0xFC, 0xCB, 0x59, 255},     // hyper-train-color
+        .genderMale      = {0x8E, 0xA8, 0xF0, 255},     // blue-dark approx, verify HW
+        .genderFemale    = {0xF2, 0x8E, 0xA6, 255},
+        .overlay         = {0, 0, 0, 160},
+        .overlayDark     = {0, 0, 0, 187},
+        .menuHighlight   = {0x7D, 0x9A, 0x9C, 255},     // teal-500
+        .iconPlaceholder = {0x36, 0x45, 0x4E, 255},     // navy-800
+        .popupBorder     = {0x01, 0x53, 0x54, 255},     // teal-800
+        .creditsText     = {0x88, 0x88, 0x88, 255},
+        .boxPreviewBg    = {0x10, 0x28, 0x34, 230},
+        .miniCellEmpty   = {0x14, 0x2A, 0x36, 180},
+        .miniCellFull    = {0x4A, 0x6C, 0x70, 200},     // teal-700
+        .textFieldBg     = {0x06, 0x12, 0x1B, 255},
+        .searchMatch     = {255, 140, 50, 255},
+        .searchDim       = {0, 0, 0, 120},
+        .partyMark       = {0x53, 0xB4, 0xA5, 255},     // teal-450
+    },
+
+    // ===== 8: OH (chiaro, da descrizione utente mappata sui token App.css) =====
+    // bg = surface light navy-950 (blu-verde); slot = gray-900 (griglia nera);
+    // panelBg = gray-800 (box un po' più chiaro); bordi = gray-400.
+    // Testo chiaro perché le celle sono scure (in light OH il testo è nero
+    // su pannelli mint, ma qui la griglia è scura per indicazione utente).
+    {
+        .name            = "OH",
+        .bg              = {0x01, 0x52, 0x54, 255},  // sfondo globale app
+        .panelBg         = {0x44, 0x7F, 0x7F, 255},  // sfondo card giochi / box
+        .statusBarBg     = {0x01, 0x3E, 0x40, 255},  // teal scuro (barra stato)
+        .slotEmpty       = {108, 141, 141, 255},     // come sfondo celle piene (slotFull)
+        .slotFull        = {108, 141, 141, 255},     // teal-600
+        .slotEgg         = {122, 95, 63, 255},
+        .cursor          = {83, 180, 165, 255},      // teal-450
+        .selected        = {0x01, 0x52, 0x54, 255},  // selezionato per spostare = sfondo globale
+        .selectedPos     = {0x01, 0x52, 0x54, 255},  // idem (preserve posizioni)
+        .text            = {240, 240, 240, 255},     // chiaro (celle scure)
+        .textDim         = {168, 168, 168, 255},
+        .textOnBadge     = {0, 0, 0, 255},
+        .boxName         = {216, 216, 216, 255},
+        .arrow           = {160, 218, 194, 255},     // teal-300
+        .statusText      = {83, 180, 165, 255},      // teal-450
+        .red             = {232, 83, 74, 255},       // red-light approx, verify HW
+        .shiny           = {219, 164, 63, 255},      // hyper-train light
+        .goldLabel       = {219, 164, 63, 255},
+        .genderMale      = {142, 168, 240, 255},
+        .genderFemale    = {242, 142, 166, 255},
+        .overlay         = {0, 0, 0, 160},
+        .overlayDark     = {0, 0, 0, 187},
+        .menuHighlight   = {0x57, 0x8D, 0x8D, 255},  // gioco/card evidenziato
+        .iconPlaceholder = {96, 96, 96, 255},        // gray-600
+        .popupBorder     = {144, 144, 144, 255},     // gray-400, riquadri
+        .creditsText     = {136, 136, 136, 255},
+        .boxPreviewBg    = {48, 48, 48, 230},
+        .miniCellEmpty   = {108, 141, 141, 180},     // come slotEmpty
+        .miniCellFull    = {108, 141, 141, 200},
+        .textFieldBg     = {48, 48, 48, 255},
+        .searchMatch     = {255, 140, 50, 255},
+        .searchDim       = {0, 0, 0, 120},
+        .partyMark       = {83, 180, 165, 255},      // teal-450
+    },
 };
 
 const Theme& getTheme(int index) {
@@ -284,11 +364,11 @@ const char* getThemeName(int index) {
 int loadThemeIndex(const std::string& basePath) {
     std::string path = basePath + "theme.cfg";
     FILE* f = std::fopen(path.c_str(), "rb");
-    if (!f) return 0;
+    if (!f) return DEFAULT_THEME_INDEX;
     uint8_t idx = 0;
     std::fread(&idx, 1, 1, f);
     std::fclose(f);
-    if (idx >= THEME_COUNT) idx = 0;
+    if (idx >= THEME_COUNT) idx = DEFAULT_THEME_INDEX;
     return idx;
 }
 

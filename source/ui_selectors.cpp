@@ -689,6 +689,7 @@ void UI::handleGameSelectorInput(bool& running) {
                             }
                         } else {
                             // Exit — chiudi menu e esci
+                            DebugLog::line("nav: menu Exit -> QUIT");
                             showGameSelMenu_ = false;
                             running = false;
                             return;
@@ -752,6 +753,8 @@ void UI::handleGameSelectorInput(bool& running) {
                         selectGame(availableGames_[gameSelCursor_]);
                     break;
                 case SDL_CONTROLLER_BUTTON_A: // Switch B = back
+                    DebugLog::line("nav: B in games profile=%d -> %s", selectedProfile_,
+                        selectedProfile_ >= 0 ? "ProfileSelector" : "QUIT");
                     if (selectedProfile_ >= 0) {
                         freeGameIcons();
                         account_.unmountSave();
@@ -830,6 +833,8 @@ void UI::enterAllBanksMode() {
 
     bankSelCursor_ = 0;
     bankSelScroll_ = 0;
+    // First pick goes RIGHT, second pick LEFT (original order: inverting it
+    // caused a crash loop on A/B toggling in the all-banks list).
     bankSelTarget_ = Panel::Bank;
     leftBankName_.clear();
     leftBankPath_.clear();
@@ -885,48 +890,33 @@ bool UI::finalizePendingUpdate() {
         return false;
     }
 
-    // Is the canonical .nro ALREADY this exact build? (a previous finalize
-    // succeeded but the .new file couldn't be deleted). Match on version
-    // string *and* byte size: on hardware where the in-place overwrite is
-    // refused (fopen "wb" on the running NRO), or when re-installing the
-    // same version number over a different build, the version can match while
-    // the canonical .nro is still the OLD bytes — in that case we must NOT
-    // drop .new, we must finalize + bounce.
+    // Same version in canonical and pending: either a stale leftover (a previous
+    // finalize succeeded but .new couldn't be deleted) or a genuine same-version
+    // reinstall. Tell them apart WITHOUT trusting byte size (NRO sizes are
+    // page-aligned: different builds often compare equal, so size match proves
+    // nothing): if .new can be unlinked it was stale — drop it. If not, we ARE
+    // the throw-away .new, so fall through and finalize for real (copy + bounce).
+    // NOTE: version compare only, never size. Same-version reinstall MUST apply.
     std::string nroVer;
     bool nroReadable = readNroDisplayVersion(runningNro, nroVer);
-    struct stat nst;
-    bool sameSize = (stat(runningNro.c_str(), &nst) == 0) && nst.st_size == st.st_size;
-    if (nroReadable && nroVer == pendVer && sameSize) {
-        // Il canonical è già byte-identico al pending. Se però siamo il boot
-        // throwaway (.new) non possiamo cancellare noi stessi (Horizon rifiuta
-        // l'unlink dell'eseguibile in uso: è lo stesso motivo per cui fallisce
-        // l'in-place overwrite) — e avviare l'app completa da .new senza bounce
-        // è il "doppio riavvio". Rimbalziamo sul canonical con la maschera
-        // "Updating…"; sarà il boot canonical a rimuovere il leftover.
+    if (nroReadable && nroVer == pendVer) {
         if (std::remove(pending.c_str()) == 0) {
-            DebugLog::line("update: canonical already v%s (%lld B), leftover .new removed",
-                           nroVer.c_str(), (long long)nst.st_size);
+            DebugLog::line("update: canonical already v%s, stale .new removed",
+                           nroVer.c_str());
             return false;
         }
-        // We are the throw-away .new and can't unlink ourselves. .nro already
-        // holds the new build — bounce into it behind the "Updating…" mask so
-        // the user never sees this instance's full app. The next .nro boot
-        // removes the leftover .new (the branch just above).
-        DebugLog::line("update: running from .new (remove refused, errno %d), bouncing to canonical v%s",
-                       errno, nroVer.c_str());
-        if (envHasNextLoad()) { envSetNextLoad(runningNro.c_str(), runningNro.c_str()); return true; }
-        return false;
+        DebugLog::line("update: same-version reinstall v%s, finalizing for real (size ignored)",
+                       nroVer.c_str());
+        // fall through to copyFileTo below: canonical isn't in use from here,
+        // so the copy lands; the bounce + next-boot cleanup handle the rest.
     }
-    if (nroReadable && nroVer == pendVer && !sameSize)
-        DebugLog::line("update: canonical v%s but %lld B != .new %lld B -> finalizing anyway",
-                       nroVer.c_str(), (long long)nst.st_size, (long long)st.st_size);
 
     if (copyFileTo(pending, runningNro)) {
         DebugLog::line("update: finalized pending %s -> %s v%s (copy)",
                        pending.c_str(), runningNro.c_str(), pendVer.c_str());
         // Try to drop the sidecar. If we ARE .new (Horizon refuses to unlink
-        // the running image) it stays and the next real launch removes it via
-        // the "canonical already ... sameSize" branch above.
+        // the running image) it stays and the next canonical boot removes it
+        // via the same-version branch above (remove succeeds from there).
         if (std::remove(pending.c_str()) != 0)
             DebugLog::line("update: .new is the running image, cleaned next boot");
         // Bounce into the canonical .nro (now the new build) behind the
