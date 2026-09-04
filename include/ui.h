@@ -86,6 +86,13 @@ public:
     bool isDualBankMode() const { return appletMode_ || allBanksMode_; }
     void run(const std::string& basePath, const std::string& savePath);
 
+    // Pending-update fast path (OpenHomeNX.nro.new present). Consolidates it
+    // into OpenHomeNX.nro; if a bounce into the fresh .nro is needed, draws the
+    // "Updating…" card and returns true (caller must exit). Returns false when
+    // there is nothing to bounce (caller continues a normal boot). Needs the
+    // renderer already up (init()).
+    bool tryUpdateBounce(const std::string& basePath);
+
 private:
     SDL_Window*          window_    = nullptr;
     SDL_Renderer*        renderer_  = nullptr;

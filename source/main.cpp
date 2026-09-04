@@ -50,19 +50,33 @@ int main(int argc, char* argv[]) {
     ledInitWithPath(basePath.c_str());
     DebugLog::init(basePath);
 
-    // Rete per l'updater remoto (Layer 1). Non su un boot-bounce di update, e
-    // mai fatale: se fallisce, "Check for update" resta solo SD/USB.
-    bool netReady = false;
-
-    // A pending self-update leaves OpenHomeNX.nro.new next to the NRO. When it
-    // is present this boot only exists to consolidate + bounce into the real
-    // .nro, so skip the cold-boot extras (USB probe wait, splash fade) that
-    // otherwise stutter on this throw-away pass.
+    // A pending self-update leaves OpenHomeNX.nro.new next to the NRO. This
+    // boot only exists to consolidate it into the real .nro and bounce into
+    // that behind the "Updating…" card — so bring up JUST the renderer, do the
+    // bounce, and exit before any of the cold-boot cost (net, USB probe,
+    // text-data parse, splash fade, game-icon load).
     bool pendingUpdate = false;
     {
         struct stat pst;
         pendingUpdate = (stat((basePath + "OpenHomeNX.nro.new").c_str(), &pst) == 0);
     }
+
+    UI ui;
+    if (!ui.init()) {
+        romfsExit();
+        return 1;
+    }
+
+    if (pendingUpdate && ui.tryUpdateBounce(basePath)) {
+        ui.shutdown();
+        ledExit();
+        romfsExit();
+        return 0;   // libnx exit -> loader chainloads the fresh OpenHomeNX.nro
+    }
+
+    // Rete per l'updater remoto (Layer 1). Non su un boot-bounce di update, e
+    // mai fatale: se fallisce, "Check for update" resta solo SD/USB.
+    bool netReady = false;
 
     {
         Result netRc = socketInitializeDefault();
@@ -145,16 +159,8 @@ int main(int argc, char* argv[]) {
     AbilityName::load("romfs:/data/abilities_en.txt");
     ItemName::load("romfs:/data/items_en.txt");
 
-    // Initialize UI first so we can show errors
-    UI ui;
-    if (!ui.init()) {
-        romfsExit();
-        return 1;
-    }
-
-    // Show splash screen while loading. (A post-update boot from .nro.new is
-    // now a normal session — finalizePendingUpdate() consolidates .nro in
-    // place and does NOT bounce — so it gets the splash like any other boot.)
+    // Show splash screen while loading. (The renderer is already up — ui.init()
+    // ran near the top so the pending-update fast path could use it.)
     ui.showSplash();
 
     // Detect applet mode on Switch — bank-only access without save data

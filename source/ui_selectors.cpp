@@ -878,7 +878,8 @@ bool UI::finalizePendingUpdate() {
             DebugLog::line("update: finalized (blind) %s -> %s", pending.c_str(), runningNro.c_str());
             if (std::remove(pending.c_str()) != 0)
                 DebugLog::line("update: .new is the running image, cleaned next boot");
-            return false;   // run from .new now; .nro is the new build (no bounce)
+            if (envHasNextLoad()) { envSetNextLoad(runningNro.c_str(), runningNro.c_str()); return true; }
+            return false;
         }
         if (envHasNextLoad()) envSetNextLoad(pending.c_str(), pending.c_str());
         return false;
@@ -907,13 +908,13 @@ bool UI::finalizePendingUpdate() {
                            nroVer.c_str(), (long long)nst.st_size);
             return false;
         }
-        // We are the throw-away .new and it can't unlink itself. The canonical
-        // .nro already holds the new build, so DON'T bounce — just run the app
-        // now (from .new, byte-identical to .nro). The leftover .new is cleaned
-        // by the next real launch (the branch just above). Bouncing here only
-        // ran the same code twice = the visible second restart.
-        DebugLog::line("update: running from .new (remove refused, errno %d), .nro already v%s -> proceeding, no bounce",
+        // We are the throw-away .new and can't unlink ourselves. .nro already
+        // holds the new build — bounce into it behind the "Updating…" mask so
+        // the user never sees this instance's full app. The next .nro boot
+        // removes the leftover .new (the branch just above).
+        DebugLog::line("update: running from .new (remove refused, errno %d), bouncing to canonical v%s",
                        errno, nroVer.c_str());
+        if (envHasNextLoad()) { envSetNextLoad(runningNro.c_str(), runningNro.c_str()); return true; }
         return false;
     }
     if (nroReadable && nroVer == pendVer && !sameSize)
@@ -928,11 +929,15 @@ bool UI::finalizePendingUpdate() {
         // the "canonical already ... sameSize" branch above.
         if (std::remove(pending.c_str()) != 0)
             DebugLog::line("update: .new is the running image, cleaned next boot");
-        // Do NOT bounce. The canonical .nro now holds the new build; this .new
-        // instance is byte-identical, so just run it. Bouncing to .nro only to
-        // execute the same code again was the second restart the user saw.
-        // (If this forwarder relaunches its target when .new exits, that lands
-        // on .nro v_new once — the same as any ordinary next launch.)
+        // Bounce into the canonical .nro (now the new build) behind the
+        // "Updating…" mask. This *is* a second restart, but the throw-away
+        // .new boot that runs it is stripped to the bone (see main.cpp:
+        // no net/USB/text-data/splash), so it's a quick flash, not a full
+        // second app launch.
+        if (envHasNextLoad()) {
+            envSetNextLoad(runningNro.c_str(), runningNro.c_str());
+            return true;
+        }
         return false;
     }
 
@@ -944,6 +949,23 @@ bool UI::finalizePendingUpdate() {
                    runningNro.c_str(), pending.c_str());
     if (envHasNextLoad()) envSetNextLoad(pending.c_str(), pending.c_str());
     return false;
+}
+
+// Called from main() BEFORE net/USB/text-data/splash when OpenHomeNX.nro.new is
+// present. Consolidates the update into OpenHomeNX.nro; if a bounce into the
+// fresh .nro is armed, flashes the "Updating…" card and returns true so main()
+// exits straight away (libnx then chainloads the nextLoad). Returns false when
+// there is nothing to bounce (a stale .new was just cleared) — main() then
+// continues a normal boot. Needs init() (renderer) already done.
+bool UI::tryUpdateBounce(const std::string& basePath) {
+    basePath_ = basePath;
+    if (!finalizePendingUpdate())
+        return false;
+    // finalizePendingUpdate() armed envSetNextLoad(the real .nro). Draw one
+    // frame of the card so the chainload isn't a black gap, then let main exit.
+    showWorking("Updating...");
+    SDL_Delay(150);
+    return true;
 }
 
 // Prima di scaricare dalla rete, rimuove eventuali .nro stantii lasciati da

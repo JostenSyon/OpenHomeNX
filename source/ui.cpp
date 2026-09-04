@@ -376,9 +376,12 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
     // returns true we are running from the throw-away .nro.new and the real
     // .nro has just been written: bounce straight into it (one quick
     // "Updating…" frame) instead of letting the user touch the .new instance.
+    // Safety net: main() normally does this via tryUpdateBounce() before we get
+    // here, so on a normal boot finalizePendingUpdate() returns false and this
+    // is skipped. Kept in case the pending .new appears after main()'s check.
     if (finalizePendingUpdate()) {
         showWorking("Updating...");
-        SDL_Delay(700);
+        SDL_Delay(150);
         return;  // main() cleans up -> libnx exit chainloads nextLoad (the real .nro)
     }
 
