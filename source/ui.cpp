@@ -393,6 +393,10 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
     int cryptoVal = loadCryptoEngine(basePath_);
     g_cryptoEngine = (cryptoVal == 1) ? CryptoEngine::OH : CryptoEngine::PK;
 
+    // Load import-path settings (which folders to scan for emulator saves —
+    // always seeds basePath_+"import/" if the config is missing/empty).
+    importPaths_ = loadImportPaths(basePath_);
+
     // All games in menu order
     constexpr GameType allGames[] = {
         GameType::GP, GameType::GE, GameType::Sw, GameType::Sh,
@@ -541,6 +545,86 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
                 else if (screen_ == AppScreen::BankSelector) drawBankSelectorFrame();
                 else drawFrame();
                 drawThemeSelectorPopup();
+                SDL_RenderPresent(renderer_);
+                dirty_ = false;
+            }
+            SDL_Delay(16);
+            continue;
+        }
+
+        // Import-path settings intercepts input from any screen
+        if (showImportSettings_) {
+            SDL_Event event;
+            while (SDL_PollEvent(&event)) {
+                if (event.type == SDL_QUIT) { running = false; break; }
+                if (event.type == SDL_CONTROLLERAXISMOTION) {
+                    if (event.caxis.axis == SDL_CONTROLLER_AXIS_LEFTX ||
+                        event.caxis.axis == SDL_CONTROLLER_AXIS_LEFTY) {
+                        int16_t lx = SDL_GameControllerGetAxis(pad_, SDL_CONTROLLER_AXIS_LEFTX);
+                        int16_t ly = SDL_GameControllerGetAxis(pad_, SDL_CONTROLLER_AXIS_LEFTY);
+                        updateStick(lx, ly);
+                    }
+                }
+                if (event.type == SDL_CONTROLLERBUTTONDOWN) {
+                    markDirty();
+                    int rows = (int)importPaths_.size() + 1; // +1 = "Add path..."
+                    switch (event.cbutton.button) {
+                        case SDL_CONTROLLER_BUTTON_DPAD_UP:
+                            importSettingsCursor_ = (importSettingsCursor_ + rows - 1) % rows;
+                            break;
+                        case SDL_CONTROLLER_BUTTON_DPAD_DOWN:
+                            importSettingsCursor_ = (importSettingsCursor_ + 1) % rows;
+                            break;
+                        case SDL_CONTROLLER_BUTTON_B: // Switch A = toggle / add
+                            if (importSettingsCursor_ == (int)importPaths_.size()) {
+                                // "+ Add path..." — swkbd is a blocking call;
+                                // commitTextInput() appends+saves on success.
+                                beginTextInput(TextInputPurpose::ImportPathEntry);
+                            } else if (importSettingsCursor_ >= 0 && importSettingsCursor_ < (int)importPaths_.size()) {
+                                importPaths_[importSettingsCursor_].enabled = !importPaths_[importSettingsCursor_].enabled;
+                                saveImportPaths(basePath_, importPaths_);
+                            }
+                            break;
+                        case SDL_CONTROLLER_BUTTON_Y: // Switch X = remove (the default import/ folder can't be removed)
+                            if (importSettingsCursor_ >= 0 && importSettingsCursor_ < (int)importPaths_.size()) {
+                                const std::string defaultPath = basePath_ + "import/";
+                                if (importPaths_[importSettingsCursor_].path != defaultPath) {
+                                    importPaths_.erase(importPaths_.begin() + importSettingsCursor_);
+                                    saveImportPaths(basePath_, importPaths_);
+                                    if (importSettingsCursor_ > 0) importSettingsCursor_--;
+                                }
+                            }
+                            break;
+                        case SDL_CONTROLLER_BUTTON_A: // Switch B = close
+                        case SDL_CONTROLLER_BUTTON_X:
+                        case SDL_CONTROLLER_BUTTON_BACK:
+                            showImportSettings_ = false;
+                            break;
+                    }
+                }
+            }
+            if (stickDirY_ != 0) {
+                uint32_t now = SDL_GetTicks();
+                uint32_t delay = stickMoved_ ? STICK_REPEAT_DELAY : STICK_INITIAL_DELAY;
+                if (now - stickMoveTime_ >= delay) {
+                    int rows = (int)importPaths_.size() + 1;
+                    importSettingsCursor_ = (importSettingsCursor_ + (stickDirY_ > 0 ? 1 : rows - 1)) % rows;
+                    stickMoveTime_ = now;
+                    stickMoved_ = true;
+                    markDirty();
+                }
+            }
+            if (!showImportSettings_) continue; // dismissed — let main draw section handle it
+            if (dirty_) {
+                if (theme_ != lastTheme_) { clearTextCache(); lastTheme_ = theme_; }
+                if (screen_ == AppScreen::ProfileSelector) drawProfileSelectorFrame();
+                else if (screen_ == AppScreen::GameSelector) {
+                    drawGameSelectorFrame();
+                    if (showGameSelMenu_) drawGameSelMenuPopup();
+                }
+                else if (screen_ == AppScreen::BankSelector) drawBankSelectorFrame();
+                else drawFrame();
+                drawImportSettingsPopup();
                 SDL_RenderPresent(renderer_);
                 dirty_ = false;
             }

@@ -203,6 +203,10 @@ namespace StrKey {
     // ui_render.cpp - theme selector
     constexpr const char* SelectTheme          = "select_theme";
     constexpr const char* ASelectBCancel       = "a_select_b_cancel";
+    constexpr const char* ImportSettingsTitle  = "import_settings_title";
+    constexpr const char* ImportAddPath        = "import_add_path";
+    constexpr const char* ImportSettingsFooter = "import_settings_footer";
+    constexpr const char* ImportPathInputHdr   = "import_path_input_hdr";
 
     // ui_render.cpp - language selector
     constexpr const char* SelectLanguage       = "select_language";

@@ -1077,6 +1077,52 @@ void UI::drawThemeSelectorPopup() {
     drawTextCentered(i18n::get(StrKey::ASelectBCancel), popX + POP_W / 2, popY + POP_H - 18, T().textDim, fontSmall_);
 }
 
+void UI::drawImportSettingsPopup() {
+    drawRect(0, 0, SCREEN_W, SCREEN_H, T().overlay);
+
+    constexpr int POP_W = 560;
+    int rowH = 36;
+    int rowCount = (int)importPaths_.size() + 1; // +1 = "Add path..." row
+    int POP_H = 50 + rowCount * rowH + 30;
+    if (POP_H > SCREEN_H - 40)
+        POP_H = SCREEN_H - 40; // clamp: a very long list still fits on screen
+    int popX = (SCREEN_W - POP_W) / 2;
+    int popY = (SCREEN_H - POP_H) / 2;
+
+    drawRect(popX, popY, POP_W, POP_H, T().panelBg);
+    drawRectOutline(popX, popY, POP_W, POP_H, T().cursor, 2);
+
+    drawTextCentered(i18n::get(StrKey::ImportSettingsTitle), popX + POP_W / 2, popY + 22, T().text, font_);
+
+    int startY = popY + 50;
+    for (int i = 0; i < (int)importPaths_.size(); i++) {
+        int rowY = startY + i * rowH;
+        if (i == importSettingsCursor_) {
+            drawRect(popX + 20, rowY, POP_W - 40, rowH - 4, T().menuHighlight);
+            drawRectOutline(popX + 20, rowY, POP_W - 40, rowH - 4, T().cursor, 2);
+        }
+        const auto& e = importPaths_[i];
+        std::string label = std::string(e.enabled ? "[x] " : "[ ] ") + e.path;
+        // Long paths (esp. USB) can overrun the row — clip rather than overflow.
+        constexpr size_t MAX_LABEL = 60;
+        if (label.size() > MAX_LABEL)
+            label = label.substr(0, MAX_LABEL - 3) + "...";
+        drawTextCentered(label, popX + POP_W / 2, rowY + (rowH - 4) / 2, T().text, fontSmall_);
+    }
+    // "+ Add path..." row, always last
+    {
+        int i = (int)importPaths_.size();
+        int rowY = startY + i * rowH;
+        if (i == importSettingsCursor_) {
+            drawRect(popX + 20, rowY, POP_W - 40, rowH - 4, T().menuHighlight);
+            drawRectOutline(popX + 20, rowY, POP_W - 40, rowH - 4, T().cursor, 2);
+        }
+        drawTextCentered(i18n::get(StrKey::ImportAddPath), popX + POP_W / 2, rowY + (rowH - 4) / 2, T().text, font_);
+    }
+
+    drawTextCentered(i18n::get(StrKey::ImportSettingsFooter), popX + POP_W / 2, popY + POP_H - 18, T().textDim, fontSmall_);
+}
+
 void UI::drawLanguageSelectorPopup() {
     drawRect(0, 0, SCREEN_W, SCREEN_H, T().overlay);
 

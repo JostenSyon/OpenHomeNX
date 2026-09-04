@@ -640,31 +640,36 @@ void UI::handleGameSelectorInput(bool& running) {
                 switch (event.cbutton.button) {
                     case SDL_CONTROLLER_BUTTON_DPAD_UP:
                     case SDL_CONTROLLER_BUTTON_DPAD_LEFT: {
-                        int ms = DebugLog::enabled() ? 5 : 4;
+                        int ms = (int)gameSelMenuActions().size();
                         gameSelMenuCursor_ = (gameSelMenuCursor_ + ms - 1) % ms;
                         break;
                     }
                     case SDL_CONTROLLER_BUTTON_DPAD_DOWN:
                     case SDL_CONTROLLER_BUTTON_DPAD_RIGHT: {
-                        int ms = DebugLog::enabled() ? 5 : 4;
+                        int ms = (int)gameSelMenuActions().size();
                         gameSelMenuCursor_ = (gameSelMenuCursor_ + 1) % ms;
                         break;
                     }
-                    case SDL_CONTROLLER_BUTTON_B: // Switch A = conferma
-                        if (gameSelMenuCursor_ == 0) {
-                            // Switch Core: toggle PK/OH
-                            g_cryptoEngine = (g_cryptoEngine == CryptoEngine::PK) ? CryptoEngine::OH : CryptoEngine::PK;
-                            saveCryptoEngine(basePath_, g_cryptoEngine);
-                            showGameSelMenu_ = false;
-                        } else if (gameSelMenuCursor_ == 1) {
-                            // Debug log: toggle on/off, resta nel menu per feedback visivo
-                            DebugLog::setEnabled(!DebugLog::enabled());
-                            // clamp cursor se appena disattivato e menu si rimpicciolisce
-                            if (!DebugLog::enabled() && gameSelMenuCursor_ >= 4)
-                                gameSelMenuCursor_ = 3;
-                        } else if (DebugLog::enabled() && gameSelMenuCursor_ == 2) {
-                            // Send log → server (solo se debug on)
-                            {
+                    case SDL_CONTROLLER_BUTTON_B: { // Switch A = conferma
+                        std::vector<GameSelMenuAction> actions = gameSelMenuActions();
+                        if (gameSelMenuCursor_ < 0 || gameSelMenuCursor_ >= (int)actions.size())
+                            break;
+                        switch (actions[gameSelMenuCursor_]) {
+                            case GameSelMenuAction::SwitchCore:
+                                g_cryptoEngine = (g_cryptoEngine == CryptoEngine::PK) ? CryptoEngine::OH : CryptoEngine::PK;
+                                saveCryptoEngine(basePath_, g_cryptoEngine);
+                                showGameSelMenu_ = false;
+                                break;
+                            case GameSelMenuAction::DebugLog: {
+                                // Toggle on/off, resta nel menu per feedback visivo.
+                                DebugLog::setEnabled(!DebugLog::enabled());
+                                // Il menu può essersi appena rimpicciolito (Send log
+                                // sparisce con debug off) — riaggancia il cursore.
+                                int ms = (int)gameSelMenuActions().size();
+                                if (gameSelMenuCursor_ >= ms) gameSelMenuCursor_ = ms - 1;
+                                break;
+                            }
+                            case GameSelMenuAction::SendLog: {
                                 UpdateCfg cfg;
                                 std::string err;
                                 if (!readUpdateCfg(basePath_, cfg) || cfg.url.empty()) {
@@ -678,23 +683,29 @@ void UI::handleGameSelectorInput(bool& running) {
                                     else
                                         showMessageAndWait(i18n::get(StrKey::SendLogTitle), i18n::fmt(StrKey::SendLogFailed, err));
                                 }
+                                break;
                             }
-                        } else if ((!DebugLog::enabled() && gameSelMenuCursor_ == 2) ||
-                                   (DebugLog::enabled() && gameSelMenuCursor_ == 3)) {
-                            // Check for a newer NRO and (if found) install + relaunch
-                            showGameSelMenu_ = false;
-                            if (checkForUpdate()) {
+                            case GameSelMenuAction::ImportSettings:
+                                showGameSelMenu_ = false;
+                                showImportSettings_ = true;
+                                importSettingsCursor_ = 0;
+                                break;
+                            case GameSelMenuAction::CheckUpdate:
+                                // Check for a newer NRO and (if found) install + relaunch
+                                showGameSelMenu_ = false;
+                                if (checkForUpdate()) {
+                                    running = false;
+                                    return;
+                                }
+                                break;
+                            case GameSelMenuAction::Exit:
+                                DebugLog::line("nav: menu Exit -> QUIT");
+                                showGameSelMenu_ = false;
                                 running = false;
                                 return;
-                            }
-                        } else {
-                            // Exit — chiudi menu e esci
-                            DebugLog::line("nav: menu Exit -> QUIT");
-                            showGameSelMenu_ = false;
-                            running = false;
-                            return;
                         }
                         break;
+                    }
                     case SDL_CONTROLLER_BUTTON_A: // Switch B = chiudi menu
                     case SDL_CONTROLLER_BUTTON_X:
                     case SDL_CONTROLLER_BUTTON_BACK: // - = cancel
@@ -802,7 +813,7 @@ void UI::handleGameSelectorInput(bool& running) {
         uint32_t now = SDL_GetTicks();
         uint32_t delay = stickMoved_ ? STICK_REPEAT_DELAY : STICK_INITIAL_DELAY;
         if (now - stickMoveTime_ >= delay) {
-            int ms = DebugLog::enabled() ? 5 : 4;
+            int ms = (int)gameSelMenuActions().size();
             gameSelMenuCursor_ = (gameSelMenuCursor_ + (stickDirY_ > 0 ? 1 : ms - 1)) % ms;
             stickMoveTime_ = now;
             stickMoved_ = true;
@@ -1229,13 +1240,28 @@ bool UI::checkForUpdate(bool usbAlreadyMounted) {
     return false;
 }
 
+std::vector<GameSelMenuAction> UI::gameSelMenuActions() const {
+    std::vector<GameSelMenuAction> v = { GameSelMenuAction::SwitchCore, GameSelMenuAction::DebugLog };
+    if (DebugLog::enabled())
+        v.push_back(GameSelMenuAction::SendLog);
+    v.push_back(GameSelMenuAction::ImportSettings);
+    v.push_back(GameSelMenuAction::CheckUpdate);
+    v.push_back(GameSelMenuAction::Exit);
+    return v;
+}
+
 void UI::drawGameSelMenuPopup() {
     // Semi-transparent dark overlay
     drawRect(0, 0, SCREEN_W, SCREEN_H, T().overlay);
 
-    bool dbg = DebugLog::enabled();
+    // Single source of truth for both row count and row selection — the old
+    // parallel hardcoded index/count logic drifted every time a row was
+    // added (see v0.1.37: the highlight box vs text alignment bug in this
+    // same popup started life as a similar copy-paste-and-forget mismatch).
+    std::vector<GameSelMenuAction> actions = gameSelMenuActions();
     constexpr int POP_W = 300;
-    int POP_H = dbg ? 276 : 240; // 5 rows se debug on (con Send log), 4 altrimenti
+    int rowH = 36;
+    int POP_H = 50 + (int)actions.size() * rowH + 30;
     int popX = (SCREEN_W - POP_W) / 2;
     int popY = (SCREEN_H - POP_H) / 2;
 
@@ -1244,24 +1270,23 @@ void UI::drawGameSelMenuPopup() {
 
     drawTextCentered(i18n::get(StrKey::MenuTitle), popX + POP_W / 2, popY + 22, T().text, font_);
 
-    const char* labels4[] = { "Switch Core", "Debug log", "Check for update", "Exit" };
-    const char* labels5[] = { "Switch Core", "Debug log", "Send log", "Check for update", "Exit" };
-    const char** labels = dbg ? labels5 : labels4;
-    int MENU_ITEMS = dbg ? 5 : 4;
-    int rowH = 36;
     int startY = popY + 50;
 
-    for (int i = 0; i < MENU_ITEMS; i++) {
+    for (int i = 0; i < (int)actions.size(); i++) {
         int rowY = startY + i * rowH;
         if (i == gameSelMenuCursor_) {
             drawRect(popX + 20, rowY, POP_W - 40, rowH - 4, T().menuHighlight);
             drawRectOutline(popX + 20, rowY, POP_W - 40, rowH - 4, T().cursor, 2);
         }
-        std::string label = labels[i];
-        if (i == 0)
-            label += useOpenHome() ? " (OH)" : " (PK)";
-        else if (i == 1)
-            label += DebugLog::enabled() ? " (on)" : " (off)";
+        std::string label;
+        switch (actions[i]) {
+            case GameSelMenuAction::SwitchCore:      label = std::string("Switch Core") + (useOpenHome() ? " (OH)" : " (PK)"); break;
+            case GameSelMenuAction::DebugLog:        label = std::string("Debug log") + (DebugLog::enabled() ? " (on)" : " (off)"); break;
+            case GameSelMenuAction::SendLog:         label = "Send log"; break;
+            case GameSelMenuAction::ImportSettings:  label = "Import settings"; break;
+            case GameSelMenuAction::CheckUpdate:     label = "Check for update"; break;
+            case GameSelMenuAction::Exit:             label = "Exit"; break;
+        }
         // drawTextCentered() takes the text's vertical CENTRE; match it to the
         // highlight box centre (box: top=rowY, height=rowH-4).
         drawTextCentered(label, popX + POP_W / 2, rowY + (rowH - 4) / 2, T().text, font_);

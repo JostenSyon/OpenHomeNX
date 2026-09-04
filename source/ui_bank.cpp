@@ -685,6 +685,10 @@ void UI::beginTextInput(TextInputPurpose purpose) {
         swkbdConfigSetHeaderText(&kbd, i18n::get(StrKey::MinLevel).c_str());
     else if (purpose == TextInputPurpose::SearchLevelMax)
         swkbdConfigSetHeaderText(&kbd, i18n::get(StrKey::MaxLevel).c_str());
+    else if (purpose == TextInputPurpose::ImportPathEntry) {
+        swkbdConfigSetHeaderText(&kbd, i18n::get(StrKey::ImportPathInputHdr).c_str());
+        swkbdConfigSetStringLenMax(&kbd, 127); // paths run longer than a bank/box name
+    }
     if (purpose == TextInputPurpose::RenameBank && !renamingBankName_.empty())
         swkbdConfigSetInitialText(&kbd, renamingBankName_.c_str());
     else if (!textInputBuffer_.empty())
@@ -693,7 +697,7 @@ void UI::beginTextInput(TextInputPurpose purpose) {
         swkbdConfigSetType(&kbd, SwkbdType_NumPad);
         swkbdConfigSetStringLenMax(&kbd, 3);
     }
-    char result[64] = {};
+    char result[160] = {}; // must fit the longest allowed input (import paths, 127 chars)
     Result rc = swkbdShow(&kbd, result, sizeof(result));
     swkbdClose(&kbd);
     if (R_SUCCEEDED(rc) && result[0])
@@ -776,5 +780,16 @@ void UI::commitTextInput(const std::string& text) {
     } else if (textInputPurpose_ == TextInputPurpose::SearchLevelMax) {
         int val = text.empty() ? 0 : std::atoi(text.c_str());
         searchFilter_.levelMax = (val < 0) ? 0 : (val > 100 ? 100 : val);
+    } else if (textInputPurpose_ == TextInputPurpose::ImportPathEntry) {
+        if (!text.empty()) {
+            bool exists = false;
+            for (const auto& e : importPaths_)
+                if (e.path == text) { exists = true; break; }
+            if (!exists) {
+                importPaths_.push_back({text, true});
+                saveImportPaths(basePath_, importPaths_);
+                importSettingsCursor_ = (int)importPaths_.size() - 1;
+            }
+        }
     }
 }

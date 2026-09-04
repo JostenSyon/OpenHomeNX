@@ -5,6 +5,7 @@
 #include "account.h"
 #include "theme.h"
 #include "wondercard.h"
+#include "import_paths.h"
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_ttf.h>
 #include <SDL2/SDL_image.h>
@@ -23,8 +24,14 @@ enum class AppScreen { ProfileSelector, GameSelector, BankSelector, MainView };
 // Purpose of text input popup
 enum class TextInputPurpose {
     CreateBank, RenameBank, RenameBoxName,
-    SearchSpecies, SearchOT, SearchLevelMin, SearchLevelMax
+    SearchSpecies, SearchOT, SearchLevelMin, SearchLevelMax,
+    ImportPathEntry
 };
+
+// Rows of the "+" game-selector menu. A single list drives both the popup's
+// draw order and its input handling — the old parallel hardcoded row-count
+// arithmetic (see v0.1.37's alignment bug) drifts every time a row is added.
+enum class GameSelMenuAction { SwitchCore, DebugLog, SendLog, ImportSettings, CheckUpdate, Exit };
 
 // Search filter enums
 enum class GenderFilter { Any, Male, Female, Genderless };
@@ -201,6 +208,14 @@ private:
     bool showLanguageSelector_ = false;
     int  langSelCursor_        = 0;
     std::vector<std::string> langList_;
+
+    // Import-path settings state (GEN_PLAN Fase 2 groundwork: which folders
+    // to scan for emulator save files — the scan itself lands separately).
+    bool showImportSettings_    = false;
+    int  importSettingsCursor_  = 0;
+    std::vector<ImportPathEntry> importPaths_;
+    std::vector<GameSelMenuAction> gameSelMenuActions() const;
+    void drawImportSettingsPopup();
 
     // Cross-gen transfer selector state (M6a)
     bool showGenSelector_ = false;
