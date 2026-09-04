@@ -97,6 +97,19 @@ impl SwordShieldSave {
         Box::from(self.box_data().mon_bytes_at(box_index, box_slot))
     }
 
+    /// Raw decrypted box-slot bytes (344), exactly as they sit in the save
+    /// after decryption — NOT a re-serialization of a parsed [`Pk8`].
+    /// `Pk8` parse→write normalizes ribbon / reserved bits that this keeps
+    /// intact, so this is what an OpenHome "verbatim OriginalBackup" must use
+    /// for a same-save read to stay byte-identical to a native decrypt.
+    pub fn get_mon_bytes_at_decrypted(
+        &self,
+        box_index: BoxIndex,
+        box_slot: BoxSlot,
+    ) -> Box<[u8]> {
+        self.get_mon_bytes_decrypted(box_index, box_slot)
+    }
+
     pub fn get_mon_at(&self, box_index: BoxIndex, box_slot: BoxSlot) -> Option<Pk8> {
         let decrypted_bytes = self.get_mon_bytes_decrypted(box_index, box_slot);
         let national_dex = Pk8Buffer::new(&decrypted_bytes).species_ndex();

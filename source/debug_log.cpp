@@ -1,4 +1,5 @@
 #include "debug_log.h"
+#include "app_version.h"
 #include <fstream>
 #include <cstdarg>
 #include <cstring>

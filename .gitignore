@@ -23,3 +23,5 @@ __pycache__/
 
 # release artifacts
 /dist/
+include/app_version.h
+update.cfg

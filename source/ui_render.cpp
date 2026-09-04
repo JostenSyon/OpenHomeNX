@@ -3,6 +3,7 @@
 #include "crypto_engine.h"
 #include "debug_log.h"
 #include "species_converter.h"
+#include "app_version.h"
 #include "move_types.h"
 #include <algorithm>
 #include <cmath>

@@ -919,8 +919,8 @@ bool UI::prepareForPlacement(Pokemon& pkm, Panel panel, std::string& whyNot) con
         PkmHandle* out = PokemonFFI::transfer(h, static_cast<uint32_t>(dg));
         PokemonFFI::free(h);
         if (!out) {
-            whyNot = "Conversion to Gen " + std::to_string(dg)
-                   + " was refused (species missing from that dex?).";
+            whyNot = pkm.displayName() + " is not in the " + gameDisplayNameOf(d)
+                   + " Pokedex, so it can't be sent there (no clone is made).";
             return false;
         }
         std::vector<uint8_t> bytes = OpenHomeNX::getPkmBoxBytesForGen(out, static_cast<uint32_t>(dg));
@@ -1020,8 +1020,8 @@ bool UI::prepareForPlacement(Pokemon& pkm, Panel panel, std::string& whyNot) con
     DebugLog::line("convert gen%d->gen%d: %s", srcGen, dstGen, out ? "ok" : "FAIL");
     PokemonFFI::free(in);
     if (!out) {
-        whyNot = "Conversion to Gen " + std::to_string(dstGen)
-               + " was refused (species missing from that dex?).";
+        whyNot = pkm.displayName() + " is not in the " + gameDisplayNameOf(dest)
+               + " Pokedex, so it can't be sent there (no clone is made).";
         return false;
     }
 

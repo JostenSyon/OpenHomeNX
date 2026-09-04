@@ -11,7 +11,7 @@ include $(DEVKITPRO)/libnx/switch_rules
 
 #---------------------------------------------------------------------------------
 APP_TITLE	:=	OpenHomeNX
-APP_VERSION :=	0.1.20
+APP_VERSION :=	0.1.21
 APP_AUTHOR	:=	JostenSyon
 
 TARGET		:=	OpenHomeNX
@@ -31,7 +31,11 @@ ARCH	:=	-march=armv8-a+crc+crypto -mtune=cortex-a57 -mtp=soft -fPIE
 CFLAGS	:=	-g -Wall -O2 -ffunction-sections -fdata-sections -flto -fuse-linker-plugin \
 			$(ARCH) $(DEFINES)
 
-CFLAGS	+=	$(INCLUDE) -D__SWITCH__ -DAPP_VERSION=\"$(APP_VERSION)\" -DAPP_AUTHOR=\"$(APP_AUTHOR)\"
+# APP_VERSION / APP_AUTHOR arrivano da include/app_version.h (generato dal target
+# `genversion`), NON da -D: così un bump di APP_VERSION rigenera l'header e i .o
+# che lo includono si ricompilano (con -D restavano stale -> "aggiorna ma sono
+# ancora alla vecchia versione").
+CFLAGS	+=	$(INCLUDE) -D__SWITCH__
 
 # Debug logger attivo di default. Il toggle a runtime è il file
 # <base>/debug.enable (di norma sdmc:/switch/OpenHomeNX/), overhead ~0 se assente.
@@ -58,6 +62,7 @@ LDFLAGS	=	-specs=$(DEVKITPRO)/libnx/switch.specs -g $(ARCH) -Wl,-Map,$(notdir $*
 LIBS	:=	-lSDL2_image -lSDL2_ttf -lSDL2 \
 			-lfreetype -lharfbuzz -lpng16 -ljpeg -lwebp -lz -lbz2 \
 			-lEGL -lGLESv2 -lglapi -ldrm_nouveau \
+			-lcurl -lmbedtls -lmbedx509 -lmbedcrypto \
 			$(USBHSFS_LIBS) \
 			-lnx
 
@@ -159,14 +164,36 @@ ifneq ($(ROMFS),)
 	export NROFLAGS += --romfsdir=$(CURDIR)/$(ROMFS)
 endif
 
-.PHONY: $(BUILD) clean all
+.PHONY: $(BUILD) clean all release genversion
+
+VERSION_HDR := $(TOPDIR)/include/app_version.h
+
+# Rigenera include/app_version.h solo se il contenuto cambia (niente rebuild
+# inutili). I sorgenti che mostrano/confrontano la versione lo #include-ano.
+genversion:
+	@printf '#pragma once\n#define APP_VERSION "%s"\n#define APP_AUTHOR "%s"\n' \
+	  '$(APP_VERSION)' '$(APP_AUTHOR)' > $(VERSION_HDR).tmp
+	@if cmp -s $(VERSION_HDR).tmp $(VERSION_HDR) 2>/dev/null; then rm -f $(VERSION_HDR).tmp; \
+	 else mv -f $(VERSION_HDR).tmp $(VERSION_HDR); echo "genversion -> v$(APP_VERSION)"; fi
 
 #---------------------------------------------------------------------------------
-all: $(BUILD)
+all: genversion $(BUILD)
 
 $(BUILD):
 	@[ -d $@ ] || mkdir -p $@
 	@$(MAKE) --no-print-directory -C $(BUILD) -f $(TOPDIR)/Makefile
+
+#---------------------------------------------------------------------------------
+# Impacchetta la build corrente in dist/ per l'updater di rete: il .nro +
+# latest.json { version, nro, sha256 }. Punta qui il webserver locale
+# (`python3 -m http.server -d dist 8000`) o carica dist/* nelle release GitHub.
+release: genversion all
+	@mkdir -p dist
+	@cp -f $(TARGET).nro dist/$(TARGET).nro
+	@sha=`shasum -a 256 dist/$(TARGET).nro | cut -d' ' -f1`; \
+	 printf '{\n  "version": "%s",\n  "nro": "%s.nro",\n  "sha256": "%s"\n}\n' \
+	   "$(APP_VERSION)" "$(TARGET)" "$$sha" > dist/latest.json
+	@echo "release -> dist/ (v$(APP_VERSION))"; cat dist/latest.json
 
 #---------------------------------------------------------------------------------
 clean:
@@ -195,7 +222,7 @@ $(OUTPUT).elf	:	$(OFILES) $(RUST_LIB)
 $(RUST_LIB):
 	cd $(TOPDIR)/rust && cargo +nightly build -p openhome_switch --target aarch64-unknown-none --release
 
-$(OFILES_SRC)	: $(HFILES_BIN)
+$(OFILES_SRC)	: $(HFILES_BIN) $(TOPDIR)/include/app_version.h
 
 #---------------------------------------------------------------------------------
 # you need a rule like this for each extension you use as binary data

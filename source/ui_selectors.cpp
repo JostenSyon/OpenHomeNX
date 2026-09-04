@@ -3,6 +3,44 @@
 #include "crypto_engine.h"
 #include "debug_log.h"
 #include "nro_version.h"
+#include "app_version.h"
+#include "update_net.h"
+
+#include <fstream>
+
+namespace {
+// update.cfg accanto all'NRO (o in sdmc:/switch/OpenHomeNX/). Righe key=value:
+//   url=http://192.168.1.50:8000            (radice con latest.json + il .nro)
+//   url=https://github.com/tuo/repo/releases/latest/download
+//   token=<PAT>                             (solo repo privati, header Bearer)
+struct UpdateCfg { std::string url, token; };
+
+bool readUpdateCfg(const std::string& basePath, UpdateCfg& out) {
+    const std::string paths[] = { basePath + "update.cfg",
+                                  "sdmc:/switch/OpenHomeNX/update.cfg" };
+    for (const auto& p : paths) {
+        std::ifstream f(p);
+        if (!f.good()) continue;
+        std::string line;
+        while (std::getline(f, line)) {
+            if (!line.empty() && line.back() == '\r') line.pop_back();
+            if (line.empty() || line[0] == '#') continue;
+            auto eq = line.find('=');
+            if (eq == std::string::npos) continue;
+            std::string k = line.substr(0, eq), v = line.substr(eq + 1);
+            auto trim = [](std::string& s) {
+                while (!s.empty() && (s.front() == ' ' || s.front() == '\t')) s.erase(s.begin());
+                while (!s.empty() && (s.back()  == ' ' || s.back()  == '\t')) s.pop_back();
+            };
+            trim(k); trim(v);
+            if (k == "url") out.url = v;
+            else if (k == "token") out.token = v;
+        }
+        if (!out.url.empty()) return true;
+    }
+    return false;
+}
+} // namespace
 #ifdef OH_USB_UPDATE
 #include <usbhsfs.h>
 #endif
@@ -796,22 +834,49 @@ bool UI::finalizePendingUpdate() {
 
     std::string pendVer;
     if (!readNroDisplayVersion(pending, pendVer)) {
-        // Unreadable .new — drop it so it can't wedge the boot forever.
-        DebugLog::line("update: pending %s unreadable -> removing", pending.c_str());
-        std::remove(pending.c_str());
+        // NACP non leggibile: NON cancellare (era la causa di "aggiorna, riavvia,
+        // ma sono ancora alla vecchia versione" — un read transitorio buttava via
+        // l'update). Se il file ha una dimensione plausibile lo finalizziamo lo
+        // stesso; lo scartiamo solo se è vuoto/minuscolo o se la copia fallisce.
+        if (st.st_size < 1024 * 1024) {
+            DebugLog::line("update: pending %s illeggibile e troppo piccolo (%lld B) -> rimuovo",
+                           pending.c_str(), (long long)st.st_size);
+            std::remove(pending.c_str());
+            return false;
+        }
+        DebugLog::line("update: pending %s NACP illeggibile (%lld B) -> finalizzo comunque",
+                       pending.c_str(), (long long)st.st_size);
+        pendVer = "?";
+        if (copyFileTo(pending, runningNro)) {
+            DebugLog::line("update: finalized (blind) %s -> %s", pending.c_str(), runningNro.c_str());
+            std::remove(pending.c_str());
+            if (envHasNextLoad()) { envSetNextLoad(runningNro.c_str(), runningNro.c_str()); return true; }
+            return false;
+        }
+        if (envHasNextLoad()) envSetNextLoad(pending.c_str(), pending.c_str());
         return false;
     }
 
-    // Is the canonical .nro already this build? (happens when a previous
-    // finalize succeeded but the .new file was left behind.)
+    // Is the canonical .nro ALREADY this exact build? (a previous finalize
+    // succeeded but the .new file couldn't be deleted). Match on version
+    // string *and* byte size: on hardware where the in-place overwrite is
+    // refused (fopen "wb" on the running NRO), or when re-installing the
+    // same version number over a different build, the version can match while
+    // the canonical .nro is still the OLD bytes — in that case we must NOT
+    // drop .new, we must finalize + bounce.
     std::string nroVer;
     bool nroReadable = readNroDisplayVersion(runningNro, nroVer);
-    if (nroReadable && nroVer == pendVer) {
-        DebugLog::line("update: canonical already v%s, dropping leftover %s",
-                       nroVer.c_str(), pending.c_str());
+    struct stat nst;
+    bool sameSize = (stat(runningNro.c_str(), &nst) == 0) && nst.st_size == st.st_size;
+    if (nroReadable && nroVer == pendVer && sameSize) {
+        DebugLog::line("update: canonical already v%s (%lld B), dropping leftover %s",
+                       nroVer.c_str(), (long long)nst.st_size, pending.c_str());
         std::remove(pending.c_str());
         return false;
     }
+    if (nroReadable && nroVer == pendVer && !sameSize)
+        DebugLog::line("update: canonical v%s but %lld B != .new %lld B -> finalizing anyway",
+                       nroVer.c_str(), (long long)nst.st_size, (long long)st.st_size);
 
     if (copyFileTo(pending, runningNro)) {
         DebugLog::line("update: finalized pending %s -> %s v%s (copy)",
@@ -909,13 +974,71 @@ bool UI::checkForUpdate() {
                    foundPath.empty() ? "(none)" : foundPath.c_str(),
                    foundVer.c_str(), foundCmp);
 
+    // Layer 1 — sorgente di rete. Solo se nessuna build LOCALE più recente è
+    // già stata trovata (una .nro locale più nuova vince senza toccare la rete)
+    // e solo se update.cfg definisce un url.
+    bool fromNet = false;
+    if (foundCmp <= 0) {
+        UpdateCfg cfg;
+        if (readUpdateCfg(basePath_, cfg)) {
+            DebugLog::line("update: cfg url=%s token=%s", cfg.url.c_str(),
+                           cfg.token.empty() ? "no" : "yes");
+            if (!updateNetAvailable()) {
+                DebugLog::line("update: rete non disponibile, salto Layer 1");
+                showMessageAndWait("Update", "Network source set (" + cfg.url +
+                    ")\nbut networking is off on this boot. Only SD/USB were checked.");
+            } else {
+                showWorking("Contacting " + cfg.url + " ...");
+                RemoteUpdateInfo info;
+                std::string err;
+                if (!updateNetFetchInfo(cfg.url, cfg.token, info, err)) {
+                    DebugLog::line("update: fetch info fallito: %s", err.c_str());
+                    showMessageAndWait("Update", "Network source: could not reach it.\n" +
+                        err + "\n(" + cfg.url + ")\n\nChecked SD/USB only.");
+                } else {
+                    int cmp = compareVersionStrings(info.version, curVer);
+                    DebugLog::line("update: remoto v%s cmp=%d", info.version.c_str(), cmp);
+                    if (cmp > 0) {
+                        if (!showConfirmDialog("Update disponibile (rete)",
+                                "v" + info.version + " (in uso v" + curVer + ")\nDa: " +
+                                cfg.url + "\nScaricare e installare?"))
+                            return false;
+                        showWorking("Downloading v" + info.version + "...");
+                        const std::string dst = basePath_ + "update/OpenHomeNX.nro";
+                        if (!updateNetDownload(info.nroUrl, cfg.token, dst, info.sha256, err,
+                                [this](const std::string& s){ showWorking(s); })) {
+                            showMessageAndWait("Update", "Download fallito:\n" + err +
+                                "\n\nL'app corrente e' intatta.");
+                            return false;
+                        }
+                        foundPath = dst;
+                        foundVer = info.version;
+                        foundCmp = 1;
+                        fromNet = true;
+                    } else {
+                        // La rete ha risposto e non c'è niente di più recente:
+                        // dillo e FERMATI. Non ricadere sull'install di un
+                        // candidato locale pari-versione (era il "riavvia due
+                        // volte" su un reinstall della stessa versione).
+                        showMessageAndWait("Update", "You're on the latest version (v" +
+                            curVer + ").\nNetwork source reports v" + info.version + ".");
+                        return false;
+                    }
+                }
+            }
+        }
+    }
+
     if (foundPath.empty()) {
         showMessageAndWait("Update", "No build found.\nCurrent version: v" + curVer +
-            "\n\nDrop OpenHomeNX.nro into sdmc:/, sdmc:/switch/OpenHomeNX/update/ or USB.");
+            "\n\nDrop OpenHomeNX.nro into sdmc:/, sdmc:/switch/OpenHomeNX/update/ or USB,"
+            "\nor set 'url=' in update.cfg for a network source.");
         return false;
     }
 
-    if (foundCmp > 0) {
+    if (fromNet) {
+        // già confermato prima del download — niente doppio prompt
+    } else if (foundCmp > 0) {
         if (!showConfirmDialog("Update available",
                 "Found v" + foundVer + " (running v" + curVer + ")\nFrom: " + foundPath + "\nInstall and restart?"))
             return false;
@@ -959,7 +1082,10 @@ bool UI::checkForUpdate() {
         DebugLog::line("update: overwrote %s in place -> v%s", runningNro.c_str(), foundVer.c_str());
         std::remove(tmp.c_str());
         if (envHasNextLoad()) envSetNextLoad(runningNro.c_str(), runningNro.c_str());
-        showMessageAndWait("Update", "Installed v" + foundVer + ".\nRestarting...");
+        // Auto-bounce, no button press: mirrors the boot-time finalize screen so
+        // the whole update is a couple of "Updating…" frames, not taps.
+        showWorking("Updating to v" + foundVer + "...");
+        SDL_Delay(700);
         return true;
     }
 
@@ -970,7 +1096,10 @@ bool UI::checkForUpdate() {
     if (envHasNextLoad()) {
         envSetNextLoad(tmp.c_str(), tmp.c_str());
         DebugLog::line("update: nextLoad -> %s", tmp.c_str());
-        showMessageAndWait("Update", "Installed v" + foundVer + ".\nRestarting...");
+        // Auto-bounce. The .new instance's boot-time finalize shows its own
+        // brief "Updating…" and bounces again into the real .nro — no taps.
+        showWorking("Updating to v" + foundVer + "...");
+        SDL_Delay(700);
         return true; // caller stops the loop -> main() returns -> hbloader relaunches
     }
     std::remove(runningNro.c_str());

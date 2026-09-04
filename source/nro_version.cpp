@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <cstring>
 #include <string>
+#include <switch.h>    // fsdevCommitDevice
 
 namespace {
 
@@ -95,6 +96,14 @@ bool copyFileTo(const std::string& src, const std::string& dst) {
         ok = false;
     std::fclose(in);
     std::fclose(out);
+    // Durabilità: senza il commit, la scrittura resta nella cache FS di libnx e
+    // un exit/relaunch immediato (self-update) rilancia il .nro VECCHIO o
+    // troncato — era la causa di "aggiorna, riavvia, ma sono ancora alla vecchia
+    // versione" (e del .nro finalizzato con size sbagliata, 17572402 vs 17576498).
+    if (ok && dst.rfind("sdmc:/", 0) == 0) {
+        if (R_FAILED(fsdevCommitDevice("sdmc")))
+            fsdevCommitDevice("sdmc:");
+    }
     return ok;
 }
 

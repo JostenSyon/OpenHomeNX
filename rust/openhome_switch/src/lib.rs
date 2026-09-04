@@ -454,9 +454,15 @@ pub extern "C" fn openhome_get_pokemon_from_slot(
                 Some(p) => p,
                 None => return core::ptr::null_mut(),
             };
+            // Backup = the TRUE raw decrypted save bytes, not
+            // `to_party_bytes(&pkm)` (a Pk8 re-serialization that normalizes
+            // ribbon / reserved bits). A same-save OH read must be byte-equal
+            // to a native decrypt; the re-serialization diverged at the ribbon
+            // bytes (~0x3A) and the recomputed checksum.
+            let backup_bytes = s.get_mon_bytes_at_decrypted(box_idx, slot);
             let ohpkm = match pkm_rs::ohpkm::OhpkmV2::convert_with_backup(
                 &pkm,
-                &pkm_rs::traits::PkmBytes::to_party_bytes(&pkm),
+                &backup_bytes,
             ) {
                 Ok(o) => o,
                 Err(_) => return core::ptr::null_mut(),
@@ -1776,6 +1782,42 @@ mod tests {
         assert_eq!(&out[..written as usize], &party[..], "must be the backup verbatim");
     }
 
+    // The verbatim read path must be byte-exact even in the ribbon / reserved
+    // region (~0x3A) and the checksum bytes (0x06) that a `Pk8` parse->write
+    // normalizes away. This is the property the SwSh same-save read fix relies
+    // on: `openhome_get_pokemon_from_slot` stores the raw decrypted slot bytes
+    // (`SwordShieldSave::get_mon_bytes_at_decrypted`) as the OriginalBackup,
+    // NOT `to_party_bytes(&pk8)`. On real Shield saves the re-serialization
+    // diverged from a native decrypt at the first ribbon byte (`+0x3A`).
+    #[test]
+    fn ffi_gen8_verbatim_backup_preserves_ribbon_and_checksum_bytes() {
+        use pkm_rs::ohpkm::OhpkmConvert;
+
+        let src_ohpkm = make_test_ohpkm(OriginGame::Sword, test_moves());
+        let pk8 = Pk8::from_ohpkm(&src_ohpkm, ConvertStrategy::default())
+            .expect("materialize Pk8");
+        let mut raw: Vec<u8> = pkm_rs::traits::PkmBytes::to_party_bytes(&pk8).to_vec();
+
+        // Bits a Pk8 round-trip would not reproduce: a ribbon-area flag at 0x3A
+        // and a checksum byte at 0x06. A raw decrypted save slot keeps them.
+        raw[0x3A] ^= 0x20;
+        raw[0x06] ^= 0xFF;
+
+        let ohpkm = OhpkmV2::convert_with_backup(&pk8, &raw)
+            .expect("convert_with_backup accepts raw bytes");
+
+        let handle = Box::into_raw(Box::new(PkmHandle { ohpkm }));
+        let mut out = vec![0u8; 512];
+        let written =
+            openhome_get_pkm_box_bytes_for_gen(handle, 8, out.as_mut_ptr(), out.len());
+        unsafe { openhome_free_pkm(handle) };
+
+        assert_eq!(written as usize, raw.len(), "full 344-byte slot");
+        assert_eq!(&out[..written as usize], &raw[..], "verbatim, incl. 0x3A / 0x06");
+        assert_eq!(out[0x3A], raw[0x3A], "ribbon-area bit survived");
+        assert_eq!(out[0x06], raw[0x06], "checksum byte survived");
+    }
+
     #[test]
     fn ffi_gen9_box_bytes_returns_backup_verbatim() {
         use pkm_rs::gen9_sv::Pk9;
@@ -1799,6 +1841,50 @@ mod tests {
 
         assert_eq!(written as usize, party.len(), "must return the full 344-byte slot");
         assert_eq!(&out[..written as usize], &party[..], "must be the backup verbatim");
+    }
+
+    // Regression for the 2026-09-04 SwSh parity diff (first offset +0x3A, the
+    // ribbon area). Guards the box-bytes READ path: given an OHPKM whose
+    // OriginalBackup holds bytes a `Pk8` parse->write would NOT reproduce
+    // (ribbon / reserved bits, recomputed checksum), `..box_bytes_for_gen`
+    // must hand those bytes back untouched — never re-materialize via
+    // `from_ohpkm`. The matching save-side half (`openhome_get_pokemon_from_slot`
+    // storing `get_mon_bytes_at_decrypted` rather than `to_party_bytes`) needs a
+    // real SwSh save and is verified on hardware.
+    #[test]
+    fn ffi_gen8_backup_keeps_raw_bits_pk8_reserialization_would_drop() {
+        use pkm_rs::ohpkm::OhpkmConvert;
+
+        let src_ohpkm = make_test_ohpkm(OriginGame::Sword, test_moves());
+        let pk8 = Pk8::from_ohpkm(&src_ohpkm, ConvertStrategy::default())
+            .expect("materialize Pk8");
+        let clean: Vec<u8> = pkm_rs::traits::PkmBytes::to_party_bytes(&pk8).to_vec();
+
+        // Simulate a real save slot whose raw decrypted bytes carry a bit the
+        // Pk8 model does not round-trip. 0x3A is inside the SwSh ribbon block.
+        let mut raw = clean.clone();
+        raw[0x3A] |= 0x20;
+        assert_ne!(raw, clean, "tampered byte must actually differ");
+
+        let ohpkm = OhpkmV2::convert_with_backup(&pk8, &raw)
+            .expect("convert_with_backup accepts raw slot bytes");
+
+        let handle = Box::into_raw(Box::new(PkmHandle { ohpkm }));
+        let mut out = vec![0u8; 512];
+        let written =
+            openhome_get_pkm_box_bytes_for_gen(handle, 8, out.as_mut_ptr(), out.len());
+        unsafe { openhome_free_pkm(handle) };
+
+        assert_eq!(written as usize, raw.len(), "full 344-byte slot");
+        assert_eq!(
+            &out[..written as usize],
+            &raw[..],
+            "OH read must return the raw slot bytes verbatim, including +0x3A"
+        );
+        assert_eq!(
+            out[0x3A], raw[0x3A],
+            "the ribbon bit at +0x3A must survive the OH read path"
+        );
     }
 
     // Phase C1: openhome_get_pkm_original_backup exposes the pre-conversion

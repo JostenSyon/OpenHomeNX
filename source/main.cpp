@@ -4,6 +4,7 @@
 #include "i18n.h"
 #include "debug_log.h"
 #include "account.h"
+#include "update_net.h"
 
 #include <switch.h>
 #include <string>
@@ -49,6 +50,10 @@ int main(int argc, char* argv[]) {
     ledInitWithPath(basePath.c_str());
     DebugLog::init(basePath);
 
+    // Rete per l'updater remoto (Layer 1). Non su un boot-bounce di update, e
+    // mai fatale: se fallisce, "Check for update" resta solo SD/USB.
+    bool netReady = false;
+
     // A pending self-update leaves OpenHomeNX.nro.new next to the NRO. When it
     // is present this boot only exists to consolidate + bounce into the real
     // .nro, so skip the cold-boot extras (USB probe wait, splash fade) that
@@ -57,6 +62,14 @@ int main(int argc, char* argv[]) {
     {
         struct stat pst;
         pendingUpdate = (stat((basePath + "OpenHomeNX.nro.new").c_str(), &pst) == 0);
+    }
+
+    if (!pendingUpdate) {
+        Result netRc = socketInitializeDefault();
+        netReady = R_SUCCEEDED(netRc);
+        DebugLog::line("socketInitializeDefault -> 0x%08X (net %s)",
+                       (unsigned)netRc, netReady ? "on" : "off");
+        updateNetSetReady(netReady);
     }
 
 #ifdef OH_USB_UPDATE
@@ -162,6 +175,8 @@ int main(int argc, char* argv[]) {
 #ifdef OH_USB_UPDATE
     usbHsFsExit();
 #endif
+
+    if (netReady) socketExit();
 
     romfsExit();
     return 0;

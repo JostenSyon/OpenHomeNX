@@ -27,6 +27,56 @@ slot box; Pk7/Pk3 tengono un backup party-sized e non hanno ancora un percorso d
 lettura same-format. Regression test: `ffi_gen8_box_bytes_returns_backup_verbatim`.
 Sword "1 mon" confermato PK==OH — non un bug.
 
+**Re-test HW 2026-09-04 — SwSh parity ANCORA divergente (≠ Bug #2).**
+L'utente riporta Spada/Scudo con Crypto=OH: dialog parity ~110 byte diversi per
+slot, **primo offset `+0x3A`** (blocco A, area ribbon/marking) — **non** `0x122`
+(MetLocation, la causa di Bug #2). Gen3 (FR/LG), Gen9 (S/V), Gen7 LGPE (Eevee):
+nessun dialog (il parity check gira **solo per SwSh**, `saveHandleRust_` settato
+solo lì — quindi "OK" su quei giochi = check non eseguito, non validazione).
+Stato software: `cargo test -p openhome_switch --features std` = **40/40 verde**,
+incluso `pk8_ohpkm_roundtrip_box_bytes_preserved` (Pk8→OhpkmV2 con backup→
+`from_ohpkm`→`to_box_bytes` byte-identico per un mon origine Sword). Quindi la
+conversione OHPKM↔Pk8 **non** è la causa: la divergenza `+0x3A` nasce a monte,
+nel **reader** — parsing dello slot box SwSh lato Rust (`gen8_swsh/save.rs`)
+oppure `Pokemon::loadFromEncrypted` lato pkHouse (`sizeBoxSlot_ = 0x158` = 344
+party-size vs slot box 0x148 = 328 → possibile disallineamento blocchi/unshuffle).
+**Fix già in working tree (non committato, non ancora confermato su HW).**
+`gen8_swsh/save.rs`: nuovo `SwordShieldSave::get_mon_bytes_at_decrypted()` =
+byte 344 grezzi decrittati, senza passare da un parse→write di `Pk8` (che
+normalizza i bit ribbon/reserved ~`0x3A` + ricalcola il checksum).
+`openhome_get_pokemon_from_slot` ora costruisce l'OHPKM con
+`convert_with_backup(&pkm, &get_mon_bytes_at_decrypted(...))` invece di
+`&to_party_bytes(&pkm)`. Razionale: un OriginalBackup "verbatim" per una lettura
+same-save deve essere byte-uguale al decrypt nativo. 40/40 host verde con questa
+modifica in albero. **Ma il re-test HW 2026-09-04 mostrava ancora `+0x3A`** →
+delle due: (a) il binario testato era stale (build senza questa modifica), oppure
+(b) il path del parity check (`debugCompareEnginesParity` → `SaveFileFFI::getSlot`
+→ legacy `openhome_get_pkm_box_bytes`) non passa dal backup verbatim e
+ri-materializza via `from_ohpkm`.
+Prossimo passo (richiede HW + save): (1) `make clean && make` con questa modifica,
+re-test; (2) se persiste, tracciare quale FFI serve il parity check e se prende
+il ramo backup-verbatim; (3) verificare se gli slot divergenti sono transfer da
+HOME (`game_of_origin ≠ SwSh`) o nativi SwSh; (4) dump degli 8 offset del primo
+slot. Nessuna nuova modifica alla conversione finché non è chiaro (a) vs (b).
+
+**2026-09-04 (sessione unattended) — fix APPLICATO davvero + build.**
+La modifica descritta sopra NON era in albero (era una nota aspirazionale): il
+`lib.rs` passava ancora `&to_party_bytes(&pkm)`. Ora applicata sul serio:
+`pkm_rs/src/gen8_swsh/save.rs` → `pub fn get_mon_bytes_at_decrypted()` (wrapper su
+`get_mon_bytes_decrypted`, privato); `openhome_switch/src/lib.rs`
+`openhome_get_pokemon_from_slot` (ramo SwSh) → `convert_with_backup(&pkm,
+&s.get_mon_bytes_at_decrypted(box_idx, slot))`. Ipotesi (b) esclusa a lettura
+codice: `openhome_get_pkm_box_bytes_for_gen(gen 8)` prende il ramo verbatim quando
+`original_data_bytes()` è `Some` (lo era già, ma conteneva la ri-serializzazione
+`to_party_bytes` che normalizza i bit ribbon a `0x3A` + il checksum). Resta
+ipotesi (a): il binario testato il 2026-09-04 era pre-fix.
+`cargo test -p openhome_switch --features std --target aarch64-apple-darwin` =
+**40/40 verde** (incl. `ffi_gen8_box_bytes_returns_backup_verbatim`); rust lib
+`aarch64-unknown-none` release + `make` → `OpenHomeNX.nro` ricostruito.
+**Da fare (HW):** aprire un box Spada/Scudo con Crypto=OH — se nessun dialog
+parity → fix confermato. Se `+0x3A` persiste, dump degli 8 offset del primo slot
+divergente e verifica `game_of_origin` di quello slot.
+
 ---
 
 ## Riepilogo Toggle PK/OH
