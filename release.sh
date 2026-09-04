@@ -1,7 +1,16 @@
 #!/bin/bash
 # release.sh — build + dist per OpenHomeNX
-# Uso: ./release.sh         -> make release (0.1.24) in dist/
-#      ./release.sh serve   -> build + python http server su dist
+#
+# UNICO modo per produrre un .nro destinato a un test HW o a dist/: legge
+# APP_VERSION dal Makefile, builda, copia in dist/OpenHomeNX.nro e rigenera
+# dist/latest.json {version, nro, sha256} in un solo passaggio atomico. Mai
+# `make release` a mano o una cp manuale in dist/ — versione e sha256
+# finiscono per disallinearsi dal binario vero.
+#
+# Uso: ./release.sh         -> build + dist/ (versione da Makefile)
+#      ./release.sh serve   -> come sopra + python server su dist (update.cfg)
+#      VAR=1 ./release.sh   -> override make (es. USB_LIB_DEBUG=1 per una
+#                              build diagnostica che linka libusbhsfsd.a)
 set -e
 cd "$(dirname "$0")"
 export DEVKITPRO=/opt/devkitpro
