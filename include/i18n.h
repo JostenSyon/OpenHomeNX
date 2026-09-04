@@ -312,4 +312,59 @@ namespace StrKey {
     constexpr const char* LabelDualBank        = "label_dual_bank";
     constexpr const char* Left                 = "left";
     constexpr const char* Right                = "right";
+
+    // Updater (ui_selectors.cpp checkForUpdate + Send log)
+    constexpr const char* UpdateTitle          = "update_title";
+    constexpr const char* UpdateNetOff         = "update_net_off";
+    constexpr const char* UpdateContacting     = "update_contacting";
+    constexpr const char* UpdateUnreachable    = "update_unreachable";
+    constexpr const char* UpdateAvailNetTitle  = "update_avail_net_title";
+    constexpr const char* UpdateAvailNetBody   = "update_avail_net_body";
+    constexpr const char* UpdateDownloading    = "update_downloading";
+    constexpr const char* UpdateDlFailed       = "update_dl_failed";
+    constexpr const char* UpdateSameDbgTitle   = "update_same_dbg_title";
+    constexpr const char* UpdateSameDbgBody    = "update_same_dbg_body";
+    constexpr const char* UpdateLatestBody     = "update_latest_body";
+    constexpr const char* UpdateNoBuildBody    = "update_no_build_body";
+    constexpr const char* UpdateAvailTitle     = "update_avail_title";
+    constexpr const char* UpdateAvailBody      = "update_avail_body";
+    constexpr const char* UpdateSameTitle      = "update_same_title";
+    constexpr const char* UpdateSameBody       = "update_same_body";
+    constexpr const char* UpdateDowngradeTitle = "update_downgrade_title";
+    constexpr const char* UpdateDowngradeBody  = "update_downgrade_body";
+    constexpr const char* UpdateUpdating       = "update_updating";
+    constexpr const char* UpdateCopyFailed     = "update_copy_failed";
+    constexpr const char* UpdateUpdatingTo     = "update_updating_to";
+    constexpr const char* UpdateReplaceFailed  = "update_replace_failed";
+    constexpr const char* UpdateInstalled      = "update_installed";
+    constexpr const char* SendLogTitle         = "sendlog_title";
+    constexpr const char* SendLogNoUrl         = "sendlog_no_url";
+    constexpr const char* SendLogNetOff        = "sendlog_net_off";
+    constexpr const char* SendLogUploading     = "sendlog_uploading";
+    constexpr const char* SendLogSent          = "sendlog_sent";
+    constexpr const char* SendLogFailed        = "sendlog_failed";
+
+    // Cross-gen transfer (ui_input.cpp prepareForPlacement + drop dialogs)
+    constexpr const char* TransferTitle        = "transfer_title";
+    constexpr const char* TransferNoBankLeft   = "transfer_no_bank_left";
+    constexpr const char* TransferNeedOh       = "transfer_need_oh";
+    constexpr const char* TransferNeedOhBank   = "transfer_need_oh_bank";
+    constexpr const char* TransferCantReadSrc  = "transfer_cant_read_src";
+    constexpr const char* TransferCantReadSrcXfer = "transfer_cant_read_src_xfer";
+    constexpr const char* TransferBadRecord    = "transfer_bad_record";
+    constexpr const char* TransferNoOhpkm      = "transfer_no_ohpkm";
+    constexpr const char* TransferCantBuild    = "transfer_cant_build";
+    constexpr const char* TransferBadOhpkm     = "transfer_bad_ohpkm";
+    constexpr const char* TransferNotInDex     = "transfer_not_in_dex";
+    constexpr const char* TransferNoBytes      = "transfer_no_bytes";
+
+    // Bank creation (ui_bank.cpp)
+    constexpr const char* CreateBankTitle      = "create_bank_title";
+    constexpr const char* CreateBankBody       = "create_bank_body";
+
+    // Applet mode + gen selector info (ui.cpp)
+    constexpr const char* AppletTitle          = "applet_title";
+    constexpr const char* AppletBody           = "applet_body";
+    constexpr const char* XGenTitle            = "xgen_title";
+    constexpr const char* XGenBody             = "xgen_body";
 }

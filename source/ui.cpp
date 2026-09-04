@@ -380,7 +380,7 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
     // here, so on a normal boot finalizePendingUpdate() returns false and this
     // is skipped. Kept in case the pending .new appears after main()'s check.
     if (finalizePendingUpdate()) {
-        showWorking("Updating...");
+        showWorking(i18n::get(StrKey::UpdateUpdating));
         SDL_Delay(150);
         return;  // main() cleans up -> libnx exit chainloads nextLoad (the real .nro)
     }
@@ -429,11 +429,8 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
         refreshBankCounts();
         showWorking(i18n::get(StrKey::LoadingGameIcons));
         loadGameIcons();
-        showMessageAndWait("Applet mode",
-            "Save read/write is unavailable in applet mode.\n"
-            "To load a game's save, relaunch OpenHomeNX as an\n"
-            "application (hold R on a game in the HOME menu).\n\n"
-            "Bank browsing and cross-gen work here.");
+        showMessageAndWait(i18n::get(StrKey::AppletTitle),
+            i18n::get(StrKey::AppletBody));
     } else {
         showWorking(i18n::get(StrKey::LoadingProfiles));
         if (account_.init() && account_.loadProfiles(renderer_)) {
@@ -660,11 +657,8 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
                             // bytes to openhome_load_pkm, which only accepts real
                             // OHPKM files, so it always took the failure branch.)
                             if (holding_) {
-                                showMessageAndWait("Cross-Gen Transfer",
-                                    "Conversion now happens when you place the\n"
-                                    "Pokemon: dropping it into a box of another\n"
-                                    "generation converts it automatically, or\n"
-                                    "refuses if it cannot be converted.");
+                                showMessageAndWait(i18n::get(StrKey::XGenTitle),
+                                    i18n::get(StrKey::XGenBody));
                             }
                             break;
                         case SDL_CONTROLLER_BUTTON_A: // Switch B = cancel

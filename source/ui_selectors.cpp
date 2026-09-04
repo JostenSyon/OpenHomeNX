@@ -668,15 +668,15 @@ void UI::handleGameSelectorInput(bool& running) {
                                 UpdateCfg cfg;
                                 std::string err;
                                 if (!readUpdateCfg(basePath_, cfg) || cfg.url.empty()) {
-                                    showMessageAndWait("Send log", "No url in update.cfg\nSet url=http://<ip>:8000");
+                                    showMessageAndWait(i18n::get(StrKey::SendLogTitle), i18n::get(StrKey::SendLogNoUrl));
                                 } else if (!updateNetAvailable()) {
-                                    showMessageAndWait("Send log", "Network is off on this boot.");
+                                    showMessageAndWait(i18n::get(StrKey::SendLogTitle), i18n::get(StrKey::SendLogNetOff));
                                 } else {
-                                    showWorking("Uploading log to " + cfg.url + " ...");
+                                    showWorking(i18n::fmt(StrKey::SendLogUploading, cfg.url));
                                     if (updateNetUploadLog(cfg.url, cfg.token, basePath_, err))
-                                        showMessageAndWait("Send log", "Log inviato al server.");
+                                        showMessageAndWait(i18n::get(StrKey::SendLogTitle), i18n::get(StrKey::SendLogSent));
                                     else
-                                        showMessageAndWait("Send log", "Upload fallito:\n" + err);
+                                        showMessageAndWait(i18n::get(StrKey::SendLogTitle), i18n::fmt(StrKey::SendLogFailed, err));
                                 }
                             }
                         } else if ((!DebugLog::enabled() && gameSelMenuCursor_ == 2) ||
@@ -963,7 +963,7 @@ bool UI::tryUpdateBounce(const std::string& basePath) {
         return false;
     // finalizePendingUpdate() armed envSetNextLoad(the real .nro). Draw one
     // frame of the card so the chainload isn't a black gap, then let main exit.
-    showWorking("Updating...");
+    showWorking(i18n::get(StrKey::UpdateUpdating));
     SDL_Delay(150);
     return true;
 }
@@ -1071,31 +1071,30 @@ bool UI::checkForUpdate() {
                            cfg.token.empty() ? "no" : "yes");
             if (!updateNetAvailable()) {
                 DebugLog::line("update: rete non disponibile, salto Layer 1");
-                showMessageAndWait("Update", "Network source set (" + cfg.url +
-                    ")\nbut networking is off on this boot. Only SD/USB were checked.");
+                showMessageAndWait(i18n::get(StrKey::UpdateTitle),
+                    i18n::fmt(StrKey::UpdateNetOff, cfg.url));
             } else {
-                showWorking("Contacting " + cfg.url + " ...");
+                showWorking(i18n::fmt(StrKey::UpdateContacting, cfg.url));
                 RemoteUpdateInfo info;
                 std::string err;
                 if (!updateNetFetchInfo(cfg.url, cfg.token, info, err)) {
                     DebugLog::line("update: fetch info fallito: %s", err.c_str());
-                    showMessageAndWait("Update", "Network source: could not reach it.\n" +
-                        err + "\n(" + cfg.url + ")\n\nChecked SD/USB only.");
+                    showMessageAndWait(i18n::get(StrKey::UpdateTitle),
+                        i18n::fmt(StrKey::UpdateUnreachable, err, cfg.url));
                 } else {
                     int cmp = compareVersionStrings(info.version, curVer);
                     DebugLog::line("update: remoto v%s cmp=%d", info.version.c_str(), cmp);
                     if (cmp > 0) {
-                        if (!showConfirmDialog("Update disponibile (rete)",
-                                "v" + info.version + " (in uso v" + curVer + ")\nDa: " +
-                                cfg.url + "\nScaricare e installare?"))
+                        if (!showConfirmDialog(i18n::get(StrKey::UpdateAvailNetTitle),
+                                i18n::fmt(StrKey::UpdateAvailNetBody, info.version, curVer, cfg.url)))
                             return false;
                         removeStaleLocalUpdates(basePath_, runningNro);
-                        showWorking("Downloading v" + info.version + "...");
+                        showWorking(i18n::fmt(StrKey::UpdateDownloading, info.version));
                         const std::string dst = basePath_ + "update/OpenHomeNX.nro";
                         if (!updateNetDownload(info.nroUrl, cfg.token, dst, info.sha256, err,
                                 [this](const std::string& s){ showWorking(s); })) {
-                            showMessageAndWait("Update", "Download fallito:\n" + err +
-                                "\n\nL'app corrente e' intatta.");
+                            showMessageAndWait(i18n::get(StrKey::UpdateTitle),
+                                i18n::fmt(StrKey::UpdateDlFailed, err));
                             return false;
                         }
                         foundPath = dst;
@@ -1106,14 +1105,15 @@ bool UI::checkForUpdate() {
                         // La rete ha risposto e non c'è niente di più recente:
                         // con debug attivo offri reinstall per testare l'updater anche a pari versione.
                         if (DebugLog::enabled()) {
-                            if (showConfirmDialog("Same version (debug)",
-                                    "You're on v" + curVer + " and network is also v" + info.version + ".\nReinstall anyway for testing?")) {
+                            if (showConfirmDialog(i18n::get(StrKey::UpdateSameDbgTitle),
+                                    i18n::fmt(StrKey::UpdateSameDbgBody, curVer, info.version))) {
                                 removeStaleLocalUpdates(basePath_, runningNro);
-                                showWorking("Downloading v" + info.version + "...");
+                                showWorking(i18n::fmt(StrKey::UpdateDownloading, info.version));
                                 const std::string dst = basePath_ + "update/OpenHomeNX.nro";
                                 if (!updateNetDownload(info.nroUrl, cfg.token, dst, info.sha256, err,
                                         [this](const std::string& s){ showWorking(s); })) {
-                                    showMessageAndWait("Update", "Download fallito:\n" + err);
+                                    showMessageAndWait(i18n::get(StrKey::UpdateTitle),
+                                        i18n::fmt(StrKey::UpdateDlFailed, err));
                                     return false;
                                 }
                                 foundPath = dst; foundVer = info.version; foundCmp = 0; fromNet = true;
@@ -1121,8 +1121,8 @@ bool UI::checkForUpdate() {
                                 return false;
                             }
                         } else {
-                            showMessageAndWait("Update", "You're on the latest version (v" +
-                                curVer + ").\nNetwork source reports v" + info.version + ".");
+                            showMessageAndWait(i18n::get(StrKey::UpdateTitle),
+                                i18n::fmt(StrKey::UpdateLatestBody, curVer, info.version));
                             return false;
                         }
                     }
@@ -1132,34 +1132,33 @@ bool UI::checkForUpdate() {
     }
 
     if (foundPath.empty()) {
-        showMessageAndWait("Update", "No build found.\nCurrent version: v" + curVer +
-            "\n\nDrop OpenHomeNX.nro into sdmc:/, sdmc:/switch/OpenHomeNX/update/ or USB,"
-            "\nor set 'url=' in update.cfg for a network source.");
+        showMessageAndWait(i18n::get(StrKey::UpdateTitle),
+            i18n::fmt(StrKey::UpdateNoBuildBody, curVer));
         return false;
     }
 
     if (fromNet) {
         // già confermato prima del download — niente doppio prompt
     } else if (foundCmp > 0) {
-        if (!showConfirmDialog("Update available",
-                "Found v" + foundVer + " (running v" + curVer + ")\nFrom: " + foundPath + "\nInstall and restart?"))
+        if (!showConfirmDialog(i18n::get(StrKey::UpdateAvailTitle),
+                i18n::fmt(StrKey::UpdateAvailBody, foundVer, curVer, foundPath)))
             return false;
     } else if (foundCmp == 0) {
-        if (!showConfirmDialog("Same version",
-                "Found v" + foundVer + " (same as running v" + curVer + ")\nFrom: " + foundPath + "\nInstall anyway?"))
+        if (!showConfirmDialog(i18n::get(StrKey::UpdateSameTitle),
+                i18n::fmt(StrKey::UpdateSameBody, foundVer, curVer, foundPath)))
             return false;
     } else {
-        if (!showConfirmDialog("Downgrade?",
-                "Found v" + foundVer + " (older than running v" + curVer + ")\nFrom: " + foundPath + "\nInstall anyway?"))
+        if (!showConfirmDialog(i18n::get(StrKey::UpdateDowngradeTitle),
+                i18n::fmt(StrKey::UpdateDowngradeBody, foundVer, curVer, foundPath)))
             return false;
     }
 
-    showWorking("Updating...");
+    showWorking(i18n::get(StrKey::UpdateUpdating));
     const std::string tmp = runningNro + ".new";
     std::remove(tmp.c_str());
     if (!copyFileTo(foundPath, tmp)) {
         std::remove(tmp.c_str());
-        showMessageAndWait("Update", "Copy failed. The current app is untouched.");
+        showMessageAndWait(i18n::get(StrKey::UpdateTitle), i18n::get(StrKey::UpdateCopyFailed));
         return false;
     }
 
@@ -1186,7 +1185,7 @@ bool UI::checkForUpdate() {
         if (envHasNextLoad()) envSetNextLoad(runningNro.c_str(), runningNro.c_str());
         // Auto-bounce, no button press: mirrors the boot-time finalize screen so
         // the whole update is a couple of "Updating…" frames, not taps.
-        showWorking("Updating to v" + foundVer + "...");
+        showWorking(i18n::fmt(StrKey::UpdateUpdatingTo, foundVer));
         SDL_Delay(700);
         return true;
     }
@@ -1200,17 +1199,16 @@ bool UI::checkForUpdate() {
         DebugLog::line("update: nextLoad -> %s", tmp.c_str());
         // Auto-bounce. The .new instance's boot-time finalize shows its own
         // brief "Updating…" and bounces again into the real .nro — no taps.
-        showWorking("Updating to v" + foundVer + "...");
+        showWorking(i18n::fmt(StrKey::UpdateUpdatingTo, foundVer));
         SDL_Delay(700);
         return true; // caller stops the loop -> main() returns -> hbloader relaunches
     }
     std::remove(runningNro.c_str());
     if (std::rename(tmp.c_str(), runningNro.c_str()) != 0) {
-        showMessageAndWait("Update", "Could not replace the app file (in use?).\nTry closing the app first.");
+        showMessageAndWait(i18n::get(StrKey::UpdateTitle), i18n::get(StrKey::UpdateReplaceFailed));
         return false;
     }
-    showMessageAndWait("Update", "Installed v" + foundVer +
-        ".\nClose and reopen the app to use it.");
+    showMessageAndWait(i18n::get(StrKey::UpdateTitle), i18n::fmt(StrKey::UpdateInstalled, foundVer));
     return false;
 }
 

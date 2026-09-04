@@ -390,16 +390,16 @@ void UI::handleBankSelectorInput(bool& running) {
                     return;
                 case SDL_CONTROLLER_BUTTON_Y: // Switch X = new
                     if (!bankManager_.isAllMode()) {
-                        newBankCrossGen_ = showConfirmDialog("Create bank",
-                            "Cross-gen (OHPKM, every game)?\nA = Cross-gen  B = Normal (this game)");
+                        newBankCrossGen_ = showConfirmDialog(i18n::get(StrKey::CreateBankTitle),
+                            i18n::get(StrKey::CreateBankBody));
                         beginTextInput(TextInputPurpose::CreateBank);
                     } else if (bankRightCrossGen_) {
                         // New bank is created for the currently loaded game;
                         // drop back to its single-game list first.
                         bankRightCrossGen_ = false;
                         bankManager_.init(basePath_, selectedGame_);
-                        newBankCrossGen_ = showConfirmDialog("Create bank",
-                            "Cross-gen (OHPKM, every game)?\nA = Cross-gen  B = Normal (this game)");
+                        newBankCrossGen_ = showConfirmDialog(i18n::get(StrKey::CreateBankTitle),
+                            i18n::get(StrKey::CreateBankBody));
                         beginTextInput(TextInputPurpose::CreateBank);
                         return;
                     }

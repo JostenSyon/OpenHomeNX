@@ -848,7 +848,7 @@ bool UI::prepareForPlacement(Pokemon& pkm, Panel panel, std::string& whyNot) con
     // no bank loaded. Refuse up front instead: otherwise we would convert the
     // Pokemon for a placement that never happens, mutating what is in hand.
     if (panel == Panel::Game && isDualBankMode() && leftBankName_.empty()) {
-        whyNot = "No bank is loaded in the left panel.";
+        whyNot = i18n::get(StrKey::TransferNoBankLeft);
         return false;
     }
 
@@ -858,13 +858,13 @@ bool UI::prepareForPlacement(Pokemon& pkm, Panel panel, std::string& whyNot) con
         if (!pkm.ohpkmBlob_.empty())
             return true; // already OHPKM (from another cross-gen bank) — just move it
         if (!useOpenHome()) {
-            whyNot = "Cross-gen bank needs the OpenHome core (menu -> Crypto: OpenHome).";
+            whyNot = i18n::get(StrKey::TransferNeedOhBank);
             return false;
         }
         const int g = ohSourceGenFor(pkm.gameType_);
         if (g == 0) {
-            whyNot = std::string("OpenHome cannot read a ")
-                   + gameDisplayNameOf(pkm.gameType_) + " Pokemon yet.";
+            whyNot = i18n::fmt(StrKey::TransferCantReadSrc,
+                               gameDisplayNameOf(pkm.gameType_));
             return false;
         }
         int sz = ohRecordBytesFor(g);
@@ -874,7 +874,7 @@ bool UI::prepareForPlacement(Pokemon& pkm, Panel panel, std::string& whyNot) con
         if (!h) {
             DebugLog::line("xbank in: %s g%d recBytes=%d loadPkmFromGen -> NULL",
                            gameDisplayNameOf(pkm.gameType_), g, sz);
-            whyNot = "Could not read this Pokemon as a Gen " + std::to_string(g) + " record.";
+            whyNot = i18n::fmt(StrKey::TransferBadRecord, std::to_string(g));
             return false;
         }
         std::vector<uint8_t> blob = OpenHomeNX::getOhpkmBytes(h);
@@ -882,7 +882,7 @@ bool UI::prepareForPlacement(Pokemon& pkm, Panel panel, std::string& whyNot) con
         DebugLog::line("xbank in: %s g%d -> OHPKM %zu B",
                        gameDisplayNameOf(pkm.gameType_), g, blob.size());
         if (blob.empty()) {
-            whyNot = "Could not build the OHPKM record for this Pokemon.";
+            whyNot = i18n::get(StrKey::TransferNoOhpkm);
             return false;
         }
         pkm.ohpkmBlob_ = std::move(blob);
@@ -901,27 +901,26 @@ bool UI::prepareForPlacement(Pokemon& pkm, Panel panel, std::string& whyNot) con
             return true;
         }
         if (!useOpenHome()) {
-            whyNot = "Cross-gen transfer needs the OpenHome core (menu -> Crypto: OpenHome).";
+            whyNot = i18n::get(StrKey::TransferNeedOh);
             return false;
         }
         const int dg = ohTargetGenFor(d);
         if (dg == 0) {
-            whyNot = std::string("OpenHome cannot build a ") + gameDisplayNameOf(d) + " Pokemon.";
+            whyNot = i18n::fmt(StrKey::TransferCantBuild, gameDisplayNameOf(d));
             return false;
         }
         PkmHandle* h = OpenHomeNX::loadOhpkm(pkm.ohpkmBlob_);
-        if (!h) { whyNot = "Could not read the stored OHPKM record."; return false; }
+        if (!h) { whyNot = i18n::get(StrKey::TransferBadOhpkm); return false; }
         PkmHandle* out = PokemonFFI::transfer(h, static_cast<uint32_t>(dg));
         PokemonFFI::free(h);
         if (!out) {
-            whyNot = pkm.displayName() + " is not in the " + gameDisplayNameOf(d)
-                   + " Pokedex, so it can't be sent there (no clone is made).";
+            whyNot = i18n::fmt(StrKey::TransferNotInDex, pkm.displayName(), gameDisplayNameOf(d));
             return false;
         }
         std::vector<uint8_t> bytes = OpenHomeNX::getPkmBoxBytesForGen(out, static_cast<uint32_t>(dg));
         PokemonFFI::free(out);
         if (bytes.empty() || bytes.size() > pkm.data.size()) {
-            whyNot = "Could not extract the converted Pokemon bytes.";
+            whyNot = i18n::get(StrKey::TransferNoBytes);
             return false;
         }
         pkm.data.fill(0);
@@ -939,14 +938,13 @@ bool UI::prepareForPlacement(Pokemon& pkm, Panel panel, std::string& whyNot) con
     // With the pkHouse (PK) core active, keep the two pipelines fully separate:
     // no OH FFI call, so a cross-format drop is refused.
     if (!useOpenHome()) {
-        whyNot = "Cross-gen transfer needs the OpenHome core (menu -> Crypto: OpenHome).";
+        whyNot = i18n::get(StrKey::TransferNeedOh);
         return false;
     }
 
     const int dstGen = ohTargetGenFor(dest);
     if (dstGen == 0) {
-        whyNot = std::string("OpenHome cannot build a ")
-               + gameDisplayNameOf(dest) + " Pokemon.";
+        whyNot = i18n::fmt(StrKey::TransferCantBuild, gameDisplayNameOf(dest));
         return false;
     }
 
@@ -990,8 +988,7 @@ bool UI::prepareForPlacement(Pokemon& pkm, Panel panel, std::string& whyNot) con
     // them would silently produce a wrong Pokemon. Refuse explicitly instead.
     const int srcGen = ohSourceGenFor(pkm.gameType_);
     if (srcGen == 0) {
-        whyNot = std::string("OpenHome cannot read a ")
-               + gameDisplayNameOf(pkm.gameType_) + " Pokemon for transfer.";
+        whyNot = i18n::fmt(StrKey::TransferCantReadSrcXfer, gameDisplayNameOf(pkm.gameType_));
         return false;
     }
 
@@ -1006,8 +1003,7 @@ bool UI::prepareForPlacement(Pokemon& pkm, Panel panel, std::string& whyNot) con
     dbgBlob("src", src.data(), src.size());
     PkmHandle* in = OpenHomeNX::loadPkmFromGen(src, static_cast<uint32_t>(srcGen));
     if (!in) {
-        whyNot = "Could not read this Pokemon as a Gen "
-               + std::to_string(srcGen) + " record.";
+        whyNot = i18n::fmt(StrKey::TransferBadRecord, std::to_string(srcGen));
         return false;
     }
 
@@ -1015,8 +1011,7 @@ bool UI::prepareForPlacement(Pokemon& pkm, Panel panel, std::string& whyNot) con
     DebugLog::line("convert gen%d->gen%d: %s", srcGen, dstGen, out ? "ok" : "FAIL");
     PokemonFFI::free(in);
     if (!out) {
-        whyNot = pkm.displayName() + " is not in the " + gameDisplayNameOf(dest)
-               + " Pokedex, so it can't be sent there (no clone is made).";
+        whyNot = i18n::fmt(StrKey::TransferNotInDex, pkm.displayName(), gameDisplayNameOf(dest));
         return false;
     }
 
@@ -1027,7 +1022,7 @@ bool UI::prepareForPlacement(Pokemon& pkm, Panel panel, std::string& whyNot) con
     std::vector<uint8_t> backup = OpenHomeNX::getPkmOriginalBackup(out);
     PokemonFFI::free(out);
     if (bytes.empty() || bytes.size() > pkm.data.size()) {
-        whyNot = "Could not extract the converted Pokemon bytes.";
+        whyNot = i18n::get(StrKey::TransferNoBytes);
         return false;
     }
 
@@ -1130,7 +1125,7 @@ void UI::actionSelect() {
             for (int i = 0; i < (int)converted.size(); i++) {
                 std::string whyNot;
                 if (!prepareForPlacement(converted[i], cursor_.panel, whyNot)) {
-                    showMessageAndWait("Transfer",
+                    showMessageAndWait(i18n::get(StrKey::TransferTitle),
                         converted[i].displayName() + ": " + whyNot);
                     return;  // keep everything in hand, write nothing
                 }
@@ -1215,7 +1210,7 @@ void UI::actionSelect() {
         {
             std::string whyNot;
             if (!prepareForPlacement(heldPkm_, cursor_.panel, whyNot)) {
-                showMessageAndWait("Transfer", whyNot);
+                showMessageAndWait(i18n::get(StrKey::TransferTitle), whyNot);
                 return;  // keep the Pokemon in hand, write nothing
             }
         }
