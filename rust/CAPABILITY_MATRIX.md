@@ -1,5 +1,13 @@
 # Capability Matrix — openhome_switch (target: `aarch64-unknown-none`, feature `alloc`)
 
+> **SUPERSEDUTO (2026-09-04).** Questo file è uno snapshot pre-2026-09-03: non
+> elenca PA8/LA, PA9/LZA, PB8/BDSP (tutte COLLEGATE da allora) né il cross-gen
+> bank (funzionante per SwSh/SV/LA/ZA/BDSP/LGPE). Per lo stato gen aggiornato →
+> **`../GenPorting.md`** (tabella "Stato attuale"). Per il piano di completamento
+> di TUTTE le gen (oracle PKHeX, import-file, RSE/RBY/G2/4-5-6) → **`../GEN_PLAN.md`**.
+> Tenuto per il dettaglio storico sotto (ricognizioni Gen6/Gen9, cronologia FASE
+> 1-3 cross-gen 7/8/9), non per lo stato corrente.
+
 > **2026-09-03:** arco Switch chiuso. Gen 8a **LA** (FFI id 10), 9 **LZA**
 > (id 11), 8 **BDSP** (id 12) ora COLLEGATE: `pa8`/`pa9`/`pb8` + `OhpkmConvert`
 > + `convert_to_pa8/pa9/pb8` in `openhome_switch`. Le righe qui sotto (pre-2026-09-03)

@@ -1,5 +1,12 @@
 # Integrazione pkHouse ↔ OpenHome Rust — Stato Attuale
 
+> **SUPERSEDUTO (2026-09-04):** il punto "M6 — dormiente per scelta" in fondo a
+> questo file è **risolto** — la banca cross-gen è implementata e funzionante
+> (SwSh/SV/LA/ZA/BDSP/LGPE, `UI::prepareForPlacement` generico su
+> `ohSourceGenFor`/`ohTargetGenFor`, vedi `SESSION_LOG.md` Sessioni 10-14). Per
+> lo stato gen corrente → `../GenPorting.md`; per il piano di completamento
+> gen mancanti → `../GEN_PLAN.md`.
+
 > **2026-09-03 (Sessione 8-9):** aggiunte le 3 gen Switch mancanti al cross-gen
 > OH — **LA** (PA8, FFI id 10), **LZA** (PA9, id 11), **BDSP** (PB8, id 12).
 > Read/write dei save di quei giochi resta sul **path PK C++** (invariato); il
