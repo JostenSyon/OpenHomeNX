@@ -876,9 +876,9 @@ bool UI::finalizePendingUpdate() {
         pendVer = "?";
         if (copyFileTo(pending, runningNro)) {
             DebugLog::line("update: finalized (blind) %s -> %s", pending.c_str(), runningNro.c_str());
-            std::remove(pending.c_str());
-            if (envHasNextLoad()) { envSetNextLoad(runningNro.c_str(), runningNro.c_str()); return true; }
-            return false;
+            if (std::remove(pending.c_str()) != 0)
+                DebugLog::line("update: .new is the running image, cleaned next boot");
+            return false;   // run from .new now; .nro is the new build (no bounce)
         }
         if (envHasNextLoad()) envSetNextLoad(pending.c_str(), pending.c_str());
         return false;
@@ -907,9 +907,13 @@ bool UI::finalizePendingUpdate() {
                            nroVer.c_str(), (long long)nst.st_size);
             return false;
         }
-        DebugLog::line("update: running from .new (remove refused, errno %d), bouncing to canonical",
-                       errno);
-        if (envHasNextLoad()) { envSetNextLoad(runningNro.c_str(), runningNro.c_str()); return true; }
+        // We are the throw-away .new and it can't unlink itself. The canonical
+        // .nro already holds the new build, so DON'T bounce — just run the app
+        // now (from .new, byte-identical to .nro). The leftover .new is cleaned
+        // by the next real launch (the branch just above). Bouncing here only
+        // ran the same code twice = the visible second restart.
+        DebugLog::line("update: running from .new (remove refused, errno %d), .nro already v%s -> proceeding, no bounce",
+                       errno, nroVer.c_str());
         return false;
     }
     if (nroReadable && nroVer == pendVer && !sameSize)
@@ -919,14 +923,16 @@ bool UI::finalizePendingUpdate() {
     if (copyFileTo(pending, runningNro)) {
         DebugLog::line("update: finalized pending %s -> %s v%s (copy)",
                        pending.c_str(), runningNro.c_str(), pendVer.c_str());
-        std::remove(pending.c_str());
-        // We are running from the throw-away .new and the canonical .nro now
-        // holds the new build. Tell run() to bounce straight into it: one
-        // quick "Updating…" screen, no interaction with this .new instance.
-        if (envHasNextLoad()) {
-            envSetNextLoad(runningNro.c_str(), runningNro.c_str());
-            return true;
-        }
+        // Try to drop the sidecar. If we ARE .new (Horizon refuses to unlink
+        // the running image) it stays and the next real launch removes it via
+        // the "canonical already ... sameSize" branch above.
+        if (std::remove(pending.c_str()) != 0)
+            DebugLog::line("update: .new is the running image, cleaned next boot");
+        // Do NOT bounce. The canonical .nro now holds the new build; this .new
+        // instance is byte-identical, so just run it. Bouncing to .nro only to
+        // execute the same code again was the second restart the user saw.
+        // (If this forwarder relaunches its target when .new exits, that lands
+        // on .nro v_new once — the same as any ordinary next launch.)
         return false;
     }
 

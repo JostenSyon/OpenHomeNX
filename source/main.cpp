@@ -152,11 +152,10 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    // Show splash screen while loading — but skip it when a self-update is
-    // pending: this boot only exists to consolidate the update and bounce, and
-    // the splash fade stutters against that. run() shows "Updating..." instead.
-    if (!pendingUpdate)
-        ui.showSplash();
+    // Show splash screen while loading. (A post-update boot from .nro.new is
+    // now a normal session — finalizePendingUpdate() consolidates .nro in
+    // place and does NOT bounce — so it gets the splash like any other boot.)
+    ui.showSplash();
 
     // Detect applet mode on Switch — bank-only access without save data
     {
