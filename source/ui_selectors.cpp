@@ -978,7 +978,7 @@ static void removeStaleLocalUpdates(const std::string& basePath, const std::stri
     }
 }
 
-bool UI::checkForUpdate() {
+bool UI::checkForUpdate(bool usbAlreadyMounted) {
     const std::string runningNro = basePath_ + "OpenHomeNX.nro";
     finalizePendingUpdate();
     const std::string curVer =
@@ -1011,8 +1011,14 @@ bool UI::checkForUpdate() {
         // user-initiated, not automatic, action.
         u32 phys = usbHsFsGetPhysicalDeviceCount();
         u32 n = usbHsFsGetMountedDeviceCount();
-        DebugLog::line("update: USB physical=%u mounted=%u", phys, n);
-        if (n == 0) {
+        DebugLog::line("update: USB physical=%u mounted=%u usbAlreadyMounted=%d",
+                       phys, n, (int)usbAlreadyMounted);
+        // The hotplug caller (run()'s rising-edge poll) already confirmed a
+        // drive just finished mounting THIS SAME FRAME — re-waiting here would
+        // just burn 3-6s re-discovering what it already knows. Only the
+        // menu-triggered path (which may run before the hotplug poll ever
+        // notices) needs the retry.
+        if (n == 0 && !usbAlreadyMounted) {
             UEvent* ev = usbHsFsGetStatusChangeUserEvent();
             for (int attempt = 1; n == 0 && ev && attempt <= 2; attempt++) {
                 showWorking(i18n::get(StrKey::UpdateScanningUsb));

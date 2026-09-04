@@ -717,7 +717,7 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
             if (rising && !s_didHotplugCheck) {
                 s_didHotplugCheck = true;
                 DebugLog::line("usb hotplug: running update check");
-                if (checkForUpdate()) { running = false; break; }
+                if (checkForUpdate(/*usbAlreadyMounted=*/true)) { running = false; break; }
                 markDirty();
             }
         }
