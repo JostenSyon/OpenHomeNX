@@ -103,6 +103,34 @@ void line(const char* fmt, ...) {
     std::fflush(s_file);
 }
 
+std::string logPath() {
+    if (s_basePath.empty()) return "";
+    return s_basePath + "debug.log";
+}
+
+bool flushAndReopenForUpload(std::string& outPath) {
+    if (!s_enabled) return false;
+    if (s_file) {
+        std::fflush(s_file);
+        std::fclose(s_file);
+        s_file = nullptr;
+    }
+    outPath = logPath();
+    // verifica che esista (senza riaprire subito: il file resta chiuso così
+    // update_net.cpp può fare fopen("rb") senza I/O error su Horizon)
+    FILE* f = std::fopen(outPath.c_str(), "rb");
+    if (!f) return false;
+    std::fclose(f);
+    // lascia s_file chiuso fino a reopenAfterUpload()
+    return true;
+}
+
+void reopenAfterUpload() {
+    if (!s_enabled || s_file) return;
+    std::string p = logPath();
+    if (!p.empty()) s_file = std::fopen(p.c_str(), "a");
+}
+
 } // namespace DebugLog
 
 #else // OH_DEBUG_LOG

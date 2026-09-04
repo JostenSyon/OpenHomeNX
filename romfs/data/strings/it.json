@@ -59,6 +59,8 @@
     "dual_bank_mode": "Modalita doppia banca",
     "no_banks_title": "Nessuna banca",
     "no_banks_any_game": "Nessuna banca trovata per nessun gioco.",
+    "no_boxes_title": "Nessun box",
+    "no_boxes_body": "Questo salvataggio non ha ancora box (o non è leggibile).\nGioca finché i box non sono sbloccati, poi riaprilo.",
     "export_complete": "Esportazione completata",
     "pokemon_exported": "{0} Pokemon esportato/i.",
     "export_failed_count": "{0} fallito/i.",

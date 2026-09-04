@@ -64,11 +64,11 @@ int main(int argc, char* argv[]) {
         pendingUpdate = (stat((basePath + "OpenHomeNX.nro.new").c_str(), &pst) == 0);
     }
 
-    if (!pendingUpdate) {
+    {
         Result netRc = socketInitializeDefault();
         netReady = R_SUCCEEDED(netRc);
-        DebugLog::line("socketInitializeDefault -> 0x%08X (net %s)",
-                       (unsigned)netRc, netReady ? "on" : "off");
+        DebugLog::line("socketInitializeDefault -> 0x%08X (net %s) pending=%d",
+                       (unsigned)netRc, netReady ? "on" : "off", pendingUpdate ? 1 : 0);
         updateNetSetReady(netReady);
     }
 

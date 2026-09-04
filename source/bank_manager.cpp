@@ -27,10 +27,9 @@ bool BankManager::init(const std::string& basePath, GameType game) {
     return true;
 }
 
-bool BankManager::initAll(const std::string& basePath) {
-    basePath_ = basePath;
-    allMode_ = true;
+void BankManager::refreshAll() {
     bankList_.clear();
+    const std::string& basePath = basePath_;
 
     // One representative game per unique bank folder (matches game card order)
     constexpr GameType folderGames[] = {
@@ -88,7 +87,12 @@ bool BankManager::initAll(const std::string& basePath) {
         std::transform(lb.begin(), lb.end(), lb.begin(), ::tolower);
         return la < lb;
     });
+}
 
+bool BankManager::initAll(const std::string& basePath) {
+    basePath_ = basePath;
+    allMode_ = true;
+    refreshAll();
     return true;
 }
 
@@ -208,7 +212,8 @@ bool BankManager::createBank(const std::string& name, bool crossGen) {
     if (!empty.save(path))
         return false;
 
-    refresh();
+    if (allMode_) refreshAll();
+    else refresh();
     return true;
 }
 
@@ -238,7 +243,8 @@ bool BankManager::deleteBank(const std::string& name) {
     if (std::rename(info->fullPath.c_str(), destPath.c_str()) != 0)
         return false;
 
-    refresh();
+    if (allMode_) refreshAll();
+    else refresh();
     return true;
 }
 
@@ -271,7 +277,8 @@ bool BankManager::renameBank(const std::string& oldName, const std::string& newN
     if (std::rename(oldPath.c_str(), newPath.c_str()) != 0)
         return false;
 
-    refresh();
+    if (allMode_) refreshAll();
+    else refresh();
     return true;
 }
 

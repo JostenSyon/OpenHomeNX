@@ -14,6 +14,9 @@ OpenHomeNX.nacp
 debug.log
 __pycache__/
 *.pyc
+node_modules/
+package.json
+package-lock.json
 
 # vendored reference clone (not built) — re-clone from github.com/Insektaure/pkHouse
 /pkHouse/

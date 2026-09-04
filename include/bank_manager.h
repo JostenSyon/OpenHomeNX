@@ -62,4 +62,5 @@ private:
     std::vector<BankInfo> bankList_;
     static std::string sanitizeName(const std::string& raw);
     bool migrateLegacy();    // move basePath/bank.bin -> banks/za/Default.bin (ZA only)
+    void refreshAll();       // re-scan di tutte le cartelle (modo all-banks)
 };

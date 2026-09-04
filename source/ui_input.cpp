@@ -1328,13 +1328,19 @@ void UI::actionCancel() {
             leftBankName_.clear();
             leftBankPath_.clear();
             enterAllBanksMode();  // re-inits the list + cursor, screen = BankSelector
+            // Resta vista split (save a sinistra, lista a destra): con
+            // allBanksMode_=true, isDualBankMode() forzerebbe lista fullscreen.
+            allBanksMode_ = false;
+            bankSelTarget_ = Panel::Bank;
+            DebugLog::line("bank: B in box view (all-mode) -> split list, count=%d dual=%d save=%d",
+                           (int)bankManager_.list().size(), (int)isDualBankMode(), (int)save_.isLoaded());
             if (screen_ == AppScreen::MainView)  // list came back empty
                 returnToGameSelector();
             return;
         }
-        // B steps back ONE level: from an open bank to this game's bank list
-        // (persist first). A second B from the bank list leaves to the game
-        // selector. Applies to applet browsing and to the normal game+bank view.
+        // B from an open bank always steps back to the ALL-banks list (grouped
+        // by game): the single-game rescope hid other-game banks (BD folder empty
+        // -> "Nessuna banca"; Sw showed only its own folder). Persist first.
         if (!saveBankFiles()) return;
         if (!isDualBankMode() && save_.isLoaded()) {
             save_.save(savePath_);
@@ -1344,11 +1350,15 @@ void UI::actionCancel() {
         activeBankPath_.clear();
         leftBankName_.clear();
         leftBankPath_.clear();
-        bankManager_.init(basePath_, selectedGame_);
+        enterAllBanksMode();  // re-inits the list + cursor, screen = BankSelector
+        // Resta vista split (save a sinistra, lista a destra): con
+        // allBanksMode_=true, isDualBankMode() forzerebbe lista fullscreen.
+        allBanksMode_ = false;
         bankSelTarget_ = Panel::Bank;
-        bankSelCursor_ = 0;
-        bankSelScroll_ = 0;
-        screen_ = AppScreen::BankSelector;
+        DebugLog::line("bank: B in box view -> split list, count=%d dual=%d save=%d",
+                       (int)bankManager_.list().size(), (int)isDualBankMode(), (int)save_.isLoaded());
+        if (screen_ == AppScreen::MainView)  // list came back empty
+            returnToGameSelector();
         return;
     }
 

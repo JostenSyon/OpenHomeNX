@@ -11,7 +11,7 @@ include $(DEVKITPRO)/libnx/switch_rules
 
 #---------------------------------------------------------------------------------
 APP_TITLE	:=	OpenHomeNX
-APP_VERSION :=	0.1.21
+APP_VERSION :=	0.1.32
 APP_AUTHOR	:=	JostenSyon
 
 TARGET		:=	OpenHomeNX
@@ -165,6 +165,11 @@ ifneq ($(ROMFS),)
 endif
 
 .PHONY: $(BUILD) clean all release genversion
+
+# `genversion` is defined before `all`, which would make it the implicit
+# default goal — bare `make` (and build.sh) would then only regenerate the
+# version header and skip the actual .nro build. Pin the default back to `all`.
+.DEFAULT_GOAL := all
 
 VERSION_HDR := $(TOPDIR)/include/app_version.h
 

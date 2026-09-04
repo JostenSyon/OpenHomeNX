@@ -31,3 +31,7 @@ bool updateNetFetchInfo(const std::string& baseUrl, const std::string& token,
 bool updateNetDownload(const std::string& url, const std::string& token,
                        const std::string& destPath, const std::string& expectSha256,
                        std::string& err, UpdateProgressFn progress = nullptr);
+
+// POST di `basePath/debug.log` a `baseUrl/upload` (o /upload.log). Richiede debug on.
+bool updateNetUploadLog(const std::string& baseUrl, const std::string& token,
+                        const std::string& basePath, std::string& err);

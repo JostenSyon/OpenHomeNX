@@ -59,6 +59,8 @@
 	"dual_bank_mode": "Dual Bank Mode",
 	"no_banks_title": "No Banks",
 	"no_banks_any_game": "No banks found for any game.",
+	"no_boxes_title": "No Boxes Yet",
+	"no_boxes_body": "This save has no boxes yet (or can't be read).\nPlay until boxes are unlocked, then reopen it.",
 	"export_complete": "Export Complete",
 	"pokemon_exported": "{0} Pokemon exported.",
 	"export_failed_count": "{0} failed.",

@@ -124,6 +124,8 @@ namespace StrKey {
     constexpr const char* DualBankMode         = "dual_bank_mode";
     constexpr const char* NoBanksTitle         = "no_banks_title";
     constexpr const char* NoBanksAnyGame       = "no_banks_any_game";
+    constexpr const char* NoBoxesTitle         = "no_boxes_title";
+    constexpr const char* NoBoxesBody          = "no_boxes_body";
 
     // ui_input.cpp
     constexpr const char* ExportComplete       = "export_complete";

@@ -66,8 +66,8 @@ void UI::drawBankSelectorFrame() {
         }
     }
 
-    // Title
-    if (allBanksMode_) {
+    // Title (la lista grouped dipende dal manager, non dal flag UI dual)
+    if (allBanksMode_ || bankManager_.isAllMode()) {
         if (activeBankName_.empty())
             drawTextCentered(i18n::get(StrKey::AllBanks), selCenterX,
                              splitView ? 25 : 40, T().text, font_);
@@ -361,12 +361,17 @@ void UI::handleBankSelectorInput(bool& running) {
                     break;
                 case SDL_CONTROLLER_BUTTON_A: // Switch B = back
                     if (!activeBankName_.empty()) {
-                        // Already have a bank loaded — return to main view
-                        screen_ = AppScreen::MainView;
-                        if (isDualBankMode() && leftBankName_.empty()) {
-                            cursor_ = Cursor{};
-                            cursor_.panel = Panel::Bank;
-                        }
+                        // B in banca torna sempre a TUTTE le banche con header per-gioco.
+                        activeBankName_.clear();
+                        activeBankPath_.clear();
+                        bankSelTarget_ = Panel::Bank;
+                        bankManager_.initAll(basePath_);
+                        allBanksMode_ = true;
+                        bankRightCrossGen_ = false;
+                        bankSelCursor_ = 0;
+                        bankSelScroll_ = 0;
+                        screen_ = AppScreen::BankSelector;
+                        return;
                     } else {
                         if (!allBanksMode_) {
                             account_.unmountSave();

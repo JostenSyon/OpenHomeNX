@@ -6,6 +6,7 @@
 #include "app_version.h"
 #include "update_net.h"
 
+#include <cerrno>
 #include <fstream>
 
 namespace {
@@ -638,13 +639,17 @@ void UI::handleGameSelectorInput(bool& running) {
                 markDirty();
                 switch (event.cbutton.button) {
                     case SDL_CONTROLLER_BUTTON_DPAD_UP:
-                    case SDL_CONTROLLER_BUTTON_DPAD_LEFT:
-                        gameSelMenuCursor_ = (gameSelMenuCursor_ + 4 - 1) % 4; // Core, Debug log, Update, Exit
+                    case SDL_CONTROLLER_BUTTON_DPAD_LEFT: {
+                        int ms = DebugLog::enabled() ? 5 : 4;
+                        gameSelMenuCursor_ = (gameSelMenuCursor_ + ms - 1) % ms;
                         break;
+                    }
                     case SDL_CONTROLLER_BUTTON_DPAD_DOWN:
-                    case SDL_CONTROLLER_BUTTON_DPAD_RIGHT:
-                        gameSelMenuCursor_ = (gameSelMenuCursor_ + 1) % 4;
+                    case SDL_CONTROLLER_BUTTON_DPAD_RIGHT: {
+                        int ms = DebugLog::enabled() ? 5 : 4;
+                        gameSelMenuCursor_ = (gameSelMenuCursor_ + 1) % ms;
                         break;
+                    }
                     case SDL_CONTROLLER_BUTTON_B: // Switch A = conferma
                         if (gameSelMenuCursor_ == 0) {
                             // Switch Core: toggle PK/OH
@@ -654,7 +659,28 @@ void UI::handleGameSelectorInput(bool& running) {
                         } else if (gameSelMenuCursor_ == 1) {
                             // Debug log: toggle on/off, resta nel menu per feedback visivo
                             DebugLog::setEnabled(!DebugLog::enabled());
-                        } else if (gameSelMenuCursor_ == 2) {
+                            // clamp cursor se appena disattivato e menu si rimpicciolisce
+                            if (!DebugLog::enabled() && gameSelMenuCursor_ >= 4)
+                                gameSelMenuCursor_ = 3;
+                        } else if (DebugLog::enabled() && gameSelMenuCursor_ == 2) {
+                            // Send log → server (solo se debug on)
+                            {
+                                UpdateCfg cfg;
+                                std::string err;
+                                if (!readUpdateCfg(basePath_, cfg) || cfg.url.empty()) {
+                                    showMessageAndWait("Send log", "No url in update.cfg\nSet url=http://<ip>:8000");
+                                } else if (!updateNetAvailable()) {
+                                    showMessageAndWait("Send log", "Network is off on this boot.");
+                                } else {
+                                    showWorking("Uploading log to " + cfg.url + " ...");
+                                    if (updateNetUploadLog(cfg.url, cfg.token, basePath_, err))
+                                        showMessageAndWait("Send log", "Log inviato al server.");
+                                    else
+                                        showMessageAndWait("Send log", "Upload fallito:\n" + err);
+                                }
+                            }
+                        } else if ((!DebugLog::enabled() && gameSelMenuCursor_ == 2) ||
+                                   (DebugLog::enabled() && gameSelMenuCursor_ == 3)) {
                             // Check for a newer NRO and (if found) install + relaunch
                             showGameSelMenu_ = false;
                             if (checkForUpdate()) {
@@ -773,7 +799,8 @@ void UI::handleGameSelectorInput(bool& running) {
         uint32_t now = SDL_GetTicks();
         uint32_t delay = stickMoved_ ? STICK_REPEAT_DELAY : STICK_INITIAL_DELAY;
         if (now - stickMoveTime_ >= delay) {
-            gameSelMenuCursor_ = (gameSelMenuCursor_ + (stickDirY_ > 0 ? 1 : 4 - 1)) % 4;
+            int ms = DebugLog::enabled() ? 5 : 4;
+            gameSelMenuCursor_ = (gameSelMenuCursor_ + (stickDirY_ > 0 ? 1 : ms - 1)) % ms;
             stickMoveTime_ = now;
             stickMoved_ = true;
             markDirty();
@@ -869,9 +896,20 @@ bool UI::finalizePendingUpdate() {
     struct stat nst;
     bool sameSize = (stat(runningNro.c_str(), &nst) == 0) && nst.st_size == st.st_size;
     if (nroReadable && nroVer == pendVer && sameSize) {
-        DebugLog::line("update: canonical already v%s (%lld B), dropping leftover %s",
-                       nroVer.c_str(), (long long)nst.st_size, pending.c_str());
-        std::remove(pending.c_str());
+        // Il canonical è già byte-identico al pending. Se però siamo il boot
+        // throwaway (.new) non possiamo cancellare noi stessi (Horizon rifiuta
+        // l'unlink dell'eseguibile in uso: è lo stesso motivo per cui fallisce
+        // l'in-place overwrite) — e avviare l'app completa da .new senza bounce
+        // è il "doppio riavvio". Rimbalziamo sul canonical con la maschera
+        // "Updating…"; sarà il boot canonical a rimuovere il leftover.
+        if (std::remove(pending.c_str()) == 0) {
+            DebugLog::line("update: canonical already v%s (%lld B), leftover .new removed",
+                           nroVer.c_str(), (long long)nst.st_size);
+            return false;
+        }
+        DebugLog::line("update: running from .new (remove refused, errno %d), bouncing to canonical",
+                       errno);
+        if (envHasNextLoad()) { envSetNextLoad(runningNro.c_str(), runningNro.c_str()); return true; }
         return false;
     }
     if (nroReadable && nroVer == pendVer && !sameSize)
@@ -900,6 +938,26 @@ bool UI::finalizePendingUpdate() {
                    runningNro.c_str(), pending.c_str());
     if (envHasNextLoad()) envSetNextLoad(pending.c_str(), pending.c_str());
     return false;
+}
+
+// Prima di scaricare dalla rete, rimuove eventuali .nro stantii lasciati da
+// update precedenti — SOLO file che si chiamano esattamente "OpenHomeNX.nro"
+// (mai update.nro, mai l'nro in uso). Evita che un vecchio file in update/ o
+// in root venga consumato/installato al posto del download fresco.
+static void removeStaleLocalUpdates(const std::string& basePath, const std::string& runningNro) {
+    std::vector<std::string> paths = {
+        basePath + "update/OpenHomeNX.nro",
+        "sdmc:/switch/OpenHomeNX/update/OpenHomeNX.nro",
+        "sdmc:/OpenHomeNX.nro",
+    };
+    for (auto& p : paths) {
+        if (p == runningNro) continue;
+        auto slash = p.rfind('/');
+        std::string base = (slash == std::string::npos) ? p : p.substr(slash + 1);
+        if (base != "OpenHomeNX.nro") continue; // safety: solo quel basename
+        if (std::remove(p.c_str()) == 0)
+            DebugLog::line("update: rimosso stale %s", p.c_str());
+    }
 }
 
 bool UI::checkForUpdate() {
@@ -1003,6 +1061,7 @@ bool UI::checkForUpdate() {
                                 "v" + info.version + " (in uso v" + curVer + ")\nDa: " +
                                 cfg.url + "\nScaricare e installare?"))
                             return false;
+                        removeStaleLocalUpdates(basePath_, runningNro);
                         showWorking("Downloading v" + info.version + "...");
                         const std::string dst = basePath_ + "update/OpenHomeNX.nro";
                         if (!updateNetDownload(info.nroUrl, cfg.token, dst, info.sha256, err,
@@ -1017,12 +1076,27 @@ bool UI::checkForUpdate() {
                         fromNet = true;
                     } else {
                         // La rete ha risposto e non c'è niente di più recente:
-                        // dillo e FERMATI. Non ricadere sull'install di un
-                        // candidato locale pari-versione (era il "riavvia due
-                        // volte" su un reinstall della stessa versione).
-                        showMessageAndWait("Update", "You're on the latest version (v" +
-                            curVer + ").\nNetwork source reports v" + info.version + ".");
-                        return false;
+                        // con debug attivo offri reinstall per testare l'updater anche a pari versione.
+                        if (DebugLog::enabled()) {
+                            if (showConfirmDialog("Same version (debug)",
+                                    "You're on v" + curVer + " and network is also v" + info.version + ".\nReinstall anyway for testing?")) {
+                                removeStaleLocalUpdates(basePath_, runningNro);
+                                showWorking("Downloading v" + info.version + "...");
+                                const std::string dst = basePath_ + "update/OpenHomeNX.nro";
+                                if (!updateNetDownload(info.nroUrl, cfg.token, dst, info.sha256, err,
+                                        [this](const std::string& s){ showWorking(s); })) {
+                                    showMessageAndWait("Update", "Download fallito:\n" + err);
+                                    return false;
+                                }
+                                foundPath = dst; foundVer = info.version; foundCmp = 0; fromNet = true;
+                            } else {
+                                return false;
+                            }
+                        } else {
+                            showMessageAndWait("Update", "You're on the latest version (v" +
+                                curVer + ").\nNetwork source reports v" + info.version + ".");
+                            return false;
+                        }
                     }
                 }
             }
@@ -1116,8 +1190,9 @@ void UI::drawGameSelMenuPopup() {
     // Semi-transparent dark overlay
     drawRect(0, 0, SCREEN_W, SCREEN_H, T().overlay);
 
+    bool dbg = DebugLog::enabled();
     constexpr int POP_W = 300;
-    constexpr int POP_H = 240; // 4 rows (Core / Debug / Update / Exit)
+    int POP_H = dbg ? 276 : 240; // 5 rows se debug on (con Send log), 4 altrimenti
     int popX = (SCREEN_W - POP_W) / 2;
     int popY = (SCREEN_H - POP_H) / 2;
 
@@ -1126,8 +1201,10 @@ void UI::drawGameSelMenuPopup() {
 
     drawTextCentered(i18n::get(StrKey::MenuTitle), popX + POP_W / 2, popY + 22, T().text, font_);
 
-    const char* labels[] = { "Switch Core", "Debug log", "Check for update", "Exit" };
-    constexpr int MENU_ITEMS = 4;
+    const char* labels4[] = { "Switch Core", "Debug log", "Check for update", "Exit" };
+    const char* labels5[] = { "Switch Core", "Debug log", "Send log", "Check for update", "Exit" };
+    const char** labels = dbg ? labels5 : labels4;
+    int MENU_ITEMS = dbg ? 5 : 4;
     int rowH = 36;
     int startY = popY + 50;
 

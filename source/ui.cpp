@@ -276,13 +276,51 @@ void UI::showWorking(const std::string& msg) {
     SDL_SetRenderDrawColor(renderer_, T().bg.r, T().bg.g, T().bg.b, 255);
     SDL_RenderClear(renderer_);
 
+    // Progress mode if msg contains "%": layout ordinato titolo / barra / stats,
+    // ognuno nel suo slot senza sovrapposizioni (niente gear in questo modo).
+    int pct = -1;
+    {
+        size_t p = msg.find('%');
+        if (p != std::string::npos && p > 0) {
+            size_t s = msg.rfind(' ', p);
+            if (s != std::string::npos) {
+                pct = std::atoi(msg.substr(s + 1, p - s - 1).c_str());
+                if (pct < 0) pct = -1;
+                if (pct > 100) pct = 100;
+            }
+        }
+    }
+
     // Dark card behind gear + message
     constexpr int POP_W = 400;
-    constexpr int POP_H = 160;
+    const int POP_H = (pct >= 0) ? 200 : 160;
     int popX = (SCREEN_W - POP_W) / 2;
     int popY = (SCREEN_H - POP_H) / 2;
     drawRect(popX, popY, POP_W, POP_H, T().panelBg);
     drawRectOutline(popX, popY, POP_W, POP_H, T().textDim, 2);
+
+    if (pct >= 0) {
+        // "Downloading\n  45% ..." -> titolo sopra, barra in mezzo, stats sotto
+        std::string title = msg, stats;
+        size_t nl = msg.find('\n');
+        if (nl != std::string::npos) {
+            title = msg.substr(0, nl);
+            stats = msg.substr(nl + 1);
+            size_t f = stats.find_first_not_of(" \t");
+            if (f != std::string::npos) stats = stats.substr(f);
+        }
+        drawTextCentered(title, SCREEN_W / 2, popY + 52, T().text, font_);
+        constexpr int BAR_W = 300, BAR_H = 16;
+        int barX = (SCREEN_W - BAR_W) / 2;
+        int barY = popY + 92;
+        drawRect(barX, barY, BAR_W, BAR_H, T().textDim);
+        if (pct > 0)
+            drawRect(barX + 2, barY + 2, (BAR_W - 4) * pct / 100, BAR_H - 4, T().arrow);
+        if (!stats.empty())
+            drawTextCentered(stats, SCREEN_W / 2, popY + 150, T().textDim, fontSmall_);
+        SDL_RenderPresent(renderer_);
+        return;
+    }
 
     // Draw gear icon
     int gearCX = SCREEN_W / 2;
@@ -320,7 +358,7 @@ void UI::showWorking(const std::string& msg) {
     // Center hole
     fillCircle(gearCX, gearCY, HOLE_R, T().panelBg);
 
-    // Message text below gear
+    // Message text below gear (modo semplice, senza "%": una sola riga)
     drawTextCentered(msg, SCREEN_W / 2, popY + POP_H - 32, T().text, font_);
 
     SDL_RenderPresent(renderer_);
@@ -804,17 +842,23 @@ void UI::selectGame(GameType game) {
 
         save_.load(savePath_);
 
-        // M3 debug LGPE/FRLG: mostra esito load
-        {
-            char dbg[512];
-            std::snprintf(dbg, sizeof(dbg), "Path: %s\nLoaded: %d\nBox:%d Slots:%d\nRaw:%zu",
-                savePath_.c_str(), (int)save_.isLoaded(), save_.boxCount(), save_.slotsPerBox(), save_.rawDataSize());
-            if (!save_.isLoaded()) {
-                showMessageAndWait("Save Load Failed (LGPE/FRLG debug)", dbg);
-            } else if (isLGPE(game) || isFRLG(game)) {
-                // Mostra anche se ok per confermare LGPE/FRLG
-                // showMessageAndWait("Save Load OK", dbg);
+        if (!save_.isLoaded()) {
+            // Dettaglio tecnico solo nel debug.log, mai a schermo (nemmeno con debug off)
+            DebugLog::line("save: load fallito path=%s box=%d slots=%d raw=%zu",
+                savePath_.c_str(), save_.boxCount(), save_.slotsPerBox(), save_.rawDataSize());
+            // Save illeggibile o senza box sbloccati (inizio gioco): schermata
+            // amichevole, poi torna al selettore giochi invece di proseguire in
+            // un flusso banche senza senso (save non caricato -> lista vuota).
+            showMessageAndWait(i18n::get(StrKey::NoBoxesTitle),
+                               i18n::get(StrKey::NoBoxesBody));
+            if (DebugLog::enabled()) {
+                char dbg[512];
+                std::snprintf(dbg, sizeof(dbg), "Path: %s\nLoaded: %d\nBox:%d Slots:%d\nRaw:%zu",
+                    savePath_.c_str(), (int)save_.isLoaded(), save_.boxCount(), save_.slotsPerBox(), save_.rawDataSize());
+                showMessageAndWait("Save Load (debug)", dbg);
             }
+            account_.unmountSave();
+            return;
         }
 
         // Debug: verify encryption round-trip (encrypt(decrypt(file)) == file)
@@ -874,6 +918,14 @@ std::string UI::buildBackupDir(GameType game) const {
 }
 
 bool UI::saveBankFiles() {
+    // Niente da scrivere (nessuna banca aperta) → nessun popup, nessun LED.
+    // TODO(futura): dirty-tracking per contenuto (hash/memcmp vs ultimo save)
+    // per saltare la scrittura anche a banca aperta ma invariata — oggi ogni
+    // entra/esci riscrive il file anche senza modifiche.
+    if (!isDualBankMode() && activeBankPath_.empty())
+        return true;
+    if (isDualBankMode() && leftBankPath_.empty() && activeBankPath_.empty())
+        return true;
     showWorking(i18n::get(StrKey::Saving));
     ledBlink();
     if (isDualBankMode()) {

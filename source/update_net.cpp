@@ -7,6 +7,7 @@
 #include <ctime>
 #include <vector>
 
+#include <switch.h>
 #include <curl/curl.h>
 #include <mbedtls/sha256.h>
 
@@ -147,29 +148,36 @@ bool updateNetFetchInfo(const std::string& baseUrl, const std::string& token,
 }
 
 namespace {
+// Tempo di parete in secondi. `clock()` su newlib/Switch è tempo CPU: durante un
+// download il processo è bloccato su I/O e `clock()` non avanza → il throttle
+// non scadeva mai e il callback non emetteva. Uso il tick di sistema di libnx.
+double wallSeconds() {
+    return (double)armTicksToNs(armGetSystemTick()) / 1.0e9;
+}
 struct DlProgress {
     UpdateProgressFn cb;
     std::string label;
-    double lastEmit = 0.0;   // secondi (clock monotono approssimato via curl)
+    double lastEmit = 0.0;
     curl_off_t lastBytes = 0;
     double lastBytesTime = 0.0;
 };
 int xferInfo(void* p, curl_off_t dltotal, curl_off_t dlnow, curl_off_t, curl_off_t) {
     auto* dp = static_cast<DlProgress*>(p);
     if (!dp || !dp->cb) return 0;
-    double now = (double)clock() / CLOCKS_PER_SEC;
-    if (now - dp->lastEmit < 0.25) return 0;
+    double now = wallSeconds();
+    if (dp->lastEmit != 0.0 && now - dp->lastEmit < 0.25) return 0;
     double dt = now - dp->lastBytesTime;
-    double mbps = (dt > 0.01) ? ((double)(dlnow - dp->lastBytes) / dt / (1024.0 * 1024.0)) : 0.0;
+    double mbps = (dp->lastBytesTime > 0.0 && dt > 0.05)
+                  ? ((double)(dlnow - dp->lastBytes) / dt / (1024.0 * 1024.0)) : 0.0;
     dp->lastEmit = now; dp->lastBytes = dlnow; dp->lastBytesTime = now;
     char line[160];
     if (dltotal > 0) {
         int pct = (int)((dlnow * 100) / dltotal);
-        std::snprintf(line, sizeof(line), "%s  %d%%  (%.1f / %.1f MB)  ·  %.1f MB/s",
+        std::snprintf(line, sizeof(line), "%s\n  %d%%  (%.1f / %.1f MB)  ·  %.1f MB/s",
                       dp->label.c_str(), pct,
                       dlnow / (1024.0 * 1024.0), dltotal / (1024.0 * 1024.0), mbps);
     } else {
-        std::snprintf(line, sizeof(line), "%s  %.1f MB  ·  %.1f MB/s",
+        std::snprintf(line, sizeof(line), "%s\n  %.1f MB  ·  %.1f MB/s",
                       dp->label.c_str(), dlnow / (1024.0 * 1024.0), mbps);
     }
     dp->cb(line);
@@ -241,5 +249,62 @@ bool updateNetDownload(const std::string& url, const std::string& token,
         return false;
     }
     DebugLog::line("update-net: scaricato -> %s", destPath.c_str());
+    return true;
+}
+
+bool updateNetUploadLog(const std::string& baseUrl, const std::string& token,
+                        const std::string& basePath, std::string& err) {
+    if (!g_netReady) { err = "rete non inizializzata"; return false; }
+    std::string logPath;
+    if (!DebugLog::flushAndReopenForUpload(logPath)) {
+        // fallback: prova basePath diretto se flush fallisce (debug appena attivato senza file)
+        logPath = basePath + "debug.log";
+        DebugLog::line("upload: flush fallito, provo %s", logPath.c_str());
+        FILE* tf = std::fopen(logPath.c_str(), "rb");
+        if (!tf) {
+            std::string alt = "sdmc:/switch/OpenHomeNX/debug.log";
+            tf = std::fopen(alt.c_str(), "rb");
+            if (tf) { std::fclose(tf); logPath = alt; }
+            else { err = "debug.log non trovato in " + logPath + " (attiva Debug log dal menu +)"; return false; }
+        } else std::fclose(tf);
+        // riapri comunque il log per continuare
+        std::string dummy;
+        DebugLog::flushAndReopenForUpload(dummy);
+    }
+    FILE* f = std::fopen(logPath.c_str(), "rb");
+    if (!f) { err = "debug.log non trovato in " + logPath + " (errno " + std::strerror(errno) + ")"; return false; }
+    std::fseek(f, 0, SEEK_END);
+    long sz = std::ftell(f);
+    std::fseek(f, 0, SEEK_SET);
+    if (sz <= 0) { std::fclose(f); err = "debug.log vuoto"; return false; }
+    if (sz > 4 * 1024 * 1024) { std::fclose(f); err = "debug.log troppo grande (>4MB)"; return false; }
+
+    std::string url = baseUrl;
+    while (!url.empty() && url.back() == '/') url.pop_back();
+    url += "/upload";
+
+    CURL* c = curl_easy_init();
+    if (!c) { std::fclose(f); err = "curl_easy_init fallito"; return false; }
+    struct curl_slist* hdrs = nullptr;
+    applyCommonOpts(c, token, &hdrs);
+    curl_easy_setopt(c, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(c, CURLOPT_POST, 1L);
+    curl_easy_setopt(c, CURLOPT_READDATA, f);
+    curl_easy_setopt(c, CURLOPT_POSTFIELDSIZE_LARGE, (curl_off_t)sz);
+    curl_easy_setopt(c, CURLOPT_TIMEOUT, 30L);
+    // invia come binary
+    hdrs = curl_slist_append(hdrs, "Content-Type: application/octet-stream");
+    curl_easy_setopt(c, CURLOPT_HTTPHEADER, hdrs);
+
+    CURLcode rc = curl_easy_perform(c);
+    long http = 0;
+    curl_easy_getinfo(c, CURLINFO_RESPONSE_CODE, &http);
+    curl_slist_free_all(hdrs);
+    curl_easy_cleanup(c);
+    std::fclose(f);
+    DebugLog::reopenAfterUpload();
+    if (rc != CURLE_OK) { err = std::string("upload: ") + curl_easy_strerror(rc); return false; }
+    if (http < 200 || http >= 300) { err = "upload HTTP " + std::to_string(http); return false; }
+    DebugLog::line("update-net: log inviato -> %s (%ld byte)", url.c_str(), sz);
     return true;
 }

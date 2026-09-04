@@ -34,6 +34,12 @@ void setEnabled(bool on);
 // Scrive una riga formattata in stile printf nel log, con timestamp e fflush.
 void line(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
 
+// Per upload: chiude temporaneamente il file così curl può rileggerlo.
+// Dopo l'upload richiama reopenAfterUpload() per continuare a loggare.
+bool flushAndReopenForUpload(std::string& outPath);
+void reopenAfterUpload();
+std::string logPath();
+
 } // namespace DebugLog
 
 #else // OH_DEBUG_LOG
