@@ -100,7 +100,7 @@ private:
 
     uint32_t fileVersion() const {
         if (crossGen_) return VERSION_CROSSGEN;
-        if (isFRLG(gameType_)) return VERSION_FRLG;
+        if (isFRLG(gameType_) || isImportedFile(gameType_)) return VERSION_FRLG;
         if (isLGPE(gameType_)) return VERSION_LGPE;
         if (gameType_ == GameType::LA) return VERSION_LA;
         return boxCount_ == 40 ? VERSION_40BOX : VERSION_32BOX;

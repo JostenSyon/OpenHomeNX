@@ -54,7 +54,7 @@ inline const PokemonOffsets& pokemonOffsetsFor(GameType g) {
     static constexpr PokemonOffsets PK8 = {0x08, 0x0A, 0x1C, 0x20, 0x22, 0,  0x22, 2,  0x24, 0,  0x124, 0x14, false, 0x26, 0x0C, 0x0E, 0x72, 0x8C, 0x58, 0xF8, 0x148, -1,  -1,  false, 0xE2, 0xE4, 0x16, -1,  -1,  0xA8};
     static constexpr PokemonOffsets PA8 = {0x08, 0x0A, 0x1C, 0x20, 0x22, 0,  0x22, 2,  0x24, 0,  0x137, 0x14, false, 0x26, 0x0C, 0x0E, 0x54, 0x94, 0x60, 0x110, -1,   0x10, 0x16, false, 0xF2, 0xE4, -1,   -1,  -1,  0xB8};
     static constexpr PokemonOffsets PA9 = {0x08, 0x0A, 0x1C, 0x20, 0x22, 0,  0x22, 1,  0x24, 0,  0x124, 0x14, false, 0x26, 0x0C, 0x0E, 0x72, 0x8C, 0x58, 0xF8, 0x148, -1,  0x23, true,  0xD5, 0xD0, -1,   -1,  -1,  0xA8};
-    if (isFRLG(g)) return PK3;
+    if (isFRLG(g) || isImportedFile(g)) return PK3;
     if (isLGPE(g)) return PB7;
     if (g == GameType::LA) return PA8;
     if (isSV(g) || g == GameType::ZA) return PA9;
@@ -171,12 +171,12 @@ struct Pokemon {
 
     // Display TID/SID: Gen7+ uses 6-digit/4-digit format, Gen3 uses raw 16-bit
     uint32_t displayTid() const {
-        if (isFRLG(gameType_)) return tid();
+        if (isFRLG(gameType_) || isImportedFile(gameType_)) return tid();
         uint32_t combined = (static_cast<uint32_t>(sid()) << 16) | tid();
         return combined % 1000000;
     }
     uint32_t displaySid() const {
-        if (isFRLG(gameType_)) return sid();
+        if (isFRLG(gameType_) || isImportedFile(gameType_)) return sid();
         uint32_t combined = (static_cast<uint32_t>(sid()) << 16) | tid();
         return combined / 1000000;
     }
@@ -200,7 +200,7 @@ struct Pokemon {
     uint32_t iv32() const { return readU32(ofs().iv32); }
     bool isEgg() const { return ((iv32() >> 30) & 1) == 1; }
     bool isNicknamed() const {
-        if (isFRLG(gameType_)) return true;
+        if (isFRLG(gameType_) || isImportedFile(gameType_)) return true;
         return ((iv32() >> 31) & 1) == 1;
     }
 
@@ -279,7 +279,7 @@ struct Pokemon {
         uint16_t t = tid();
         uint16_t s = sid();
         uint32_t xor_val = (p >> 16) ^ (p & 0xFFFF) ^ t ^ s;
-        if (isFRLG(gameType_)) return xor_val == 0;
+        if (isFRLG(gameType_) || isImportedFile(gameType_)) return xor_val == 0;
         return xor_val < 16;
     }
 };

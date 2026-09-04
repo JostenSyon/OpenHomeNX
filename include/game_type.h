@@ -2,8 +2,8 @@
 #include <cstdint>
 
 // Supported game types (sequential enum used as array index)
-enum class GameType { ZA, S, V, Sw, Sh, BD, SP, LA, GP, GE, FR, LG, FR_ES, LG_ES, FR_DE, LG_DE, FR_IT, LG_IT, FR_FR, LG_FR, FR_JA, LG_JA };
-static constexpr int GAME_TYPE_COUNT = 22;
+enum class GameType { ZA, S, V, Sw, Sh, BD, SP, LA, GP, GE, FR, LG, FR_ES, LG_ES, FR_DE, LG_DE, FR_IT, LG_IT, FR_FR, LG_FR, FR_JA, LG_JA, RUBY, SAPPHIRE, EMERALD };
+static constexpr int GAME_TYPE_COUNT = 25;
 
 inline bool isSV(GameType g) { return g == GameType::S || g == GameType::V; }
 inline bool isSwSh(GameType g) { return g == GameType::Sw || g == GameType::Sh; }
@@ -17,6 +17,17 @@ inline bool isFRLG(GameType g) {
            g == GameType::FR_IT || g == GameType::LG_IT ||
            g == GameType::FR_FR || g == GameType::LG_FR ||
            g == GameType::FR_JA || g == GameType::LG_JA;
+}
+
+// File-backed games with no Switch titleId: found on SD/USB by scanning
+// configured import paths (see import_paths.h, import_scan.h) rather than
+// mounted via AccountManager::mountSave(). They share FRLG's exact GBA sector
+// container (verified against real ruby/sapphire/emerald.sav fixtures — see
+// GEN_PLAN.md Fase 5), so SaveFile::load()/save() route them through the same
+// loadGBA()/saveGBA() as FRLG; only the titleId-bound paths (icon fetch from
+// NS, AccountManager mount/backup) need to treat them differently.
+inline bool isImportedFile(GameType g) {
+    return g == GameType::RUBY || g == GameType::SAPPHIRE || g == GameType::EMERALD;
 }
 
 // Per-game constant table. One entry per GameType enum value.
@@ -131,6 +142,19 @@ inline const GameInfo& gameInfo(GameType g) {
         {0x0100F1E0233FA000, "LeafGreen_j.sav",  "Pokemon LeafGreen (JA)",        "FireRed / LeafGreen",
          "FireRedLeafGreen", "LeafGreen_JA",      "pk3", 100,   14, 30, 80,    0, 80,
          false, false, "", "FRLG"},
+        // RUBY (imported file, no titleId — sentinel below is never a real
+        // Nintendo titleId, which always sits above 0x0100000000010000)
+        {0x1,                "",                 "Pokemon Ruby",                  "Pokemon Ruby",
+         "Ruby",             "Ruby",              "pk3", 100,   14, 30, 80,    0, 80,
+         false, false, "", "Ruby"},
+        // SAPPHIRE
+        {0x2,                "",                 "Pokemon Sapphire",              "Pokemon Sapphire",
+         "Sapphire",         "Sapphire",          "pk3", 100,   14, 30, 80,    0, 80,
+         false, false, "", "Sapphire"},
+        // EMERALD
+        {0x3,                "",                 "Pokemon Emerald",                "Pokemon Emerald",
+         "Emerald",          "Emerald",           "pk3", 100,   14, 30, 80,    0, 80,
+         false, false, "", "Emerald"},
     };
     return INFO[static_cast<int>(g)];
 }
@@ -174,7 +198,7 @@ inline int         pkPartySize(GameType g)      { return gameInfo(g).pkPartySize
 
 // National generation of a game's Pokemon format.
 inline int genOf(GameType g) {
-    if (isFRLG(g)) return 3;
+    if (isFRLG(g) || isImportedFile(g)) return 3;
     if (isLGPE(g)) return 7;
     if (isSV(g) || g == GameType::ZA) return 9;
     return 8; // SwSh, BDSP, Legends Arceus
@@ -195,7 +219,7 @@ inline int genOf(GameType g) {
 inline int ohTargetGenFor(GameType g) {
     if (isSwSh(g)) return 8;
     if (isSV(g))   return 9;
-    if (isFRLG(g)) return 3;
+    if (isFRLG(g) || isImportedFile(g)) return 3;
     if (g == GameType::LA) return 10; // PA8 (Legends: Arceus)
     if (g == GameType::ZA) return 11; // PA9 (Legends: Z-A)
     if (isBDSP(g))         return 12; // PB8 (BDSP)
@@ -212,7 +236,7 @@ inline int ohTargetGenFor(GameType g) {
 inline int ohSourceGenFor(GameType g) {
     if (isSwSh(g)) return 8;
     if (isSV(g))   return 9;
-    if (isFRLG(g)) return 3;
+    if (isFRLG(g) || isImportedFile(g)) return 3;
     if (g == GameType::LA) return 10; // PA8 (Legends: Arceus)
     if (g == GameType::ZA) return 11; // PA9 (Legends: Z-A)
     if (isBDSP(g))         return 12; // PB8 (BDSP)

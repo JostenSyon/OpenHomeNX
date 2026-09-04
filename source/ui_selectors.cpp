@@ -200,6 +200,7 @@ void UI::selectProfile(int index) {
         if (account_.hasSaveData(index, g))
             availableGames_.push_back(g);
     }
+    appendImportedGames();
 
     if (availableGames_.empty()) {
         showMessageAndWait(i18n::get(StrKey::NoSaveData),
@@ -216,6 +217,58 @@ void UI::selectProfile(int index) {
     showWorking(i18n::get(StrKey::LoadingGameIcons));
     loadGameIcons();
     screen_ = AppScreen::GameSelector;
+}
+
+// --- File import (GEN_PLAN Fase 2/5: emulator saves on SD/USB) ---
+
+void UI::appendImportedGames() {
+    importedGames_ = scanImportPaths(importPaths_);
+    for (const auto& ig : importedGames_)
+        availableGames_.push_back(ig.type);
+}
+
+std::string UI::importedSavePath(GameType game) const {
+    for (const auto& ig : importedGames_)
+        if (ig.type == game)
+            return ig.filePath;
+    return "";
+}
+
+void UI::rescanImportedGamesOnHotplug() {
+    std::vector<GameType> oldTypes;
+    for (const auto& ig : importedGames_)
+        oldTypes.push_back(ig.type);
+
+    // Unlike appendImportedGames(), availableGames_ isn't being rebuilt from
+    // scratch here — drop the previous imported entries first so re-running
+    // this on every hotplug doesn't pile up duplicates.
+    availableGames_.erase(
+        std::remove_if(availableGames_.begin(), availableGames_.end(), isImportedFile),
+        availableGames_.end());
+
+    importedGames_ = scanImportPaths(importPaths_);
+    for (const auto& ig : importedGames_)
+        availableGames_.push_back(ig.type);
+
+    std::vector<GameType> newlyFound;
+    for (const auto& ig : importedGames_)
+        if (std::find(oldTypes.begin(), oldTypes.end(), ig.type) == oldTypes.end())
+            newlyFound.push_back(ig.type);
+
+    if (newlyFound.empty())
+        return;
+
+    DebugLog::line("import hotplug: %zu new save(s) found", newlyFound.size());
+    refreshBankCounts();
+    loadGameIcons();
+
+    std::string names;
+    for (GameType g : newlyFound) {
+        if (!names.empty()) names += ", ";
+        names += gameDisplayNameOf(g);
+    }
+    showMessageAndWait(i18n::get(StrKey::ImportFoundTitle), names);
+    markDirty();
 }
 
 // --- Game Icons ---
@@ -237,6 +290,11 @@ void UI::loadGameIcons() {
 
     bool needSystem = false;
     for (GameType game : availableGames_) {
+        // Imported games (Ruby/Sapphire/Emerald from a scanned file) have no
+        // real titleId and no NS control data — they always use the abbrev.
+        // placeholder in drawGameSelectorFrame() instead of a fetched icon.
+        if (isImportedFile(game))
+            continue;
         // Try loading from cache first
         char hexId[32];
         std::snprintf(hexId, sizeof(hexId), "%016lX", titleIdOf(game));
@@ -266,6 +324,8 @@ void UI::loadGameIcons() {
     if (needSystem) {
         nsInitialize();
         for (GameType game : availableGames_) {
+            if (isImportedFile(game))
+                continue; // no titleId, no NS control data — placeholder only
             if (gameIconCache_.count(game))
                 continue; // already loaded from cache
 
@@ -426,6 +486,9 @@ void UI::drawGameSelectorFrame() {
                 case GameType::GE: abbr = "GE"; break;
                 case GameType::FR: case GameType::FR_ES: case GameType::FR_DE: case GameType::FR_IT: case GameType::FR_FR: case GameType::FR_JA: abbr = "FR"; break;
                 case GameType::LG: case GameType::LG_ES: case GameType::LG_DE: case GameType::LG_IT: case GameType::LG_FR: case GameType::LG_JA: abbr = "LG"; break;
+                case GameType::RUBY:     abbr = "RU"; break;
+                case GameType::SAPPHIRE: abbr = "SA"; break;
+                case GameType::EMERALD:  abbr = "EM"; break;
             }
             drawTextCentered(abbr, iconX + ICON_SIZE / 2, iconY + ICON_SIZE / 2,
                              T().text, font_);

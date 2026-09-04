@@ -1,0 +1,26 @@
+#pragma once
+#include "game_type.h"
+#include "import_paths.h"
+#include <string>
+#include <vector>
+
+// One save file found while scanning enabled import paths.
+struct ImportedGame {
+    GameType    type;      // one of the isImportedFile() GameType slots
+    std::string filePath;  // absolute path, ready for SaveFile::load()
+};
+
+// Scans every enabled entry in `paths` for a Gen3 GBA save (128KB, valid
+// sector layout per SaveFile::loadGBA) and identifies which of
+// Ruby/Sapphire/Emerald each one is. An entry whose path starts with "usb:"
+// is resolved against every currently mounted UMS device (the suffix after
+// "usb:" is appended to each "umsN:" mount point) since USB device names are
+// only known at mount time, not when the path was configured. Only the first
+// match per GameType is kept.
+//
+// Gen1/Gen2 saves are not detected here — no Pk1/Pk2 reader exists yet
+// (GEN_PLAN.md Fase 3/4). A file that isn't a 128KB Gen3 save, or is a
+// FireRed/LeafGreen save (already reachable via their real titleId-backed
+// GameType), is silently skipped: scanning a folder full of unrelated files
+// is the normal case, not an error.
+std::vector<ImportedGame> scanImportPaths(const std::vector<ImportPathEntry>& paths);

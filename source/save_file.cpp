@@ -46,7 +46,7 @@ bool SaveFile::load(const std::string& path) {
     if (saveHandleRust_)
         saveHandleRust_.reset();
 
-    if (isFRLG(gameType_))
+    if (isFRLG(gameType_) || isImportedFile(gameType_))
         return loadGBA(path);
     if (isBDSP(gameType_))
         return loadBDSP(path);
@@ -60,7 +60,7 @@ bool SaveFile::save(const std::string& path) {
         return false;
 
     bool ok;
-    if (isFRLG(gameType_))
+    if (isFRLG(gameType_) || isImportedFile(gameType_))
         ok = saveGBA(path);
     else if (isBDSP(gameType_))
         ok = saveBDSP(path);
@@ -391,7 +391,7 @@ void SaveFile::clearBoxSlot(int box, int slot) {
     if (offset + sizeBoxSlot_ > static_cast<int>(boxDataLen_))
         return;
 
-    if (isFRLG(gameType_) || isLGPE(gameType_)) {
+    if (isFRLG(gameType_) || isImportedFile(gameType_) || isLGPE(gameType_)) {
         // FRLG/LGPE: empty slots are all-zero bytes (not encrypted blank).
         std::memset(boxData_ + offset, 0, sizeBoxSlot_);
     } else {
@@ -554,7 +554,7 @@ std::string SaveFile::getBoxName(int box) const {
     if (box < 0 || box >= boxCount_)
         return "Box " + std::to_string(box + 1);
 
-    if (isFRLG(gameType_)) {
+    if (isFRLG(gameType_) || isImportedFile(gameType_)) {
         // FRLG: box names stored after all pokemon data in Gen3 encoding
         if (!boxLayoutData_)
             return "Box " + std::to_string(box + 1);

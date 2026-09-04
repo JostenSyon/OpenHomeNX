@@ -207,6 +207,7 @@ namespace StrKey {
     constexpr const char* ImportAddPath        = "import_add_path";
     constexpr const char* ImportSettingsFooter = "import_settings_footer";
     constexpr const char* ImportPathInputHdr   = "import_path_input_hdr";
+    constexpr const char* ImportFoundTitle     = "import_found_title";
 
     // ui_render.cpp - language selector
     constexpr const char* SelectLanguage       = "select_language";

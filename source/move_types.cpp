@@ -134,7 +134,7 @@ static const uint8_t s_moveTypes9a[] = {
 uint8_t getMoveType(uint16_t moveId, GameType game) {
     const uint8_t* table;
     size_t len;
-    if (isFRLG(game)) {
+    if (isFRLG(game) || isImportedFile(game)) {
         table = s_moveTypes5;
         len = sizeof(s_moveTypes5);
     } else if (game == GameType::ZA) {

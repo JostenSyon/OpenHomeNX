@@ -1499,7 +1499,7 @@ void UI::buildAvailableSpeciesList() {
             if (species >= PERSONAL_GG_COUNT) return false;
             auto s = PersonalGG::BASE_STATS[species];
             return (s.hp | s.atk | s.def | s.spe | s.spa | s.spd) != 0;
-        } else if (isFRLG(selectedGame_)) {
+        } else if (isFRLG(selectedGame_) || isImportedFile(selectedGame_)) {
             return species >= 1 && species <= 386;
         }
         return false;
@@ -2349,7 +2349,7 @@ std::string UI::exportPokemon(const Pokemon& pkm) {
     std::string nick = SpeciesName::get(sp);
 
     // Checksum at 0x06 for modern, 0x1C for PK3
-    uint16_t chk = isFRLG(selectedGame_) ? pkm.readU16(0x1C) : pkm.readU16(0x06);
+    uint16_t chk = (isFRLG(selectedGame_) || isImportedFile(selectedGame_)) ? pkm.readU16(0x1C) : pkm.readU16(0x06);
     uint32_t ec = pkm.encryptionConstant();
 
     // Short game tag

@@ -6,6 +6,7 @@
 #include "theme.h"
 #include "wondercard.h"
 #include "import_paths.h"
+#include "import_scan.h"
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_ttf.h>
 #include <SDL2/SDL_image.h>
@@ -209,13 +210,22 @@ private:
     int  langSelCursor_        = 0;
     std::vector<std::string> langList_;
 
-    // Import-path settings state (GEN_PLAN Fase 2 groundwork: which folders
-    // to scan for emulator save files — the scan itself lands separately).
+    // Import-path settings state: which folders/USB suffixes to scan for
+    // emulator save files (GEN_PLAN Fase 2/5).
     bool showImportSettings_    = false;
     int  importSettingsCursor_  = 0;
     std::vector<ImportPathEntry> importPaths_;
     std::vector<GameSelMenuAction> gameSelMenuActions() const;
     void drawImportSettingsPopup();
+
+    // Games found by scanning importPaths_ (Ruby/Sapphire/Emerald so far —
+    // see isImportedFile()). Rescanned whenever availableGames_ is rebuilt
+    // (profile selection, applet-mode entry, USB hotplug) and consumed by
+    // selectGame() to bypass AccountManager::mountSave() for these GameTypes.
+    std::vector<ImportedGame> importedGames_;
+    void appendImportedGames();               // scans importPaths_, extends availableGames_
+    void rescanImportedGamesOnHotplug();      // re-scan in place + popup on newly found games
+    std::string importedSavePath(GameType game) const;
 
     // Cross-gen transfer selector state (M6a)
     bool showGenSelector_ = false;

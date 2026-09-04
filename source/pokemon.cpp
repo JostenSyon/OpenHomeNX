@@ -237,7 +237,7 @@ uint8_t Pokemon::level() const {
         return data[o.levelByte];
     // Compute from EXP using species growth rate table
     uint32_t exp = readU32(o.expOfs);
-    if (isFRLG(gameType_)) {
+    if (isFRLG(gameType_) || isImportedFile(gameType_)) {
         uint16_t sp = species();
         uint8_t growth = (sp < 387) ? FRLG_GROWTH_RATES[sp] : 0;
         return levelFromExp(exp, growth);
@@ -249,7 +249,7 @@ uint8_t Pokemon::level() const {
 }
 
 uint16_t Pokemon::species() const {
-    if (isFRLG(gameType_))
+    if (isFRLG(gameType_) || isImportedFile(gameType_))
         return SpeciesConverter::getNational3(speciesInternal());
     if (isSwSh(gameType_) || isBDSP(gameType_) || gameType_ == GameType::LA || isLGPE(gameType_))
         return speciesInternal(); // PK8/PB8/PA8/PB7 stores national dex ID directly
@@ -623,7 +623,7 @@ static const RibbonDef GEN3_RIBBON_DEFS[] = {
 std::vector<Pokemon::RibbonInfo> Pokemon::getRibbonsAndMarks() const {
     std::vector<RibbonInfo> result;
 
-    if (isFRLG(gameType_)) {
+    if (isFRLG(gameType_) || isImportedFile(gameType_)) {
         // Gen3: single uint32 at 0x4C
         uint32_t rib = readU32(0x4C);
         // Contest ribbons: 3-bit counts at bits 0-14
@@ -674,7 +674,7 @@ std::vector<Pokemon::RibbonInfo> Pokemon::getRibbonsAndMarks() const {
 }
 
 void Pokemon::loadFromEncrypted(const uint8_t* encrypted, size_t len) {
-    if (isFRLG(gameType_))
+    if (isFRLG(gameType_) || isImportedFile(gameType_))
         PokemonFFI::decryptArray3(encrypted, len, data.data());
     else if (isLGPE(gameType_))
         PokemonFFI::decryptArray6(encrypted, len, data.data());
@@ -685,7 +685,7 @@ void Pokemon::loadFromEncrypted(const uint8_t* encrypted, size_t len) {
 }
 
 void Pokemon::refreshChecksum() {
-    if (isFRLG(gameType_)) {
+    if (isFRLG(gameType_) || isImportedFile(gameType_)) {
         // PK3: sum u16 words from 0x20 to 0x4F (48 bytes = 24 words), store at 0x1C
         uint16_t chk = 0;
         for (int i = 0x20; i < 0x50; i += 2)
@@ -706,7 +706,7 @@ void Pokemon::refreshChecksum() {
 
 void Pokemon::getEncrypted(uint8_t* outBuf) {
     refreshChecksum();
-    if (isFRLG(gameType_))
+    if (isFRLG(gameType_) || isImportedFile(gameType_))
         PokemonFFI::encryptArray3(data.data(), PokemonFFI::SIZE_3STORED, outBuf);
     else if (isLGPE(gameType_))
         PokemonFFI::encryptArray6(data.data(), PokemonFFI::SIZE_6PARTY, outBuf);

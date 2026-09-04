@@ -424,6 +424,7 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
             if (availableGames_.empty())
                 availableGames_.assign(std::begin(allGames), std::end(allGames));
         }
+        appendImportedGames();
     };
 
     if (appletMode_) {
@@ -804,6 +805,15 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
                 if (checkForUpdate(/*usbAlreadyMounted=*/true)) { running = false; break; }
                 markDirty();
             }
+            // Import scan re-runs on every insertion (not once-per-session
+            // like the update check above): the user may swap in a different
+            // drive with different emulator saves later in the same session.
+            // SD-configured import paths appear passively next time the game
+            // list is (re)built; a "usb:" path only ever resolves once a
+            // drive is actually mounted, so this is the one that needs an
+            // explicit rescan + popup on hotplug.
+            if (rising)
+                rescanImportedGamesOnHotplug();
         }
 #endif
 
@@ -885,7 +895,19 @@ void UI::selectGame(GameType game) {
     if (!isDualBankMode()) {
         showWorking(i18n::get(StrKey::LoadingSaveData));
 
-        if (selectedProfile_ >= 0) {
+        if (isImportedFile(game)) {
+            // File-backed game (scanned emulator save) — no titleId, no
+            // AccountManager mount/backup: load straight from the resolved
+            // path found by appendImportedGames(). Read/write both go
+            // through this same file (SaveFile::load()/save() already route
+            // isImportedFile() through loadGBA()/saveGBA()), so writes here
+            // land directly on the user's own emulator save.
+            savePath_ = importedSavePath(game);
+            if (savePath_.empty()) {
+                showMessageAndWait(i18n::get(StrKey::MountError), i18n::get(StrKey::FailedMountSave));
+                return;
+            }
+        } else if (selectedProfile_ >= 0) {
             std::string mountPath = account_.mountSave(selectedProfile_, game);
             if (mountPath.empty()) {
                 showMessageAndWait(i18n::get(StrKey::MountError), i18n::get(StrKey::FailedMountSave));
@@ -949,7 +971,7 @@ void UI::selectGame(GameType game) {
         }
 
         // Debug: verify encryption round-trip (encrypt(decrypt(file)) == file)
-        if (!isBDSP(game) && !isLGPE(game) && !isFRLG(game)) {
+        if (!isBDSP(game) && !isLGPE(game) && !isFRLG(game) && !isImportedFile(game)) {
             std::string rtResult = save_.verifyRoundTrip();
             if (rtResult != "OK")
                 showMessageAndWait(i18n::get(StrKey::RoundTripCheck), rtResult);
