@@ -742,6 +742,15 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
                 }
             }
         }
+        // running just went false (quit, or checkForUpdate() is about to
+        // restart us): skip the redraw below entirely. Otherwise this same
+        // iteration still falls through to it before the while() condition is
+        // re-checked, drawing one more frame of the screen underneath — which
+        // for an update meant a flash of the game selector overwriting the
+        // "Updating…" card checkForUpdate() had just presented, right before
+        // the process exits. Whatever was last presented (or nothing) stays.
+        if (!running) break;
+
         // Screen transition always triggers redraw
         if (screen_ != screenBefore)
             markDirty();

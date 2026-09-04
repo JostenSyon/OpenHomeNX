@@ -224,6 +224,7 @@
     "right": "Destra",
     "update_title": "Aggiornamento",
     "update_net_off": "Sorgente di rete impostata ({0})\nma la rete è spenta in questo avvio. Controllati solo SD/USB.",
+    "update_scanning_usb": "Scansione USB...",
     "update_contacting": "Contatto {0} ...",
     "update_unreachable": "Sorgente di rete irraggiungibile.\n{0}\n({1})\n\nControllati solo SD/USB.",
     "update_avail_net_title": "Aggiornamento disponibile (rete)",

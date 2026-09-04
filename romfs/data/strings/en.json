@@ -224,6 +224,7 @@
 	"right": "Right",
 	"update_title": "Update",
 	"update_net_off": "Network source set ({0})\nbut networking is off on this boot. Only SD/USB were checked.",
+	"update_scanning_usb": "Scanning USB...",
 	"update_contacting": "Contacting {0} ...",
 	"update_unreachable": "Network source: could not reach it.\n{0}\n({1})\n\nChecked SD/USB only.",
 	"update_avail_net_title": "Update available (network)",

@@ -995,13 +995,34 @@ bool UI::checkForUpdate() {
     std::vector<std::string> candidates;
 #ifdef OH_USB_UPDATE
     {
-        // USB detection is a known-open issue (usb:hs never enumerates a drive
-        // in this process — see Updater.md). Until that's solved, keep this to
-        // a single instant query so it never slows down the common SD update.
-        // No wait loop, no "Scanning USB…" prompt.
+        // The "no wait, instant query only" design was based on believing USB
+        // detection was broken outright. HW logging (2026-09) showed it's pure
+        // timing: a drive takes ~3s past usbHsFsInitialize() to enumerate (the
+        // same fix landed for the boot-time diagnostic, see SESSION_LOG). A USB
+        // drive just plugged in — the common reason to open this menu with one
+        // attached — can still be mid-enumeration at the instant check, which
+        // used to fall through straight to the network source (reported to the
+        // user as "update available" from the network even with a newer build
+        // sitting right there on the stick). Retry up to 2x3s, bailing out the
+        // moment something mounts; a "Scanning USB…" card covers the wait so it
+        // doesn't read as a freeze. No USB present at all still costs the full
+        // ~6s here — accepted, since reliably finding a plugged-in drive matters
+        // more than shaving a few seconds off the no-USB case for this
+        // user-initiated, not automatic, action.
         u32 phys = usbHsFsGetPhysicalDeviceCount();
         u32 n = usbHsFsGetMountedDeviceCount();
         DebugLog::line("update: USB physical=%u mounted=%u", phys, n);
+        if (n == 0) {
+            UEvent* ev = usbHsFsGetStatusChangeUserEvent();
+            for (int attempt = 1; n == 0 && ev && attempt <= 2; attempt++) {
+                showWorking(i18n::get(StrKey::UpdateScanningUsb));
+                waitSingle(waiterForUEvent(ev), 3000000000ULL); // 3s
+                phys = usbHsFsGetPhysicalDeviceCount();
+                n = usbHsFsGetMountedDeviceCount();
+                DebugLog::line("update: USB +%ds (retry %d/2) physical=%u mounted=%u",
+                               attempt * 3, attempt, phys, n);
+            }
+        }
         if (n > 0) {
             if (n > 8) n = 8;
             std::vector<UsbHsFsDevice> devs(n);
