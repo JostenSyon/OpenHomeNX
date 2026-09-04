@@ -1247,6 +1247,8 @@ void UI::drawGameSelMenuPopup() {
             label += useOpenHome() ? " (OH)" : " (PK)";
         else if (i == 1)
             label += DebugLog::enabled() ? " (on)" : " (off)";
-        drawTextCentered(label, popX + POP_W / 2, rowY + rowH / 2 - 8, T().text, font_);
+        // drawTextCentered() takes the text's vertical CENTRE; match it to the
+        // highlight box centre (box: top=rowY, height=rowH-4).
+        drawTextCentered(label, popX + POP_W / 2, rowY + (rowH - 4) / 2, T().text, font_);
     }
 }
