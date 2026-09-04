@@ -31,6 +31,7 @@ bool SaveFile::isBDSPSize(size_t size) {
 bool SaveFile::load(const std::string& path) {
     filePath_ = path;
     loaded_ = false;
+    dirty_ = false;   // fresh state; the load* helpers write buffers directly, not via the marked mutators
     boxData_ = nullptr;
     boxLayoutData_ = nullptr;
     invalidateAllBoxCache();
@@ -58,13 +59,19 @@ bool SaveFile::save(const std::string& path) {
     if (!loaded_)
         return false;
 
+    bool ok;
     if (isFRLG(gameType_))
-        return saveGBA(path);
-    if (isBDSP(gameType_))
-        return saveBDSP(path);
-    if (isLGPE(gameType_))
-        return saveLGPE(path);
-    return saveSCBlock(path);
+        ok = saveGBA(path);
+    else if (isBDSP(gameType_))
+        ok = saveBDSP(path);
+    else if (isLGPE(gameType_))
+        ok = saveLGPE(path);
+    else
+        ok = saveSCBlock(path);
+
+    if (ok)
+        dirty_ = false;
+    return ok;
 }
 
 bool SaveFile::loadSCBlock(const std::string& path) {
@@ -367,6 +374,7 @@ void SaveFile::setBoxSlot(int box, int slot, Pokemon pkm) {
         Pokedex::registerPokemon(*this, pkm);
 
     invalidateBoxCache(box);
+    dirty_ = true;
 
     // Invalidate the Rust OH handle: it was created from the original file
     // at load time and is now stale. Subsequent getCachedBox() calls will
@@ -399,6 +407,7 @@ void SaveFile::clearBoxSlot(int box, int slot) {
     }
 
     invalidateBoxCache(box);
+    dirty_ = true;
 
     // Invalidate the Rust OH handle after mutation (same as setBoxSlot).
     if (saveHandleRust_)
@@ -425,6 +434,7 @@ int SaveFile::lgpePartyIndexOf(int box, int slot) const {
 
 void SaveFile::setLGPEPartyPointer(int partyIdx, uint16_t flatSlot) {
     if (partyIdx < 0 || partyIdx >= 6) return;
+    dirty_ = true;
     lgpePartyIndices_[partyIdx] = flatSlot;
     // Also update rawData_ header so save compaction stays consistent
     if (isLGPE(gameType_) && !rawData_.empty()) {
@@ -435,6 +445,7 @@ void SaveFile::setLGPEPartyPointer(int partyIdx, uint16_t flatSlot) {
 }
 
 void SaveFile::setLGPEPartyIndices(const std::array<uint16_t, 6>& v) {
+    dirty_ = true;
     lgpePartyIndices_ = v;
     if (isLGPE(gameType_) && !rawData_.empty()) {
         for (int i = 0; i < 6; i++) {

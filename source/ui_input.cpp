@@ -240,12 +240,7 @@ void UI::handleMenuInput(const SDL_Event& event, bool& running) {
             // sel: 0=Switch Bank, 1=Change Game, 2=Save & Quit, 3=Quit Without Saving
             if (sel == 0) {
                 if (!saveBankFiles()) { showMenu_ = false; return; }
-                showWorking(i18n::get(StrKey::Saving));
-                ledBlink();
-                if (save_.isLoaded())
-                    save_.save(savePath_);
-                account_.commitSave();
-                ledOff();
+                persistGameSaveIfDirty();
                 bankManager_.refresh();
                 // Cross-gen: the right-panel bank selector lists ALL banks of
                 // every game, sectioned by game (same as "All Banks"). A SwSh
@@ -1269,14 +1264,11 @@ void UI::actionSelect() {
 void UI::returnToGameSelector() {
     if (!saveBankFiles())
         return;
-    showWorking(i18n::get(StrKey::Saving));
-    ledBlink();
-    if (!isDualBankMode() && save_.isLoaded()) {
-        save_.save(savePath_);
-        account_.commitSave();
+    persistGameSaveIfDirty();
+    // Unmount regardless — leaving the game, so release the save mount even
+    // when nothing was written.
+    if (!isDualBankMode() && save_.isLoaded())
         account_.unmountSave();
-    }
-    ledOff();
     leftBankName_.clear();
     leftBankPath_.clear();
     activeBankName_.clear();
@@ -1342,10 +1334,7 @@ void UI::actionCancel() {
         // by game): the single-game rescope hid other-game banks (BD folder empty
         // -> "Nessuna banca"; Sw showed only its own folder). Persist first.
         if (!saveBankFiles()) return;
-        if (!isDualBankMode() && save_.isLoaded()) {
-            save_.save(savePath_);
-            account_.commitSave();
-        }
+        persistGameSaveIfDirty();
         activeBankName_.clear();
         activeBankPath_.clear();
         leftBankName_.clear();

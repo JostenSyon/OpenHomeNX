@@ -737,14 +737,7 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
                     saveNow_ = false;
                     running = true;
                 } else {
-                    if (!isDualBankMode()) {
-                        showWorking(i18n::get(StrKey::Saving));
-                        ledBlink();
-                        if (save_.isLoaded())
-                            save_.save(savePath_);
-                        account_.commitSave();
-                        ledOff();
-                    }
+                    persistGameSaveIfDirty();
                     saveNow_ = false;
                 }
             }
@@ -918,22 +911,26 @@ std::string UI::buildBackupDir(GameType game) const {
 }
 
 bool UI::saveBankFiles() {
-    // Niente da scrivere (nessuna banca aperta) → nessun popup, nessun LED.
-    // TODO(futura): dirty-tracking per contenuto (hash/memcmp vs ultimo save)
-    // per saltare la scrittura anche a banca aperta ma invariata — oggi ogni
-    // entra/esci riscrive il file anche senza modifiche.
-    if (!isDualBankMode() && activeBankPath_.empty())
-        return true;
-    if (isDualBankMode() && leftBankPath_.empty() && activeBankPath_.empty())
+    // Write only banks that are (a) open and (b) actually modified since load.
+    // An untouched open bank is not rewritten — no popup, no LED, no file churn.
+    bool writeLeft  = isDualBankMode() && !leftBankPath_.empty() && bankLeft_.isDirty();
+    bool writeRight = !activeBankPath_.empty() && bank_.isDirty();
+    if (!writeLeft && !writeRight)
         return true;
     showWorking(i18n::get(StrKey::Saving));
     ledBlink();
-    if (isDualBankMode()) {
-        if (!leftBankPath_.empty()) bankLeft_.save(leftBankPath_);
-        if (!activeBankPath_.empty()) bank_.save(activeBankPath_);
-    } else {
-        if (!activeBankPath_.empty()) bank_.save(activeBankPath_);
-    }
+    if (writeLeft)  bankLeft_.save(leftBankPath_);
+    if (writeRight) bank_.save(activeBankPath_);
     ledOff();
     return true;
+}
+
+void UI::persistGameSaveIfDirty() {
+    if (isDualBankMode() || !save_.isLoaded() || !save_.isDirty())
+        return;
+    showWorking(i18n::get(StrKey::Saving));
+    ledBlink();
+    save_.save(savePath_);
+    account_.commitSave();
+    ledOff();
 }

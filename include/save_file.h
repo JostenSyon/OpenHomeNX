@@ -28,6 +28,9 @@ public:
     std::string getBoxName(int box) const;
 
     bool isLoaded() const { return loaded_; }
+    // True once a mutator has changed persistent content since the last
+    // load()/save(). Lets the UI skip rewriting an untouched save on B.
+    bool isDirty() const { return dirty_; }
     GameType gameType() const { return gameType_; }
 
     // Access SCBlock by key (for SCBlock-based games: ZA/SV/SwSh/LA) — via FFI wrapper M3a
@@ -82,6 +85,8 @@ private:
 
     std::string filePath_;
     bool loaded_ = false;
+    // Set by any content mutator, cleared by load() and a successful save().
+    bool dirty_ = false;
 
     // Game-specific parameters
     GameType gameType_  = GameType::ZA;

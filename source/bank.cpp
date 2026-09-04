@@ -16,6 +16,7 @@ void Bank::makeCrossGen() {
     slots_.clear();
     ohpkmSlots_.assign((size_t)boxCount_ * slotsPerBox_, {});
     boxNames_.assign(boxCount_, std::string());
+    dirty_       = true;
 }
 
 const std::vector<uint8_t>& Bank::ohpkmAt(int box, int slot) const {
@@ -32,6 +33,7 @@ void Bank::setOhpkmAt(int box, int slot, std::vector<uint8_t> blob) {
     if (idx < 0 || idx >= (int)ohpkmSlots_.size()) return;
     if (blob.size() > OHPKM_MAX_BLOB) return;
     ohpkmSlots_[idx] = std::move(blob);
+    dirty_ = true;
 }
 
 void Bank::clearOhpkmAt(int box, int slot) {
@@ -39,6 +41,7 @@ void Bank::clearOhpkmAt(int box, int slot) {
     int idx = slotIndex(box, slot);
     if (idx < 0 || idx >= (int)ohpkmSlots_.size()) return;
     ohpkmSlots_[idx].clear();
+    dirty_ = true;
 }
 
 void Bank::setGameType(GameType g) {
@@ -97,6 +100,7 @@ bool Bank::load(const std::string& path) {
     std::ifstream file(path, std::ios::binary);
     if (!file.is_open()) {
         // File doesn't exist - start with empty bank
+        dirty_ = false;
         return true;
     }
 
@@ -129,15 +133,15 @@ bool Bank::load(const std::string& path) {
 
         file.seekg(HEADER_SIZE);
         uint32_t slotCount = 0;
-        if (!file.read(reinterpret_cast<char*>(&slotCount), 4)) return true;
+        if (!file.read(reinterpret_cast<char*>(&slotCount), 4)) { dirty_ = false; return true; }
         int n = (int)slotCount < total ? (int)slotCount : total;
         for (int i = 0; i < n; i++) {
             uint32_t len = 0;
-            if (!file.read(reinterpret_cast<char*>(&len), 4)) return true;
+            if (!file.read(reinterpret_cast<char*>(&len), 4)) { dirty_ = false; return true; }
             if (len == 0) continue;
-            if (len > OHPKM_MAX_BLOB) return true; // corrupt — stop cleanly
+            if (len > OHPKM_MAX_BLOB) { dirty_ = false; return true; } // corrupt — stop cleanly
             std::vector<uint8_t> blob(len);
-            if (!file.read(reinterpret_cast<char*>(blob.data()), len)) return true;
+            if (!file.read(reinterpret_cast<char*>(blob.data()), len)) { dirty_ = false; return true; }
             ohpkmSlots_[i] = std::move(blob);
         }
         for (int i = 0; i < boxCount_; i++) {
@@ -147,6 +151,7 @@ bool Bank::load(const std::string& path) {
             while (len < BOX_NAME_SIZE && nameBuf[len] != '\0') len++;
             boxNames_[i] = std::string(nameBuf, len);
         }
+        dirty_ = false;
         return true;
     }
 
@@ -227,6 +232,7 @@ bool Bank::load(const std::string& path) {
         }
     }
 
+    dirty_ = false;
     return true;
 }
 
@@ -268,7 +274,10 @@ bool Bank::save(const std::string& path) {
                             std::min((int)boxNames_[i].size(), BOX_NAME_SIZE));
             file.write(nameBuf, BOX_NAME_SIZE);
         }
-        return file.good();
+        bool ok = file.good();
+        if (ok)
+            dirty_ = false;
+        return ok;
     }
 
     // Write header
@@ -312,7 +321,10 @@ bool Bank::save(const std::string& path) {
         }
     }
 
-    return file.good();
+    bool ok = file.good();
+    if (ok)
+        dirty_ = false;
+    return ok;
 }
 
 Pokemon Bank::getSlot(int box, int slot) const {
@@ -331,6 +343,7 @@ void Bank::setSlot(int box, int slot, const Pokemon& pkm) {
     if (idx < 0 || idx >= totalSlots())
         return;
     slots_[idx] = pkm;
+    dirty_ = true;
 }
 
 void Bank::clearSlot(int box, int slot) {
@@ -339,6 +352,7 @@ void Bank::clearSlot(int box, int slot) {
     if (idx < 0 || idx >= totalSlots())
         return;
     slots_[idx] = Pokemon{};
+    dirty_ = true;
 }
 
 std::string Bank::getBoxName(int box) const {
@@ -354,4 +368,5 @@ void Bank::setBoxName(int box, const std::string& name) {
         boxNames_[box] = name.substr(0, BOX_NAME_SIZE);
     else
         boxNames_[box] = name;
+    dirty_ = true;
 }

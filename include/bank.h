@@ -40,6 +40,11 @@ public:
     // Save bank to file.
     bool save(const std::string& path);
 
+    // Dirty-tracking (Round 1): true se il contenuto in memoria differisce
+    // dall'ultimo load()/save() riuscito. Nessuno lo legge ancora (lo userà
+    // la UI per saltare scritture inutili). Vive nei setter, non nella UI.
+    bool isDirty() const { return dirty_; }
+
     Pokemon getSlot(int box, int slot) const;
     void setSlot(int box, int slot, const Pokemon& pkm);
     void clearSlot(int box, int slot);
@@ -88,6 +93,7 @@ private:
     int slotsPerBox_ = 30;
     int slotSize_ = PokeCrypto::SIZE_9PARTY;
     bool crossGen_ = false;
+    bool dirty_ = false;
     std::vector<Pokemon> slots_;
     std::vector<std::vector<uint8_t>> ohpkmSlots_; // used only when crossGen_
     std::vector<std::string> boxNames_;

@@ -407,6 +407,9 @@ private:
     void selectGame(GameType game);
     std::string buildBackupDir(GameType game) const;
     bool saveBankFiles();
+    // Write the game save (+ account commit + "Saving…" mask + LED) only when a
+    // mutator actually changed it since load. No-op in dual-bank mode.
+    void persistGameSaveIfDirty();
 
     // Bank selector
     void drawBankSelectorFrame();
