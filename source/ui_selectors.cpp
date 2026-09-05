@@ -1052,7 +1052,7 @@ static void removeStaleLocalUpdates(const std::string& basePath, const std::stri
     }
 }
 
-bool UI::checkForUpdate(bool usbAlreadyMounted) {
+bool UI::checkForUpdate() {
     const std::string runningNro = basePath_ + "OpenHomeNX.nro";
     finalizePendingUpdate();
     const std::string curVer =
@@ -1069,40 +1069,18 @@ bool UI::checkForUpdate(bool usbAlreadyMounted) {
     std::vector<std::string> candidates;
 #ifdef OH_USB_UPDATE
     {
-        // The "no wait, instant query only" design was based on believing USB
-        // detection was broken outright. HW logging (2026-09) showed it's pure
-        // timing: a drive takes ~3s past usbHsFsInitialize() to enumerate (the
-        // same fix landed for the boot-time diagnostic, see SESSION_LOG). A USB
-        // drive just plugged in — the common reason to open this menu with one
-        // attached — can still be mid-enumeration at the instant check, which
-        // used to fall through straight to the network source (reported to the
-        // user as "update available" from the network even with a newer build
-        // sitting right there on the stick). Retry up to 2x3s, bailing out the
-        // moment something mounts; a "Scanning USB…" card covers the wait so it
-        // doesn't read as a freeze. No USB present at all still costs the full
-        // ~6s here — accepted, since reliably finding a plugged-in drive matters
-        // more than shaving a few seconds off the no-USB case for this
-        // user-initiated, not automatic, action.
+        // Instant check only — never wait/retry here. USB drives are handled
+        // by the hotplug poll in run() (which re-scans import paths and, once
+        // per session, calls this same function right after a rising edge —
+        // by then the drive is already mounted, so n reflects it immediately).
+        // Waiting here too used to make the manual "Check for Update" menu
+        // entry slow for no reason: this menu isn't when a drive gets
+        // detected, only when the user asks "is there an update", and that
+        // question should answer from SD/network without a multi-second USB
+        // stall (explicit user request 2026-09-05).
         u32 phys = usbHsFsGetPhysicalDeviceCount();
         u32 n = usbHsFsGetMountedDeviceCount();
-        DebugLog::line("update: USB physical=%u mounted=%u usbAlreadyMounted=%d",
-                       phys, n, (int)usbAlreadyMounted);
-        // The hotplug caller (run()'s rising-edge poll) already confirmed a
-        // drive just finished mounting THIS SAME FRAME — re-waiting here would
-        // just burn 3-6s re-discovering what it already knows. Only the
-        // menu-triggered path (which may run before the hotplug poll ever
-        // notices) needs the retry.
-        if (n == 0 && !usbAlreadyMounted) {
-            UEvent* ev = usbHsFsGetStatusChangeUserEvent();
-            for (int attempt = 1; n == 0 && ev && attempt <= 2; attempt++) {
-                showWorking(i18n::get(StrKey::UpdateScanningUsb));
-                waitSingle(waiterForUEvent(ev), 3000000000ULL); // 3s
-                phys = usbHsFsGetPhysicalDeviceCount();
-                n = usbHsFsGetMountedDeviceCount();
-                DebugLog::line("update: USB +%ds (retry %d/2) physical=%u mounted=%u",
-                               attempt * 3, attempt, phys, n);
-            }
-        }
+        DebugLog::line("update: USB physical=%u mounted=%u", phys, n);
         if (n > 0) {
             if (n > 8) n = 8;
             std::vector<UsbHsFsDevice> devs(n);

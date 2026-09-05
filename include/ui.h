@@ -508,7 +508,7 @@ private:
     // caller already observed. false (menu-triggered "Check for update")
     // keeps the retry: the user could have opened the menu before the
     // hotplug poll even noticed the drive.
-    bool checkForUpdate(bool usbAlreadyMounted = false);
+    bool checkForUpdate();
     // Consolidate a pending OpenHomeNX.nro.new from a self-update. Returns true
     // when it just wrote the new bytes onto the canonical .nro while running
     // from the throw-away .new — the caller should then bounce straight into

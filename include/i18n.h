@@ -321,7 +321,6 @@ namespace StrKey {
     // Updater (ui_selectors.cpp checkForUpdate + Send log)
     constexpr const char* UpdateTitle          = "update_title";
     constexpr const char* UpdateNetOff         = "update_net_off";
-    constexpr const char* UpdateScanningUsb    = "update_scanning_usb";
     constexpr const char* UpdateContacting     = "update_contacting";
     constexpr const char* UpdateUnreachable    = "update_unreachable";
     constexpr const char* UpdateAvailNetTitle  = "update_avail_net_title";
