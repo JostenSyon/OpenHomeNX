@@ -190,6 +190,13 @@ private:
     bool saveLGPE(const std::string& path);
     bool loadGBA(const std::string& path);
     bool saveGBA(const std::string& path);
+    // Gen 1 (R/B/Y SRAM, G1c/G1d): unpacks the 12 PokeList1 boxes into gbStorage_
+    // (flat 55B slots: 33B record + 11B OT + 11B nick); saveGB() packs back +
+    // file checksum. Party is preserved byte-wise (never parsed).
+    bool loadGB(const std::string& path);
+    bool saveGB(const std::string& path);
+    // Flat unpacked Gen1 box storage (12*20*55B), backing boxData_.
+    std::vector<uint8_t> gbStorage_;
 
     static bool isBDSPSize(size_t size);
 

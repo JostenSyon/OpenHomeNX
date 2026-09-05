@@ -118,26 +118,26 @@ impl Pk1 {
         let nickname = if has_extra {
             read_gb_string(buf, 0x37, 11)
         } else {
-            lookup::species_name(NationalDex::assert_valid(national_dex), Language::English)
+            lookup::species_name(NationalDex::assert_valid(national_dex), Language::English).into()
         };
 
         Ok(Pk1 {
             national_dex,
-            current_hp: u16::from_le_bytes([buf[1], buf[2]]),
+            current_hp: u16::from_be_bytes([buf[1], buf[2]]),
             level: buf[3],
             status_condition: buf[4],
             type1: buf[5],
             type2: buf[6],
             held_item_index: buf[7],
             moves: [buf[8], buf[9], buf[0xa], buf[0xb]],
-            trainer_id: u16::from_le_bytes([buf[0xc], buf[0xd]]),
+            trainer_id: u16::from_be_bytes([buf[0xc], buf[0xd]]),
             exp,
             evs_g12: StatsPreSplit {
-                hp: u16::from_le_bytes([buf[0x11], buf[0x12]]),
-                atk: u16::from_le_bytes([buf[0x13], buf[0x14]]),
-                def: u16::from_le_bytes([buf[0x15], buf[0x16]]),
-                spe: u16::from_le_bytes([buf[0x17], buf[0x18]]),
-                spc: u16::from_le_bytes([buf[0x19], buf[0x1a]]),
+                hp: u16::from_be_bytes([buf[0x11], buf[0x12]]),
+                atk: u16::from_be_bytes([buf[0x13], buf[0x14]]),
+                def: u16::from_be_bytes([buf[0x15], buf[0x16]]),
+                spe: u16::from_be_bytes([buf[0x17], buf[0x18]]),
+                spc: u16::from_be_bytes([buf[0x19], buf[0x1a]]),
             },
             dvs,
             move_pp,
@@ -151,22 +151,22 @@ impl Pk1 {
         let mut buf = [0u8; 33];
 
         buf[0] = gen1_pokemon_index::encode(self.national_dex as u8).unwrap_or(0);
-        buf[1..3].copy_from_slice(&self.current_hp.to_le_bytes());
+        buf[1..3].copy_from_slice(&self.current_hp.to_be_bytes());
         buf[3] = self.level;
         buf[4] = self.status_condition;
         buf[5] = self.type1;
         buf[6] = self.type2;
         buf[7] = self.held_item_index;
         buf[8..12].copy_from_slice(&self.moves);
-        buf[0xc..0xe].copy_from_slice(&self.trainer_id.to_le_bytes());
+        buf[0xc..0xe].copy_from_slice(&self.trainer_id.to_be_bytes());
         buf[0xe] = ((self.exp >> 16) & 0xff) as u8;
         buf[0xf] = ((self.exp >> 8) & 0xff) as u8;
         buf[0x10] = (self.exp & 0xff) as u8;
-        buf[0x11..0x13].copy_from_slice(&self.evs_g12.hp.to_le_bytes());
-        buf[0x13..0x15].copy_from_slice(&self.evs_g12.atk.to_le_bytes());
-        buf[0x15..0x17].copy_from_slice(&self.evs_g12.def.to_le_bytes());
-        buf[0x17..0x19].copy_from_slice(&self.evs_g12.spe.to_le_bytes());
-        buf[0x19..0x1b].copy_from_slice(&self.evs_g12.spc.to_le_bytes());
+        buf[0x11..0x13].copy_from_slice(&self.evs_g12.hp.to_be_bytes());
+        buf[0x13..0x15].copy_from_slice(&self.evs_g12.atk.to_be_bytes());
+        buf[0x15..0x17].copy_from_slice(&self.evs_g12.def.to_be_bytes());
+        buf[0x17..0x19].copy_from_slice(&self.evs_g12.spe.to_be_bytes());
+        buf[0x19..0x1b].copy_from_slice(&self.evs_g12.spc.to_be_bytes());
 
         let dv_raw: u16 = (self.dvs.atk << 12)
             | (self.dvs.def << 8)
@@ -178,7 +178,7 @@ impl Pk1 {
             buf[0x1d + i] = (self.move_pp_ups[i] << 6) | (self.move_pp[i] & 0x3f);
         }
 
-        buf
+        Box::new(buf)
     }
 
     pub fn to_bytes_full(&self) -> Box<[u8]> {

@@ -229,7 +229,11 @@ $(OUTPUT).nro	:	$(OUTPUT).elf $(OUTPUT).nacp
 $(OUTPUT).elf	:	$(OFILES) $(RUST_LIB)
 	$(LD) $(LDFLAGS) -o $@ $^ $(LIBPATHS) -lopenhome_switch $(LIBS)
 
-$(RUST_LIB):
+# La lib Rust va ricostruita quando cambia QUALSIASI sorgente Rust (prima la
+# regola non aveva prerequisiti: se il .a esisteva, make non lo rifaceva mai
+# e il link falliva/stallava su simboli nuovi o vecchi).
+RUST_SRCS := $(shell find $(TOPDIR)/rust -name '*.rs' -o -name 'Cargo.toml' -o -name 'Cargo.lock' 2>/dev/null)
+$(RUST_LIB): $(RUST_SRCS)
 	cd $(TOPDIR)/rust && cargo +nightly build -p openhome_switch --target aarch64-unknown-none --release
 
 $(OFILES_SRC)	: $(HFILES_BIN) $(TOPDIR)/include/app_version.h

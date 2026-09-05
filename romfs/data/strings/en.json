@@ -271,6 +271,8 @@
 	"transfer_bad_ohpkm": "Could not read the stored OHPKM record.",
 	"transfer_not_in_dex": "{0} is not in the {1} Pokedex, so it can't be sent there (no clone is made).",
 	"transfer_no_bytes": "Could not extract the converted Pokemon bytes.",
+	"gen1_drops_title": "Moves will be dropped",
+	"gen1_drops_body": "{0} has {1} moves that don't exist in Gen 1: they will be removed on export. If none remain, base species moves will be assigned. The bank copy is untouched.\nA: export anyway  B: cancel.",
 	"create_bank_title": "Create bank",
 	"create_bank_body": "Cross-gen (OHPKM, every game)?\nA = Cross-gen  B = Normal (this game)",
 	"applet_title": "Applet mode",

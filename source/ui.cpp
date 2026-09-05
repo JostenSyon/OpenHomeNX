@@ -141,6 +141,8 @@ bool UI::init() {
             return t;
         };
         tileBgCache_[GameType::EMERALD]  = loadBg("emerald");
+        tileBgCache_[GameType::RUBY]     = loadBg("ruby");
+        tileBgCache_[GameType::SAPPHIRE] = loadBg("sapphire");
     }
 
     // Open game controller
@@ -856,6 +858,8 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
             if (usbCount != s_lastUsbCount || usbPhys != s_lastUsbPhys) {
                 DebugLog::line("usb hotplug: physical %u->%u mounted %u->%u",
                                s_lastUsbPhys, usbPhys, s_lastUsbCount, usbCount);
+                if (DebugLog::enabled() && usbPhys > 0 && usbCount == 0)
+                    DebugLog::line("usb hotplug: drive present but no FAT volume mounted (blank MBR? reformat MBR+FAT32)");
             }
             bool rising = (usbCount > s_lastUsbCount);
             bool falling = (usbCount < s_lastUsbCount);
@@ -968,12 +972,13 @@ void UI::selectGame(GameType game) {
     if (!isDualBankMode()) {
         showWorking(i18n::get(StrKey::LoadingSaveData));
 
-        if (isImportedFile(game)) {
+        if (isImportedFile(game) || isGen1File(game)) {
             // File-backed game (scanned emulator save) — no titleId, no
             // AccountManager mount/backup: load straight from the resolved
             // path found by appendImportedGames(). Read/write both go
             // through this same file (SaveFile::load()/save() already route
-            // isImportedFile() through loadGBA()/saveGBA()), so writes here
+            // GBA through loadGBA()/saveGBA() and GB through loadGB();
+            // Gen1 save() refuses until the G1d writer lands), so GBA writes
             // land directly on the user's own emulator save.
             savePath_ = importedSavePath(game);
             if (savePath_.empty()) {
@@ -1044,7 +1049,7 @@ void UI::selectGame(GameType game) {
         }
 
         // Debug: verify encryption round-trip (encrypt(decrypt(file)) == file)
-        if (!isBDSP(game) && !isLGPE(game) && !isFRLG(game) && !isImportedFile(game)) {
+        if (!isBDSP(game) && !isLGPE(game) && !isFRLG(game) && !isImportedFile(game) && !isGen1File(game)) {
             std::string rtResult = save_.verifyRoundTrip();
             if (rtResult != "OK")
                 showMessageAndWait(i18n::get(StrKey::RoundTripCheck), rtResult);

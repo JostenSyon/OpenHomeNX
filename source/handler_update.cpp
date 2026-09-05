@@ -251,8 +251,8 @@ void updatePokemonHandler(Pokemon& pkm, const TrainerInfo& tr) {
     // M3c: via FFI wrapper (no-op stub fino a M5)
     (void)HandlerFFI::updateHandler(nullptr, nullptr);
     GameType g = pkm.gameType_;
-    if (isFRLG(g) || isImportedFile(g))
-        return; // Gen3 has no handling-trainer data
+    if (isFRLG(g) || isImportedFile(g) || isGen1File(g))
+        return; // Gen3/Gen1 have no handling-trainer data
     if (isLGPE(g))
         updateLGPE(pkm, tr);
     else

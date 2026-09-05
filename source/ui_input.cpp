@@ -756,7 +756,7 @@ Pokemon UI::getPokemonAt(int box, int slot, Panel panel) const {
             static const struct { uint32_t gen; GameType gt; } kPreviewFmts[] = {
                 {9, GameType::S},  {8, GameType::Sw}, {13, GameType::GP},
                 {10, GameType::LA}, {12, GameType::BD}, {11, GameType::ZA},
-                {3, GameType::FR},
+                {3, GameType::FR}, {1, GameType::RED},
             };
             bool rendered = false;
             for (const auto& f : kPreviewFmts) {
@@ -841,6 +841,72 @@ bool UI::destIsCrossGenBank(Panel panel) const {
     return panel == Panel::Bank && bank_.isCrossGen();
 }
 
+// True if the current record differs from its OriginalBackup in user-meaningful
+// fields (moves, level, nickname, held item). The backup is [tag u16 LE][record];
+// it is parsed with the offsets of its own format via a temp Pokemon, so no FFI
+// round-trip is needed and volatile fields (met date, PP, friendship) can never
+// trigger a false positive. Tags with no local GameType (Pk7/Alola) return false
+// (unverifiable -> no fallback, explicit fail). EXP-without-level and ribbon-only
+// edits are NOT detected (known limit, documented in GenPorting.md).
+static bool monEditedSinceBackup(const Pokemon& cur, const std::vector<uint8_t>& backup) {
+    if (backup.size() <= 2)
+        return false;
+    const int bkTag = backup[0] | (backup[1] << 8);
+    GameType bkGame;
+    switch (bkTag) {
+        case 1:  bkGame = GameType::RED; break; // Pk1 (offsets via Gen1 branches)
+        case 3:  bkGame = GameType::FR; break; // Pk3
+        case 8:  bkGame = GameType::GP; break; // Pb7 (LGPE)
+        case 9:  bkGame = GameType::Sw; break; // Pk8
+        case 10: bkGame = GameType::LA; break; // Pa8
+        case 11: bkGame = GameType::BD; break; // Pb8
+        case 12: bkGame = GameType::S;  break; // Pk9
+        case 13: bkGame = GameType::ZA; break; // Pa9
+        default: return false; // incl. Pk7: no local offsets table
+    }
+    Pokemon old;
+    old.data.fill(0);
+    const size_t rec = backup.size() - 2;
+    std::memcpy(old.data.data(), backup.data() + 2,
+                rec <= old.data.size() ? rec : old.data.size());
+    old.gameType_ = bkGame;
+    if (cur.move1() != old.move1() || cur.move2() != old.move2() ||
+        cur.move3() != old.move3() || cur.move4() != old.move4())
+        return true;
+    if (cur.level() != old.level())
+        return true;
+    if (bkTag == 1)
+        return false; // Pk1 backup = 33B record only (no OT/nick/item to compare)
+    if (cur.nickname() != old.nickname())
+        return true;
+    if (cur.heldItem() != old.heldItem())
+        return true;
+    return false;
+}
+
+// Seconda scelta (nostra, NON upstream): se la ricostruzione Rust fallisce ma
+// il mon porta ancora l'OriginalBackup del formato di destinazione ed è
+// intatto dalla conversione, ripristina quei byte verbatim invece di fallire.
+// Se è stato modificato nel frattempo, il restore cancellerebbe mosse/livelli
+// guadagnati → si rifiuta (il chiamante fallisce con il suo whyNot, il mon
+// resta in mano intatto). Mai perdita silenziosa. Non muta pkm se ritorna false.
+bool UI::restoreVerbatimFallback(Pokemon& pkm, GameType dest, int dstGen) const {
+    if (pkm.ohBackup_.size() < 2)
+        return false;
+    const int bkTag = pkm.ohBackup_[0] | (pkm.ohBackup_[1] << 8);
+    const size_t rec = pkm.ohBackup_.size() - 2;
+    if (!(bkTag == ohBackupTagForGen(dstGen) && rec > 0 && rec <= pkm.data.size()))
+        return false;
+    if (monEditedSinceBackup(pkm, pkm.ohBackup_))
+        return false;
+    pkm.data.fill(0);
+    std::memcpy(pkm.data.data(), pkm.ohBackup_.data() + 2, rec);
+    pkm.gameType_ = dest;
+    DebugLog::line("xfer: primary failed, verbatim fallback (tag %d)", bkTag);
+    // Keep ohBackup_: data == backup now, still valid for a re-transfer.
+    return true;
+}
+
 bool UI::prepareForPlacement(Pokemon& pkm, Panel panel, std::string& whyNot) const {
     if (pkm.isEmpty()) return true;
 
@@ -885,13 +951,29 @@ bool UI::prepareForPlacement(Pokemon& pkm, Panel panel, std::string& whyNot) con
             whyNot = i18n::get(StrKey::TransferNoOhpkm);
             return false;
         }
+        // Preserve an older OriginalBackup already carried by the mon: the fresh
+        // blob only knows the current record, but a later return to the origin
+        // format needs the oldest one. No-op when there is none or it won't parse.
+        if (!pkm.ohBackup_.empty()) {
+            PkmHandle* hb = OpenHomeNX::ohpkmWithOriginalBackup(blob, pkm.ohBackup_);
+            if (hb) {
+                std::vector<uint8_t> re = OpenHomeNX::getOhpkmBytes(hb);
+                OpenHomeNX::freePkm(hb);
+                if (!re.empty())
+                    blob = std::move(re);
+                else
+                    DebugLog::line("xbank in: backup re-attach produced empty blob, keeping fresh");
+            } else {
+                DebugLog::line("xbank in: backup re-attach failed, keeping fresh blob");
+            }
+        }
         pkm.ohpkmBlob_ = std::move(blob);
         return true;
     }
 
     // Mon picked up from a cross-gen bank (carries a full OHPKM): build the
-    // destination format straight from it — the OHPKM has its own backup so a
-    // return to the origin format is verbatim.
+    // destination format straight from it via the Rust engine (primary path,
+    // same as below) — the OHPKM keeps its own backup for a later return.
     if (!pkm.ohpkmBlob_.empty()) {
         const GameType d = destGameFor(panel);
         if (sameStoredFormat(GameType::S, d) && !pkm.data.empty()) {
@@ -918,6 +1000,16 @@ bool UI::prepareForPlacement(Pokemon& pkm, Panel panel, std::string& whyNot) con
             return false;
         }
         std::vector<uint8_t> bytes = OpenHomeNX::getPkmBoxBytesForGen(out, static_cast<uint32_t>(dg));
+        // Keep the oldest backup for a later lossless return (transfer()
+        // propagates the pre-conversion original through the OHPKM).
+        std::vector<uint8_t> backup = OpenHomeNX::getPkmOriginalBackup(out);
+        // Gen1 records carry no names: snapshot OT/nick from the converted
+        // OHPKM (which preserved them) before freeing the handle.
+        std::string gen1Ot, gen1Nick;
+        if (dg == 1) {
+            gen1Ot = OpenHomeNX::ohpkmTrainerName(out);
+            gen1Nick = OpenHomeNX::ohpkmNickname(out);
+        }
         PokemonFFI::free(out);
         if (bytes.empty() || bytes.size() > pkm.data.size()) {
             whyNot = i18n::get(StrKey::TransferNoBytes);
@@ -927,6 +1019,9 @@ bool UI::prepareForPlacement(Pokemon& pkm, Panel panel, std::string& whyNot) con
         std::memcpy(pkm.data.data(), bytes.data(), bytes.size());
         pkm.gameType_ = d;
         pkm.ohpkmBlob_.clear();
+        if (dg == 1) fillGen1Names(pkm, gen1Ot, gen1Nick);
+        if (pkm.ohBackup_.empty() && !backup.empty())
+            pkm.ohBackup_ = std::move(backup);
         return true;
     }
 
@@ -966,21 +1061,17 @@ bool UI::prepareForPlacement(Pokemon& pkm, Panel panel, std::string& whyNot) con
     DebugLog::line("xfer: %s -> %s (gen? -> gen%d)",
                    gameDisplayNameOf(pkm.gameType_), gameDisplayNameOf(dest), dstGen);
 
-    // Lossless return trip: if this mon still carries the OHPKM OriginalBackup
-    // of the exact destination format, restore those verbatim bytes instead of
-    // running another conversion (mirrors OpenHome's OHPKMFile behaviour).
-    if (pkm.ohBackup_.size() >= 2) {
-        const int bkTag = pkm.ohBackup_[0] | (pkm.ohBackup_[1] << 8);
-        const size_t rec = pkm.ohBackup_.size() - 2;
-        if (bkTag == ohBackupTagForGen(dstGen) && rec > 0 && rec <= pkm.data.size()) {
-            pkm.data.fill(0);
-            std::memcpy(pkm.data.data(), pkm.ohBackup_.data() + 2, rec);
-            pkm.gameType_ = dest;
-            DebugLog::line("xfer: restored from backup (tag %d)", bkTag);
-            dbgBlob("restored", pkm.data.data(), rec);
-            // Keep ohBackup_: data == backup now, still valid for a re-transfer.
-            return true;
-        }
+    // Primary path = upstream method (GenPorting.md): always rebuild the
+    // destination record via the Rust engine below. The carried OriginalBackup
+    // is only a fallback (restoreVerbatimFallback) if that fails — never
+    // preferred, so moves/levels gained meanwhile survive by construction.
+
+    // Gen1 records carry no names: snapshot OT/nick from the CURRENT format
+    // now (pkm.data is overwritten by the conversion below).
+    std::string gen1Ot, gen1Nick;
+    if (dstGen == 1) {
+        gen1Ot = pkm.otName();
+        gen1Nick = pkm.nickname();
     }
 
     // genOf() would report 8/9/7 for BDSP/LA/Z-A/LGPE too, but their PB8/PA8/
@@ -1003,6 +1094,7 @@ bool UI::prepareForPlacement(Pokemon& pkm, Panel panel, std::string& whyNot) con
     dbgBlob("src", src.data(), src.size());
     PkmHandle* in = OpenHomeNX::loadPkmFromGen(src, static_cast<uint32_t>(srcGen));
     if (!in) {
+        if (restoreVerbatimFallback(pkm, dest, dstGen)) return true;
         whyNot = i18n::fmt(StrKey::TransferBadRecord, std::to_string(srcGen));
         return false;
     }
@@ -1011,6 +1103,7 @@ bool UI::prepareForPlacement(Pokemon& pkm, Panel panel, std::string& whyNot) con
     DebugLog::line("convert gen%d->gen%d: %s", srcGen, dstGen, out ? "ok" : "FAIL");
     PokemonFFI::free(in);
     if (!out) {
+        if (restoreVerbatimFallback(pkm, dest, dstGen)) return true;
         whyNot = i18n::fmt(StrKey::TransferNotInDex, pkm.displayName(), gameDisplayNameOf(dest));
         return false;
     }
@@ -1022,6 +1115,7 @@ bool UI::prepareForPlacement(Pokemon& pkm, Panel panel, std::string& whyNot) con
     std::vector<uint8_t> backup = OpenHomeNX::getPkmOriginalBackup(out);
     PokemonFFI::free(out);
     if (bytes.empty() || bytes.size() > pkm.data.size()) {
+        if (restoreVerbatimFallback(pkm, dest, dstGen)) return true;
         whyNot = i18n::get(StrKey::TransferNoBytes);
         return false;
     }
@@ -1030,10 +1124,14 @@ bool UI::prepareForPlacement(Pokemon& pkm, Panel panel, std::string& whyNot) con
     dbgBlob("backup", backup.data(), backup.size());
 
     // Commit only now that every step succeeded: pkm is untouched on failure.
+    // Oldest origin wins (upstream "imported original" semantics): seed the
+    // backup only on first conversion, never overwrite one already carried.
     pkm.data.fill(0);
     std::memcpy(pkm.data.data(), bytes.data(), bytes.size());
     pkm.gameType_ = dest;
-    pkm.ohBackup_ = std::move(backup);
+    if (dstGen == 1) fillGen1Names(pkm, gen1Ot, gen1Nick);
+    if (pkm.ohBackup_.empty() && !backup.empty())
+        pkm.ohBackup_ = std::move(backup);
     return true;
 }
 
@@ -1501,6 +1599,8 @@ void UI::buildAvailableSpeciesList() {
             return (s.hp | s.atk | s.def | s.spe | s.spa | s.spd) != 0;
         } else if (isFRLG(selectedGame_) || isImportedFile(selectedGame_)) {
             return species >= 1 && species <= 386;
+        } else if (isGen1File(selectedGame_)) {
+            return species >= 1 && species <= 151;
         }
         return false;
     };

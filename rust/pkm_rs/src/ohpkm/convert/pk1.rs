@@ -32,7 +32,9 @@ impl OhpkmConvert for Pk1 {
             atk: self.evs_g12.atk as u8,
             def: self.evs_g12.def as u8,
             spe: self.evs_g12.spe as u8,
-            spc: self.evs_g12.spc as u8,
+            // Gen 1 has a single Special stat: it feeds both spa and spd.
+            spa: self.evs_g12.spc as u8,
+            spd: self.evs_g12.spc as u8,
             ..Default::default()
         };
 
@@ -95,10 +97,8 @@ impl OhpkmConvert for Pk1 {
         let pp = moves.pp();
         let pp_ups = moves.pp_ups();
 
-        let national_dex = ohpkm.species_and_form().get_ndex();
-
         Ok(Pk1 {
-            national_dex,
+            national_dex: ohpkm.species_and_form().get_ndex() as u16,
             current_hp: 0,
             level: 0,
             status_condition: 0,

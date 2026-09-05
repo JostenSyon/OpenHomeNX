@@ -1,6 +1,8 @@
 #pragma once
 #include "poke_crypto.h"
 #include "game_type.h"
+#include "gen1_tables.h"
+#include <cctype>
 #include <cstdint>
 #include <cstring>
 #include <string>
@@ -71,6 +73,11 @@ inline bool sameStoredFormat(GameType a, GameType b) {
 
 // Pokemon data structure for Gen3/Gen6/Gen8/Gen8a/Gen9 (PK3/PB7/PK8/PA8/PA9).
 // Ported from PKHeX.Core/PKM/PA9.cs, G8PKM.cs, PA8.cs, PK3.cs
+//
+// Gen 1 (R/B/Y, isGen1File) reuses the same array with its own layout:
+// [0:33] box record, [33:44] OT name (GB, 11B), [44:55] nickname (GB, 11B).
+// Gen1 has no PID/IV32/checksum/held-item/egg/gender — every accessor below
+// branches explicitly so the PK8 offset table is never consulted for it.
 struct Pokemon {
     std::array<uint8_t, PokeCrypto::MAX_PARTY_SIZE> data{};
     GameType gameType_ = GameType::ZA;
@@ -113,23 +120,34 @@ struct Pokemon {
 
     uint32_t encryptionConstant() const { return readU32(0x00); }
 
-    uint16_t speciesInternal() const { return readU16(ofs().speciesInternal); }
+    uint16_t speciesInternal() const {
+        if (isGen1File(gameType_)) return data[0]; // internal index, not dex
+        return readU16(ofs().speciesInternal);
+    }
 
     // National species ID (converted via SpeciesConverter)
     uint16_t species() const;
 
-    uint16_t heldItem() const { return readU16(ofs().heldItem); }
+    uint16_t heldItem() const {
+        if (isGen1File(gameType_)) return 0; // byte 7 is catch rate, no items
+        return readU16(ofs().heldItem);
+    }
 
-    uint32_t pid() const { return readU32(ofs().pid); }
+    uint32_t pid() const {
+        if (isGen1File(gameType_)) return 0; // no PID/personality value
+        return readU32(ofs().pid);
+    }
 
-    // Nature: byte read for modern, pid % 25 for PK3
+    // Nature: byte read for modern, pid % 25 for PK3, 0 (Hardy) for Gen1
     uint8_t nature() const {
+        if (isGen1File(gameType_)) return 0;
         int o = ofs().nature;
         return o >= 0 ? data[o] : static_cast<uint8_t>(pid() % 25);
     }
 
     // FatefulEncounter: bit in byte for modern, bit 31 of u32@0x4C for PK3
     bool fatefulEncounter() const {
+        if (isGen1File(gameType_)) return false;
         auto& o = ofs();
         if (o.fateful < 0) return (readU32(0x4C) >> 31) & 1;
         return (data[o.fateful] >> o.fatefulBit) & 1;
@@ -138,45 +156,56 @@ struct Pokemon {
     // Gender: byte bits for modern, PID-based for PK3 (impl in pokemon.cpp)
     uint8_t gender() const;
 
-    // Form: byte for modern, always 0 for PK3
+    // Form: byte for modern, always 0 for PK3/Gen1
     uint8_t form() const {
+        if (isGen1File(gameType_)) return 0;
         auto& o = ofs();
         return o.form >= 0 ? static_cast<uint8_t>(data[o.form] >> o.formShift) : 0;
     }
 
-    // Ball: byte for modern, bits 11-14 of u16@0x46 for PK3
+    // Ball: byte for modern, bits 11-14 of u16@0x46 for PK3, none for Gen1
+    // (0 = no icon drawn, see ui_render ball display).
     uint8_t ball() const {
+        if (isGen1File(gameType_)) return 0;
         int o = ofs().ball;
         return o >= 0 ? data[o] : static_cast<uint8_t>((readU16(0x46) >> 11) & 0xF);
     }
 
-    // Ability: u16 for modern, u8 for PB7, 0 for PK3
+    // Ability: u16 for modern, u8 for PB7, 0 for PK3/Gen1
     uint16_t ability() const {
+        if (isGen1File(gameType_)) return 0;
         auto& o = ofs();
         if (o.ability < 0) return 0;
         return o.abilityIsU8 ? static_cast<uint16_t>(data[o.ability]) : readU16(o.ability);
     }
 
-    // EVs
-    uint8_t evHp()  const { return data[ofs().evBase + 0]; }
-    uint8_t evAtk() const { return data[ofs().evBase + 1]; }
-    uint8_t evDef() const { return data[ofs().evBase + 2]; }
-    uint8_t evSpe() const { return data[ofs().evBase + 3]; }
-    uint8_t evSpA() const { return data[ofs().evBase + 4]; }
-    uint8_t evSpD() const { return data[ofs().evBase + 5]; }
+    // EVs (u8 API cannot hold Gen1 stat-exp u16: report 0, documented)
+    uint8_t evHp()  const { return isGen1File(gameType_) ? 0 : data[ofs().evBase + 0]; }
+    uint8_t evAtk() const { return isGen1File(gameType_) ? 0 : data[ofs().evBase + 1]; }
+    uint8_t evDef() const { return isGen1File(gameType_) ? 0 : data[ofs().evBase + 2]; }
+    uint8_t evSpe() const { return isGen1File(gameType_) ? 0 : data[ofs().evBase + 3]; }
+    uint8_t evSpA() const { return isGen1File(gameType_) ? 0 : data[ofs().evBase + 4]; }
+    uint8_t evSpD() const { return isGen1File(gameType_) ? 0 : data[ofs().evBase + 5]; }
 
-    // TID/SID
-    uint16_t tid() const { return readU16(ofs().tid); }
-    uint16_t sid() const { return readU16(ofs().sid); }
+    // TID/SID (Gen1 TID is big-endian @0x0C; no SID)
+    uint16_t tid() const {
+        if (isGen1File(gameType_))
+            return static_cast<uint16_t>((data[0x0C] << 8) | data[0x0D]);
+        return readU16(ofs().tid);
+    }
+    uint16_t sid() const {
+        if (isGen1File(gameType_)) return 0;
+        return readU16(ofs().sid);
+    }
 
-    // Display TID/SID: Gen7+ uses 6-digit/4-digit format, Gen3 uses raw 16-bit
+    // Display TID/SID: Gen7+ uses 6-digit/4-digit format, Gen3/Gen1 raw 16-bit
     uint32_t displayTid() const {
-        if (isFRLG(gameType_) || isImportedFile(gameType_)) return tid();
+        if (isFRLG(gameType_) || isImportedFile(gameType_) || isGen1File(gameType_)) return tid();
         uint32_t combined = (static_cast<uint32_t>(sid()) << 16) | tid();
         return combined % 1000000;
     }
     uint32_t displaySid() const {
-        if (isFRLG(gameType_) || isImportedFile(gameType_)) return sid();
+        if (isFRLG(gameType_) || isImportedFile(gameType_) || isGen1File(gameType_)) return sid();
         uint32_t combined = (static_cast<uint32_t>(sid()) << 16) | tid();
         return combined / 1000000;
     }
@@ -187,30 +216,52 @@ struct Pokemon {
     std::string otName() const;
     std::string htName() const;
 
-    // True if this format stores a handling-trainer block (everything but Gen3).
-    bool hasHandlingTrainer() const { return ofs().htName >= 0; }
-
-    // Moves
-    uint16_t move1() const { return readU16(ofs().moveBase + 0); }
-    uint16_t move2() const { return readU16(ofs().moveBase + 2); }
-    uint16_t move3() const { return readU16(ofs().moveBase + 4); }
-    uint16_t move4() const { return readU16(ofs().moveBase + 6); }
-
-    // IV32: bit-packed IV word
-    uint32_t iv32() const { return readU32(ofs().iv32); }
-    bool isEgg() const { return ((iv32() >> 30) & 1) == 1; }
-    bool isNicknamed() const {
-        if (isFRLG(gameType_) || isImportedFile(gameType_)) return true;
-        return ((iv32() >> 31) & 1) == 1;
+    // True if this format stores a handling-trainer block (Gen1/Gen3: no).
+    bool hasHandlingTrainer() const {
+        if (isGen1File(gameType_)) return false;
+        return ofs().htName >= 0;
     }
 
-    // IVs (from iv32 bit-packed — same layout for all formats)
-    int ivHp()  const { return (iv32() >>  0) & 0x1F; }
-    int ivAtk() const { return (iv32() >>  5) & 0x1F; }
-    int ivDef() const { return (iv32() >> 10) & 0x1F; }
-    int ivSpe() const { return (iv32() >> 15) & 0x1F; }
-    int ivSpA() const { return (iv32() >> 20) & 0x1F; }
-    int ivSpD() const { return (iv32() >> 25) & 0x1F; }
+    // Moves (Gen1: single bytes @0x08, no PP data here)
+    uint16_t move1() const { return isGen1File(gameType_) ? data[0x08] : readU16(ofs().moveBase + 0); }
+    uint16_t move2() const { return isGen1File(gameType_) ? data[0x09] : readU16(ofs().moveBase + 2); }
+    uint16_t move3() const { return isGen1File(gameType_) ? data[0x0A] : readU16(ofs().moveBase + 4); }
+    uint16_t move4() const { return isGen1File(gameType_) ? data[0x0B] : readU16(ofs().moveBase + 6); }
+
+    // IV32: bit-packed IV word (Gen1: none — DVs exposed via iv* below)
+    uint32_t iv32() const {
+        if (isGen1File(gameType_)) return 0;
+        return readU32(ofs().iv32);
+    }
+    bool isEgg() const {
+        if (isGen1File(gameType_)) return false; // no eggs in Gen 1
+        return ((iv32() >> 30) & 1) == 1;
+    }
+    bool isNicknamed() const {
+        if (isFRLG(gameType_) || isImportedFile(gameType_)) return true;
+        if (isGen1File(gameType_)) return gen1IsNicknamed();
+        return ((iv32() >> 31) & 1) == 1;
+    }
+    // GB nickname vs species name (exact match = not nicknamed). Outlined:
+    // needs SpeciesName (species_converter.h), unavailable in this header.
+    bool gen1IsNicknamed() const;
+
+    // IVs (from iv32 bit-packed — same layout for all formats).
+    // Gen1: mapped from 0-15 DVs (SpA/SpD share Special).
+    int gen1DvAtk() const { return (data[0x1B] >> 4) & 0xF; }
+    int gen1DvDef() const { return data[0x1B] & 0xF; }
+    int gen1DvSpe() const { return (data[0x1C] >> 4) & 0xF; }
+    int gen1DvSpc() const { return data[0x1C] & 0xF; }
+    int gen1DvHp()  const {
+        return ((gen1DvAtk() & 1) << 3) | ((gen1DvDef() & 1) << 2) |
+               ((gen1DvSpe() & 1) << 1) | (gen1DvSpc() & 1);
+    }
+    int ivHp()  const { return isGen1File(gameType_) ? gen1DvHp()  : (iv32() >>  0) & 0x1F; }
+    int ivAtk() const { return isGen1File(gameType_) ? gen1DvAtk() : (iv32() >>  5) & 0x1F; }
+    int ivDef() const { return isGen1File(gameType_) ? gen1DvDef() : (iv32() >> 10) & 0x1F; }
+    int ivSpe() const { return isGen1File(gameType_) ? gen1DvSpe() : (iv32() >> 15) & 0x1F; }
+    int ivSpA() const { return isGen1File(gameType_) ? gen1DvSpc() : (iv32() >> 20) & 0x1F; }
+    int ivSpD() const { return isGen1File(gameType_) ? gen1DvSpc() : (iv32() >> 25) & 0x1F; }
 
     // Level (impl in pokemon.cpp — byte read or computed from EXP)
     uint8_t level() const;
@@ -218,6 +269,7 @@ struct Pokemon {
     // --- Utility ---
 
     bool isEmpty() const {
+        if (isGen1File(gameType_)) return data[0] == 0; // no EC field
         return encryptionConstant() == 0 && speciesInternal() == 0;
     }
 
@@ -273,8 +325,16 @@ struct Pokemon {
     // Returns list of all set ribbons/marks
     std::vector<RibbonInfo> getRibbonsAndMarks() const;
 
-    // Shiny: XOR == 0 for Gen3, XOR < 16 for modern
+    // Shiny: XOR == 0 for Gen3, XOR < 16 for modern, DV rule for Gen1
+    // (Bank/VC rule: Atk DV in {2,3,6,7,10,11,14,15}, Def/Spe/Spc == 10).
     bool isShiny() const {
+        if (isGen1File(gameType_)) {
+            if (gen1DvDef() != 10 || gen1DvSpe() != 10 || gen1DvSpc() != 10)
+                return false;
+            int a = gen1DvAtk();
+            return a == 2 || a == 3 || a == 6 || a == 7 ||
+                   a == 10 || a == 11 || a == 14 || a == 15;
+        }
         uint32_t p = pid();
         uint16_t t = tid();
         uint16_t s = sid();
@@ -283,3 +343,12 @@ struct Pokemon {
         return xor_val < 16;
     }
 };
+
+// Write OT/nickname (UTF-8) into a Gen1 mon's GB regions ([33:44]/[44:55]).
+// Used after a cross-gen conversion materializes the 33B record: the record
+// alone carries no names, so they travel explicitly (OT stays the original
+// trainer, like a real transfer). Unknown chars become '?', padded 0x50.
+inline void fillGen1Names(Pokemon& pkm, const std::string& ot, const std::string& nick) {
+    Gen1::encodeGbString(ot.c_str(), pkm.data.data() + 33, 11);
+    Gen1::encodeGbString(nick.c_str(), pkm.data.data() + 44, 11);
+}

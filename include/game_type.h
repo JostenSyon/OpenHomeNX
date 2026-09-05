@@ -2,8 +2,8 @@
 #include <cstdint>
 
 // Supported game types (sequential enum used as array index)
-enum class GameType { ZA, S, V, Sw, Sh, BD, SP, LA, GP, GE, FR, LG, FR_ES, LG_ES, FR_DE, LG_DE, FR_IT, LG_IT, FR_FR, LG_FR, FR_JA, LG_JA, RUBY, SAPPHIRE, EMERALD };
-static constexpr int GAME_TYPE_COUNT = 25;
+enum class GameType { ZA, S, V, Sw, Sh, BD, SP, LA, GP, GE, FR, LG, FR_ES, LG_ES, FR_DE, LG_DE, FR_IT, LG_IT, FR_FR, LG_FR, FR_JA, LG_JA, RUBY, SAPPHIRE, EMERALD, RED, BLUE, YELLOW };
+static constexpr int GAME_TYPE_COUNT = 28;
 
 inline bool isSV(GameType g) { return g == GameType::S || g == GameType::V; }
 inline bool isSwSh(GameType g) { return g == GameType::Sw || g == GameType::Sh; }
@@ -28,6 +28,13 @@ inline bool isFRLG(GameType g) {
 // NS, AccountManager mount/backup) need to treat them differently.
 inline bool isImportedFile(GameType g) {
     return g == GameType::RUBY || g == GameType::SAPPHIRE || g == GameType::EMERALD;
+}
+
+// File-backed Gen 1 games (R/B/Y SRAM dumps found by import scan, G1c).
+// Same "no titleId" shape as isImportedFile, but a different container
+// (GB 32KB SRAM + PokeList1, not GBA sectors) so they need their own branch.
+inline bool isGen1File(GameType g) {
+    return g == GameType::RED || g == GameType::BLUE || g == GameType::YELLOW;
 }
 
 // Per-game constant table. One entry per GameType enum value.
@@ -155,6 +162,18 @@ inline const GameInfo& gameInfo(GameType g) {
         {0x3,                "",                 "Pokemon Emerald",                "Pokemon Emerald",
          "Emerald",          "Emerald",           "pk3", 100,   14, 30, 80,    0, 80,
          false, false, "", "Emerald"},
+        // RED (Gen 1 SRAM dump, no titleId — sentinels continue past EMERALD's)
+        {0x4,                "",                 "Pokemon Red",                    "Pokemon Red",
+         "Red",              "Red",               "pk1", 33,    12, 20, 55,    0, 55,
+         false, false, "", "Red"},
+        // BLUE
+        {0x5,                "",                 "Pokemon Blue",                   "Pokemon Blue",
+         "Blue",             "Blue",              "pk1", 33,    12, 20, 55,    0, 55,
+         false, false, "", "Blue"},
+        // YELLOW
+        {0x6,                "",                 "Pokemon Yellow",                 "Pokemon Yellow",
+         "Yellow",           "Yellow",            "pk1", 33,    12, 20, 55,    0, 55,
+         false, false, "", "Yellow"},
     };
     return INFO[static_cast<int>(g)];
 }
@@ -217,6 +236,7 @@ inline int genOf(GameType g) {
 // Gen 7 is never a valid destination: the engine emits Pk7 (Alola SM/USUM),
 // and this app has no SM/USUM GameType (GP/GE are LGPE, a different layout).
 inline int ohTargetGenFor(GameType g) {
+    if (isGen1File(g)) return 1;  // Pk1 (R/B/Y)
     if (isSwSh(g)) return 8;
     if (isSV(g))   return 9;
     if (isFRLG(g) || isImportedFile(g)) return 3;
@@ -234,6 +254,7 @@ inline int ohTargetGenFor(GameType g) {
 // PB8 / PA8 / PB7 / PA9, which openhome_transfer_pkm never consumes — genOf()
 // would wrongly report 8/9/7 for them and the bytes would be mis-parsed.
 inline int ohSourceGenFor(GameType g) {
+    if (isGen1File(g)) return 1;  // Pk1 (R/B/Y)
     if (isSwSh(g)) return 8;
     if (isSV(g))   return 9;
     if (isFRLG(g) || isImportedFile(g)) return 3;
@@ -249,7 +270,7 @@ inline int ohSourceGenFor(GameType g) {
 // laid out largest-format-first, so a prefix is the exact record.
 inline int ohRecordBytesFor(int gen) {
     switch (gen) {
-        case 3:  return 80;   // Pk3
+        case 1:  return 33;   // Pk1 (box record; party 44 = box33 + level + stats)        case 3:  return 80;   // Pk3
         case 8:  return 344;  // Pk8  (box == party)
         case 9:  return 344;  // Pk9  (Rust core: box == party == 344)
         case 10: return 360;  // Pa8  (box; PKHeX party record is 376)
@@ -265,7 +286,7 @@ inline int ohRecordBytesFor(int gen) {
 // has no single tag here.
 inline int ohBackupTagForGen(int gen) {
     switch (gen) {
-        case 3:  return 3;   // Tag::Pk3
+        case 1:  return 1;   // Tag::Pk1        case 3:  return 3;   // Tag::Pk3
         case 8:  return 9;   // Tag::Pk8
         case 9:  return 12;  // Tag::Pk9
         case 10: return 10;  // Tag::Pa8

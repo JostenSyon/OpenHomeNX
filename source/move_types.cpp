@@ -134,6 +134,12 @@ static const uint8_t s_moveTypes9a[] = {
 uint8_t getMoveType(uint16_t moveId, GameType game) {
     const uint8_t* table;
     size_t len;
+    if (isGen1File(game)) {
+        // Only two moves changed type after Gen 1 (both were Normal):
+        // Gust #16 (-> Flying) and Bite #44 (-> Dark). Everything else
+        // matches the modern table.
+        if (moveId == 16 || moveId == 44) return 0; // Normal
+    }
     if (isFRLG(game) || isImportedFile(game)) {
         table = s_moveTypes5;
         len = sizeof(s_moveTypes5);

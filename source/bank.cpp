@@ -72,6 +72,7 @@ bool Bank::isValidFile(const std::string& path) {
         return false;
     switch (version) {
         case VERSION_FRLG:
+        case VERSION_GB:
         case VERSION_LGPE:
         case VERSION_LA:
         case VERSION_40BOX:
@@ -162,6 +163,10 @@ bool Bank::load(const std::string& path) {
         fileBoxCount = 14;
         fileSlotSize = PokeCrypto::SIZE_3STORED;
         fileSlotsPerBox = 30;
+    } else if (version == VERSION_GB) {
+        fileBoxCount = 12;
+        fileSlotSize = 55; // 33B record + 11B OT + 11B nick (see pokemon.h)
+        fileSlotsPerBox = 20;
     } else if (version == VERSION_LGPE) {
         fileBoxCount = 40;
         fileSlotSize = PokeCrypto::SIZE_6PARTY;

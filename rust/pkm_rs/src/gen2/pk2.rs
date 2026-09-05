@@ -134,14 +134,14 @@ impl Pk2 {
             national_dex: buf[0],
             held_item_index: buf[1],
             moves: [buf[2], buf[3], buf[4], buf[5]],
-            trainer_id: u16::from_le_bytes([buf[6], buf[7]]),
+            trainer_id: u16::from_be_bytes([buf[6], buf[7]]),
             exp,
             evs_g12: StatsPreSplit {
-                hp: u16::from_le_bytes([buf[0xb], buf[0xc]]),
-                atk: u16::from_le_bytes([buf[0xd], buf[0xe]]),
-                def: u16::from_le_bytes([buf[0xf], buf[0x10]]),
-                spe: u16::from_le_bytes([buf[0x11], buf[0x12]]),
-                spc: u16::from_le_bytes([buf[0x13], buf[0x14]]),
+                hp: u16::from_be_bytes([buf[0xb], buf[0xc]]),
+                atk: u16::from_be_bytes([buf[0xd], buf[0xe]]),
+                def: u16::from_be_bytes([buf[0xf], buf[0x10]]),
+                spe: u16::from_be_bytes([buf[0x11], buf[0x12]]),
+                spc: u16::from_be_bytes([buf[0x13], buf[0x14]]),
             },
             dvs,
             move_pp,
@@ -166,15 +166,15 @@ impl Pk2 {
         buf[0] = self.national_dex;
         buf[1] = self.held_item_index;
         buf[2..6].copy_from_slice(&self.moves);
-        buf[6..8].copy_from_slice(&self.trainer_id.to_le_bytes());
+        buf[6..8].copy_from_slice(&self.trainer_id.to_be_bytes());
         buf[0x8] = ((self.exp >> 16) & 0xff) as u8;
         buf[0x9] = ((self.exp >> 8) & 0xff) as u8;
         buf[0xa] = (self.exp & 0xff) as u8;
-        buf[0xb..0xd].copy_from_slice(&self.evs_g12.hp.to_le_bytes());
-        buf[0xd..0xf].copy_from_slice(&self.evs_g12.atk.to_le_bytes());
-        buf[0xf..0x11].copy_from_slice(&self.evs_g12.def.to_le_bytes());
-        buf[0x11..0x13].copy_from_slice(&self.evs_g12.spe.to_le_bytes());
-        buf[0x13..0x15].copy_from_slice(&self.evs_g12.spc.to_le_bytes());
+        buf[0xb..0xd].copy_from_slice(&self.evs_g12.hp.to_be_bytes());
+        buf[0xd..0xf].copy_from_slice(&self.evs_g12.atk.to_be_bytes());
+        buf[0xf..0x11].copy_from_slice(&self.evs_g12.def.to_be_bytes());
+        buf[0x11..0x13].copy_from_slice(&self.evs_g12.spe.to_be_bytes());
+        buf[0x13..0x15].copy_from_slice(&self.evs_g12.spc.to_be_bytes());
 
         let dv_raw: u16 = (self.dvs.atk << 12)
             | (self.dvs.def << 8)

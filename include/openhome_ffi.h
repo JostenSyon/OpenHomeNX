@@ -30,6 +30,11 @@ uint32_t openhome_get_pokemon_count(SaveHandle *handle);
 uint32_t openhome_get_box_count(SaveHandle *handle);
 PkmHandle *openhome_get_pokemon_from_slot(SaveHandle *handle, uint32_t box_idx, uint32_t slot_idx);
 PkmHandle *openhome_transfer_pkm(PkmHandle *pkm_handle, uint32_t target_gen);
+// Quante mosse dell'handle non esistono nella gen `gen` (solo Gen 1 oggi):
+// gli slot che un transfer lì dropperebbe (e refillerebbe se tutti e 4).
+// La UI lo chiede PRIMA per avvisare. u32::MAX se handle nullo o gen non
+// supportata ("sconosciuto" esplicito, mai uno 0 silenzioso).
+uint32_t openhome_count_moves_not_in_gen(const PkmHandle *pkm_handle, uint32_t gen);
 bool openhome_save_pkm_to_file(PkmHandle *pkm_handle, uint32_t slot);
 uint32_t openhome_get_pkm_box_bytes(PkmHandle *pkm_handle, uint8_t *out_buf, size_t out_len);
 uint32_t openhome_get_pkm_box_bytes_for_gen(PkmHandle *pkm_handle, uint32_t gen, uint8_t *out_buf, size_t out_len);
@@ -37,6 +42,10 @@ uint32_t openhome_get_pkm_original_backup(PkmHandle *pkm_handle, uint8_t *out_bu
 // OHPKM universal storage (bank cross-gen)
 uint32_t openhome_get_ohpkm_bytes(PkmHandle *handle, uint8_t *out_buf, size_t out_len);
 PkmHandle *openhome_load_ohpkm(const uint8_t *data, size_t len);
+// Parse un OHPKM blob e gli riattacca un OriginalBackup ([tag u16 LE][record]).
+// Serve quando il blob è stato ricostruito da byte convertiti ma il mon porta
+// già un backup più vecchio: quello vecchio deve vincere. NULL se fallisce.
+PkmHandle *openhome_ohpkm_with_original_backup(const uint8_t *blob, size_t blob_len, const uint8_t *backup, size_t backup_len);
 uint16_t openhome_ohpkm_species(PkmHandle *handle);
 uint16_t openhome_ohpkm_form(PkmHandle *handle);
 uint8_t openhome_ohpkm_level(PkmHandle *handle);
@@ -45,6 +54,7 @@ uint8_t openhome_ohpkm_gender(PkmHandle *handle);
 uint16_t openhome_ohpkm_held_item(PkmHandle *handle);
 uint8_t openhome_ohpkm_origin_gen(PkmHandle *handle);
 uint32_t openhome_ohpkm_nickname(PkmHandle *handle, uint8_t *out_buf, size_t out_len);
+uint32_t openhome_ohpkm_trainer_name(PkmHandle *handle, uint8_t *out_buf, size_t out_len);
 void openhome_free_ptr(void *ptr);
 const FormatList *openhome_get_supported_formats(void);
 
@@ -81,9 +91,14 @@ inline std::vector<uint8_t> getPkmBoxBytes(PkmHandle* pkm_handle) {
 inline PkmHandle* loadPkmFromGen(const std::vector<uint8_t>& data, uint32_t gen) {
     return openhome_load_pkm_from_gen(data.data(), data.size(), gen);
 }
+// Mosse droppate da un transfer verso `gen` (solo Gen 1); u32::MAX = sconosciuto.
+inline uint32_t countMovesNotInGen(const PkmHandle* pkm_handle, uint32_t gen) {
+    return openhome_count_moves_not_in_gen(pkm_handle, gen);
+}
 inline std::vector<uint8_t> getPkmBoxBytesForGen(PkmHandle* pkm_handle, uint32_t gen) {
     size_t max_len = 344;
-    if (gen == 3) max_len = 80;
+    if (gen == 1) max_len = 33; // Pk1 (Gen 1 R/B/Y box record)
+    else if (gen == 3) max_len = 80;
     else if (gen == 7) max_len = 232;
     else if (gen == 9) max_len = 344;
     else if (gen == 10) max_len = 360; // Pa8 (Legends: Arceus)
@@ -116,6 +131,12 @@ inline std::vector<uint8_t> getOhpkmBytes(PkmHandle* handle) {
 inline PkmHandle* loadOhpkm(const std::vector<uint8_t>& data) {
     return openhome_load_ohpkm(data.data(), data.size());
 }
+// Riattacca un backup più vecchio a un blob appena ricostruito; nullptr se
+// input vuoti o parse fallita (il chiamante tiene il blob così com'è).
+inline PkmHandle* ohpkmWithOriginalBackup(const std::vector<uint8_t>& blob, const std::vector<uint8_t>& backup) {
+    if (blob.empty() || backup.empty()) return nullptr;
+    return openhome_ohpkm_with_original_backup(blob.data(), blob.size(), backup.data(), backup.size());
+}
 inline uint16_t ohpkmSpecies(PkmHandle* handle) { return openhome_ohpkm_species(handle); }
 inline uint16_t ohpkmForm(PkmHandle* handle) { return openhome_ohpkm_form(handle); }
 inline uint8_t ohpkmLevel(PkmHandle* handle) { return openhome_ohpkm_level(handle); }
@@ -126,6 +147,12 @@ inline uint8_t ohpkmOriginGen(PkmHandle* handle) { return openhome_ohpkm_origin_
 inline std::string ohpkmNickname(PkmHandle* handle) {
     uint8_t buf[64];
     uint32_t written = openhome_ohpkm_nickname(handle, buf, sizeof(buf));
+    if (written == 0) return {};
+    return std::string(reinterpret_cast<char*>(buf), written);
+}
+inline std::string ohpkmTrainerName(PkmHandle* handle) {
+    uint8_t buf[64];
+    uint32_t written = openhome_ohpkm_trainer_name(handle, buf, sizeof(buf));
     if (written == 0) return {};
     return std::string(reinterpret_cast<char*>(buf), written);
 }

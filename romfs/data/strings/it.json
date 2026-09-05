@@ -271,6 +271,8 @@
     "transfer_bad_ohpkm": "Impossibile leggere il record OHPKM salvato.",
     "transfer_not_in_dex": "{0} non è nel Pokédex di {1}, quindi non può essere inviato lì (nessun clone creato).",
     "transfer_no_bytes": "Impossibile estrarre i byte del Pokémon convertito.",
+    "gen1_drops_title": "Mosse rimosse",
+    "gen1_drops_body": "{0} ha {1} mosse che non esistono in Gen 1: verranno rimosse all'export. Se non ne resta nessuna, verranno assegnate le mosse base di specie. La copia in banca resta intatta.\nA: esporta comunque  B: annulla.",
     "create_bank_title": "Crea banca",
     "create_bank_body": "Cross-gen (OHPKM, tutti i giochi)?\nA = Cross-gen  B = Normale (questo gioco)",
     "applet_title": "Modalità applet",

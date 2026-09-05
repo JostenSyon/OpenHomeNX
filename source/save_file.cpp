@@ -1,5 +1,6 @@
 #include "save_file.h"
 #include "save_file_ffi.h"
+#include "gen1_tables.h"
 #include "handler_update.h"
 #include "openhome_ffi.h"
 #include "pokedex.h"
@@ -48,6 +49,8 @@ bool SaveFile::load(const std::string& path) {
 
     if (isFRLG(gameType_) || isImportedFile(gameType_))
         return loadGBA(path);
+    if (isGen1File(gameType_))
+        return loadGB(path);
     if (isBDSP(gameType_))
         return loadBDSP(path);
     if (isLGPE(gameType_))
@@ -60,7 +63,9 @@ bool SaveFile::save(const std::string& path) {
         return false;
 
     bool ok;
-    if (isFRLG(gameType_) || isImportedFile(gameType_))
+    if (isGen1File(gameType_))
+        ok = saveGB(path);
+    else if (isFRLG(gameType_) || isImportedFile(gameType_))
         ok = saveGBA(path);
     else if (isBDSP(gameType_))
         ok = saveBDSP(path);
@@ -391,8 +396,8 @@ void SaveFile::clearBoxSlot(int box, int slot) {
     if (offset + sizeBoxSlot_ > static_cast<int>(boxDataLen_))
         return;
 
-    if (isFRLG(gameType_) || isImportedFile(gameType_) || isLGPE(gameType_)) {
-        // FRLG/LGPE: empty slots are all-zero bytes (not encrypted blank).
+    if (isFRLG(gameType_) || isImportedFile(gameType_) || isLGPE(gameType_) || isGen1File(gameType_)) {
+        // FRLG/LGPE/Gen1: empty slots are all-zero bytes (not encrypted blank).
         std::memset(boxData_ + offset, 0, sizeBoxSlot_);
     } else {
         // Write encrypted blank PKM (matching PKHeX behavior) instead of raw zeros.
@@ -1005,6 +1010,171 @@ bool SaveFile::saveLGPE(const std::string& path) {
     size_t written = std::fwrite(rawData_.data(), 1, rawData_.size(), f);
     std::fclose(f);
     return written == rawData_.size();
+}
+
+// --- GB save format (Gen 1 R/B/Y SRAM, PKHeX SAV1.cs) ---
+
+// Offsets below are the INT set (SAV1Offsets.INT); v1 supports INT saves
+// only (user saves are Italian). JP saves fail the INT checksum and are
+// rejected without touching anything.
+namespace {
+constexpr size_t GB_SAVE_SIZE = 0x8000;
+constexpr int GB_BOX_COUNT = 12;
+constexpr int GB_SLOTS_PER_BOX = 20;
+constexpr int GB_SLOT_STRIDE = 55; // 33B record + 11B OT GB + 11B nick GB
+constexpr int GB_OT = 0x2598;
+constexpr int GB_CHECKSUM = 0x3523;
+constexpr int GB_PARTY = 0x2F2C;
+constexpr int GB_CURBOX = 0x30C0;
+constexpr int GB_CURBOXIDX = 0x284C;
+constexpr int GB_BOX_LIST = 0x462; // ((11*2)+33+1)*20+2
+int gbStoredBoxBase(int box) {
+    return box < 6 ? 0x4000 + box * GB_BOX_LIST : 0x6000 + (box - 6) * GB_BOX_LIST;
+}
+bool gbChecksumValid(const uint8_t* d) {
+    uint8_t s = 0;
+    for (int i = GB_OT; i < GB_CHECKSUM; i++) s += d[i];
+    return d[GB_CHECKSUM] == static_cast<uint8_t>(~s);
+}
+// Unpack one PokeList1 ([count][species x cap+1][records][OT x cap][nick x cap])
+// into flat 55B slots. Returns count, or -1 when the list is corrupt.
+// An erased (0xFF) count means an empty box, not corruption.
+int gbUnpackList(const uint8_t* list, int cap, int recSize, uint8_t* out) {
+    int n = list[0];
+    if (n == 0xFF) n = 0;
+    if (n < 0 || n > cap) return -1;
+    const uint8_t* recs = list + 1 + cap + 1;
+    const uint8_t* ots = recs + recSize * cap;
+    const uint8_t* nicks = ots + 11 * cap;
+    for (int i = 0; i < n; i++) {
+        uint8_t* dst = out + i * GB_SLOT_STRIDE;
+        std::memcpy(dst, recs + i * recSize, recSize);
+        std::memcpy(dst + 33, ots + i * 11, 11);
+        std::memcpy(dst + 44, nicks + i * 11, 11);
+    }
+    return n;
+}
+// Pack flat 55B slots back into one PokeList1 region (mirror of gbUnpackList).
+// Only non-empty slots (species byte != 0) are stored; the rest is zeroed.
+void gbPackList(uint8_t* list, int cap, const uint8_t* flat) {
+    int idx[GB_SLOTS_PER_BOX], n = 0;
+    for (int s = 0; s < cap; s++)
+        if (flat[s * GB_SLOT_STRIDE] != 0) idx[n++] = s;
+    // Zero the whole region first (no stale bytes past the terminator).
+    std::memset(list, 0, static_cast<size_t>(GB_BOX_LIST));
+    list[0] = static_cast<uint8_t>(n);
+    for (int i = 0; i < n; i++) list[1 + i] = flat[idx[i] * GB_SLOT_STRIDE];
+    list[1 + n] = 0xFF;
+    uint8_t* recs = list + 1 + cap + 1;
+    uint8_t* ots = recs + 33 * cap;
+    uint8_t* nicks = ots + 11 * cap;
+    for (int i = 0; i < n; i++) {
+        const uint8_t* f = flat + idx[i] * GB_SLOT_STRIDE;
+        std::memcpy(recs + i * 33, f, 33);
+        std::memcpy(ots + i * 11, f + 33, 11);
+        std::memcpy(nicks + i * 11, f + 44, 11);
+    }
+}
+} // namespace
+
+bool SaveFile::loadGB(const std::string& path) {
+    std::ifstream file(path, std::ios::binary | std::ios::ate);
+    if (!file.is_open())
+        return false;
+
+    auto fileSize = static_cast<size_t>(file.tellg());
+    if (fileSize != GB_SAVE_SIZE)
+        return false;
+
+    file.seekg(0);
+    rawData_.resize(GB_SAVE_SIZE);
+    file.read(reinterpret_cast<char*>(rawData_.data()), GB_SAVE_SIZE);
+    file.close();
+
+    if (!gbChecksumValid(rawData_.data())) {
+        DebugLog::line("loadGB: %s -> bad INT checksum, rejected", path.c_str());
+        return false;
+    }
+
+    // Current box: bit7 of the index byte tells whether the stored boxes were
+    // ever flushed (PKHeX BoxesInitialized). An unflushed stored box may hold
+    // garbage counts, so only the current box is trusted from storage then.
+    int cur = rawData_[GB_CURBOXIDX] & 0x7F;
+    if (cur < 0 || cur >= GB_BOX_COUNT) cur = 0;
+    bool flushed = (rawData_[GB_CURBOXIDX] & 0x80) != 0;
+
+    gbStorage_.assign(GB_BOX_COUNT * GB_SLOTS_PER_BOX * GB_SLOT_STRIDE, 0);
+    for (int b = 0; b < GB_BOX_COUNT; b++) {
+        uint8_t* dst = gbStorage_.data() + b * GB_SLOTS_PER_BOX * GB_SLOT_STRIDE;
+        if (b == cur) {
+            if (gbUnpackList(rawData_.data() + GB_CURBOX, GB_SLOTS_PER_BOX, 33, dst) < 0)
+                return false;
+        } else if (flushed) {
+            if (gbUnpackList(rawData_.data() + gbStoredBoxBase(b), GB_SLOTS_PER_BOX, 33, dst) < 0)
+                return false;
+        }
+        // else: leave zeros (empty) — never trust unflushed storage.
+    }
+
+    boxData_ = gbStorage_.data();
+    boxDataLen_ = gbStorage_.size();
+    boxLayoutData_ = nullptr; // Gen 1 has no custom box names ("Box N")
+    boxLayoutLen_ = 0;
+
+    loaded_ = true;
+    DebugLog::line("loadGB: %s -> OK (curbox %d, flushed %d)", path.c_str(), cur, (int)flushed);
+    return true;
+}
+
+bool SaveFile::saveGB(const std::string& path) {
+    if (!loaded_)
+        return false;
+
+    // Pack every box from the flat buffer back into its PokeList1 region.
+    // The current box is mirrored into the live CurrentBox region as well
+    // (PKHeX SAV1.GetFinalData): the game reads party-adjacent state from it.
+    int cur = rawData_[GB_CURBOXIDX] & 0x7F;
+    if (cur < 0 || cur >= GB_BOX_COUNT) cur = 0;
+    bool anyContent = false;
+    for (int b = 0; b < GB_BOX_COUNT; b++) {
+        const uint8_t* src = gbStorage_.data() + b * GB_SLOTS_PER_BOX * GB_SLOT_STRIDE;
+        for (int s = 0; s < GB_SLOTS_PER_BOX; s++)
+            if (src[s * GB_SLOT_STRIDE] != 0) { anyContent = true; break; }
+        if (b == cur) {
+            gbPackList(rawData_.data() + GB_CURBOX, GB_SLOTS_PER_BOX, src);
+            gbPackList(rawData_.data() + gbStoredBoxBase(b), GB_SLOTS_PER_BOX, src);
+        } else {
+            gbPackList(rawData_.data() + gbStoredBoxBase(b), GB_SLOTS_PER_BOX, src);
+        }
+    }
+    if (anyContent)
+        rawData_[GB_CURBOXIDX] |= 0x80; // boxes-initialized flag
+
+    // Pokedex seen+caught for every boxed species (PKHeX SetDex-on-deposit
+    // equivalent, applied at save time): bit (species-1).
+    for (int b = 0; b < GB_BOX_COUNT; b++) {
+        const uint8_t* src = gbStorage_.data() + b * GB_SLOTS_PER_BOX * GB_SLOT_STRIDE;
+        for (int s = 0; s < GB_SLOTS_PER_BOX; s++) {
+            int ndex = Gen1::internalToNdex(src[s * GB_SLOT_STRIDE]);
+            if (ndex < 1 || ndex > 151) continue;
+            int bit = ndex - 1;
+            rawData_[0x25B6 + (bit >> 3)] |= (1 << (bit & 7)); // seen
+            rawData_[0x25A3 + (bit >> 3)] |= (1 << (bit & 7)); // caught
+        }
+    }
+
+    // File checksum over OT..ChecksumOfs (PKHeX GetRBYChecksum).
+    uint8_t cks = 0;
+    for (int i = GB_OT; i < GB_CHECKSUM; i++) cks += rawData_[i];
+    rawData_[GB_CHECKSUM] = static_cast<uint8_t>(~cks);
+
+    std::ofstream file(path, std::ios::binary | std::ios::trunc);
+    if (!file.is_open())
+        return false;
+    file.write(reinterpret_cast<const char*>(rawData_.data()), rawData_.size());
+    file.close();
+    DebugLog::line("saveGB: %s -> OK", path.c_str());
+    return true;
 }
 
 // --- GBA save format (sector-based, for FRLG) ---

@@ -118,6 +118,8 @@ int main(int argc, char* argv[]) {
             DebugLog::line("boot USB +%ds (retry %d/3) physical=%u mounted=%u",
                            attempt * 3, attempt, phys, n);
         }
+        if (phys > 0 && n == 0)
+            DebugLog::line("boot USB: drive present but no FAT volume mounted (blank MBR? reformat MBR+FAT32)");
     }
 #endif
 

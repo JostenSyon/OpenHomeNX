@@ -365,6 +365,8 @@ namespace StrKey {
     constexpr const char* TransferBadOhpkm     = "transfer_bad_ohpkm";
     constexpr const char* TransferNotInDex     = "transfer_not_in_dex";
     constexpr const char* TransferNoBytes      = "transfer_no_bytes";
+    constexpr const char* Gen1DropsTitle       = "gen1_drops_title";
+    constexpr const char* Gen1DropsBody        = "gen1_drops_body";
 
     // Bank creation (ui_bank.cpp)
     constexpr const char* CreateBankTitle      = "create_bank_title";

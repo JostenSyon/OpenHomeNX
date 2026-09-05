@@ -6,7 +6,7 @@
 
 // One save file found while scanning enabled import paths.
 struct ImportedGame {
-    GameType    type;      // one of the isImportedFile() GameType slots
+    GameType    type;      // isImportedFile() (Gen3 GBA) or isGen1File() (Gen1 SRAM) slot
     std::string filePath;  // absolute path, ready for SaveFile::load()
     std::string sourceTag; // last path segment before the filename ("saves",
                             // "roms", ...) — shown as a small on-tile badge

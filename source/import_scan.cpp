@@ -9,6 +9,10 @@
 #include <algorithm>
 #include <cctype>
 #include <cerrno>
+#include <cstdint>
+#include <fstream>
+#include <string>
+#include <vector>
 
 namespace {
 
@@ -42,6 +46,42 @@ bool detectGen3Version(const std::string& filename, SaveFile& probe, GameType& o
     if (low.find("ruby")     != std::string::npos) { outType = GameType::RUBY;     return true; }
     if (low.find("emerald")  != std::string::npos) { outType = GameType::EMERALD;  return true; }
     outType = (gameCode == 0) ? GameType::RUBY : GameType::EMERALD;
+    return true;
+}
+
+// Gen 1 (R/B/Y SRAM dump, PKHeX SAV1 INT offsets): 32KB + valid checksum.
+// Yellow is byte-detectable (Pikachu starter 0x54 at 0x29C3, else nonzero
+// Pikachu friendship at 0x271C). Red vs Blue are byte-identical: filename
+// hint first (EN + IT), RED default — same policy as Ruby-over-Sapphire.
+bool detectGen1Version(const std::string& filename, const std::string& full, GameType& outType) {
+    std::ifstream file(full, std::ios::binary | std::ios::ate);
+    if (!file.is_open())
+        return false;
+    if (static_cast<size_t>(file.tellg()) != 0x8000)
+        return false;
+    file.seekg(0);
+    std::vector<uint8_t> d(0x8000);
+    file.read(reinterpret_cast<char*>(d.data()), d.size());
+    if (!file)
+        return false;
+
+    uint8_t s = 0;
+    for (int i = 0x2598; i < 0x3523; i++) s += d[i];
+    if (d[0x3523] != static_cast<uint8_t>(~s))
+        return false; // not a valid INT Gen1 save (JP saves land here too)
+
+    if (d[0x29C3] == 0x54 || d[0x271C] != 0) {
+        outType = GameType::YELLOW;
+        return true;
+    }
+    std::string low = toLower(filename);
+    if (low.find("blue") != std::string::npos || low.find("blu") != std::string::npos) {
+        outType = GameType::BLUE;
+        return true;
+    }
+    // "red"/"rosso"/"yellow"/"giallo" or anything else: Yellow was already
+    // excluded by the bytes above, so this is Red (default, documented).
+    outType = GameType::RED;
     return true;
 }
 
@@ -82,21 +122,37 @@ void scanDir(const std::string& dir, std::vector<ImportedGame>& out, std::vector
         // figures out the real type from the loaded bytes below.
         SaveFile probe;
         probe.setGameType(GameType::EMERALD);
-        if (!probe.load(full))
-            continue; // wrong size or bad sector layout — not a Gen3 GBA save
-        gbaSized++;
+        if (probe.load(full)) {
+            gbaSized++;
 
-        GameType type;
-        if (!detectGen3Version(entry->d_name, probe, type))
+            GameType type;
+            if (!detectGen3Version(entry->d_name, probe, type))
+                continue;
+
+            int idx = static_cast<int>(type);
+            if (claimed[idx])
+                continue; // first match per GameType wins
+            claimed[idx] = true;
+            matched++;
+            out.push_back({type, full, lastPathSegment(dir)});
+            DebugLog::line("import scan: %s -> %s", full.c_str(), gameInfo(type).gameTag);
             continue;
+        }
 
-        int idx = static_cast<int>(type);
-        if (claimed[idx])
-            continue; // first match per GameType wins
-        claimed[idx] = true;
-        matched++;
-        out.push_back({type, full, lastPathSegment(dir)});
-        DebugLog::line("import scan: %s -> %s", full.c_str(), gameInfo(type).gameTag);
+        // Gen 1 (R/B/Y SRAM): 32KB + valid INT checksum (PKHeX SAV1).
+        // Yellow is detectable from the bytes (Pikachu starter / friendship);
+        // Red vs Blue are byte-identical, so the filename decides, RED default
+        // (same policy as Ruby-over-Sapphire above).
+        GameType gbType = GameType::RED;
+        if (detectGen1Version(entry->d_name, full, gbType)) {
+            int idx = static_cast<int>(gbType);
+            if (claimed[idx])
+                continue;
+            claimed[idx] = true;
+            matched++;
+            out.push_back({gbType, full, lastPathSegment(dir)});
+            DebugLog::line("import scan: %s -> %s", full.c_str(), gameInfo(gbType).gameTag);
+        }
     }
     closedir(d);
     DebugLog::line("import scan: %s -> %d entr(y/ies), %d file(s), %d GBA-sized, %d matched",
@@ -125,6 +181,8 @@ std::vector<ImportedGame> scanImportPaths(const std::vector<ImportPathEntry>& pa
             u32 n = usbHsFsGetMountedDeviceCount();
             if (n == 0) {
                 DebugLog::line("import scan: %s -> no USB device mounted, skipped", entry.path.c_str());
+                if (DebugLog::enabled() && usbHsFsGetPhysicalDeviceCount() > 0)
+                    DebugLog::line("import scan: drive present but no FAT volume mounted (blank MBR? reformat MBR+FAT32)");
                 continue;
             }
             if (n > 8) n = 8;
@@ -145,6 +203,8 @@ std::vector<ImportedGame> scanImportPaths(const std::vector<ImportPathEntry>& pa
         u32 n = usbHsFsGetMountedDeviceCount();
         if (n == 0) {
             DebugLog::line("import scan: autocheck USB -> no device mounted, skipped");
+            if (DebugLog::enabled() && usbHsFsGetPhysicalDeviceCount() > 0)
+                DebugLog::line("import scan: drive present but no FAT volume mounted (blank MBR? reformat MBR+FAT32)");
         } else {
             if (n > 8) n = 8;
             std::vector<UsbHsFsDevice> devs(n);

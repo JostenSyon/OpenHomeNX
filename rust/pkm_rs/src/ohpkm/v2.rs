@@ -1544,6 +1544,28 @@ impl OhpkmV2 {
         self.original_data = Some(OriginalBackup::new(original_bytes));
     }
 
+    /// Attach an OriginalBackup from its tagged wire form (`[tag u16 LE][record]`,
+    /// as produced by `StoredPkmBytes::to_bytes`). Used when parking a mon in a
+    /// cross-gen bank whose blob was rebuilt from converted bytes: an older backup
+    /// already carried by the mon must win over the fresh one, so a later return
+    /// to the origin format restores verbatim bytes.
+    pub fn set_original_data_from_tagged(&mut self, tagged: &[u8]) -> Result<()> {
+        if tagged.len() <= 2 {
+            return Err(Error::BufferSize {
+                requirement_source: Some(alloc::format!("OriginalBackup(tagged)")),
+                expected: 3,
+                received: tagged.len(),
+            });
+        }
+        let tag_val = u16::from_le_bytes([tagged[0], tagged[1]]);
+        let tag = pkm_bytes::Tag::try_from(tag_val).map_err(|_| Error::TagError {
+            tag_type: "OriginalBackup",
+            value: tag_val,
+        })?;
+        self.set_original_data_bytes(pkm_bytes::StoredPkmBytes::new(tag, &tagged[2..])?);
+        Ok(())
+    }
+
     // Calculated
 
     pub fn is_shiny(&self) -> bool {

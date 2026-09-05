@@ -596,4 +596,9 @@ private:
     // then abort the placement — never write bytes that do not match the
     // destination layout.
     bool prepareForPlacement(Pokemon& pkm, Panel panel, std::string& whyNot) const;
+    // Second choice (ours, NOT upstream): verbatim restore from the carried
+    // OriginalBackup, used only when the Rust reconstruction fails. Returns
+    // false (leaving pkm untouched) when there is no matching backup or the
+    // mon was edited since conversion.
+    bool restoreVerbatimFallback(Pokemon& pkm, GameType dest, int dstGen) const;
 };
