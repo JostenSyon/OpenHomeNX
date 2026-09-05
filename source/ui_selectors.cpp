@@ -469,6 +469,30 @@ void UI::drawGameSelectorFrame() {
         if (it != gameIconCache_.end() && it->second) {
             SDL_Rect dst = {iconX, iconY, ICON_SIZE, ICON_SIZE};
             SDL_RenderCopy(renderer_, it->second, nullptr, &dst);
+        } else if (isImportedFile(availableGames_[i])) {
+            // No NS control data (no titleId) — a fixed per-game background
+            // (Bulbapedia color templates, same values pkm_rs_types uses for
+            // OriginGame::color()) plus the OpenHome logo PNG, letterboxed to
+            // fit without stretching.
+            SDL_Color bg;
+            switch (availableGames_[i]) {
+                case GameType::RUBY:     bg = {0xCD, 0x22, 0x36, 255}; break;
+                case GameType::SAPPHIRE: bg = {0x3D, 0x51, 0xA7, 255}; break;
+                case GameType::EMERALD: default: bg = {0x50, 0xC8, 0x78, 255}; break;
+            }
+            drawRect(iconX, iconY, ICON_SIZE, ICON_SIZE, bg);
+            auto logoIt = gameLogoCache_.find(availableGames_[i]);
+            if (logoIt != gameLogoCache_.end() && logoIt->second) {
+                int texW = 0, texH = 0;
+                SDL_QueryTexture(logoIt->second, nullptr, nullptr, &texW, &texH);
+                if (texW > 0 && texH > 0) {
+                    float scale = std::min((float)ICON_SIZE / texW, (float)ICON_SIZE / texH);
+                    int dstW = (int)(texW * scale);
+                    int dstH = (int)(texH * scale);
+                    SDL_Rect dst = {iconX + (ICON_SIZE - dstW) / 2, iconY + (ICON_SIZE - dstH) / 2, dstW, dstH};
+                    SDL_RenderCopy(renderer_, logoIt->second, nullptr, &dst);
+                }
+            }
         } else {
             // Colored placeholder with game abbreviation
             drawRect(iconX, iconY, ICON_SIZE, ICON_SIZE, T().iconPlaceholder);
@@ -486,9 +510,7 @@ void UI::drawGameSelectorFrame() {
                 case GameType::GE: abbr = "GE"; break;
                 case GameType::FR: case GameType::FR_ES: case GameType::FR_DE: case GameType::FR_IT: case GameType::FR_FR: case GameType::FR_JA: abbr = "FR"; break;
                 case GameType::LG: case GameType::LG_ES: case GameType::LG_DE: case GameType::LG_IT: case GameType::LG_FR: case GameType::LG_JA: abbr = "LG"; break;
-                case GameType::RUBY:     abbr = "RU"; break;
-                case GameType::SAPPHIRE: abbr = "SA"; break;
-                case GameType::EMERALD:  abbr = "EM"; break;
+                default: break;
             }
             drawTextCentered(abbr, iconX + ICON_SIZE / 2, iconY + ICON_SIZE / 2,
                              T().text, font_);

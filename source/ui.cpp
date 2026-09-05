@@ -96,6 +96,25 @@ bool UI::init() {
         iconBoxNonEmpty_ = loadIcon("box_nonempty.png");
     }
 
+    // Game-selector logos for imported (titleId-less) games: no NS control
+    // data to fetch an icon from, so these come from romfs instead — the same
+    // PNGs OpenHome upstream ships at public/logos/<Name>.png, downscaled to
+    // a sane icon size (source was up to 1200x675, most of it never visible
+    // at tile scale).
+    {
+        auto loadLogo = [&](const char* name) -> SDL_Texture* {
+            std::string path = std::string("romfs:/logos/") + name + ".png";
+            SDL_Surface* s = IMG_Load(path.c_str());
+            if (!s) return nullptr;
+            SDL_Texture* t = SDL_CreateTextureFromSurface(renderer_, s);
+            SDL_FreeSurface(s);
+            return t;
+        };
+        gameLogoCache_[GameType::RUBY]     = loadLogo("Ruby");
+        gameLogoCache_[GameType::SAPPHIRE] = loadLogo("Sapphire");
+        gameLogoCache_[GameType::EMERALD]  = loadLogo("Emerald");
+    }
+
     // Open game controller
     for (int i = 0; i < SDL_NumJoysticks(); i++) {
         if (SDL_IsGameController(i)) {

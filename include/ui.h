@@ -160,6 +160,10 @@ private:
     SDL_Texture* iconBoxEmpty_    = nullptr;
     SDL_Texture* iconBoxNonEmpty_ = nullptr;
 
+    // Game-selector logos for imported (titleId-less) games — see init()'s
+    // loadLogo(). Keyed by GameType since there are only a handful of these.
+    std::unordered_map<GameType, SDL_Texture*> gameLogoCache_;
+
     // Screen dimensions (Switch: 1280x720)
     static constexpr int SCREEN_W = 1280;
     static constexpr int SCREEN_H = 720;
