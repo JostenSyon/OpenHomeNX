@@ -1082,7 +1082,9 @@ void UI::drawImportSettingsPopup() {
 
     constexpr int POP_W = 560;
     int rowH = 36;
-    int rowCount = (int)importPaths_.size() + 1; // +1 = "Add path..." row
+    // Row 0 = autoCheckUsb_ toggle, rows 1..N = configured paths, row N+1 =
+    // "Add path...".
+    int rowCount = (int)importPaths_.size() + 2;
     int POP_H = 50 + rowCount * rowH + 30;
     if (POP_H > SCREEN_H - 40)
         POP_H = SCREEN_H - 40; // clamp: a very long list still fits on screen
@@ -1095,9 +1097,21 @@ void UI::drawImportSettingsPopup() {
     drawTextCentered(i18n::get(StrKey::ImportSettingsTitle), popX + POP_W / 2, popY + 22, T().text, font_);
 
     int startY = popY + 50;
+
+    // Row 0: global USB autocheck toggle
+    {
+        int rowY = startY;
+        if (0 == importSettingsCursor_) {
+            drawRect(popX + 20, rowY, POP_W - 40, rowH - 4, T().menuHighlight);
+            drawRectOutline(popX + 20, rowY, POP_W - 40, rowH - 4, T().cursor, 2);
+        }
+        std::string label = std::string(autoCheckUsb_ ? "[x] " : "[ ] ") + i18n::get(StrKey::ImportAutoCheckUsb);
+        drawTextCentered(label, popX + POP_W / 2, rowY + (rowH - 4) / 2, T().text, fontSmall_);
+    }
+
     for (int i = 0; i < (int)importPaths_.size(); i++) {
-        int rowY = startY + i * rowH;
-        if (i == importSettingsCursor_) {
+        int rowY = startY + (i + 1) * rowH;
+        if (i + 1 == importSettingsCursor_) {
             drawRect(popX + 20, rowY, POP_W - 40, rowH - 4, T().menuHighlight);
             drawRectOutline(popX + 20, rowY, POP_W - 40, rowH - 4, T().cursor, 2);
         }
@@ -1111,7 +1125,7 @@ void UI::drawImportSettingsPopup() {
     }
     // "+ Add path..." row, always last
     {
-        int i = (int)importPaths_.size();
+        int i = (int)importPaths_.size() + 1;
         int rowY = startY + i * rowH;
         if (i == importSettingsCursor_) {
             drawRect(popX + 20, rowY, POP_W - 40, rowH - 4, T().menuHighlight);

@@ -7,6 +7,7 @@
 #include "wondercard.h"
 #include "import_paths.h"
 #include "import_scan.h"
+#include "autocheck_usb.h"
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_ttf.h>
 #include <SDL2/SDL_image.h>
@@ -215,21 +216,26 @@ private:
     std::vector<std::string> langList_;
 
     // Import-path settings state: which folders/USB suffixes to scan for
-    // emulator save files (GEN_PLAN Fase 2/5).
+    // emulator save files (GEN_PLAN Fase 2/5). Row 0 of the popup is the
+    // autoCheckUsb_ toggle, rows 1..importPaths_.size() are the configured
+    // paths, the last row is "+ Add path...".
     bool showImportSettings_    = false;
     int  importSettingsCursor_  = 0;
     std::vector<ImportPathEntry> importPaths_;
+    bool autoCheckUsb_ = false; // persisted via autocheck_usb.cfg
     std::vector<GameSelMenuAction> gameSelMenuActions() const;
     void drawImportSettingsPopup();
 
-    // Games found by scanning importPaths_ (Ruby/Sapphire/Emerald so far —
-    // see isImportedFile()). Rescanned whenever availableGames_ is rebuilt
+    // Games found by scanning importPaths_ + (if autoCheckUsb_) every mounted
+    // USB device's /roms/saves and /roms (Ruby/Sapphire/Emerald so far — see
+    // isImportedFile()). Rescanned whenever availableGames_ is rebuilt
     // (profile selection, applet-mode entry, USB hotplug) and consumed by
     // selectGame() to bypass AccountManager::mountSave() for these GameTypes.
     std::vector<ImportedGame> importedGames_;
     void appendImportedGames();               // scans importPaths_, extends availableGames_
     void rescanImportedGames();      // re-scan in place + popup on newly found games
     std::string importedSavePath(GameType game) const;
+    std::string importedSourceTag(GameType game) const; // small on-tile badge text
 
     // Cross-gen transfer selector state (M6a)
     bool showGenSelector_ = false;

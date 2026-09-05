@@ -415,6 +415,7 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
     // Load import-path settings (which folders to scan for emulator saves —
     // always seeds basePath_+"import/" if the config is missing/empty).
     importPaths_ = loadImportPaths(basePath_);
+    autoCheckUsb_ = loadAutoCheckUsb(basePath_);
 
     // All games in menu order
     constexpr GameType allGames[] = {
@@ -587,7 +588,9 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
                 }
                 if (event.type == SDL_CONTROLLERBUTTONDOWN) {
                     markDirty();
-                    int rows = (int)importPaths_.size() + 1; // +1 = "Add path..."
+                    // Row 0 = autoCheckUsb_ toggle, rows 1..N = importPaths_
+                    // (path index = cursor-1), row N+1 = "Add path...".
+                    int rows = (int)importPaths_.size() + 2;
                     switch (event.cbutton.button) {
                         case SDL_CONTROLLER_BUTTON_DPAD_UP:
                             importSettingsCursor_ = (importSettingsCursor_ + rows - 1) % rows;
@@ -596,22 +599,27 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
                             importSettingsCursor_ = (importSettingsCursor_ + 1) % rows;
                             break;
                         case SDL_CONTROLLER_BUTTON_B: // Switch A = toggle / add
-                            if (importSettingsCursor_ == (int)importPaths_.size()) {
+                            if (importSettingsCursor_ == 0) {
+                                autoCheckUsb_ = !autoCheckUsb_;
+                                saveAutoCheckUsb(basePath_, autoCheckUsb_);
+                            } else if (importSettingsCursor_ == (int)importPaths_.size() + 1) {
                                 // "+ Add path..." — swkbd is a blocking call;
                                 // commitTextInput() appends+saves on success.
                                 beginTextInput(TextInputPurpose::ImportPathEntry);
-                            } else if (importSettingsCursor_ >= 0 && importSettingsCursor_ < (int)importPaths_.size()) {
-                                importPaths_[importSettingsCursor_].enabled = !importPaths_[importSettingsCursor_].enabled;
+                            } else {
+                                int pi = importSettingsCursor_ - 1;
+                                importPaths_[pi].enabled = !importPaths_[pi].enabled;
                                 saveImportPaths(basePath_, importPaths_);
                             }
                             break;
                         case SDL_CONTROLLER_BUTTON_Y: // Switch X = remove (the default import/ folder can't be removed)
-                            if (importSettingsCursor_ >= 0 && importSettingsCursor_ < (int)importPaths_.size()) {
+                            if (importSettingsCursor_ >= 1 && importSettingsCursor_ <= (int)importPaths_.size()) {
+                                int pi = importSettingsCursor_ - 1;
                                 const std::string defaultPath = basePath_ + "import/";
-                                if (importPaths_[importSettingsCursor_].path != defaultPath) {
-                                    importPaths_.erase(importPaths_.begin() + importSettingsCursor_);
+                                if (importPaths_[pi].path != defaultPath) {
+                                    importPaths_.erase(importPaths_.begin() + pi);
                                     saveImportPaths(basePath_, importPaths_);
-                                    if (importSettingsCursor_ > 0) importSettingsCursor_--;
+                                    if (importSettingsCursor_ > 1) importSettingsCursor_--;
                                 }
                             }
                             break;
@@ -632,7 +640,7 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
                 uint32_t now = SDL_GetTicks();
                 uint32_t delay = stickMoved_ ? STICK_REPEAT_DELAY : STICK_INITIAL_DELAY;
                 if (now - stickMoveTime_ >= delay) {
-                    int rows = (int)importPaths_.size() + 1;
+                    int rows = (int)importPaths_.size() + 2;
                     importSettingsCursor_ = (importSettingsCursor_ + (stickDirY_ > 0 ? 1 : rows - 1)) % rows;
                     stickMoveTime_ = now;
                     stickMoved_ = true;

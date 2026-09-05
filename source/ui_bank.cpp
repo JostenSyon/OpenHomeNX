@@ -788,7 +788,7 @@ void UI::commitTextInput(const std::string& text) {
             if (!exists) {
                 importPaths_.push_back({text, true});
                 saveImportPaths(basePath_, importPaths_);
-                importSettingsCursor_ = (int)importPaths_.size() - 1;
+                importSettingsCursor_ = (int)importPaths_.size(); // row 0 is the autocheck toggle
             }
         }
     }

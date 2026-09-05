@@ -222,7 +222,7 @@ void UI::selectProfile(int index) {
 // --- File import (GEN_PLAN Fase 2/5: emulator saves on SD/USB) ---
 
 void UI::appendImportedGames() {
-    importedGames_ = scanImportPaths(importPaths_);
+    importedGames_ = scanImportPaths(importPaths_, autoCheckUsb_);
     for (const auto& ig : importedGames_)
         availableGames_.push_back(ig.type);
 }
@@ -231,6 +231,13 @@ std::string UI::importedSavePath(GameType game) const {
     for (const auto& ig : importedGames_)
         if (ig.type == game)
             return ig.filePath;
+    return "";
+}
+
+std::string UI::importedSourceTag(GameType game) const {
+    for (const auto& ig : importedGames_)
+        if (ig.type == game)
+            return ig.sourceTag;
     return "";
 }
 
@@ -246,7 +253,7 @@ void UI::rescanImportedGames() {
         std::remove_if(availableGames_.begin(), availableGames_.end(), isImportedFile),
         availableGames_.end());
 
-    importedGames_ = scanImportPaths(importPaths_);
+    importedGames_ = scanImportPaths(importPaths_, autoCheckUsb_);
     for (const auto& ig : importedGames_)
         availableGames_.push_back(ig.type);
 
@@ -492,6 +499,25 @@ void UI::drawGameSelectorFrame() {
                     SDL_Rect dst = {iconX + (ICON_SIZE - dstW) / 2, iconY + (ICON_SIZE - dstH) / 2, dstW, dstH};
                     SDL_RenderCopy(renderer_, logoIt->second, nullptr, &dst);
                 }
+            }
+            // Small source-folder badge (bottom-left corner of the icon) —
+            // only useful when more than one plausible source could hold the
+            // same game (e.g. a "roms/saves" copy AND a "roms" companion
+            // file); harmless/redundant otherwise, so always shown rather
+            // than only-on-ambiguity, which would need an extra pass to
+            // detect and would still surprise the user the first time a
+            // second source shows up.
+            std::string tag = importedSourceTag(availableGames_[i]);
+            if (!tag.empty()) {
+                if (tag.length() > 10) tag = tag.substr(0, 9) + ".";
+                const auto& te = getTextEntry(tag, fontSmall_, T().text);
+                int badgeW = te.w + 8, badgeH = te.h + 4;
+                int badgeX = iconX + 2, badgeY = iconY + ICON_SIZE - badgeH - 2;
+                SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_BLEND);
+                SDL_SetRenderDrawColor(renderer_, 0, 0, 0, 160);
+                SDL_Rect badgeRect = {badgeX, badgeY, badgeW, badgeH};
+                SDL_RenderFillRect(renderer_, &badgeRect);
+                drawText(tag, badgeX + 4, badgeY + 2, T().text, fontSmall_);
             }
         } else {
             // Colored placeholder with game abbreviation

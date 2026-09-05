@@ -135,6 +135,7 @@
 	"import_settings_footer": "A: Toggle  X: Remove  B: Close",
 	"import_path_input_hdr": "Path: sdmc:/... or usb:/folder/ (any USB drive)",
 	"import_found_title": "New save(s) found on USB",
+	"import_autocheck_usb": "Autocheck save on USB (roms/saves, roms)",
 	"select_language": "Select Language",
 	"search_filter": "Search / Filter",
 	"filter_species": "Species:",

@@ -45,6 +45,16 @@ bool detectGen3Version(const std::string& filename, SaveFile& probe, GameType& o
     return true;
 }
 
+// Last path segment before the filename — e.g. "ums0:/roms/saves/x.sav" ->
+// "saves". Falls back to the whole dir if there's no '/' to split on.
+std::string lastPathSegment(const std::string& dir) {
+    std::string d = dir;
+    while (!d.empty() && d.back() == '/')
+        d.pop_back();
+    auto pos = d.find_last_of('/');
+    return pos == std::string::npos ? d : d.substr(pos + 1);
+}
+
 void scanDir(const std::string& dir, std::vector<ImportedGame>& out, std::vector<bool>& claimed) {
     DIR* d = opendir(dir.c_str());
     if (!d) {
@@ -85,7 +95,7 @@ void scanDir(const std::string& dir, std::vector<ImportedGame>& out, std::vector
             continue; // first match per GameType wins
         claimed[idx] = true;
         matched++;
-        out.push_back({type, full});
+        out.push_back({type, full, lastPathSegment(dir)});
         DebugLog::line("import scan: %s -> %s", full.c_str(), gameInfo(type).gameTag);
     }
     closedir(d);
@@ -95,11 +105,11 @@ void scanDir(const std::string& dir, std::vector<ImportedGame>& out, std::vector
 
 } // namespace
 
-std::vector<ImportedGame> scanImportPaths(const std::vector<ImportPathEntry>& paths) {
+std::vector<ImportedGame> scanImportPaths(const std::vector<ImportPathEntry>& paths, bool autoCheckUsb) {
     std::vector<ImportedGame> out;
     std::vector<bool> claimed(GAME_TYPE_COUNT, false);
 
-    DebugLog::line("import scan: %zu configured path(s)", paths.size());
+    DebugLog::line("import scan: %zu configured path(s), autoCheckUsb=%d", paths.size(), (int)autoCheckUsb);
     for (const auto& entry : paths) {
         if (!entry.enabled) {
             DebugLog::line("import scan: %s -> disabled, skipped", entry.path.c_str());
@@ -129,6 +139,30 @@ std::vector<ImportedGame> scanImportPaths(const std::vector<ImportPathEntry>& pa
         }
         scanDir(entry.path, out, claimed);
     }
+
+    if (autoCheckUsb) {
+#ifdef OH_USB_UPDATE
+        u32 n = usbHsFsGetMountedDeviceCount();
+        if (n == 0) {
+            DebugLog::line("import scan: autocheck USB -> no device mounted, skipped");
+        } else {
+            if (n > 8) n = 8;
+            std::vector<UsbHsFsDevice> devs(n);
+            u32 got = usbHsFsListMountedDevices(devs.data(), n);
+            for (u32 i = 0; i < got; i++) {
+                std::string dev = devs[i].name;
+                // "saves" first: if the same game sits in both, the more
+                // deliberate save-folder copy wins over the one that might
+                // just be an emulator's auto-generated companion file.
+                scanDir(dev + "/roms/saves", out, claimed);
+                scanDir(dev + "/roms", out, claimed);
+            }
+        }
+#else
+        DebugLog::line("import scan: autocheck USB enabled but built without OH_USB_UPDATE, skipped");
+#endif
+    }
+
     DebugLog::line("import scan: done, %zu game(s) found", out.size());
     return out;
 }
