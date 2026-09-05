@@ -75,14 +75,9 @@ int main(int argc, char* argv[]) {
     }
 
     // Show the splash as early as possible — right after ui.init() (window +
-    // fonts + icons, all fast). Network/USB/language/text-data setup below
-    // used to run BEFORE this, which meant a black screen (window shown,
-    // nothing drawn) for however long that took — with debug logging on,
-    // the USB boot diagnostic alone can add up to 9s of retry-waiting on a
-    // cold boot with nothing plugged in yet. Doesn't make that work any
-    // faster, but the user sees the logo immediately instead of a stretch of
-    // nothing (reported 2026-09-05 as "avvio lentissimo, schermata nera").
-    ui.showSplash();
+    // fonts + icons, all fast) — and keep it up (no fade) while the setup
+    // below runs, so there is never a black gap between logo and app.
+    ui.showSplash(2500, false);
 
     // Rete per l'updater remoto (Layer 1). Non su un boot-bounce di update, e
     // mai fatale: se fallisce, "Check for update" resta solo SD/USB.
@@ -182,6 +177,9 @@ int main(int argc, char* argv[]) {
         if (at != AppletType_Application && at != AppletType_SystemApplication)
             ui.setAppletMode(true);
     }
+
+    // Everything is ready: fade the splash out straight into the app.
+    ui.showSplash(0, true);
 
     // Run main loop — game selection, bank selection, and save loading all handled inside
     ui.run(basePath, savePath);

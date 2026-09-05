@@ -86,7 +86,10 @@ class UI {
 public:
     bool init();
     void shutdown();
-    void showSplash();
+    // holdMs: how long the logo stays up (pumps events meanwhile).
+    // fadeOut=false leaves the last logo frame on screen so init work below
+    // doesn't play over a black gap; call showSplash(0, true) when ready.
+    void showSplash(int holdMs = 2500, bool fadeOut = true);
     int  drawBodyText(const std::string& body, int startY, const std::string& footer);
     void showMessageAndWait(const std::string& title, const std::string& body);
     bool showConfirmDialog(const std::string& title, const std::string& body);
@@ -164,6 +167,12 @@ private:
     // Game-selector logos for imported (titleId-less) games — see init()'s
     // loadLogo(). Keyed by GameType since there are only a handful of these.
     std::unordered_map<GameType, SDL_Texture*> gameLogoCache_;
+    // HD box art for RSE tiles (romfs:/boxart/, from user-provided PNGs).
+    // Same lifetime policy as gameLogoCache_ (app lifetime, never freed).
+    std::unordered_map<GameType, SDL_Texture*> boxArtCache_;
+    // Per-game tile backgrounds (romfs:/backgrounds/). Drawn over the flat
+    // color rect (which stays as fallback), e.g. Emerald artwork.
+    std::unordered_map<GameType, SDL_Texture*> tileBgCache_;
 
     // Screen dimensions (Switch: 1280x720)
     static constexpr int SCREEN_W = 1280;
@@ -518,7 +527,10 @@ private:
     // caller already observed. false (menu-triggered "Check for update")
     // keeps the retry: the user could have opened the menu before the
     // hotplug poll even noticed the drive.
-    bool checkForUpdate();
+    // usbOnly=true: scope ristretto all'USB per l'auto-check su hotplug —
+    // se l'USB non ha niente di più recente torna silenzioso senza toccare
+    // SD/rete. Il menu manuale usa la catena completa (default).
+    bool checkForUpdate(bool usbOnly = false);
     // Consolidate a pending OpenHomeNX.nro.new from a self-update. Returns true
     // when it just wrote the new bytes onto the canonical .nro while running
     // from the throw-away .new — the caller should then bounce straight into

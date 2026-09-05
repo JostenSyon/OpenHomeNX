@@ -257,6 +257,21 @@ void UI::rescanImportedGames() {
     for (const auto& ig : importedGames_)
         availableGames_.push_back(ig.type);
 
+    // Clamp cursor/page: removals may have shrunk the list under them, and a
+    // stale cursor + A press would OOB-read availableGames_.
+    if (availableGames_.empty()) {
+        gameSelCursor_ = 0;
+        gameSelPage_ = 0;
+    } else {
+        if (gameSelCursor_ >= (int)availableGames_.size() || gameSelCursor_ < 0)
+            gameSelCursor_ = (int)availableGames_.size() - 1;
+        int totalPages = ((int)availableGames_.size() + 12 - 1) / 12;
+        if (gameSelPage_ >= totalPages)
+            gameSelPage_ = totalPages - 1;
+        if (gameSelCursor_ < gameSelPage_ * 12)
+            gameSelCursor_ = gameSelPage_ * 12;
+    }
+
     std::vector<GameType> newlyFound;
     for (const auto& ig : importedGames_)
         if (std::find(oldTypes.begin(), oldTypes.end(), ig.type) == oldTypes.end())
@@ -488,16 +503,72 @@ void UI::drawGameSelectorFrame() {
                 case GameType::EMERALD: default: bg = {0x50, 0xC8, 0x78, 255}; break;
             }
             drawRect(iconX, iconY, ICON_SIZE, ICON_SIZE, bg);
-            auto logoIt = gameLogoCache_.find(availableGames_[i]);
-            if (logoIt != gameLogoCache_.end() && logoIt->second) {
+            // Tile background image (e.g. Emerald artwork): center-cropped
+            // square stretched over the icon rect, on top of the flat color
+            // (which stays as fallback when the file is missing).
+            auto bgIt = tileBgCache_.find(availableGames_[i]);
+            if (bgIt != tileBgCache_.end() && bgIt->second) {
                 int texW = 0, texH = 0;
-                SDL_QueryTexture(logoIt->second, nullptr, nullptr, &texW, &texH);
+                SDL_QueryTexture(bgIt->second, nullptr, nullptr, &texW, &texH);
                 if (texW > 0 && texH > 0) {
-                    float scale = std::min((float)ICON_SIZE / texW, (float)ICON_SIZE / texH);
-                    int dstW = (int)(texW * scale);
-                    int dstH = (int)(texH * scale);
-                    SDL_Rect dst = {iconX + (ICON_SIZE - dstW) / 2, iconY + (ICON_SIZE - dstH) / 2, dstW, dstH};
-                    SDL_RenderCopy(renderer_, logoIt->second, nullptr, &dst);
+                    int side = std::min(texW, texH);
+                    SDL_Rect src = {(texW - side) / 2, (texH - side) / 2, side, side};
+                    SDL_Rect dst = {iconX, iconY, ICON_SIZE, ICON_SIZE};
+                    SDL_RenderCopy(renderer_, bgIt->second, &src, &dst);
+                }
+            }
+            if (availableGames_[i] == GameType::RUBY ||
+                availableGames_[i] == GameType::SAPPHIRE ||
+                availableGames_[i] == GameType::EMERALD) {
+                // RSE tile: box art grande quasi tutto il riquadro (box 120px
+                // dentro 128, non esce mai), logo sopra come titolo. Entrambi
+                // con sfondo trasparente verificato, quindi sovrapponibili.
+                auto artIt = boxArtCache_.find(availableGames_[i]);
+                if (artIt != boxArtCache_.end() && artIt->second) {
+                    int texW = 0, texH = 0;
+                    SDL_QueryTexture(artIt->second, nullptr, nullptr, &texW, &texH);
+                    if (texW > 0 && texH > 0) {
+                        // +15% di dimensione, spostato a destra del 15% e in
+                        // basso del 5% (percentuali su ICON_SIZE). L'eccesso
+                        // viene tagliato netto sul bordo riquadro via clip.
+                        constexpr int SPR = 117;
+                        constexpr int SHIFT_X = (128 * 15) / 100;
+                        constexpr int SHIFT_Y = (128 * 5) / 100;
+                        float scale = std::min((float)SPR / texW, (float)SPR / texH);
+                        int dstW = (int)(texW * scale);
+                        int dstH = (int)(texH * scale);
+                        SDL_Rect dst = {iconX + (ICON_SIZE - dstW) / 2 + SHIFT_X,
+                                        iconY + ICON_SIZE - dstH + SHIFT_Y, dstW, dstH};
+                        SDL_Rect clip = {iconX, iconY, ICON_SIZE, ICON_SIZE};
+                        SDL_RenderSetClipRect(renderer_, &clip);
+                        SDL_RenderCopy(renderer_, artIt->second, nullptr, &dst);
+                        SDL_RenderSetClipRect(renderer_, nullptr);
+                    }
+                }
+                auto logoIt = gameLogoCache_.find(availableGames_[i]);
+                if (logoIt != gameLogoCache_.end() && logoIt->second) {
+                    int texW = 0, texH = 0;
+                    SDL_QueryTexture(logoIt->second, nullptr, nullptr, &texW, &texH);
+                    if (texW > 0 && texH > 0) {
+                        constexpr int LOGO_H = 54;
+                        int dstW = (int)(texW * ((float)LOGO_H / texH));
+                        if (dstW > ICON_SIZE) dstW = ICON_SIZE;
+                        SDL_Rect dst = {iconX + (ICON_SIZE - dstW) / 2, iconY, dstW, LOGO_H};
+                        SDL_RenderCopy(renderer_, logoIt->second, nullptr, &dst);
+                    }
+                }
+            } else {
+                auto logoIt = gameLogoCache_.find(availableGames_[i]);
+                if (logoIt != gameLogoCache_.end() && logoIt->second) {
+                    int texW = 0, texH = 0;
+                    SDL_QueryTexture(logoIt->second, nullptr, nullptr, &texW, &texH);
+                    if (texW > 0 && texH > 0) {
+                        float scale = std::min((float)ICON_SIZE / texW, (float)ICON_SIZE / texH);
+                        int dstW = (int)(texW * scale);
+                        int dstH = (int)(texH * scale);
+                        SDL_Rect dst = {iconX + (ICON_SIZE - dstW) / 2, iconY + (ICON_SIZE - dstH) / 2, dstW, dstH};
+                        SDL_RenderCopy(renderer_, logoIt->second, nullptr, &dst);
+                    }
                 }
             }
             // Small source-folder badge (bottom-left corner of the icon) —
@@ -542,14 +613,17 @@ void UI::drawGameSelectorFrame() {
                              T().text, font_);
         }
 
-        // Game name below icon
-        std::string name = gameDisplayNameOf(availableGames_[i]);
-        // Strip "Pokemon " prefix for brevity
-        if (name.substr(0, 8) == "Pokemon ")
-            name = name.substr(8);
-        if (name.length() > 20) name = name.substr(0, 19) + ".";
-        drawTextCentered(name, cardX + CARD_W / 2, cardY + ICON_SIZE + 30,
-                         T().text, fontSmall_);
+        // Game name below icon (RSE show the logo on top too, but the
+        // text label below stays for readability at a glance).
+        {
+            std::string name = gameDisplayNameOf(availableGames_[i]);
+            // Strip "Pokemon " prefix for brevity
+            if (name.substr(0, 8) == "Pokemon ")
+                name = name.substr(8);
+            if (name.length() > 20) name = name.substr(0, 19) + ".";
+            drawTextCentered(name, cardX + CARD_W / 2, cardY + ICON_SIZE + 30,
+                             T().text, fontSmall_);
+        }
 
         // Bank count under game name
         auto bc = gameBankCounts_.find(availableGames_[i]);
@@ -608,9 +682,15 @@ void UI::drawGameSelectorFrame() {
                          canRight ? T().text : T().textDim, font_);
     }
 
+    // "X: Espelli USB" suffix only while a device is actually mounted.
+    std::string ejectHint;
+#ifdef OH_USB_UPDATE
+    if (usbHsFsGetMountedDeviceCount() > 0)
+        ejectHint = i18n::get(StrKey::StatusGameEject);
+#endif
     if (selectedProfile_ >= 0) {
-        drawStatusBar(totalPages > 1 ? i18n::get(StrKey::StatusGameBackPage)
-                                     : i18n::get(StrKey::StatusGameBack));
+        drawStatusBar((totalPages > 1 ? i18n::get(StrKey::StatusGameBackPage)
+                                      : i18n::get(StrKey::StatusGameBack)) + ejectHint);
         std::string profileLabel = account_.profiles()[selectedProfile_].nickname;
         profileLabel += " | ";
         profileLabel += useOpenHome() ? "OH" : "PK";
@@ -619,8 +699,8 @@ void UI::drawGameSelectorFrame() {
         const auto& e = getTextEntry(profileLabel, fontSmall_, T().goldLabel);
         if (e.tex) drawText(profileLabel, SCREEN_W - e.w - 15, SCREEN_H - 26, T().goldLabel, fontSmall_);
     } else {
-        drawStatusBar(totalPages > 1 ? i18n::get(StrKey::StatusGameQuitPage)
-                                     : i18n::get(StrKey::StatusGameQuit));
+        drawStatusBar((totalPages > 1 ? i18n::get(StrKey::StatusGameQuitPage)
+                                      : i18n::get(StrKey::StatusGameQuit)) + ejectHint);
         // Show core even without profile so feedback is always visible
         std::string coreLabel = useOpenHome() ? "OH" : "PK";
         if (DebugLog::enabled())
@@ -789,8 +869,11 @@ void UI::handleGameSelectorInput(bool& running) {
                                     showMessageAndWait(i18n::get(StrKey::SendLogTitle), i18n::get(StrKey::SendLogNetOff));
                                 } else {
                                     showWorking(i18n::fmt(StrKey::SendLogUploading, cfg.url));
-                                    if (updateNetUploadLog(cfg.url, cfg.token, basePath_, err))
-                                        showMessageAndWait(i18n::get(StrKey::SendLogTitle), i18n::get(StrKey::SendLogSent));
+                                    bool sentLib = false;
+                                    if (updateNetUploadLog(cfg.url, cfg.token, basePath_, err, &sentLib))
+                                        showMessageAndWait(i18n::get(StrKey::SendLogTitle),
+                                            sentLib ? i18n::get(StrKey::SendLogSentBoth)
+                                                    : i18n::get(StrKey::SendLogSent));
                                     else
                                         showMessageAndWait(i18n::get(StrKey::SendLogTitle), i18n::fmt(StrKey::SendLogFailed, err));
                                 }
@@ -889,6 +972,22 @@ void UI::handleGameSelectorInput(bool& running) {
                     showThemeSelector_ = true;
                     themeSelCursor_ = themeIndex_;
                     themeSelOriginal_ = themeIndex_;
+                    break;
+                case SDL_CONTROLLER_BUTTON_Y: // Switch X = eject USB (hint shown only when mounted)
+#ifdef OH_USB_UPDATE
+                {
+                    u32 n = usbHsFsGetMountedDeviceCount();
+                    if (n > 8) n = 8;
+                    std::vector<UsbHsFsDevice> devs(n > 0 ? n : 1);
+                    u32 got = n > 0 ? usbHsFsListMountedDevices(devs.data(), n) : 0;
+                    int ok = 0;
+                    for (u32 i = 0; i < got; i++)
+                        if (usbHsFsUnmountDevice(&devs[i], true)) ok++;
+                    DebugLog::line("usb eject: unmounted %d/%u device(s)", ok, got);
+                    rescanImportedGames();
+                    markDirty();
+                }
+#endif
                     break;
                 case SDL_CONTROLLER_BUTTON_LEFTSHOULDER: { // L = previous page
                     if (totalPages > 1 && gameSelPage_ > 0) {
@@ -1100,7 +1199,7 @@ static void removeStaleLocalUpdates(const std::string& basePath, const std::stri
     }
 }
 
-bool UI::checkForUpdate() {
+bool UI::checkForUpdate(bool usbOnly) {
     const std::string runningNro = basePath_ + "OpenHomeNX.nro";
     finalizePendingUpdate();
     const std::string curVer =
@@ -1144,11 +1243,14 @@ bool UI::checkForUpdate() {
         }
     }
 #endif
-    candidates.push_back(basePath_ + "update/OpenHomeNX.nro");
-    candidates.push_back("sdmc:/switch/OpenHomeNX/update/OpenHomeNX.nro");
-    // SD root (richiesta utente: butta direttamente in sdmc:/)
-    candidates.push_back("sdmc:/OpenHomeNX.nro");
-    candidates.push_back("sdmc:/OpenHomeNX/update.nro");
+    // Auto-check USB: solo candidati USB, niente SD e niente rete dopo.
+    if (!usbOnly) {
+        candidates.push_back(basePath_ + "update/OpenHomeNX.nro");
+        candidates.push_back("sdmc:/switch/OpenHomeNX/update/OpenHomeNX.nro");
+        // SD root (richiesta utente: butta direttamente in sdmc:/)
+        candidates.push_back("sdmc:/OpenHomeNX.nro");
+        candidates.push_back("sdmc:/OpenHomeNX/update.nro");
+    }
     // Dedup (basePath_ è spesso già sdmc:/switch/OpenHomeNX/) e mai il file in uso.
     {
         std::vector<std::string> uniq;
@@ -1177,11 +1279,19 @@ bool UI::checkForUpdate() {
                    foundPath.empty() ? "(none)" : foundPath.c_str(),
                    foundVer.c_str(), foundCmp);
 
+    if (usbOnly && foundCmp <= 0) {
+        // Auto-trigger su inserimento: parla solo se l'USB ha davvero un
+        // update (newer). Vuoto/older/same = silenzio totale, niente rete,
+        // niente dialoghi informativi.
+        DebugLog::line("update: USB auto-check, nothing newer -> silent");
+        return false;
+    }
+
     // Layer 1 — sorgente di rete. Solo se nessuna build LOCALE più recente è
     // già stata trovata (una .nro locale più nuova vince senza toccare la rete)
-    // e solo se update.cfg definisce un url.
+    // e solo se update.cfg definisce un url. Mai in modo usbOnly.
     bool fromNet = false;
-    if (foundCmp <= 0) {
+    if (!usbOnly && foundCmp <= 0) {
         UpdateCfg cfg;
         if (readUpdateCfg(basePath_, cfg)) {
             DebugLog::line("update: cfg url=%s token=%s", cfg.url.c_str(),

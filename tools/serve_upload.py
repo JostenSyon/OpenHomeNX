@@ -11,18 +11,23 @@ class Handler(SimpleHTTPRequestHandler):
     def __init__(self, *a, **kw):
         super().__init__(*a, directory=str(DIST), **kw)
     def do_POST(self):
-        if self.path.split("?")[0] not in ("/upload", "/upload.log"):
+        from urllib.parse import urlsplit, parse_qs
+        parts = urlsplit(self.path)
+        if parts.path not in ("/upload", "/upload.log"):
             self.send_error(404, "usa POST /upload")
             return
+        # ?f=nome -> distingue più file dello stesso invio (es. libusbhsfs)
+        tag = "".join(parse_qs(parts.query).get("f", ["debug"]))[:24] or "debug"
+        tag = "".join(c if (c.isalnum() or c in "-_") else "_" for c in tag)
         length = int(self.headers.get("Content-Length", 0) or 0)
         if length == 0 or length > 5*1024*1024:
             self.send_error(400, "body vuoto o >5MB")
             return
         data = self.rfile.read(length)
-        ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         # prova a prendere IP client per nome file
         client = self.client_address[0].replace(".", "_")
-        out = UPLOAD_DIR / f"debug_{ts}_{client}.log"
+        out = UPLOAD_DIR / f"{tag}_{ts}_{client}.log"
         out.write_bytes(data)
         print(f"[upload] {len(data)} byte -> {out}")
         self.send_response(200)

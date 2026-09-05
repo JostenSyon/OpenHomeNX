@@ -121,6 +121,7 @@ namespace StrKey {
     constexpr const char* StatusGameBack       = "status_game_back";
     constexpr const char* StatusGameQuitPage   = "status_game_quit_page";
     constexpr const char* StatusGameQuit       = "status_game_quit";
+    constexpr const char* StatusGameEject      = "status_game_eject";
     constexpr const char* DualBankMode         = "dual_bank_mode";
     constexpr const char* NoBanksTitle         = "no_banks_title";
     constexpr const char* NoBanksAnyGame       = "no_banks_any_game";
@@ -348,6 +349,7 @@ namespace StrKey {
     constexpr const char* SendLogNetOff        = "sendlog_net_off";
     constexpr const char* SendLogUploading     = "sendlog_uploading";
     constexpr const char* SendLogSent          = "sendlog_sent";
+    constexpr const char* SendLogSentBoth      = "sendlog_sent_both";
     constexpr const char* SendLogFailed        = "sendlog_failed";
 
     // Cross-gen transfer (ui_input.cpp prepareForPlacement + drop dialogs)
@@ -373,4 +375,5 @@ namespace StrKey {
     constexpr const char* AppletBody           = "applet_body";
     constexpr const char* XGenTitle            = "xgen_title";
     constexpr const char* XGenBody             = "xgen_body";
+
 }

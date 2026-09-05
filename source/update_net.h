@@ -34,4 +34,5 @@ bool updateNetDownload(const std::string& url, const std::string& token,
 
 // POST di `basePath/debug.log` a `baseUrl/upload` (o /upload.log). Richiede debug on.
 bool updateNetUploadLog(const std::string& baseUrl, const std::string& token,
-                        const std::string& basePath, std::string& err);
+                        const std::string& basePath, std::string& err,
+                        bool* outSentLibLog = nullptr);

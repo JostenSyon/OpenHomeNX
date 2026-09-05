@@ -115,6 +115,34 @@ bool UI::init() {
         gameLogoCache_[GameType::EMERALD]  = loadLogo("Emerald");
     }
 
+    // HD box art for the RSE tiles (user-provided PNGs, aspect-preserved).
+    {
+        auto loadArt = [&](const char* name) -> SDL_Texture* {
+            std::string path = std::string("romfs:/boxart/") + name + ".png";
+            SDL_Surface* s = IMG_Load(path.c_str());
+            if (!s) return nullptr;
+            SDL_Texture* t = SDL_CreateTextureFromSurface(renderer_, s);
+            SDL_FreeSurface(s);
+            return t;
+        };
+        boxArtCache_[GameType::RUBY]     = loadArt("ruby");
+        boxArtCache_[GameType::SAPPHIRE] = loadArt("sapphire");
+        boxArtCache_[GameType::EMERALD]  = loadArt("emerald");
+    }
+
+    // Tile backgrounds (user-provided). Missing file = flat color stays.
+    {
+        auto loadBg = [&](const char* name) -> SDL_Texture* {
+            std::string path = std::string("romfs:/backgrounds/") + name + ".png";
+            SDL_Surface* s = IMG_Load(path.c_str());
+            if (!s) return nullptr;
+            SDL_Texture* t = SDL_CreateTextureFromSurface(renderer_, s);
+            SDL_FreeSurface(s);
+            return t;
+        };
+        tileBgCache_[GameType::EMERALD]  = loadBg("emerald");
+    }
+
     // Open game controller
     for (int i = 0; i < SDL_NumJoysticks(); i++) {
         if (SDL_IsGameController(i)) {
@@ -146,7 +174,7 @@ void UI::shutdown() {
     plExit();
 }
 
-void UI::showSplash() {
+void UI::showSplash(int holdMs, bool fadeOut) {
     if (!renderer_) return;
 
     const char* splashPath = "romfs:/splash.png";
@@ -170,10 +198,10 @@ void UI::showSplash() {
     int dstH = static_cast<int>(texH * scale);
     SDL_Rect dst = {(SCREEN_W - dstW) / 2, (SCREEN_H - dstH) / 2, dstW, dstH};
 
-    // Hold splash for ~2.5 seconds
-    Uint32 holdMs = 2500;
+    // Hold splash (logo stays on screen; with fadeOut=false the last frame
+    // persists while the caller keeps initializing — no black gap).
     Uint32 start = SDL_GetTicks();
-    while (SDL_GetTicks() - start < holdMs) {
+    while ((int)(SDL_GetTicks() - start) < holdMs) {
         SDL_Event event;
         while (SDL_PollEvent(&event)) {
             if (event.type == SDL_QUIT) {
@@ -186,6 +214,10 @@ void UI::showSplash() {
         SDL_RenderCopy(renderer_, tex, nullptr, &dst);
         SDL_RenderPresent(renderer_);
         SDL_Delay(16);
+    }
+
+    if (!fadeOut) {
+        return; // texture cached, last logo frame stays up
     }
 
     // Fade out over ~0.5 seconds
@@ -826,6 +858,7 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
                                s_lastUsbPhys, usbPhys, s_lastUsbCount, usbCount);
             }
             bool rising = (usbCount > s_lastUsbCount);
+            bool falling = (usbCount < s_lastUsbCount);
             s_lastUsbCount = usbCount;
             s_lastUsbPhys  = usbPhys;
             // Only once per session: a drive being re-seated shouldn't keep
@@ -833,8 +866,8 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
             static bool s_didHotplugCheck = false;
             if (rising && !s_didHotplugCheck) {
                 s_didHotplugCheck = true;
-                DebugLog::line("usb hotplug: running update check");
-                if (checkForUpdate()) { running = false; break; }
+                DebugLog::line("usb hotplug: running update check (USB-only)");
+                if (checkForUpdate(true)) { running = false; break; }
                 markDirty();
             }
             // Import scan re-runs on every insertion (not once-per-session
@@ -846,6 +879,14 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
             // explicit rescan + popup on hotplug.
             if (rising)
                 rescanImportedGames();
+            // Falling edge (drive pulled or lost): USB games must leave the
+            // list or A-press would open stale entries. Silent by design —
+            // rescanImportedGames() popups only on newly found games.
+            if (falling) {
+                DebugLog::line("usb hotplug: drive removed, rescanning imports");
+                rescanImportedGames();
+                markDirty();
+            }
         }
 #endif
 

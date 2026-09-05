@@ -164,6 +164,9 @@ struct DlProgress {
 int xferInfo(void* p, curl_off_t dltotal, curl_off_t dlnow, curl_off_t, curl_off_t) {
     auto* dp = static_cast<DlProgress*>(p);
     if (!dp || !dp->cb) return 0;
+    // No all-zero frames: the "Downloading vX..." card stays up until the
+    // first bytes arrive (avoids the ugly 0% / 0.0 MB/s flash on connect).
+    if (dlnow <= 0 && dltotal <= 0) return 0;
     double now = wallSeconds();
     if (dp->lastEmit != 0.0 && now - dp->lastEmit < 0.25) return 0;
     double dt = now - dp->lastBytesTime;
@@ -171,13 +174,15 @@ int xferInfo(void* p, curl_off_t dltotal, curl_off_t dlnow, curl_off_t, curl_off
                   ? ((double)(dlnow - dp->lastBytes) / dt / (1024.0 * 1024.0)) : 0.0;
     dp->lastEmit = now; dp->lastBytes = dlnow; dp->lastBytesTime = now;
     char line[160];
+    // NOTE: ASCII '-' separator, not '·' (U+00B7): the Switch system font
+    // lacks it and renders tofu (box with X) instead.
     if (dltotal > 0) {
         int pct = (int)((dlnow * 100) / dltotal);
-        std::snprintf(line, sizeof(line), "%s\n  %d%%  (%.1f / %.1f MB)  ·  %.1f MB/s",
+        std::snprintf(line, sizeof(line), "%s\n  %d%%  (%.1f / %.1f MB)  -  %.1f MB/s",
                       dp->label.c_str(), pct,
                       dlnow / (1024.0 * 1024.0), dltotal / (1024.0 * 1024.0), mbps);
     } else {
-        std::snprintf(line, sizeof(line), "%s\n  %.1f MB  ·  %.1f MB/s",
+        std::snprintf(line, sizeof(line), "%s\n  %.1f MB  -  %.1f MB/s",
                       dp->label.c_str(), dlnow / (1024.0 * 1024.0), mbps);
     }
     dp->cb(line);
@@ -252,36 +257,23 @@ bool updateNetDownload(const std::string& url, const std::string& token,
     return true;
 }
 
-bool updateNetUploadLog(const std::string& baseUrl, const std::string& token,
-                        const std::string& basePath, std::string& err) {
-    if (!g_netReady) { err = "rete non inizializzata"; return false; }
-    std::string logPath;
-    if (!DebugLog::flushAndReopenForUpload(logPath)) {
-        // fallback: prova basePath diretto se flush fallisce (debug appena attivato senza file)
-        logPath = basePath + "debug.log";
-        DebugLog::line("upload: flush fallito, provo %s", logPath.c_str());
-        FILE* tf = std::fopen(logPath.c_str(), "rb");
-        if (!tf) {
-            std::string alt = "sdmc:/switch/OpenHomeNX/debug.log";
-            tf = std::fopen(alt.c_str(), "rb");
-            if (tf) { std::fclose(tf); logPath = alt; }
-            else { err = "debug.log non trovato in " + logPath + " (attiva Debug log dal menu +)"; return false; }
-        } else std::fclose(tf);
-        // riapri comunque il log per continuare
-        std::string dummy;
-        DebugLog::flushAndReopenForUpload(dummy);
-    }
-    FILE* f = std::fopen(logPath.c_str(), "rb");
-    if (!f) { err = "debug.log non trovato in " + logPath + " (errno " + std::strerror(errno) + ")"; return false; }
+// POST binario di un file su <baseUrl>/upload[?f=nome]. Ritorna false + err
+// su qualunque problema. Usato sia per debug.log che per libusbhsfs.log.
+static bool uploadOneFile(const std::string& baseUrl, const std::string& token,
+                          const std::string& path, const std::string& remoteName,
+                          std::string& err) {
+    FILE* f = std::fopen(path.c_str(), "rb");
+    if (!f) { err = path + " non trovato (errno " + std::strerror(errno) + ")"; return false; }
     std::fseek(f, 0, SEEK_END);
     long sz = std::ftell(f);
     std::fseek(f, 0, SEEK_SET);
-    if (sz <= 0) { std::fclose(f); err = "debug.log vuoto"; return false; }
-    if (sz > 4 * 1024 * 1024) { std::fclose(f); err = "debug.log troppo grande (>4MB)"; return false; }
+    if (sz <= 0) { std::fclose(f); err = path + " vuoto"; return false; }
+    if (sz > 4 * 1024 * 1024) { std::fclose(f); err = path + " troppo grande (>4MB)"; return false; }
 
     std::string url = baseUrl;
     while (!url.empty() && url.back() == '/') url.pop_back();
     url += "/upload";
+    if (!remoteName.empty()) url += "?f=" + remoteName;
 
     CURL* c = curl_easy_init();
     if (!c) { std::fclose(f); err = "curl_easy_init fallito"; return false; }
@@ -302,9 +294,54 @@ bool updateNetUploadLog(const std::string& baseUrl, const std::string& token,
     curl_slist_free_all(hdrs);
     curl_easy_cleanup(c);
     std::fclose(f);
-    DebugLog::reopenAfterUpload();
     if (rc != CURLE_OK) { err = std::string("upload: ") + curl_easy_strerror(rc); return false; }
     if (http < 200 || http >= 300) { err = "upload HTTP " + std::to_string(http); return false; }
-    DebugLog::line("update-net: log inviato -> %s (%ld byte)", url.c_str(), sz);
+    DebugLog::line("update-net: %s inviato -> %s (%ld byte)", path.c_str(), url.c_str(), sz);
+    return true;
+}
+
+bool updateNetUploadLog(const std::string& baseUrl, const std::string& token,
+                        const std::string& basePath, std::string& err,
+                        bool* outSentLibLog) {
+    if (outSentLibLog) *outSentLibLog = false;
+    if (!g_netReady) { err = "rete non inizializzata"; return false; }
+    std::string logPath;
+    if (!DebugLog::flushAndReopenForUpload(logPath)) {
+        // fallback: prova basePath diretto se flush fallisce (debug appena attivato senza file)
+        logPath = basePath + "debug.log";
+        DebugLog::line("upload: flush fallito, provo %s", logPath.c_str());
+        FILE* tf = std::fopen(logPath.c_str(), "rb");
+        if (!tf) {
+            std::string alt = "sdmc:/switch/OpenHomeNX/debug.log";
+            tf = std::fopen(alt.c_str(), "rb");
+            if (tf) { std::fclose(tf); logPath = alt; }
+            else { err = "debug.log non trovato in " + logPath + " (attiva Debug log dal menu +)"; return false; }
+        } else std::fclose(tf);
+        // riapri comunque il log per continuare
+        std::string dummy;
+        DebugLog::flushAndReopenForUpload(dummy);
+    }
+    if (!uploadOneFile(baseUrl, token, logPath, "", err)) {
+        DebugLog::reopenAfterUpload();
+        return false;
+    }
+    DebugLog::reopenAfterUpload();
+    // Best-effort: se esiste anche il log della libreria USB, invialo. Un suo
+    // fallimento non invalida l'upload principale (già riuscito).
+    {
+        const char* libLog = "sdmc:/libusbhsfs.log";
+        FILE* probe = std::fopen(libLog, "rb");
+        if (probe) {
+            std::fclose(probe);
+            std::string libErr;
+            if (uploadOneFile(baseUrl, token, libLog, "libusbhsfs", libErr)) {
+                if (outSentLibLog) *outSentLibLog = true;
+            } else {
+                DebugLog::line("upload: libusbhsfs.log saltato: %s", libErr.c_str());
+            }
+        } else {
+            DebugLog::line("upload: sdmc:/libusbhsfs.log assente, invio solo debug.log");
+        }
+    }
     return true;
 }
