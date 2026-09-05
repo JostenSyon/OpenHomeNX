@@ -192,7 +192,7 @@ impl Pk2 {
         buf[0x1e] = (self.trainer_gender << 7) | (self.met_location_index & 0x7f);
         buf[0x1f] = self.level;
 
-        buf
+        Box::new(buf)
     }
 
     pub fn to_bytes_full(&self) -> Box<[u8]> {

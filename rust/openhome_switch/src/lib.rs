@@ -285,6 +285,18 @@ pub extern "C" fn openhome_load_pkm_from_gen(
             },
             Err(_) => return core::ptr::null_mut(),
         },
+        // 2 = PK2 (Gen 2 G/S/C). 32-byte box record (73-byte party also
+        // parses, same 0xFF-header convention as PK1).
+        2 => match pkm_rs::gen2::Pk2::from_bytes(slice) {
+            Ok(pk) => match pkm_rs::ohpkm::OhpkmV2::convert_with_backup(
+                &pk,
+                &pkm_rs::traits::PkmBytes::to_party_bytes(&pk),
+            ) {
+                Ok(o) => o,
+                Err(_) => return core::ptr::null_mut(),
+            },
+            Err(_) => return core::ptr::null_mut(),
+        },
         3 => match pkm_rs::gen3::Pk3::from_bytes(slice) {
             Ok(pk) => match pkm_rs::ohpkm::OhpkmV2::convert_with_backup(
                 &pk,
@@ -557,8 +569,13 @@ pub extern "C" fn openhome_transfer_pkm(
             Ok(ohpkm) => ohpkm,
             Err(_) => return core::ptr::null_mut(),
         },
+        // 2 = PK2 (Gen 2 G/S/C): real downgrade conversion.
+        2 => match convert_to_pk2(&pkm.ohpkm) {
+            Ok(ohpkm) => ohpkm,
+            Err(_) => return core::ptr::null_mut(),
+        },
         // All other target generations are not yet implemented in the Switch
-        // build (Gen 2, 4, 5, 6). Explicitly fail instead of producing a fake cross-gen.
+        // build (Gen 4, 5, 6). Explicitly fail instead of producing a fake cross-gen.
         _ => return core::ptr::null_mut(),
     };
 
@@ -800,8 +817,62 @@ fn convert_to_pk1(
     Ok(new_ohpkm)
 }
 
+#[cfg(any(feature = "alloc", feature = "std"))]
+fn convert_to_pk2(
+    ohpkm: &pkm_rs::ohpkm::OhpkmV2,
+) -> core::result::Result<pkm_rs::ohpkm::OhpkmV2, pkm_rs::result::Error> {
+    use pkm_rs::gen2::Pk2;
+    use pkm_rs::ohpkm::OhpkmConvert;
+    use pkm_rs::ohpkm::OhpkmV2;
+
+    let existing_backup = ohpkm.original_data_bytes();
+    let strategy = pkm_rs::convert_strategy::ConvertStrategy::default();
+    let mut pk2 = Pk2::from_ohpkm(ohpkm, strategy)?;
+
+    // Our policy (NOT upstream): Gen 2 only has moves 1-251. Anything else
+    // must not silently wrap through the `as u8` cast in from_ohpkm: zero
+    // the dropped slots here (refill below if nothing survived). Mirrors
+    // convert_to_pk1.
+    let src_moves = ohpkm.moves().indices();
+    let mut had_move = false;
+    for (slot, dst) in pk2.moves.iter_mut().enumerate() {
+        let src = src_moves.get(slot).copied().unwrap_or(0);
+        if src != 0 {
+            had_move = true;
+        }
+        if !pkm_rs::gen2::move_legal_in_gen2(src) {
+            *dst = 0;
+            pk2.move_pp[slot] = 0;
+            pk2.move_pp_ups[slot] = 0;
+        }
+    }
+    if had_move && pk2.moves == [0, 0, 0, 0] {
+        let (base, base_pp) = pkm_rs::gen2::base_moves_for_species(
+            ohpkm.species_and_form().get_ndex() as u16,
+        );
+        pk2.moves = base;
+        pk2.move_pp = base_pp;
+    }
+
+    let mut new_ohpkm = OhpkmV2::convert_without_backup(&pk2);
+
+    // Propagate fields that Pk2 cannot represent, so they survive the
+    // downgrade and are available when the mon returns to a later gen
+    // (mirrors convert_to_pk1).
+    new_ohpkm.set_dynamax_level(ohpkm.dynamax_level());
+    new_ohpkm.set_can_gigantamax(ohpkm.can_gigantamax());
+    new_ohpkm.set_palma(ohpkm.palma());
+    new_ohpkm.set_tr_flags_swsh(ohpkm.tr_flags_swsh());
+    new_ohpkm.set_sv_data(ohpkm.sv_data());
+
+    if let Some(backup) = existing_backup {
+        new_ohpkm.set_original_data_bytes(backup);
+    }
+    Ok(new_ohpkm)
+}
+
 /// How many of this handle's current moves do not exist in generation `gen`
-/// (Gen 1 only for now): the slots a transfer there would drop and, when all
+/// (Gen 1-2 for now): the slots a transfer there would drop and, when all
 /// four drop, refill with base moves. The UI asks this BEFORE transferring so
 /// it can warn (never a silent change). Returns u32::MAX for a null handle
 /// or an unsupported gen — explicit "unknown", never a silent 0.
@@ -822,15 +893,17 @@ pub extern "C" fn openhome_count_moves_not_in_gen(
     if pkm_handle.is_null() {
         return u32::MAX;
     }
-    if gen != 1 {
-        return u32::MAX;
-    }
     let pkm = unsafe { &*pkm_handle };
+    let legal: fn(u16) -> bool = match gen {
+        1 => pkm_rs::gen1::move_legal_in_gen1,
+        2 => pkm_rs::gen2::move_legal_in_gen2,
+        _ => return u32::MAX,
+    };
     pkm.ohpkm
         .moves()
         .indices()
         .into_iter()
-        .filter(|&id| id != 0 && !pkm_rs::gen1::move_legal_in_gen1(id))
+        .filter(|&id| id != 0 && !legal(id))
         .count() as u32
 }
 
@@ -917,6 +990,13 @@ pub extern "C" fn openhome_get_pkm_box_bytes_for_gen(
             };
             pk.to_box_bytes().to_vec()
         }
+        2 => {
+            let pk = match pkm_rs::gen2::Pk2::from_ohpkm(&pkm.ohpkm, strategy) {
+                Ok(p) => p,
+                Err(_) => return 0,
+            };
+            pk.to_box_bytes().to_vec()
+        }
         3 => {
             let pk = match pkm_rs::gen3::Pk3::from_ohpkm(&pkm.ohpkm, strategy) {
                 Ok(p) => p,
@@ -998,7 +1078,7 @@ pub extern "C" fn openhome_get_pkm_box_bytes(
 
 /// Copy this OHPKM's `OriginalBackup` — the verbatim stored record of the
 /// format the mon was imported from — into `out_buf`. Layout: `[tag u16 LE,
-/// ..stored bytes]` (tag ids: Pk1=1, Pk3=3, Pk7=7, Pk8=9, Pk9=12; see
+/// ..stored bytes]` (tag ids: Pk1=1, Pk2=2, Pk3=3, Pk7=7, Pk8=9, Pk9=12; see
 /// `pkm_rs::ohpkm::v2_sections::pkm_bytes::Tag`). Returns the byte count, or 0
 /// if the handle carries no backup. Lets the caller keep the pre-conversion
 /// original alongside a cross-gen transfer so a return trip is lossless.
@@ -1329,6 +1409,7 @@ pub extern "C" fn openhome_get_supported_formats() -> *const FormatList {
 mod tests {
     use super::*;
     use pkm_rs::gen1::Pk1;
+    use pkm_rs::gen2::Pk2;
     use pkm_rs::gen7_alola::Pk7;
     use pkm_rs::gen8_swsh::Pk8;
     use pkm_rs::gen8_la::Pa8;
@@ -1487,10 +1568,10 @@ mod tests {
 
     // Anti-clone rule: unsupported target generations must fail explicitly
     // (NULL), never return a silently-cloned handle that fakes a conversion.
-    // (Gen 1 now supported, see gen1 tests below; Gen 2/4/5/6 still fail.)
+    // (Gen 1-2 now supported, see gen1/gen2 tests below; Gen 4/5/6 still fail.)
     #[test]
     fn transfer_unsupported_gen_fails_explicitly() {
-        for target in [4u32, 2u32] {
+        for target in [4u32] {
             let mut handle = PkmHandle {
                 ohpkm: make_test_ohpkm(OriginGame::Sword, test_moves()),
             };
@@ -1617,7 +1698,7 @@ mod tests {
         openhome_free_pkm(out);
     }
 
-    // Count query: 0 for clean movesets, MAX for null/unsupported (never 0).
+        // Count query: 0 for clean movesets, MAX for null/unsupported (never 0).
     #[test]
     fn count_moves_not_in_gen_edge_cases() {        let mut handle = PkmHandle {
             ohpkm: make_test_ohpkm(OriginGame::Sword, test_moves()),
@@ -1629,6 +1710,109 @@ mod tests {
             u32::MAX
         );
         assert_eq!(openhome_count_moves_not_in_gen(ptr, 9), u32::MAX);
+    }
+
+    // Gen2 (G/S/C) through the public FFI: Sword Pikachu with Gen1 moves
+    // (a subset of the Gen2 movepool) -> target_gen == 2 -> converted
+    // handle whose materialized Pk2 keeps species and all four moves.
+    #[test]
+    fn transfer_gen2_via_ffi_returns_converted_handle() {
+        let mut handle = PkmHandle {
+            ohpkm: make_test_ohpkm(OriginGame::Sword, test_moves()),
+        };
+        let ptr = &mut handle as *mut PkmHandle;
+        assert_eq!(
+            openhome_count_moves_not_in_gen(ptr, 2),
+            0,
+            "Gen1 moves all exist in Gen 2"
+        );
+        let out = openhome_transfer_pkm(ptr, 2);
+        assert!(!out.is_null(), "target_gen=2 must return a valid handle");
+        let converted = unsafe { &*out };
+        assert_eq!(
+            move_indices(&converted.ohpkm),
+            [85, 98, 86, 87],
+            "Gen2 downgrade must preserve the four moves"
+        );
+
+        let mut buf = [0u8; 64];
+        let n = openhome_get_pkm_box_bytes_for_gen(out, 2, buf.as_mut_ptr(), buf.len());
+        assert_eq!(n, 32, "Pk2 box record must be 32 bytes");
+        let pk2 = Pk2::from_bytes(&buf[..n as usize]).expect("Pk2 bytes must re-parse");
+        assert_eq!(pk2.national_dex, PIKACHU as u8, "species must survive");
+        assert_eq!(pk2.moves, [85, 98, 86, 87], "moves must survive");
+        openhome_free_pkm(out);
+    }
+
+    // Gen2 load path: Pk2 box bytes -> OHPKM with a Pk2-tagged OriginalBackup.
+    #[test]
+    fn load_pk2_from_gen_round_trip() {
+        let src_ohpkm = make_test_ohpkm(OriginGame::Sword, test_moves());
+        let pk2 = Pk2::from_ohpkm(&src_ohpkm, ConvertStrategy::default())
+            .expect("downgrade to Pk2 must succeed for Gen1-legal moves");
+        let bytes = pk2.to_box_bytes();
+        assert_eq!(bytes.len(), 32);
+        let handle = openhome_load_pkm_from_gen(bytes.as_ptr(), bytes.len(), 2);
+        assert!(!handle.is_null(), "gen=2 load must return a valid handle");
+        openhome_free_pkm(handle);
+    }
+
+    // All four moves dropped -> refill with the species' G/S base moves
+    // (Pikachu head: Thundershock, Growl, Tail Whip, Thunder Wave).
+    #[test]
+    fn transfer_gen2_drops_modern_moves_and_refills_base() {
+        let mut handle = PkmHandle {
+            ohpkm: make_test_ohpkm(OriginGame::Sword, modern_moves()),
+        };
+        let ptr = &mut handle as *mut PkmHandle;
+        assert_eq!(
+            openhome_count_moves_not_in_gen(ptr, 2),
+            4,
+            "all four modern moves must be reported as dropped"
+        );
+        let out = openhome_transfer_pkm(ptr, 2);
+        assert!(!out.is_null(), "transfer must still succeed with refilled moves");
+        let converted = unsafe { &*out };
+        assert_eq!(
+            move_indices(&converted.ohpkm),
+            [84, 45, 39, 86],
+            "emptied Gen2 record must carry Pikachu's base moves"
+        );
+        let mut buf = [0u8; 64];
+        let n = openhome_get_pkm_box_bytes_for_gen(out, 2, buf.as_mut_ptr(), buf.len());
+        assert_eq!(n, 32);
+        let pk2 = Pk2::from_bytes(&buf[..n as usize]).expect("Pk2 bytes must re-parse");
+        assert_eq!(pk2.moves, [84, 45, 39, 86]);
+        assert!(
+            pk2.move_pp.iter().all(|&pp| pp > 0),
+            "refilled moves must carry base PP"
+        );
+        openhome_free_pkm(out);
+    }
+
+    // Mixed moves: legal ones survive, others become empty slots, no refill.
+    #[test]
+    fn transfer_gen2_keeps_mixed_moves_without_refill() {
+        let mixed = MoveSlots::from_arrays(
+            [
+                MoveIndex::from_u16(85),
+                MoveIndex::from_u16(500),
+                MoveIndex::from_u16(98),
+                MoveIndex::from_u16(501),
+            ],
+            [15, 10, 30, 10],
+            [0, 0, 0, 0],
+        );
+        let mut handle = PkmHandle {
+            ohpkm: make_test_ohpkm(OriginGame::Sword, mixed),
+        };
+        let ptr = &mut handle as *mut PkmHandle;
+        assert_eq!(openhome_count_moves_not_in_gen(ptr, 2), 2);
+        let out = openhome_transfer_pkm(ptr, 2);
+        assert!(!out.is_null());
+        let converted = unsafe { &*out };
+        assert_eq!(move_indices(&converted.ohpkm), [85, 0, 98, 0]);
+        openhome_free_pkm(out);
     }
 
     // Real-cart regression (Yellow "Versione Gialla" starter Pikachu, party

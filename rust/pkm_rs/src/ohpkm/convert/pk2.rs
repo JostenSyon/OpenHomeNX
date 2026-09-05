@@ -32,7 +32,10 @@ impl OhpkmConvert for Pk2 {
             atk: self.evs_g12.atk as u8,
             def: self.evs_g12.def as u8,
             spe: self.evs_g12.spe as u8,
-            spc: self.evs_g12.spc as u8,
+            // Gen 2 keeps a single Special stat exp (like Gen 1): it feeds
+            // both spa and spd.
+            spa: self.evs_g12.spc as u8,
+            spd: self.evs_g12.spc as u8,
             ..Default::default()
         };
 

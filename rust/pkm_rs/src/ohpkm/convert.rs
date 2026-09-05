@@ -1,6 +1,6 @@
 #[cfg(any(feature = "wasm", feature = "alloc"))]
 mod pk1;
-#[cfg(all(feature = "newgen", any(feature = "wasm", feature = "alloc")))]
+#[cfg(any(feature = "wasm", feature = "alloc"))]
 mod pk2;
 #[cfg(any(feature = "wasm", feature = "alloc"))]
 mod pk3;

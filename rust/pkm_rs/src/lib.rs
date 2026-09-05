@@ -14,7 +14,7 @@ pub mod convert_strategy;
 pub mod format;
 #[cfg(any(feature = "wasm", feature = "alloc"))]
 pub mod gen1;
-#[cfg(all(feature = "newgen", any(feature = "wasm", feature = "alloc")))]
+#[cfg(any(feature = "wasm", feature = "alloc"))]
 pub mod gen2;
 #[cfg(any(feature = "wasm", feature = "alloc"))]
 pub mod gen3;
