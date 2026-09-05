@@ -224,7 +224,7 @@ private:
     // selectGame() to bypass AccountManager::mountSave() for these GameTypes.
     std::vector<ImportedGame> importedGames_;
     void appendImportedGames();               // scans importPaths_, extends availableGames_
-    void rescanImportedGamesOnHotplug();      // re-scan in place + popup on newly found games
+    void rescanImportedGames();      // re-scan in place + popup on newly found games
     std::string importedSavePath(GameType game) const;
 
     // Cross-gen transfer selector state (M6a)

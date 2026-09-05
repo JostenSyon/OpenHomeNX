@@ -600,6 +600,11 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
                         case SDL_CONTROLLER_BUTTON_X:
                         case SDL_CONTROLLER_BUTTON_BACK:
                             showImportSettings_ = false;
+                            // Rescan right away — otherwise a path/toggle just
+                            // changed here wouldn't show up until the next
+                            // profile reselect or USB hotplug, which isn't
+                            // discoverable from this screen.
+                            rescanImportedGames();
                             break;
                     }
                 }
@@ -813,7 +818,7 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
             // drive is actually mounted, so this is the one that needs an
             // explicit rescan + popup on hotplug.
             if (rising)
-                rescanImportedGamesOnHotplug();
+                rescanImportedGames();
         }
 #endif
 

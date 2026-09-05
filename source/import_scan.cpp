@@ -8,6 +8,7 @@
 #include <sys/stat.h>
 #include <algorithm>
 #include <cctype>
+#include <cerrno>
 
 namespace {
 
@@ -46,12 +47,16 @@ bool detectGen3Version(const std::string& filename, SaveFile& probe, GameType& o
 
 void scanDir(const std::string& dir, std::vector<ImportedGame>& out, std::vector<bool>& claimed) {
     DIR* d = opendir(dir.c_str());
-    if (!d)
+    if (!d) {
+        DebugLog::line("import scan: %s -> opendir failed (errno=%d)", dir.c_str(), errno);
         return;
+    }
+    int filesSeen = 0, regularFiles = 0, gbaSized = 0, matched = 0;
     struct dirent* entry;
     while ((entry = readdir(d)) != nullptr) {
         if (entry->d_name[0] == '.')
             continue;
+        filesSeen++;
         std::string full = dir;
         if (!full.empty() && full.back() != '/')
             full += '/';
@@ -60,6 +65,7 @@ void scanDir(const std::string& dir, std::vector<ImportedGame>& out, std::vector
         struct stat st;
         if (stat(full.c_str(), &st) != 0 || !S_ISREG(st.st_mode))
             continue;
+        regularFiles++;
 
         // Any isImportedFile() GameType routes SaveFile::load() through the
         // same loadGBA() — which one doesn't matter yet, detectGen3Version()
@@ -68,6 +74,7 @@ void scanDir(const std::string& dir, std::vector<ImportedGame>& out, std::vector
         probe.setGameType(GameType::EMERALD);
         if (!probe.load(full))
             continue; // wrong size or bad sector layout — not a Gen3 GBA save
+        gbaSized++;
 
         GameType type;
         if (!detectGen3Version(entry->d_name, probe, type))
@@ -77,10 +84,13 @@ void scanDir(const std::string& dir, std::vector<ImportedGame>& out, std::vector
         if (claimed[idx])
             continue; // first match per GameType wins
         claimed[idx] = true;
+        matched++;
         out.push_back({type, full});
         DebugLog::line("import scan: %s -> %s", full.c_str(), gameInfo(type).gameTag);
     }
     closedir(d);
+    DebugLog::line("import scan: %s -> %d entr(y/ies), %d file(s), %d GBA-sized, %d matched",
+                    dir.c_str(), filesSeen, regularFiles, gbaSized, matched);
 }
 
 } // namespace
@@ -89,9 +99,12 @@ std::vector<ImportedGame> scanImportPaths(const std::vector<ImportPathEntry>& pa
     std::vector<ImportedGame> out;
     std::vector<bool> claimed(GAME_TYPE_COUNT, false);
 
+    DebugLog::line("import scan: %zu configured path(s)", paths.size());
     for (const auto& entry : paths) {
-        if (!entry.enabled)
+        if (!entry.enabled) {
+            DebugLog::line("import scan: %s -> disabled, skipped", entry.path.c_str());
             continue;
+        }
 
         if (entry.path.rfind("usb:", 0) == 0) {
 #ifdef OH_USB_UPDATE
@@ -100,17 +113,22 @@ std::vector<ImportedGame> scanImportPaths(const std::vector<ImportPathEntry>& pa
             // every currently mounted UMS device instead of a fixed path.
             std::string suffix = entry.path.substr(4); // keep leading '/'
             u32 n = usbHsFsGetMountedDeviceCount();
-            if (n == 0)
+            if (n == 0) {
+                DebugLog::line("import scan: %s -> no USB device mounted, skipped", entry.path.c_str());
                 continue;
+            }
             if (n > 8) n = 8;
             std::vector<UsbHsFsDevice> devs(n);
             u32 got = usbHsFsListMountedDevices(devs.data(), n);
             for (u32 i = 0; i < got; i++)
                 scanDir(std::string(devs[i].name) + suffix, out, claimed);
+#else
+            DebugLog::line("import scan: %s -> built without OH_USB_UPDATE, skipped", entry.path.c_str());
 #endif
             continue;
         }
         scanDir(entry.path, out, claimed);
     }
+    DebugLog::line("import scan: done, %zu game(s) found", out.size());
     return out;
 }

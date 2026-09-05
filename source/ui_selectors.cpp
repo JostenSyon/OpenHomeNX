@@ -234,7 +234,7 @@ std::string UI::importedSavePath(GameType game) const {
     return "";
 }
 
-void UI::rescanImportedGamesOnHotplug() {
+void UI::rescanImportedGames() {
     std::vector<GameType> oldTypes;
     for (const auto& ig : importedGames_)
         oldTypes.push_back(ig.type);
