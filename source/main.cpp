@@ -74,6 +74,16 @@ int main(int argc, char* argv[]) {
         return 0;   // libnx exit -> loader chainloads the fresh OpenHomeNX.nro
     }
 
+    // Show the splash as early as possible — right after ui.init() (window +
+    // fonts + icons, all fast). Network/USB/language/text-data setup below
+    // used to run BEFORE this, which meant a black screen (window shown,
+    // nothing drawn) for however long that took — with debug logging on,
+    // the USB boot diagnostic alone can add up to 9s of retry-waiting on a
+    // cold boot with nothing plugged in yet. Doesn't make that work any
+    // faster, but the user sees the logo immediately instead of a stretch of
+    // nothing (reported 2026-09-05 as "avvio lentissimo, schermata nera").
+    ui.showSplash();
+
     // Rete per l'updater remoto (Layer 1). Non su un boot-bounce di update, e
     // mai fatale: se fallisce, "Check for update" resta solo SD/USB.
     bool netReady = false;
@@ -165,10 +175,6 @@ int main(int argc, char* argv[]) {
     NatureName::load("romfs:/data/natures_en.txt");
     AbilityName::load("romfs:/data/abilities_en.txt");
     ItemName::load("romfs:/data/items_en.txt");
-
-    // Show splash screen while loading. (The renderer is already up — ui.init()
-    // ran near the top so the pending-update fast path could use it.)
-    ui.showSplash();
 
     // Detect applet mode on Switch — bank-only access without save data
     {
