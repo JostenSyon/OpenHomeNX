@@ -73,7 +73,7 @@ void BankManager::refreshAll() {
         if (g == GameType::LA) return 3;
         if (isSV(g))   return 4;
         if (g == GameType::ZA) return 5;
-        if (isFRLG(g) || isImportedFile(g) || isGen1File(g)) return 6;
+        if (isFRLG(g) || isImportedFile(g) || isGen1File(g) || isGen2File(g)) return 6;
         return 7;
     };
     std::sort(bankList_.begin(), bankList_.end(), [&](const BankInfo& a, const BankInfo& b) {

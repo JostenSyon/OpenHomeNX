@@ -17,6 +17,11 @@ MAX_SAVE = 128 * 1024 * 1024
 class Handler(SimpleHTTPRequestHandler):
     def __init__(self, *a, **kw):
         super().__init__(*a, directory=str(DIST), **kw)
+    def copyfile(self, source, outputfile):
+        # Chunk da 1MB invece dei 64KB di default: meno syscall/segmenti
+        # TCP, meglio su WiFi verso Switch.
+        import shutil
+        shutil.copyfileobj(source, outputfile, length=1024 * 1024)
     def do_POST(self):
         from urllib.parse import urlsplit, parse_qs
         parts = urlsplit(self.path)

@@ -8,6 +8,7 @@
 #include <sys/stat.h>
 #include <algorithm>
 #include <cctype>
+#include <cstring>
 #include <cerrno>
 #include <cstdint>
 #include <fstream>
@@ -41,10 +42,24 @@ bool detectGen3Version(const std::string& filename, SaveFile& probe, GameType& o
     if (gameCode == 1)
         return false;
 
+    // Filename keywords in all common languages (EN/IT/DE/FR/ES): the GBA
+    // save itself carries no game code (bytes at 0xAC are 0 on real saves),
+    // so the name is the primary signal — same as PKHeX, which asks the user
+    // which game a file is when the bytes cannot decide.
     std::string low = toLower(filename);
-    if (low.find("sapphire") != std::string::npos) { outType = GameType::SAPPHIRE; return true; }
-    if (low.find("ruby")     != std::string::npos) { outType = GameType::RUBY;     return true; }
-    if (low.find("emerald")  != std::string::npos) { outType = GameType::EMERALD;  return true; }
+    auto has = [&](const char* k) { return low.find(k) != std::string::npos; };
+    if (has("sapphire") || has("zaffiro") || has("saphir") || has("zafiro")) { outType = GameType::SAPPHIRE; return true; }
+    if (has("ruby") || has("rubino") || has("rubin") || has("rubis") || has("rub")) { outType = GameType::RUBY; return true; }
+    if (has("emerald") || has("smeraldo") || has("smaragd") || has("meraude") || has("esmeralda")) { outType = GameType::EMERALD; return true; }
+    // No keyword: the save's own game code (ASCII at sector0+0xAC).
+    char code[5] = {0};
+    code[0] = static_cast<char>(sector0[0xac]);
+    code[1] = static_cast<char>(sector0[0xad]);
+    code[2] = static_cast<char>(sector0[0xae]);
+    code[3] = static_cast<char>(sector0[0xaf]);
+    if (std::strcmp(code, "AXPE") == 0) { outType = GameType::SAPPHIRE; return true; }
+    if (std::strcmp(code, "AXVE") == 0) { outType = GameType::RUBY;     return true; }
+    if (std::strcmp(code, "BPEE") == 0) { outType = GameType::EMERALD;  return true; }
     outType = (gameCode == 0) ? GameType::RUBY : GameType::EMERALD;
     return true;
 }
@@ -82,6 +97,55 @@ bool detectGen1Version(const std::string& filename, const std::string& full, Gam
     // "red"/"rosso"/"yellow"/"giallo" or anything else: Yellow was already
     // excluded by the bytes above, so this is Red (default, documented).
     outType = GameType::RED;
+    return true;
+}
+
+// Gen 2 (G/S/C SRAM dump, PKHeX SAV2 INT offsets): 32KB + one of the two
+// checksum pairs valid (Crystal: sum 0x2009..0x2B82 at 0x2D0D+0x1F0D LE;
+// GS: sum 0x2009..0x2D68 at 0x2D69+0x7E6D LE). Checksum-first detection:
+// bytes decide between Crystal and GS/Gold/Silver; inside GS the filename
+// decides Gold vs Silver (byte-identical), GOLD default.
+bool detectGen2Version(const std::string& filename, const std::string& full, GameType& outType) {
+    std::ifstream file(full, std::ios::binary | std::ios::ate);
+    if (!file.is_open())
+        return false;
+    if (static_cast<size_t>(file.tellg()) != 0x8000)
+        return false;
+    file.seekg(0);
+    std::vector<uint8_t> d(0x8000);
+    file.read(reinterpret_cast<char*>(d.data()), d.size());
+    if (!file)
+        return false;
+
+    auto u16le = [&](int o) -> uint16_t {
+        return static_cast<uint16_t>(d[o] | (d[o + 1] << 8));
+    };
+    uint16_t sc = 0;
+    for (int i = 0x2009; i <= 0x2B82; i++) sc += d[i];
+    bool crystal = (u16le(0x2D0D) == sc && u16le(0x1F0D) == sc);
+    uint16_t sg = 0;
+    for (int i = 0x2009; i <= 0x2D68; i++) sg += d[i];
+    bool gs = (u16le(0x2D69) == sg && u16le(0x7E6D) == sg);
+    if (!crystal && !gs)
+        return false; // neither valid (JP/KR saves land here too)
+
+    if (crystal && !gs) {
+        outType = GameType::CRYSTAL;
+        return true;
+    }
+    // GS (or ambiguous tie): filename decides Gold vs Silver.
+    std::string low = toLower(filename);
+    if (low.find("silver") != std::string::npos || low.find("argento") != std::string::npos ||
+        low.find("silber") != std::string::npos || low.find("argent") != std::string::npos) {
+        outType = GameType::SILVER;
+        return true;
+    }
+    outType = GameType::GOLD; // default (also on crystal+gs tie without silver hint)
+    if (crystal) {
+        if (low.find("crystal") != std::string::npos || low.find("cristal") != std::string::npos ||
+            low.find("cristallo") != std::string::npos || low.find("kristall") != std::string::npos)
+            outType = GameType::CRYSTAL;
+    }
     return true;
 }
 
@@ -126,12 +190,18 @@ void scanDir(const std::string& dir, std::vector<ImportedGame>& out, std::vector
             gbaSized++;
 
             GameType type;
-            if (!detectGen3Version(entry->d_name, probe, type))
+            if (!detectGen3Version(entry->d_name, probe, type)) {
+                DebugLog::line("import scan: skip %s (%lld byte, GBA ma versione ignota)",
+                               entry->d_name, (long long)st.st_size);
                 continue;
+            }
 
             int idx = static_cast<int>(type);
-            if (claimed[idx])
+            if (claimed[idx]) {
+                DebugLog::line("import scan: skip %s (doppione %s, vince il primo)",
+                               entry->d_name, gameInfo(type).gameTag);
                 continue; // first match per GameType wins
+            }
             claimed[idx] = true;
             matched++;
             out.push_back({type, full, lastPathSegment(dir)});
@@ -146,13 +216,37 @@ void scanDir(const std::string& dir, std::vector<ImportedGame>& out, std::vector
         GameType gbType = GameType::RED;
         if (detectGen1Version(entry->d_name, full, gbType)) {
             int idx = static_cast<int>(gbType);
-            if (claimed[idx])
+            if (claimed[idx]) {
+                DebugLog::line("import scan: skip %s (doppione %s, vince il primo)",
+                               entry->d_name, gameInfo(gbType).gameTag);
                 continue;
+            }
             claimed[idx] = true;
             matched++;
             out.push_back({gbType, full, lastPathSegment(dir)});
             DebugLog::line("import scan: %s -> %s", full.c_str(), gameInfo(gbType).gameTag);
+            continue;
         }
+
+        // Gen 2 (G/S/C SRAM): checksum-driven version detection.
+        GameType gbcType = GameType::GOLD;
+        if (detectGen2Version(entry->d_name, full, gbcType)) {
+            int idx = static_cast<int>(gbcType);
+            if (claimed[idx]) {
+                DebugLog::line("import scan: skip %s (doppione %s, vince il primo)",
+                               entry->d_name, gameInfo(gbcType).gameTag);
+                continue;
+            }
+            claimed[idx] = true;
+            matched++;
+            out.push_back({gbcType, full, lastPathSegment(dir)});
+            DebugLog::line("import scan: %s -> %s", full.c_str(), gameInfo(gbcType).gameTag);
+            continue;
+        }
+        // Niente ha matchato: stampa nome + dimensione così si vede
+        // letteralmente cosa c'è nel disco (es. .sav con size errata).
+        DebugLog::line("import scan: skip %s (%lld byte, save non riconosciuto)",
+                       entry->d_name, (long long)st.st_size);
     }
     closedir(d);
     DebugLog::line("import scan: %s -> %d entr(y/ies), %d file(s), %d GBA-sized, %d matched",

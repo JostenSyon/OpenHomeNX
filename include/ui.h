@@ -262,6 +262,29 @@ private:
     int  wcListScroll_  = 0;
     std::vector<WCInfo> wcList_;
 
+    // PK file import list state (.pk1/.pk2 picker, mirrors wondercards)
+    struct PkFileInfo {
+        std::string filename;  // bare name for display
+        std::string path;      // full path
+        int gen = 0;           // 1 = .pk1, 2 = .pk2
+        uint16_t species = 0;  // 0 = unreadable (listed as invalid)
+        bool valid = false;
+    };
+    bool showPkImportList_ = false;
+    int  pkImportCursor_  = 0;
+    int  pkImportScroll_  = 0;
+    std::vector<PkFileInfo> pkImportList_;
+
+    // Learnset viewer state (X in the detail view)
+    bool showLearnset_ = false;
+    int  learnsetCursor_  = 0;
+    int  learnsetScroll_  = 0;
+    // (move id, level); level 0 = evolution move.
+    std::vector<std::pair<uint16_t, uint8_t>> learnset_;
+    uint16_t learnsetSpecies_ = 0;
+    // Currently equipped moves (marked with * in the list).
+    uint16_t learnsetEquipped_[4] = {0, 0, 0, 0};
+
     // Search/Filter state
     bool showSearchFilter_  = false;
     bool showSearchResults_ = false;
@@ -489,6 +512,8 @@ private:
     void drawSpeciesLetterPicker();
     void drawSpeciesListPicker();
     void drawWondercardListPopup();
+    void drawPkImportListPopup();
+    void drawLearnsetPopup();
     void drawHeldOverlay();
     void drawBoxViewOverlay();
     void drawBoxPreview(int boxIdx, int anchorX, int anchorY);
@@ -551,7 +576,16 @@ private:
     bool letterHasSpecies(int letterIndex) const;
     void handleWondercardListInput(const SDL_Event& event);
     void injectWondercard(const WCInfo& info);
+    void handlePkImportListInput(const SDL_Event& event);
+    void importPkFile(const PkFileInfo& info);
+    void openLearnset(const Pokemon& pkm);
+    void handleLearnsetInput(const SDL_Event& event);
     std::string exportPokemon(const Pokemon& pkm);
+    // Cross-gen bank blob -> .pk1/.pk2 file (format chosen via dialog).
+    // Returns the filename, or "" on cancel/failure (nothing written).
+    std::string exportCrossGenBlob(const Pokemon& pkm);
+    // PK import picker (.pk1/.pk2, mirrors the wondercard list).
+    std::vector<PkFileInfo> scanPkImportFiles();
     void executeSearch();
     bool matchesSearchFilter(const Pokemon& pkm, const std::string& filterSpecies,
                              const std::string& filterOT) const;

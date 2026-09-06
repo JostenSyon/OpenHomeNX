@@ -191,6 +191,7 @@ namespace StrKey {
     constexpr const char* MenuSearch           = "menu_search";
     constexpr const char* MenuWondercard       = "menu_wondercard";
     constexpr const char* MenuExportSelected   = "menu_export_selected";
+    constexpr const char* MenuImportPk         = "menu_import_pk";
     constexpr const char* MenuSwitchBank       = "menu_switch_bank";
     constexpr const char* MenuChangeGame       = "menu_change_game";
     constexpr const char* MenuSaveQuit         = "menu_save_quit";
@@ -375,6 +376,14 @@ namespace StrKey {
     constexpr const char* TransferNoBytes      = "transfer_no_bytes";
     constexpr const char* Gen1DropsTitle       = "gen1_drops_title";
     constexpr const char* Gen1DropsBody        = "gen1_drops_body";
+    constexpr const char* ExportGenTitle       = "export_gen_title";
+    constexpr const char* ExportGenBody        = "export_gen_body";
+    constexpr const char* ImportPkTitle        = "import_pk_title";
+    constexpr const char* ImportPkNeedBank     = "import_pk_need_bank";
+    constexpr const char* PkImportTitle        = "pkimport_title";
+    constexpr const char* PkImportNone         = "pkimport_none";
+    constexpr const char* LearnsetTitle        = "learnset_title";
+    constexpr const char* LearnsetNone         = "learnset_none";
 
     // Bank creation (ui_bank.cpp)
     constexpr const char* CreateBankTitle      = "create_bank_title";

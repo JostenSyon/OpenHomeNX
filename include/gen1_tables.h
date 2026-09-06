@@ -234,3 +234,46 @@ static_assert(kNdexToInternal[151] == 21);
 static_assert(kNdexToInternal[25] == 84);
 
 } // namespace Gen1
+
+// Gen 2 (Oro/Argento/Cristallo) record helpers. The GB text codec above is
+// shared (same charset). Species needs NO index table: Pk2 stores the
+// national dex directly (unlike Gen 1 internal indices).
+// Box record layout (32B, all BE, from rust/pkm_rs/src/gen2/pk2.rs):
+// [0]=species (ndex), [1]=held item, [2-5]=moves, [6-7]=TID,
+// [8-10]=EXP, [11-20]=stat exp, [21-22]=DVs, [23-26]=PP+PPUp,
+// [27]=friendship, [28]=pokerus, [29]=met time/level, [30]=OT gender/met
+// location, [31]=level. Party record 73B.
+namespace Gen2 {
+
+inline uint8_t recSpecies(const uint8_t* rec) { return rec[0]; }
+inline uint8_t recLevel(const uint8_t* rec) { return rec[31]; }
+inline uint8_t recMove(const uint8_t* rec, int slot) { return rec[2 + slot]; }
+inline uint8_t recHeldItem(const uint8_t* rec) { return rec[1]; }
+inline uint16_t recTid(const uint8_t* rec) {
+    return static_cast<uint16_t>((rec[6] << 8) | rec[7]);
+}
+inline uint32_t recExp(const uint8_t* rec) {
+    return (static_cast<uint32_t>(rec[8]) << 16) | (static_cast<uint32_t>(rec[9]) << 8) | rec[10];
+}
+// DVs at [21-22] BE, same split as Gen 1 (Gen 2 still has 4 DVs + derived HP).
+inline uint16_t recDvsRaw(const uint8_t* rec) {
+    return static_cast<uint16_t>((rec[21] << 8) | rec[22]);
+}
+inline int recDvAtk(const uint8_t* rec) { return (recDvsRaw(rec) >> 12) & 0xF; }
+inline int recDvDef(const uint8_t* rec) { return (recDvsRaw(rec) >> 8) & 0xF; }
+inline int recDvSpe(const uint8_t* rec) { return (recDvsRaw(rec) >> 4) & 0xF; }
+inline int recDvSpc(const uint8_t* rec) { return recDvsRaw(rec) & 0xF; }
+inline int recDvHp(const uint8_t* rec) {
+    return ((recDvAtk(rec) & 1) << 3) | ((recDvDef(rec) & 1) << 2) |
+           ((recDvSpe(rec) & 1) << 1) | (recDvSpc(rec) & 1);
+}
+// Shiny: same Bank/VC DV rule as Gen 1.
+inline bool recIsShiny(const uint8_t* rec) {
+    if (recDvDef(rec) != 10 || recDvSpe(rec) != 10 || recDvSpc(rec) != 10)
+        return false;
+    int a = recDvAtk(rec);
+    return a == 2 || a == 3 || a == 6 || a == 7 ||
+           a == 10 || a == 11 || a == 14 || a == 15;
+}
+
+} // namespace Gen2

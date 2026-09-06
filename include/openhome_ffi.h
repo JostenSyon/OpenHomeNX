@@ -35,6 +35,11 @@ PkmHandle *openhome_transfer_pkm(PkmHandle *pkm_handle, uint32_t target_gen);
 // La UI lo chiede PRIMA per avvisare. u32::MAX se handle nullo o gen non
 // supportata ("sconosciuto" esplicito, mai uno 0 silenzioso).
 uint32_t openhome_count_moves_not_in_gen(const PkmHandle *pkm_handle, uint32_t gen);
+// Level-up learnset (table ids mirror learnsetTableFor() in game_type.h):
+// writes [id_lo, id_hi, level] triples (level 0 = evolution move). Two-phase:
+// null buffer returns the move count for sizing; with a buffer writes all or
+// nothing (0 on undersize/unknown). Never truncates silently.
+uint32_t openhome_get_learnset(uint32_t table, uint32_t species, uint8_t *out_buf, size_t out_len);
 bool openhome_save_pkm_to_file(PkmHandle *pkm_handle, uint32_t slot);
 uint32_t openhome_get_pkm_box_bytes(PkmHandle *pkm_handle, uint8_t *out_buf, size_t out_len);
 uint32_t openhome_get_pkm_box_bytes_for_gen(PkmHandle *pkm_handle, uint32_t gen, uint8_t *out_buf, size_t out_len);
@@ -94,6 +99,17 @@ inline PkmHandle* loadPkmFromGen(const std::vector<uint8_t>& data, uint32_t gen)
 // Mosse droppate da un transfer verso `gen` (solo Gen 1); u32::MAX = sconosciuto.
 inline uint32_t countMovesNotInGen(const PkmHandle* pkm_handle, uint32_t gen) {
     return openhome_count_moves_not_in_gen(pkm_handle, gen);
+}
+// Learnset level-up come coppie (move id, level): level 0 = mossa evoluzione.
+inline std::vector<std::pair<uint16_t, uint8_t>> getLearnset(uint32_t table, uint32_t species) {
+    std::vector<std::pair<uint16_t, uint8_t>> out;
+    uint32_t n = openhome_get_learnset(table, species, nullptr, 0);
+    if (n == 0 || n > 256) return out;
+    std::vector<uint8_t> buf(n * 3);
+    if (openhome_get_learnset(table, species, buf.data(), buf.size()) != n) return out;
+    for (uint32_t i = 0; i < n; i++)
+        out.emplace_back(buf[i * 3] | (buf[i * 3 + 1] << 8), buf[i * 3 + 2]);
+    return out;
 }
 inline std::vector<uint8_t> getPkmBoxBytesForGen(PkmHandle* pkm_handle, uint32_t gen) {
     size_t max_len = 344;

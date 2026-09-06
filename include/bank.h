@@ -87,6 +87,7 @@ private:
     static constexpr uint32_t VERSION_FRLG   = 5;
     static constexpr uint32_t VERSION_CROSSGEN = 6; // slots = len-prefixed OHPKM
     static constexpr uint32_t VERSION_GB     = 7; // Gen1 native (12 box x 20 x 55B)
+    static constexpr uint32_t VERSION_GBC    = 8; // Gen2 native (14 box x 20 x 54B)
     static constexpr uint32_t OHPKM_MAX_BLOB   = 8192; // serialized OhpkmV2 upper bound
 
     GameType gameType_ = GameType::ZA;
@@ -103,6 +104,7 @@ private:
         if (crossGen_) return VERSION_CROSSGEN;
         if (isFRLG(gameType_) || isImportedFile(gameType_)) return VERSION_FRLG;
         if (isGen1File(gameType_)) return VERSION_GB;
+        if (isGen2File(gameType_)) return VERSION_GBC;
         if (isLGPE(gameType_)) return VERSION_LGPE;
         if (gameType_ == GameType::LA) return VERSION_LA;
         return boxCount_ == 40 ? VERSION_40BOX : VERSION_32BOX;

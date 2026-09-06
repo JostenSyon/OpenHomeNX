@@ -1,5 +1,7 @@
 use pkm_rs_resources::ball::Ball;
+use pkm_rs_resources::metadata_source::MetadataSource;
 use pkm_rs_resources::ribbons::OpenHomeRibbonSet;
+use pkm_rs_resources::species::SpeciesForm;
 use pkm_rs_types::{AbilityNumber, Stats16Le};
 
 use super::OhpkmConvert;
@@ -46,12 +48,18 @@ impl OhpkmConvert for Pk6 {
                 MetadataSource::XY,
                 ohpkm::MOVE_METADATA_SOURCE,
             ),
-            nickname: self.nickname.resize(),
+            nickname: {
+                let mut nickname = self.nickname;
+                nickname.resize()
+            },
             relearn_moves: self.relearn_moves,
             ivs: self.ivs,
             is_egg: self.is_egg,
             is_nicknamed: self.is_nicknamed,
-            handler_name: self.handler_name.resize(),
+            handler_name: {
+                let mut handler_name = self.handler_name;
+                handler_name.resize()
+            },
             is_current_handler: self.is_current_handler,
             handler_friendship: self.handler_friendship,
             handler_memory: self.handler_memory,
@@ -63,7 +71,10 @@ impl OhpkmConvert for Pk6 {
             console_region: self.console_region,
             language: self.language,
             form_argument: self.form_argument,
-            trainer_name: self.trainer_name.resize(),
+            trainer_name: {
+                let mut trainer_name = self.trainer_name;
+                trainer_name.resize()
+            },
             trainer_friendship: self.trainer_friendship,
             trainer_memory: self.trainer_memory,
             trainer_affection: self.trainer_affection,
@@ -101,7 +112,7 @@ impl OhpkmConvert for Pk6 {
         let species_and_form = ohpkm.species_and_form();
 
         let form_index = species_and_form.get_forme_index() as u8;
-        let national_dex = species_and_form.get_ndex();
+        let national_dex = species_and_form.get_ndex() as u16;
 
         let mut mon = Self {
             encryption_constant: ohpkm.encryption_constant(),
@@ -137,13 +148,17 @@ impl OhpkmConvert for Pk6 {
             evs: ohpkm.evs(),
             contest: ohpkm.contest(),
             markings: ohpkm.markings().into(),
+            is_fateful_encounter: ohpkm.is_fateful_encounter(),
             pokerus: ohpkm.pokerus(),
             super_training_flags: ohpkm.super_training_flags().unwrap_or_default(),
             contest_memory_count: ohpkm.contest_memory_count(),
             battle_memory_count: ohpkm.battle_memory_count(),
             super_training_dist_flags: ohpkm.super_training_dist_flags().unwrap_or_default(),
             form_argument: ohpkm.form_argument(),
-            nickname: ohpkm.nickname().resize(),
+            nickname: {
+                let mut nickname = ohpkm.nickname();
+                nickname.resize()
+            },
             moves: ohpkm.moves().to_pp_adjusted(
                 ohpkm::MOVE_METADATA_SOURCE,
                 MetadataSource::XY,
@@ -158,7 +173,10 @@ impl OhpkmConvert for Pk6 {
             ivs: converter.ivs(ohpkm),
             is_egg: ohpkm.is_egg(),
             is_nicknamed: ohpkm.is_nicknamed(),
-            handler_name: ohpkm.handler_name().resize(),
+            handler_name: {
+                let mut handler_name = ohpkm.handler_name();
+                handler_name.resize()
+            },
             handler_gender: ohpkm.handler_gender(),
             is_current_handler: ohpkm.is_current_handler(),
             geolocations: ohpkm.geolocations().unwrap_or_default(),
@@ -167,10 +185,14 @@ impl OhpkmConvert for Pk6 {
             handler_memory: ohpkm.handler_memory(),
             fullness: ohpkm.fullness(),
             enjoyment: ohpkm.enjoyment(),
-            trainer_name: ohpkm.trainer_name().resize(),
+            trainer_name: {
+                let mut trainer_name = ohpkm.trainer_name();
+                trainer_name.resize()
+            },
             trainer_friendship: ohpkm.trainer_friendship(),
             trainer_affection: ohpkm.trainer_affection(),
             trainer_memory: ohpkm.trainer_memory(),
+            trainer_gender: ohpkm.trainer_gender(),
             egg_date: ohpkm.egg_date(),
             met_date: ohpkm.met_date(),
             egg_location_index: ohpkm.egg_location_index().unwrap_or(0),

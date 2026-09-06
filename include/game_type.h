@@ -2,8 +2,8 @@
 #include <cstdint>
 
 // Supported game types (sequential enum used as array index)
-enum class GameType { ZA, S, V, Sw, Sh, BD, SP, LA, GP, GE, FR, LG, FR_ES, LG_ES, FR_DE, LG_DE, FR_IT, LG_IT, FR_FR, LG_FR, FR_JA, LG_JA, RUBY, SAPPHIRE, EMERALD, RED, BLUE, YELLOW };
-static constexpr int GAME_TYPE_COUNT = 28;
+enum class GameType { ZA, S, V, Sw, Sh, BD, SP, LA, GP, GE, FR, LG, FR_ES, LG_ES, FR_DE, LG_DE, FR_IT, LG_IT, FR_FR, LG_FR, FR_JA, LG_JA, RUBY, SAPPHIRE, EMERALD, RED, BLUE, YELLOW, GOLD, SILVER, CRYSTAL };
+static constexpr int GAME_TYPE_COUNT = 31;
 
 inline bool isSV(GameType g) { return g == GameType::S || g == GameType::V; }
 inline bool isSwSh(GameType g) { return g == GameType::Sw || g == GameType::Sh; }
@@ -35,6 +35,18 @@ inline bool isImportedFile(GameType g) {
 // (GB 32KB SRAM + PokeList1, not GBA sectors) so they need their own branch.
 inline bool isGen1File(GameType g) {
     return g == GameType::RED || g == GameType::BLUE || g == GameType::YELLOW;
+}
+
+// File-backed Gen 2 games (G/S/C SRAM dumps, G2c). Same shape as Gen 1,
+// different container again (PokeList2 + dual checksums + box names).
+inline bool isGen2File(GameType g) {
+    return g == GameType::GOLD || g == GameType::SILVER || g == GameType::CRYSTAL;
+}
+
+// Either GB generation (shared record traits: no PID/IV32/crypto/eggs/HT,
+// GB text codec, BE multibyte fields).
+inline bool isGbFile(GameType g) {
+    return isGen1File(g) || isGen2File(g);
 }
 
 // Per-game constant table. One entry per GameType enum value.
@@ -174,6 +186,18 @@ inline const GameInfo& gameInfo(GameType g) {
         {0x6,                "",                 "Pokemon Yellow",                 "Pokemon Yellow",
          "Yellow",           "Yellow",            "pk1", 33,    12, 20, 55,    0, 55,
          false, false, "", "Yellow"},
+        // GOLD (Gen 2 SRAM dump, sentinels continue; 14 boxes x 20, 54B slots)
+        {0x7,                "",                 "Pokemon Gold",                   "Pokemon Gold",
+         "Gold",             "Gold",              "pk2", 32,    14, 20, 54,    0, 54,
+         false, false, "", "Gold"},
+        // SILVER
+        {0x8,                "",                 "Pokemon Silver",                 "Pokemon Silver",
+         "Silver",           "Silver",            "pk2", 32,    14, 20, 54,    0, 54,
+         false, false, "", "Silver"},
+        // CRYSTAL
+        {0x9,                "",                 "Pokemon Crystal",                "Pokemon Crystal",
+         "Crystal",          "Crystal",           "pk2", 32,    14, 20, 54,    0, 54,
+         false, false, "", "Crystal"},
     };
     return INFO[static_cast<int>(g)];
 }
@@ -237,6 +261,7 @@ inline int genOf(GameType g) {
 // and this app has no SM/USUM GameType (GP/GE are LGPE, a different layout).
 inline int ohTargetGenFor(GameType g) {
     if (isGen1File(g)) return 1;  // Pk1 (R/B/Y)
+    if (isGen2File(g)) return 2;  // Pk2 (G/S/C)
     if (isSwSh(g)) return 8;
     if (isSV(g))   return 9;
     if (isFRLG(g) || isImportedFile(g)) return 3;
@@ -255,6 +280,7 @@ inline int ohTargetGenFor(GameType g) {
 // would wrongly report 8/9/7 for them and the bytes would be mis-parsed.
 inline int ohSourceGenFor(GameType g) {
     if (isGen1File(g)) return 1;  // Pk1 (R/B/Y)
+    if (isGen2File(g)) return 2;  // Pk2 (G/S/C)
     if (isSwSh(g)) return 8;
     if (isSV(g))   return 9;
     if (isFRLG(g) || isImportedFile(g)) return 3;
@@ -271,6 +297,7 @@ inline int ohSourceGenFor(GameType g) {
 inline int ohRecordBytesFor(int gen) {
     switch (gen) {
         case 1:  return 33;   // Pk1 (box record; party 44 = box33 + level + stats)
+        case 2:  return 32;   // Pk2 (box record; party 73)
         case 3:  return 80;   // Pk3
         case 8:  return 344;  // Pk8  (box == party)
         case 9:  return 344;  // Pk9  (Rust core: box == party == 344)
@@ -282,11 +309,31 @@ inline int ohRecordBytesFor(int gen) {
     }
 }
 
+// Level-up learnset table for the move viewer (mirrors the Rust
+// learnset_table() ids in openhome_switch). 0 = none.
+inline int learnsetTableFor(GameType g) {
+    if (g == GameType::RED || g == GameType::BLUE) return 1;   // RB
+    if (g == GameType::YELLOW) return 2;                        // Y
+    if (g == GameType::GOLD || g == GameType::SILVER) return 3; // GS
+    if (g == GameType::CRYSTAL) return 4;                       // C
+    if (g == GameType::RUBY || g == GameType::SAPPHIRE) return 5; // RS
+    if (g == GameType::EMERALD) return 6;                       // E
+    if (isFRLG(g)) return 7;                                    // FR
+    if (isLGPE(g)) return 8;                                    // GG
+    if (isSwSh(g)) return 9;                                    // SWSH
+    if (isBDSP(g)) return 10;                                   // BDSP
+    if (g == GameType::LA) return 11;                           // LA
+    if (isSV(g)) return 12;                                     // SV
+    if (g == GameType::ZA) return 13;                           // ZA
+    return 0;
+}
+
 // Generation id for openhome_*_from_gen/transfer matching an OriginalBackup
 // tag, or 0 if unknown. Inverse of ohBackupTagForGen (same numbering).
 inline int ohGenForBackupTag(int tag) {
     switch (tag) {
         case 1:  return 1;   // Pk1
+        case 2:  return 2;   // Pk2
         case 3:  return 3;   // Pk3
         case 7:  return 7;   // Pk7
         case 8:  return 13;  // Pb7
@@ -305,6 +352,7 @@ inline int ohGenForBackupTag(int tag) {
 inline int ohBackupTagForGen(int gen) {
     switch (gen) {
         case 1:  return 1;   // Tag::Pk1
+        case 2:  return 2;   // Tag::Pk2
         case 3:  return 3;   // Tag::Pk3
         case 8:  return 9;   // Tag::Pk8
         case 9:  return 12;  // Tag::Pk9

@@ -234,6 +234,7 @@ static const uint8_t FRLG_GENDER_RATIOS[387] = {
 
 uint8_t Pokemon::level() const {
     if (isGen1File(gameType_)) return data[3]; // box level byte
+    if (isGen2File(gameType_)) return data[31]; // box level byte
     auto& o = ofs();
     if (o.levelByte >= 0)
         return data[o.levelByte];
@@ -253,6 +254,8 @@ uint8_t Pokemon::level() const {
 uint16_t Pokemon::species() const {
     if (isGen1File(gameType_))
         return Gen1::internalToNdex(data[0]);
+    if (isGen2File(gameType_))
+        return data[0]; // national dex stored directly, no index table
     if (isFRLG(gameType_) || isImportedFile(gameType_))
         return SpeciesConverter::getNational3(speciesInternal());
     if (isSwSh(gameType_) || isBDSP(gameType_) || gameType_ == GameType::LA || isLGPE(gameType_))
@@ -262,6 +265,20 @@ uint16_t Pokemon::species() const {
 
 uint8_t Pokemon::gender() const {
     if (isGen1File(gameType_)) return 2; // no gender in Gen 1 (Nidoran M/F are species)
+    if (isGen2File(gameType_)) {
+        // Gen2: female iff Attack DV maps below the ratio threshold. A DV d
+        // covers PID bytes [d*16, d*16+15], so the midpoint d*16+8 is tested
+        // against the ratio (0xFF genderless, 0xFE female, 0x00 male) — exact
+        // percentages for every standard ratio (31/63/127/191/254).
+        uint16_t sp = species();
+        if (sp < 1 || sp > 251) return 2;
+        uint8_t ratio = FRLG_GENDER_RATIOS[sp];
+        if (ratio == 0xFF) return 2; // genderless
+        if (ratio == 0xFE) return 1; // always female
+        if (ratio == 0x00) return 0; // always male
+        int atk = (data[0x15] >> 4) & 0xF;
+        return (atk * 16 + 8 < ratio) ? 1 : 0; // 0=male, 1=female
+    }
     auto& o = ofs();
     if (o.genderByte < 0) {
         // PK3: PID-based gender
@@ -432,6 +449,7 @@ static std::string readUtf16String(const uint8_t* base, int offset, int maxChars
 
 std::string Pokemon::nickname() const {
     if (isGen1File(gameType_)) return Gen1::decodeGbString(data.data() + 44, 11);
+    if (isGen2File(gameType_)) return Gen1::decodeGbString(data.data() + 43, 11);
     auto& o = ofs();
     if (o.nickname < 0)
         return readGen3String(data.data(), 0x08, 10, language() == 1);
@@ -440,6 +458,7 @@ std::string Pokemon::nickname() const {
 
 std::string Pokemon::otName() const {
     if (isGen1File(gameType_)) return Gen1::decodeGbString(data.data() + 33, 11);
+    if (isGen2File(gameType_)) return Gen1::decodeGbString(data.data() + 32, 11);
     auto& o = ofs();
     if (o.otName < 0)
         return readGen3String(data.data(), 0x14, 7, language() == 1);
@@ -448,7 +467,7 @@ std::string Pokemon::otName() const {
 
 // Case-sensitive on purpose: GB species names are stored caps ("PIKACHU"),
 // so unnicknamed mons display their stored bytes verbatim via displayName().
-bool Pokemon::gen1IsNicknamed() const {
+bool Pokemon::gbIsNicknamed() const {
     const std::string& base = SpeciesName::get(species());
     const std::string nick = nickname();
     return nick != base;
@@ -638,7 +657,7 @@ static const RibbonDef GEN3_RIBBON_DEFS[] = {
 std::vector<Pokemon::RibbonInfo> Pokemon::getRibbonsAndMarks() const {
     std::vector<RibbonInfo> result;
 
-    if (isGen1File(gameType_)) return result; // no ribbons/marks in Gen 1
+    if (isGbFile(gameType_)) return result; // no ribbons/marks on GB
     if (isFRLG(gameType_) || isImportedFile(gameType_)) {
         // Gen3: single uint32 at 0x4C
         uint32_t rib = readU32(0x4C);
@@ -695,6 +714,11 @@ void Pokemon::loadFromEncrypted(const uint8_t* encrypted, size_t len) {
         std::memcpy(data.data(), encrypted, len < 55 ? len : 55);
         return;
     }
+    if (isGen2File(gameType_)) {
+        // Same, 54B stride (32B record + OT + nick).
+        std::memcpy(data.data(), encrypted, len < 54 ? len : 54);
+        return;
+    }
     if (isFRLG(gameType_) || isImportedFile(gameType_))
         PokemonFFI::decryptArray3(encrypted, len, data.data());
     else if (isLGPE(gameType_))
@@ -706,7 +730,7 @@ void Pokemon::loadFromEncrypted(const uint8_t* encrypted, size_t len) {
 }
 
 void Pokemon::refreshChecksum() {
-    if (isGen1File(gameType_)) return; // record has no checksum (file-level only)
+    if (isGbFile(gameType_)) return; // GB records have no checksum (file-level only)
     if (isFRLG(gameType_) || isImportedFile(gameType_)) {
         // PK3: sum u16 words from 0x20 to 0x4F (48 bytes = 24 words), store at 0x1C
         uint16_t chk = 0;
@@ -730,6 +754,10 @@ void Pokemon::getEncrypted(uint8_t* outBuf) {
     refreshChecksum();
     if (isGen1File(gameType_)) {
         std::memcpy(outBuf, data.data(), 55); // plain, see loadFromEncrypted
+        return;
+    }
+    if (isGen2File(gameType_)) {
+        std::memcpy(outBuf, data.data(), 54); // plain, see loadFromEncrypted
         return;
     }
     if (isFRLG(gameType_) || isImportedFile(gameType_))

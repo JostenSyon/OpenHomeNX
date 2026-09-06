@@ -37,6 +37,8 @@ pub mod gen9_lza;
 #[cfg(any(feature = "wasm", feature = "alloc"))]
 pub mod gen9_sv;
 pub mod location;
+#[cfg(any(feature = "wasm", feature = "alloc"))]
+pub mod learnset;
 pub mod ohpkm;
 pub mod result;
 pub mod sectioned_data;

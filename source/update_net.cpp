@@ -2,6 +2,7 @@
 #include "debug_log.h"
 
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <cctype>
 #include <ctime>
@@ -32,19 +33,59 @@ size_t writeToString(char* ptr, size_t size, size_t nmemb, void* userdata) {
     return size * nmemb;
 }
 
-size_t writeToFile(char* ptr, size_t size, size_t nmemb, void* userdata) {
-    auto* f = static_cast<FILE*>(userdata);
-    return std::fwrite(ptr, size, nmemb, f) * size;
+// Download in RAM: la rete non aspetta mai la SD. Tetto 256MB (un NRO
+// è ~18MB): oltre si abortisce esplicito, mai OOM silenzioso.
+constexpr size_t kRamCap = 256u * 1024u * 1024u;
+struct MemSink {
+    std::vector<uint8_t> data;
+    size_t contentLen = 0;  // da Content-Length, 0 se chunked/sconosciuto
+    bool overCap = false;
+};
+size_t writeToMemory(char* ptr, size_t size, size_t nmemb, void* userdata) {
+    auto* m = static_cast<MemSink*>(userdata);
+    size_t n = size * nmemb;
+    if (m->overCap || m->contentLen > kRamCap || m->data.size() + n > kRamCap) {
+        m->overCap = true;
+        return 0;  // -> CURLE_WRITE_ERROR, mappato in errore leggibile
+    }
+    m->data.insert(m->data.end(), ptr, ptr + n);
+    return n;
+}
+size_t headerToMem(char* ptr, size_t size, size_t nmemb, void* userdata) {
+    auto* m = static_cast<MemSink*>(userdata);
+    size_t n = size * nmemb;
+    // "Content-Length: 12345" case-insensitive
+    const char* kKey = "content-length:";
+    if (n > strlen(kKey)) {
+        bool match = true;
+        for (size_t i = 0; i < strlen(kKey); i++)
+            if (std::tolower((unsigned char)ptr[i]) != kKey[i]) { match = false; break; }
+        if (match) {
+            unsigned long v = strtoul(ptr + strlen(kKey), nullptr, 10);
+            m->contentLen = (size_t)v;
+            if (m->contentLen > kRamCap) m->overCap = true;
+            else if (m->contentLen > 0) m->data.reserve(m->contentLen);
+        }
+    }
+    return n;
 }
 
 void applyCommonOpts(CURL* c, const std::string& token, struct curl_slist** hdrs) {
     curl_easy_setopt(c, CURLOPT_FOLLOWLOCATION, 1L);   // GitHub 302 -> objects.githubusercontent.com
     curl_easy_setopt(c, CURLOPT_MAXREDIRS, 8L);
-    curl_easy_setopt(c, CURLOPT_CONNECTTIMEOUT, 15L);
-    curl_easy_setopt(c, CURLOPT_LOW_SPEED_LIMIT, 64L);  // < 64 B/s per 30s -> abort
+    curl_easy_setopt(c, CURLOPT_CONNECTTIMEOUT, 10L);
+    curl_easy_setopt(c, CURLOPT_LOW_SPEED_LIMIT, 1024L);  // < 1 KB/s per 30s -> abort
     curl_easy_setopt(c, CURLOPT_LOW_SPEED_TIME, 30L);
     curl_easy_setopt(c, CURLOPT_USERAGENT, "OpenHomeNX-updater/1");
     curl_easy_setopt(c, CURLOPT_NOSIGNAL, 1L);
+    // Buffer più grandi per throughput (default 16KB)
+    curl_easy_setopt(c, CURLOPT_BUFFERSIZE, 256 * 1024L);
+    // HTTP/2 su GitHub (richiede libcurl compilato con nghttp2)
+    curl_easy_setopt(c, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_2TLS);
+    // TCP keepalive per connessioni lunghe
+    curl_easy_setopt(c, CURLOPT_TCP_KEEPALIVE, 1L);
+    curl_easy_setopt(c, CURLOPT_TCP_KEEPIDLE, 30L);
+    curl_easy_setopt(c, CURLOPT_TCP_KEEPINTVL, 10L);
     if (caBundlePresent()) {
         curl_easy_setopt(c, CURLOPT_CAINFO, kCaBundle);
     } else {
@@ -52,6 +93,7 @@ void applyCommonOpts(CURL* c, const std::string& token, struct curl_slist** hdrs
         curl_easy_setopt(c, CURLOPT_SSL_VERIFYHOST, 0L);
     }
     *hdrs = curl_slist_append(*hdrs, "Accept: application/octet-stream");
+    // GitHub: preferisce compression per JSON, ma NRO è già compresso
     if (!token.empty()) {
         std::string h = "Authorization: Bearer " + token;
         *hdrs = curl_slist_append(*hdrs, h.c_str());
@@ -80,17 +122,11 @@ std::string joinUrl(const std::string& base, const std::string& rel) {
     return base + "/" + rel;
 }
 
-std::string sha256Hex(const std::string& path) {
-    FILE* f = std::fopen(path.c_str(), "rb");
-    if (!f) return "";
+std::string sha256HexBuf(const uint8_t* data, size_t len) {
     mbedtls_sha256_context ctx;
     mbedtls_sha256_init(&ctx);
     mbedtls_sha256_starts_ret(&ctx, 0);
-    std::vector<unsigned char> buf(64 * 1024);
-    size_t n;
-    while ((n = std::fread(buf.data(), 1, buf.size(), f)) > 0)
-        mbedtls_sha256_update_ret(&ctx, buf.data(), n);
-    std::fclose(f);
+    mbedtls_sha256_update_ret(&ctx, data, len);
     unsigned char out[32];
     mbedtls_sha256_finish_ret(&ctx, out);
     mbedtls_sha256_free(&ctx);
@@ -158,8 +194,7 @@ struct DlProgress {
     UpdateProgressFn cb;
     std::string label;
     double lastEmit = 0.0;
-    curl_off_t lastBytes = 0;
-    double lastBytesTime = 0.0;
+    double startTime = 0.0;  // media stabile su tutto il trasferimento
 };
 int xferInfo(void* p, curl_off_t dltotal, curl_off_t dlnow, curl_off_t, curl_off_t) {
     auto* dp = static_cast<DlProgress*>(p);
@@ -168,11 +203,14 @@ int xferInfo(void* p, curl_off_t dltotal, curl_off_t dlnow, curl_off_t, curl_off
     // first bytes arrive (avoids the ugly 0% / 0.0 MB/s flash on connect).
     if (dlnow <= 0 && dltotal <= 0) return 0;
     double now = wallSeconds();
+    if (dp->startTime == 0.0) dp->startTime = now;
     if (dp->lastEmit != 0.0 && now - dp->lastEmit < 0.25) return 0;
-    double dt = now - dp->lastBytesTime;
-    double mbps = (dp->lastBytesTime > 0.0 && dt > 0.05)
-                  ? ((double)(dlnow - dp->lastBytes) / dt / (1024.0 * 1024.0)) : 0.0;
-    dp->lastEmit = now; dp->lastBytes = dlnow; dp->lastBytesTime = now;
+    // Media dall'inizio: stabile e veritiera. L'istantanea su finestre da
+    // 0.25s oscilla (lettura rete a burst + scrittura SD bloccante) e
+    // mostra 0.5 MB/s anche quando la media reale è 2 MB/s.
+    double elapsed = now - dp->startTime;
+    double mbps = (elapsed > 0.05) ? ((double)dlnow / elapsed / (1024.0 * 1024.0)) : 0.0;
+    dp->lastEmit = now;
     char line[160];
     // NOTE: ASCII '-' separator, not '·' (U+00B7): the Switch system font
     // lacks it and renders tofu (box with X) instead.
@@ -195,18 +233,17 @@ bool updateNetDownload(const std::string& url, const std::string& token,
                        std::string& err, UpdateProgressFn progress) {
     if (!g_netReady) { err = "rete non inizializzata"; return false; }
 
-    const std::string tmp = destPath + ".part";
-    std::remove(tmp.c_str());
-    FILE* f = std::fopen(tmp.c_str(), "wb");
-    if (!f) { err = "impossibile scrivere " + tmp; return false; }
-
+    // Fase 1: rete -> RAM (la SD non rallenta mai il socket).
+    MemSink mem;
     CURL* c = curl_easy_init();
-    if (!c) { std::fclose(f); std::remove(tmp.c_str()); err = "curl_easy_init fallito"; return false; }
+    if (!c) { err = "curl_easy_init fallito"; return false; }
     struct curl_slist* hdrs = nullptr;
     applyCommonOpts(c, token, &hdrs);
     curl_easy_setopt(c, CURLOPT_URL, url.c_str());
-    curl_easy_setopt(c, CURLOPT_WRITEFUNCTION, writeToFile);
-    curl_easy_setopt(c, CURLOPT_WRITEDATA, f);
+    curl_easy_setopt(c, CURLOPT_WRITEFUNCTION, writeToMemory);
+    curl_easy_setopt(c, CURLOPT_WRITEDATA, &mem);
+    curl_easy_setopt(c, CURLOPT_HEADERFUNCTION, headerToMem);
+    curl_easy_setopt(c, CURLOPT_HEADERDATA, &mem);
     curl_easy_setopt(c, CURLOPT_TIMEOUT, 600L);
 
     DlProgress dp;
@@ -218,34 +255,69 @@ bool updateNetDownload(const std::string& url, const std::string& token,
         curl_easy_setopt(c, CURLOPT_XFERINFODATA, &dp);
     }
 
+    // Niente eccezioni nel build Switch (-fno-exceptions): la protezione
+    // OOM è il tetto kRamCap controllato in writeToMemory/headerToMem.
     CURLcode rc = curl_easy_perform(c);
     long http = 0;
     curl_easy_getinfo(c, CURLINFO_RESPONSE_CODE, &http);
+    curl_off_t dlBytes = 0, dlNanos = 0;
+    double dlAvg = 0.0;
+    curl_easy_getinfo(c, CURLINFO_SIZE_DOWNLOAD_T, &dlBytes);
+    curl_easy_getinfo(c, CURLINFO_TOTAL_TIME_T, &dlNanos);
+    curl_easy_getinfo(c, CURLINFO_SPEED_DOWNLOAD, &dlAvg);
     curl_slist_free_all(hdrs);
     curl_easy_cleanup(c);
-    std::fclose(f);
 
+    if (rc == CURLE_WRITE_ERROR && mem.overCap) {
+        err = "file oltre il tetto RAM 256MB, download abortito";
+        return false;
+    }
     if (rc != CURLE_OK) {
-        std::remove(tmp.c_str());
         err = std::string("download: ") + curl_easy_strerror(rc);
         return false;
     }
     if (http != 200) {
-        std::remove(tmp.c_str());
         err = "download HTTP " + std::to_string(http);
         return false;
     }
+    if (mem.data.empty()) { err = "download vuoto"; return false; }
+    if (dlNanos > 0)
+        DebugLog::line("update-net: %.1f MB in RAM in %.1fs (rete %.1f MB/s)",
+                       mem.data.size() / (1024.0 * 1024.0),
+                       dlNanos / 1.0e6, dlAvg / (1024.0 * 1024.0));
 
+    // Fase 2: sha in RAM (niente rilettura da SD).
     if (!expectSha256.empty()) {
-        std::string got = sha256Hex(tmp);
+        std::string got = sha256HexBuf(mem.data.data(), mem.data.size());
         if (got != toLower(expectSha256)) {
-            std::remove(tmp.c_str());
             err = "sha256 non combacia (atteso " + expectSha256.substr(0, 12) +
                   "…, ottenuto " + got.substr(0, 12) + "…)";
             return false;
         }
         DebugLog::line("update-net: sha256 ok");
     }
+
+    // Fase 3: un'unica scrittura sequenziale su SD (veloce su flash).
+    if (progress) progress("Scrittura su SD…");
+    double w0 = wallSeconds();
+    const std::string tmp = destPath + ".part";
+    std::remove(tmp.c_str());
+    FILE* f = std::fopen(tmp.c_str(), "wb");
+    if (!f) { err = "impossibile scrivere " + tmp; return false; }
+    size_t w = std::fwrite(mem.data.data(), 1, mem.data.size(), f);
+    bool wok = (w == mem.data.size()) && (std::fflush(f) == 0);
+    std::fclose(f);
+    if (!wok) {
+        std::remove(tmp.c_str());
+        err = "scrittura SD incompleta (" + std::to_string(w) + "/" +
+              std::to_string(mem.data.size()) + " byte)";
+        return false;
+    }
+    double wsec = wallSeconds() - w0;
+    if (wsec > 0.01)
+        DebugLog::line("update-net: %.1f MB su SD in %.1fs (%.1f MB/s)",
+                       mem.data.size() / (1024.0 * 1024.0), wsec,
+                       mem.data.size() / (1024.0 * 1024.0) / wsec);
 
     std::remove(destPath.c_str());
     if (std::rename(tmp.c_str(), destPath.c_str()) != 0) {

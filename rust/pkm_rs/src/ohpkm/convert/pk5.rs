@@ -1,8 +1,5 @@
-extern crate alloc;
-#[cfg(not(feature = "std"))] use alloc::{string::{String, ToString}, vec::Vec, boxed::Box, collections::{BTreeMap, BTreeSet}, borrow::ToOwned};
-
-use pkm_rs_resources::metadata_source::MetadataSource;
 use super::OhpkmConvert;
+use crate::conversion::gen4_string_encoding;
 use crate::convert_strategy::{ConvertStrategy, PkmConverter};
 use crate::format::PkmFormat;
 use crate::gen5::{self, Pk5};
@@ -12,9 +9,50 @@ use crate::result::{Error, Result};
 use crate::traits::HasSpeciesAndForm;
 use crate::ohpkm;
 
-#[cfg(any(feature = "wasm", feature = "alloc"))]
+use pkm_rs_resources::moves::MoveIndex;
+use pkm_rs_resources::ribbons::DsRibbonSet;
+use pkm_rs_types::strings::SizedUtf16String;
+use pkm_rs_types::{AbilityNumber, MarkingsFourShapes, OriginGame};
+
+/// Gen5 strings share the Gen4 charset (PKHeX StringConverter345/TransferGlyphs45).
+/// Unknown codes pass through raw (documented, lossless).
+fn gen5_name_to_ohpkm(codes: &[u16]) -> SizedUtf16String<26> {
+    let mut raw = [0u8; 26];
+    let mut o = 0;
+    for &code in codes {
+        if code == 0xFFFF || o + 2 > raw.len() {
+            break;
+        }
+        let uni = gen4_string_encoding::decode(code).unwrap_or(code);
+        raw[o..o + 2].copy_from_slice(&uni.to_le_bytes());
+        o += 2;
+    }
+    SizedUtf16String::from_bytes(raw)
+}
+
+fn ohpkm_name_to_gen5<const N: usize>(name: SizedUtf16String<26>) -> [u16; N] {
+    let bytes = name.bytes();
+    let mut out = [0xFFFFu16; N];
+    let mut i = 0;
+    while i < N && i * 2 + 1 < bytes.len() {
+        let uni = u16::from_le_bytes([bytes[i * 2], bytes[i * 2 + 1]]);
+        if uni == 0x0000 {
+            break;
+        }
+        out[i] = gen4_string_encoding::encode(uni).unwrap_or(uni);
+        i += 1;
+    }
+    out
+}
+
 impl OhpkmConvert for Pk5 {
     fn to_main_data(&self) -> ohpkm::v2_sections::MainDataV2 {
+        let moves = [
+            MoveIndex::from(self.moves[0]),
+            MoveIndex::from(self.moves[1]),
+            MoveIndex::from(self.moves[2]),
+            MoveIndex::from(self.moves[3]),
+        ];
         ohpkm::v2_sections::MainDataV2 {
             personality_value: self.personality_value,
             encryption_constant: self.personality_value,
@@ -28,39 +66,39 @@ impl OhpkmConvert for Pk5 {
                     pkm_rs_resources::abilities::AbilityIndexBounded::new(1)
                         .expect("1 is a valid ability index")
                 }),
-            ability_num: if self.personality_value % 2 == 1 {
-                pkm_rs_types::AbilityNumber::Second
+            // PKHeX PK5 AbilityNumber: hidden -> 4, else 1 << (pid & 1).
+            ability_num: if self.hidden_ability {
+                AbilityNumber::Hidden
+            } else if self.personality_value % 2 == 1 {
+                AbilityNumber::Second
             } else {
-                pkm_rs_types::AbilityNumber::First
+                AbilityNumber::First
             },
-            markings: self.markings.into(),
+            markings: MarkingsFourShapes::from_byte(self.markings).into(),
             nature: self.nature,
             is_fateful_encounter: self.is_fateful_encounter,
             gender: self.gender,
             evs: self.evs,
             contest: self.contest,
             pokerus: pkm_rs_types::Pokerus::from_byte(self.pokerus_byte),
-            ribbons: OpenHomeRibbonSet::default(),
+            ribbons: DsRibbonSet::from_bytes(
+                self.ribbons[4..8].try_into().unwrap(),
+                self.ribbons[0..4].try_into().unwrap(),
+                self.ribbons[8..12].try_into().unwrap(),
+            )
+            .to_openhome(),
             moves: pkm_rs_resources::moves::MoveSlots::from_arrays(
-                self.moves,
+                moves,
                 self.move_pp,
                 self.move_pp_ups,
             ),
-            nickname: pkm_rs_types::strings::SizedUtf16String::from_bytes({
-                let mut buf = [0u8; 52];
-                buf[..24].copy_from_slice(self.nickname.bytes());
-                buf
-            }),
+            nickname: gen5_name_to_ohpkm(&self.nickname),
             ivs: self.ivs,
             is_egg: self.is_egg,
             is_nicknamed: self.is_nicknamed,
-            game_of_origin: pkm_rs_types::OriginGame::from(self.game_of_origin),
+            game_of_origin: OriginGame::from(self.game_of_origin),
             language: self.language,
-            trainer_name: pkm_rs_types::strings::SizedUtf16String::from_bytes({
-                let mut buf = [0u8; 52];
-                buf[..16].copy_from_slice(self.trainer_name.bytes());
-                buf
-            }),
+            trainer_name: gen5_name_to_ohpkm(&self.trainer_name),
             trainer_friendship: self.trainer_friendship,
             ball: pkm_rs_resources::ball::Ball::from(self.ball),
             egg_location_index: Some(self.egg_location_index),
@@ -68,45 +106,38 @@ impl OhpkmConvert for Pk5 {
             met_level: self.met_level,
             trainer_gender: self.trainer_gender,
             egg_date: self.egg_date,
-            met_date: self.met_date.unwrap_or_else(pkm_rs_types::PokeDate::today),
+            met_date: self.met_date,
             ..Default::default()
         }
     }
 
     fn from_ohpkm(ohpkm: &OhpkmV2, strategy: ConvertStrategy) -> Result<Self> {
-        // dex-cut: Gen5 only supports forms present in BW/B2W2
-        if !pkm_rs_resources::species::form_metadata::source_has_form_metadata(
-            MetadataSource::BlackWhite,
-            ohpkm.species_and_form().get_ndex() as u16,
-            ohpkm.species_and_form().get_forme_index(),
-        ) && !pkm_rs_resources::species::form_metadata::source_has_form_metadata(
-            MetadataSource::Black2White2,
-            ohpkm.species_and_form().get_ndex() as u16,
-            ohpkm.species_and_form().get_forme_index(),
-        ) {
-            return Err(Error::form_index(ohpkm.species_and_form()));
-        }
         let converter = PkmConverter::new(PkmFormat::PK5, strategy);
         let met_data = converter.met_data(ohpkm);
 
-        let moves_vec = ohpkm.moves().indices();
+        let indices = ohpkm.moves().indices();
         let mut moves = [0u16; 4];
-        for (i, &m) in moves_vec.iter().enumerate().take(4) {
-            moves[i] = m;
+        for (i, m) in indices.iter().take(4).enumerate() {
+            moves[i] = *m;
         }
-        let pp_vec = ohpkm.moves().pp();
+        let pp = ohpkm.moves().pp();
         let mut move_pp = [0u8; 4];
-        for (i, &p) in pp_vec.iter().enumerate().take(4) {
-            move_pp[i] = p;
+        for (i, p) in pp.iter().take(4).enumerate() {
+            move_pp[i] = *p;
         }
-        let pp_ups_vec = ohpkm.moves().pp_ups();
+        let pp_ups = ohpkm.moves().pp_ups();
         let mut move_pp_ups = [0u8; 4];
-        for (i, &p) in pp_ups_vec.iter().enumerate().take(4) {
-            move_pp_ups[i] = p;
+        for (i, p) in pp_ups.iter().take(4).enumerate() {
+            move_pp_ups[i] = *p;
         }
+
+        let ribbons = DsRibbonSet::from_openhome(ohpkm.ribbons()).to_bytes_12();
+        let version = met_data.origin as u8;
 
         let mut mon = Self {
             personality_value: ohpkm.personality_value(),
+            sanity: 0,
+            checksum: 0,
             national_dex: ohpkm.species_and_form().get_ndex() as u16,
             held_item_index: ohpkm.held_item_index(),
             trainer_id: ohpkm.trainer_id(),
@@ -114,7 +145,7 @@ impl OhpkmConvert for Pk5 {
             exp: ohpkm.exp(),
             trainer_friendship: ohpkm.trainer_friendship(),
             ability: ohpkm.ability_index().to_u16() as u8,
-            markings: ohpkm.markings().into(),
+            markings: MarkingsFourShapes::from(ohpkm.markings()).to_byte(),
             language: ohpkm.language(),
             evs: ohpkm.evs(),
             contest: ohpkm.contest(),
@@ -127,25 +158,32 @@ impl OhpkmConvert for Pk5 {
             gender: ohpkm.gender(),
             form_index: ohpkm.species_and_form().get_forme_index() as u8,
             nature: ohpkm.nature(),
+            hidden_ability: ohpkm.ability_num() == AbilityNumber::Hidden,
             is_ns_pokemon: false,
-            game_of_origin: met_data.origin as u8,
-            egg_date: ohpkm.egg_date(),
-            met_date: Some(ohpkm.met_date()),
+            game_of_origin: version,
+            version,
+            pokerus_byte: ohpkm.pokerus().to_byte(),
+            ball: {
+                let ball = ohpkm.ball() as u8;
+                if ball <= 24 { ball } else { 4 }
+            },
+            met_level: ohpkm.met_level(),
+            trainer_gender: ohpkm.trainer_gender(),
+            encounter_type: 0,
+            ground_tile: 0,
+            poke_star_fame: 0,
             egg_location_index: ohpkm.egg_location_index().unwrap_or(0),
             met_location_index: met_data.location_index,
-            pokerus_byte: ohpkm.pokerus().to_byte(),
-            ball: ohpkm.ball() as u8,
-            met_level: ohpkm.met_level(),
-            encounter_type: 0,
-            poke_star_fame: 0,
-            status_condition: 0,
-            current_hp: 0,
-            ribbons: gen5::Gen4Ribbons::empty(),
+            ribbons,
+            nickname: ohpkm_name_to_gen5(ohpkm.nickname()),
+            trainer_name: ohpkm_name_to_gen5(ohpkm.trainer_name()),
             is_fateful_encounter: ohpkm.is_fateful_encounter(),
-            nickname: crate::gen4::Gen4String::from_bytes(&[0u8; 24]),
-            trainer_name: crate::gen4::Gen4String::from_bytes(&[0u8; 16]),
-            trainer_gender: ohpkm.trainer_gender(),
-            checksum: 0,
+            egg_date: ohpkm.egg_date(),
+            met_date: ohpkm.met_date(),
+            status_condition: 0,
+            stat_level: 0,
+            current_hp: 0,
+            stats: pkm_rs_types::Stats16Le::default(),
         };
 
         mon.refresh_checksum();
@@ -157,13 +195,15 @@ impl OhpkmConvert for Pk5 {
         if bytes.len() == gen5::BOX_SIZE {
             let mut extended = bytes.to_vec();
             extended.resize(gen5::PARTY_SIZE, 0);
+            let extended_len = extended.len();
+
             return extended
                 .try_into()
                 .map_err(|_| {
                     Error::buffer_size_with_source(
                         "Pk5::OhpkmConvert::bytes_to_stored",
                         gen5::PARTY_SIZE,
-                        extended.len(),
+                        extended_len,
                     )
                 })
                 .map(StoredPkmBytes::Pk5);

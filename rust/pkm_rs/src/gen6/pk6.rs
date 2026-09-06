@@ -4,9 +4,12 @@ use crate::result::{Error, Result};
 use crate::traits::ModernEvs;
 use crate::traits::{HasSpeciesAndForm, PkmBytes};
 
+use super::Pk6AbilityIndex;
 use pkm_rs_derive::IsShiny4096;
 use pkm_rs_resources::abilities::AbilityIndexBounded;
 use pkm_rs_resources::ball::Ball;
+use pkm_rs_resources::helpers;
+use pkm_rs_resources::metadata_source::MetadataSource;
 use pkm_rs_resources::moves::{MoveIndex, MoveSlots};
 use pkm_rs_resources::natures::NatureIndex;
 use pkm_rs_resources::ribbons::{ModernRibbon, ModernRibbonSet};
@@ -41,7 +44,7 @@ pub struct Pk6 {
     pub trainer_id: u16,
     pub secret_id: u16,
     pub exp: u32,
-    pub ability_index: AbilityIndexBounded,
+    pub ability_index: Pk6AbilityIndex,
     pub ability_num: AbilityNumber,
     pub training_bag_hits: u8,
     pub training_bag: u8,
@@ -53,6 +56,7 @@ pub struct Pk6 {
     pub evs: Stats8,
     pub contest: ContestStats,
     pub markings: MarkingsSixShapes,
+    pub is_fateful_encounter: bool,
     pub pokerus: Pokerus,
     pub super_training_flags: u32,
     pub contest_memory_count: u8,
@@ -83,6 +87,7 @@ pub struct Pk6 {
     pub trainer_friendship: u8,
     pub trainer_affection: u8,
     pub trainer_memory: TrainerMemory,
+    pub trainer_gender: BinaryGender,
     pub egg_date: Option<PokeDate>,
     pub met_date: PokeDate,
     pub egg_location_index: u16,
@@ -108,10 +113,37 @@ pub struct Pk6 {
 
 const MAX_RIBBON_GEN6: usize = ModernRibbon::ToughnessMaster as usize;
 
-const NEUROFORCE: u16 = 233;
-type Pk6AbilityIndex = AbilityIndexBounded<NEUROFORCE>;
-
 impl Pk6 {
+    /// 16-bit little-endian sum over `0x08..0xE8`, same scheme as Pk7/Pb7
+    /// (PKHeX `get16BitChecksumLittleEndian`). Tail past 0xE8 not covered.
+    pub fn calculate_checksum(&self) -> u16 {
+        let mut bytes = [0u8; Self::BOX_SIZE];
+        self.write_box_bytes(&mut bytes);
+        crate::checksum::checksum_u16_le(&bytes[0x08..0xE8])
+    }
+
+    pub fn refresh_checksum(&mut self) {
+        self.checksum = self.calculate_checksum();
+    }
+
+    pub fn calculate_stats(&self) -> Stats16Le {
+        helpers::calculate_stats_modern(
+            MetadataSource::XY,
+            SpeciesForm::new(self.national_dex, self.form_index as u16).unwrap(),
+            &self.ivs,
+            &self.evs,
+            self.calculate_level(),
+            self.nature.get_metadata(),
+            None,
+        )
+        .unwrap_or_else(|| {
+            panic!(
+                "pk6 has species/form present in x + y: {:#?}",
+                SpeciesForm::new(self.national_dex, self.form_index as u16).unwrap()
+            )
+        })
+    }
+
     pub fn try_from_bytes(bytes: &[u8]) -> Result<Self> {
         let size = bytes.len();
         if size < Self::BOX_SIZE {
@@ -309,6 +341,7 @@ impl Pk6 {
             evs,
             contest,
             markings,
+            is_fateful_encounter,
             pokerus,
             super_training_flags,
             contest_memory_count,
@@ -336,6 +369,7 @@ impl Pk6 {
             trainer_friendship,
             trainer_affection,
             trainer_memory,
+            trainer_gender,
             egg_date,
             met_date,
             egg_location_index,
@@ -501,7 +535,7 @@ impl PkmBytes for Pk6 {
 
 impl HasSpeciesAndForm for Pk6 {
     fn get_species_metadata(&self) -> &'static SpeciesMetadata {
-        self.national_dex.get_species_metadata()
+        pkm_rs_resources::species::get_species_metadata(self.national_dex)
     }
 
     fn get_forme_metadata(&self) -> &'static FormMetadata {

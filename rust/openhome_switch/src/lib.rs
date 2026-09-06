@@ -307,6 +307,40 @@ pub extern "C" fn openhome_load_pkm_from_gen(
             },
             Err(_) => return core::ptr::null_mut(),
         },
+        // 4 = PK4 (Gen 4 DPPt/HGSS). 136-byte box record (236-byte party):
+        // from_bytes decrypts when the unused ribbon block is nonzero.
+        4 => match pkm_rs::gen4::Pk4::from_bytes(slice) {
+            Ok(pk) => match pkm_rs::ohpkm::OhpkmV2::convert_with_backup(
+                &pk,
+                &pkm_rs::traits::PkmBytes::to_party_bytes(&pk),
+            ) {
+                Ok(o) => o,
+                Err(_) => return core::ptr::null_mut(),
+            },
+            Err(_) => return core::ptr::null_mut(),
+        },
+        // 5 = PK5 (Gen 5 BW/B2W2). 136-byte box record (220-byte party).
+        5 => match pkm_rs::gen5::Pk5::from_bytes(slice) {
+            Ok(pk) => match pkm_rs::ohpkm::OhpkmV2::convert_with_backup(
+                &pk,
+                &pkm_rs::traits::PkmBytes::to_party_bytes(&pk),
+            ) {
+                Ok(o) => o,
+                Err(_) => return core::ptr::null_mut(),
+            },
+            Err(_) => return core::ptr::null_mut(),
+        },
+        // 6 = PK6 (Gen 6 XY/ORAS). 232-byte box record (260-byte party).
+        6 => match pkm_rs::gen6::Pk6::from_bytes(slice) {
+            Ok(pk) => match pkm_rs::ohpkm::OhpkmV2::convert_with_backup(
+                &pk,
+                &pkm_rs::traits::PkmBytes::to_party_bytes(&pk),
+            ) {
+                Ok(o) => o,
+                Err(_) => return core::ptr::null_mut(),
+            },
+            Err(_) => return core::ptr::null_mut(),
+        },
         7 => match pkm_rs::gen7_alola::Pk7::from_bytes(slice) {
             Ok(pk) => match pkm_rs::ohpkm::OhpkmV2::convert_with_backup(
                 &pk,
@@ -544,6 +578,21 @@ pub extern "C" fn openhome_transfer_pkm(
             Ok(ohpkm) => ohpkm,
             Err(_) => return core::ptr::null_mut(),
         },
+        // Gen 6 (X/Y/ORAS, PK6): real downgrade conversion.
+        6 => match convert_to_pk6(&pkm.ohpkm) {
+            Ok(ohpkm) => ohpkm,
+            Err(_) => return core::ptr::null_mut(),
+        },
+        // Gen 5 (B/W/B2W2, PK5): real downgrade conversion.
+        5 => match convert_to_pk5(&pkm.ohpkm) {
+            Ok(ohpkm) => ohpkm,
+            Err(_) => return core::ptr::null_mut(),
+        },
+        // Gen 4 (DPPt/HGSS, PK4): real downgrade conversion.
+        4 => match convert_to_pk4(&pkm.ohpkm) {
+            Ok(ohpkm) => ohpkm,
+            Err(_) => return core::ptr::null_mut(),
+        },
         // 10 = PA8 (Legends: Arceus).
         10 => match convert_to_pa8(&pkm.ohpkm) {
             Ok(ohpkm) => ohpkm,
@@ -575,7 +624,7 @@ pub extern "C" fn openhome_transfer_pkm(
             Err(_) => return core::ptr::null_mut(),
         },
         // All other target generations are not yet implemented in the Switch
-        // build (Gen 4, 5, 6). Explicitly fail instead of producing a fake cross-gen.
+        // build. Explicitly fail instead of producing a fake cross-gen.
         _ => return core::ptr::null_mut(),
     };
 
@@ -814,6 +863,17 @@ fn convert_to_pk1(
 
     let mut new_ohpkm = OhpkmV2::convert_without_backup(&pk1);
 
+    // Remember pre-drop moves (upstream #924 pattern): the materialized
+    // record may drop them, but the OHPKM keeps their memory for a future
+    // move selector (and desktop interop, which already reads this section).
+    new_ohpkm.set_learned_moves(
+        ohpkm
+            .get_learned_moves()
+            .into_iter()
+            .chain(ohpkm.moves().into_iter().map(|m| m.move_index))
+            .collect(),
+    );
+
     // Propagate fields that Pk1 cannot represent, so they survive the
     // downgrade and are available when the mon returns to a later gen
     // (mirrors convert_to_pk3).
@@ -878,6 +938,15 @@ fn convert_to_pk2(
 
     let mut new_ohpkm = OhpkmV2::convert_without_backup(&pk2);
 
+    // Remember pre-drop moves, same as convert_to_pk1 above.
+    new_ohpkm.set_learned_moves(
+        ohpkm
+            .get_learned_moves()
+            .into_iter()
+            .chain(ohpkm.moves().into_iter().map(|m| m.move_index))
+            .collect(),
+    );
+
     // Propagate fields that Pk2 cannot represent, so they survive the
     // downgrade and are available when the mon returns to a later gen
     // (mirrors convert_to_pk1).
@@ -893,7 +962,211 @@ fn convert_to_pk2(
     Ok(new_ohpkm)
 }
 
-/// How many of this handle's current moves do not exist in generation `gen`
+#[cfg(any(feature = "alloc", feature = "std"))]
+fn convert_to_pk4(
+    ohpkm: &pkm_rs::ohpkm::OhpkmV2,
+) -> core::result::Result<pkm_rs::ohpkm::OhpkmV2, pkm_rs::result::Error> {
+    use pkm_rs::gen4::Pk4;
+    use pkm_rs::ohpkm::OhpkmConvert;
+    use pkm_rs::ohpkm::OhpkmV2;
+
+    let existing_backup = ohpkm.original_data_bytes();
+    let strategy = pkm_rs::convert_strategy::ConvertStrategy::default();
+    // Dex-cut (same data PKHeX/HOME enforce): Gen 4 holds 1-493 only.
+    let ndex = ohpkm.species_and_form().get_ndex() as u16;
+    if !pkm_rs::gen4::species_legal_in_gen4(ndex) {
+        return Err(pkm_rs::result::Error::FormIndex {
+            national_dex: ohpkm.species_and_form().get_ndex(),
+            form_index: 0,
+        });
+    }
+    let mut pk4 = Pk4::from_ohpkm(ohpkm, strategy)?;
+
+    // Our policy (NOT upstream): Gen 4 only has moves introduced in Gen 4
+    // or earlier. Drop newer ones explicitly (zero the slots); refill with
+    // base moves when everything dropped. Mirrors convert_to_pk1.
+    let src_moves = ohpkm.moves().indices();
+    let mut had_move = false;
+    for (slot, dst) in pk4.moves.iter_mut().enumerate() {
+        let src = src_moves.get(slot).copied().unwrap_or(0);
+        if src != 0 {
+            had_move = true;
+        }
+        if !pkm_rs::gen4::move_legal_in_gen4(src) {
+            *dst = 0;
+            pk4.move_pp[slot] = 0;
+            pk4.move_pp_ups[slot] = 0;
+        }
+    }
+    if had_move && pk4.moves == [0, 0, 0, 0] {
+        let (base, base_pp) = pkm_rs::gen4::base_moves_for_species(
+            ohpkm.species_and_form().get_ndex() as u16,
+        );
+        pk4.moves = base;
+        pk4.move_pp = base_pp;
+    }
+    pk4.refresh_checksum();
+
+    let mut new_ohpkm = OhpkmV2::convert_without_backup(&pk4);
+
+    // Remember pre-drop moves (upstream #924 pattern), same as Gen 1.
+    new_ohpkm.set_learned_moves(
+        ohpkm
+            .get_learned_moves()
+            .into_iter()
+            .chain(ohpkm.moves().into_iter().map(|m| m.move_index))
+            .collect(),
+    );
+
+    // Propagate fields that Pk4 cannot represent, so they survive the
+    // downgrade and are available when the mon returns to a later gen.
+    new_ohpkm.set_dynamax_level(ohpkm.dynamax_level());
+    new_ohpkm.set_can_gigantamax(ohpkm.can_gigantamax());
+    new_ohpkm.set_palma(ohpkm.palma());
+    new_ohpkm.set_tr_flags_swsh(ohpkm.tr_flags_swsh());
+    new_ohpkm.set_sv_data(ohpkm.sv_data());
+
+    if let Some(backup) = existing_backup {
+        new_ohpkm.set_original_data_bytes(backup);
+    }
+    Ok(new_ohpkm)
+}
+
+#[cfg(any(feature = "alloc", feature = "std"))]
+fn convert_to_pk5(
+    ohpkm: &pkm_rs::ohpkm::OhpkmV2,
+) -> core::result::Result<pkm_rs::ohpkm::OhpkmV2, pkm_rs::result::Error> {
+    use pkm_rs::gen5::Pk5;
+    use pkm_rs::ohpkm::OhpkmConvert;
+    use pkm_rs::ohpkm::OhpkmV2;
+
+    let existing_backup = ohpkm.original_data_bytes();
+    let strategy = pkm_rs::convert_strategy::ConvertStrategy::default();
+    // Dex-cut: Gen 5 holds 1-649 only.
+    let ndex = ohpkm.species_and_form().get_ndex() as u16;
+    if !pkm_rs::gen5::species_legal_in_gen5(ndex) {
+        return Err(pkm_rs::result::Error::FormIndex {
+            national_dex: ohpkm.species_and_form().get_ndex(),
+            form_index: 0,
+        });
+    }
+    let mut pk5 = Pk5::from_ohpkm(ohpkm, strategy)?;
+
+    // Move drop + refill, mirrors convert_to_pk4.
+    let src_moves = ohpkm.moves().indices();
+    let mut had_move = false;
+    for (slot, dst) in pk5.moves.iter_mut().enumerate() {
+        let src = src_moves.get(slot).copied().unwrap_or(0);
+        if src != 0 {
+            had_move = true;
+        }
+        if !pkm_rs::gen5::move_legal_in_gen5(src) {
+            *dst = 0;
+            pk5.move_pp[slot] = 0;
+            pk5.move_pp_ups[slot] = 0;
+        }
+    }
+    if had_move && pk5.moves == [0, 0, 0, 0] {
+        let (base, base_pp) = pkm_rs::gen5::base_moves_for_species(
+            ohpkm.species_and_form().get_ndex() as u16,
+        );
+        pk5.moves = base;
+        pk5.move_pp = base_pp;
+    }
+    pk5.refresh_checksum();
+
+    let mut new_ohpkm = OhpkmV2::convert_without_backup(&pk5);
+
+    new_ohpkm.set_learned_moves(
+        ohpkm
+            .get_learned_moves()
+            .into_iter()
+            .chain(ohpkm.moves().into_iter().map(|m| m.move_index))
+            .collect(),
+    );
+
+    new_ohpkm.set_dynamax_level(ohpkm.dynamax_level());
+    new_ohpkm.set_can_gigantamax(ohpkm.can_gigantamax());
+    new_ohpkm.set_palma(ohpkm.palma());
+    new_ohpkm.set_tr_flags_swsh(ohpkm.tr_flags_swsh());
+    new_ohpkm.set_sv_data(ohpkm.sv_data());
+
+    if let Some(backup) = existing_backup {
+        new_ohpkm.set_original_data_bytes(backup);
+    }
+    Ok(new_ohpkm)
+}
+
+#[cfg(any(feature = "alloc", feature = "std"))]
+fn convert_to_pk6(
+    ohpkm: &pkm_rs::ohpkm::OhpkmV2,
+) -> core::result::Result<pkm_rs::ohpkm::OhpkmV2, pkm_rs::result::Error> {
+    use pkm_rs::gen6::Pk6;
+    use pkm_rs::ohpkm::OhpkmConvert;
+    use pkm_rs::ohpkm::OhpkmV2;
+
+    let existing_backup = ohpkm.original_data_bytes();
+    let strategy = pkm_rs::convert_strategy::ConvertStrategy::default();
+    // Dex-cut: Gen 6 holds 1-721 only.
+    let ndex = ohpkm.species_and_form().get_ndex() as u16;
+    if !pkm_rs::gen6::species_legal_in_gen6(ndex) {
+        return Err(pkm_rs::result::Error::FormIndex {
+            national_dex: ohpkm.species_and_form().get_ndex(),
+            form_index: 0,
+        });
+    }
+    let mut pk6 = Pk6::from_ohpkm(ohpkm, strategy)?;
+
+    // Move drop + refill through the MoveSlots setters. Mirrors convert_to_pk4.
+    let src_moves = ohpkm.moves().indices();
+    let mut indices = pk6.moves.indices();
+    let mut pp = pk6.moves.pp();
+    let mut pp_ups = pk6.moves.pp_ups();
+    let mut had_move = false;
+    for slot in 0..4 {
+        let src = src_moves.get(slot).copied().unwrap_or(0);
+        if src != 0 {
+            had_move = true;
+        }
+        if !pkm_rs::gen6::move_legal_in_gen6(src) {
+            indices[slot] = 0;
+            pp[slot] = 0;
+            pp_ups[slot] = 0;
+        }
+    }
+    if had_move && indices == [0, 0, 0, 0] {
+        let (base, base_pp) = pkm_rs::gen6::base_moves_for_species(
+            ohpkm.species_and_form().get_ndex() as u16,
+        );
+        indices = base.to_vec();
+        pp = base_pp.to_vec();
+    }
+    pk6.moves.set_indices(&indices);
+    pk6.moves.set_pp(&pp);
+    pk6.moves.set_pp_ups(&pp_ups);
+    pk6.refresh_checksum();
+
+    let mut new_ohpkm = OhpkmV2::convert_without_backup(&pk6);
+
+    new_ohpkm.set_learned_moves(
+        ohpkm
+            .get_learned_moves()
+            .into_iter()
+            .chain(ohpkm.moves().into_iter().map(|m| m.move_index))
+            .collect(),
+    );
+
+    new_ohpkm.set_dynamax_level(ohpkm.dynamax_level());
+    new_ohpkm.set_can_gigantamax(ohpkm.can_gigantamax());
+    new_ohpkm.set_palma(ohpkm.palma());
+    new_ohpkm.set_tr_flags_swsh(ohpkm.tr_flags_swsh());
+    new_ohpkm.set_sv_data(ohpkm.sv_data());
+
+    if let Some(backup) = existing_backup {
+        new_ohpkm.set_original_data_bytes(backup);
+    }
+    Ok(new_ohpkm)
+}
 /// (Gen 1-2 for now): the slots a transfer there would drop and, when all
 /// four drop, refill with base moves. The UI asks this BEFORE transferring so
 /// it can warn (never a silent change). Returns u32::MAX for a null handle
@@ -919,6 +1192,9 @@ pub extern "C" fn openhome_count_moves_not_in_gen(
     let legal: fn(u16) -> bool = match gen {
         1 => pkm_rs::gen1::move_legal_in_gen1,
         2 => pkm_rs::gen2::move_legal_in_gen2,
+        4 => pkm_rs::gen4::move_legal_in_gen4,
+        5 => pkm_rs::gen5::move_legal_in_gen5,
+        6 => pkm_rs::gen6::move_legal_in_gen6,
         _ => return u32::MAX,
     };
     pkm.ohpkm
@@ -927,6 +1203,48 @@ pub extern "C" fn openhome_count_moves_not_in_gen(
         .into_iter()
         .filter(|&id| id != 0 && !legal(id))
         .count() as u32
+}
+
+
+/// Level-up learnset tables live in pkm_rs::learnset (table ids mirror the
+/// C++ learnsetTableFor()); this FFI only encodes them for the UI.
+#[cfg(not(any(feature = "alloc", feature = "std")))]
+#[no_mangle]
+pub extern "C" fn openhome_get_learnset(
+    _table: u32,
+    _species: u32,
+    _out_buf: *mut u8,
+    _out_len: usize,
+) -> u32 {
+    0
+}
+#[cfg(any(feature = "alloc", feature = "std"))]
+#[no_mangle]
+pub extern "C" fn openhome_get_learnset(
+    table: u32,
+    species: u32,
+    out_buf: *mut u8,
+    out_len: usize,
+) -> u32 {
+    let moves = pkm_rs::learnset::learnset_moves(table, species as u16);
+    if out_buf.is_null() {
+        return moves.len() as u32;
+    }
+    // No partial writes: an undersized buffer fails explicitly (the caller
+    // sizes from phase one, so this never triggers in practice).
+    if moves.len() * 3 > out_len {
+        return 0;
+    }
+    let out = unsafe { core::slice::from_raw_parts_mut(out_buf, out_len) };
+    let mut written: u32 = 0;
+    for (id, lvl) in moves {
+        let o = written as usize * 3;
+        out[o] = (id & 0xFF) as u8;
+        out[o + 1] = (id >> 8) as u8;
+        out[o + 2] = lvl;
+        written += 1;
+    }
+    written
 }
 
 #[no_mangle]
@@ -1031,6 +1349,31 @@ pub extern "C" fn openhome_get_pkm_box_bytes_for_gen(
         }
         3 => {
             let pk = match pkm_rs::gen3::Pk3::from_ohpkm(&pkm.ohpkm, strategy) {
+                Ok(p) => p,
+                Err(_) => return 0,
+            };
+            pk.to_box_bytes().to_vec()
+        }
+        // NOTE: Gen 4/5/6 box bytes below are DECRYPTED records. A .pk4/.pk5
+        // file on disk is encrypted: file export must run the bytes through
+        // the matching to_encrypted_* helper (phase "lettura app"), never
+        // write these raw.
+        4 => {
+            let pk = match pkm_rs::gen4::Pk4::from_ohpkm(&pkm.ohpkm, strategy) {
+                Ok(p) => p,
+                Err(_) => return 0,
+            };
+            pk.to_box_bytes().to_vec()
+        }
+        5 => {
+            let pk = match pkm_rs::gen5::Pk5::from_ohpkm(&pkm.ohpkm, strategy) {
+                Ok(p) => p,
+                Err(_) => return 0,
+            };
+            pk.to_box_bytes().to_vec()
+        }
+        6 => {
+            let pk = match pkm_rs::gen6::Pk6::from_ohpkm(&pkm.ohpkm, strategy) {
                 Ok(p) => p,
                 Err(_) => return 0,
             };
@@ -1610,10 +1953,11 @@ mod tests {
 
     // Anti-clone rule: unsupported target generations must fail explicitly
     // (NULL), never return a silently-cloned handle that fakes a conversion.
-    // (Gen 1-2 now supported, see gen1/gen2 tests below; Gen 4/5/6 still fail.)
+    // (Gen 1-6 now supported, see gen1/gen2/gen4/gen5/gen6 tests; only
+    // unknown ids fail.)
     #[test]
     fn transfer_unsupported_gen_fails_explicitly() {
-        for target in [4u32] {
+        for target in [0u32, 99] {
             let mut handle = PkmHandle {
                 ohpkm: make_test_ohpkm(OriginGame::Sword, test_moves()),
             };
@@ -1689,6 +2033,9 @@ mod tests {
         let mut handle = PkmHandle {
             ohpkm: make_test_ohpkm(OriginGame::Sword, modern_moves()),
         };
+        // Pre-seed one remembered move: the downgrade must keep it alongside
+        // the about-to-drop ones.
+        handle.ohpkm.set_learned_moves(vec![MoveIndex::from_u16(100)]);
         let ptr = &mut handle as *mut PkmHandle;
         assert_eq!(
             openhome_count_moves_not_in_gen(ptr, 1),
@@ -1702,6 +2049,17 @@ mod tests {
             move_indices(&converted.ohpkm),
             [86, 98, 129, 97],
             "emptied Gen1 record must carry Pikachu's base moves"
+        );
+        let remembered: Vec<u16> = converted
+            .ohpkm
+            .get_learned_moves()
+            .iter()
+            .filter_map(|m| m.to_raw())
+            .collect();
+        assert_eq!(
+            remembered,
+            [100, 500, 501, 502, 503],
+            "pre-drop moves (plus prior memory) must survive in LearnedMoves"
         );
         let mut buf = [0u8; 64];
         let n = openhome_get_pkm_box_bytes_for_gen(out, 1, buf.as_mut_ptr(), buf.len());
@@ -1929,6 +2287,117 @@ mod tests {
         }
     }
 
+    // Dex-cut Gen 4/5/6 at the exact boundaries: 494 (Victini) is the first
+    // Gen 5 species, 650 (Chespin) the first Gen 6, 722 (Rowlet) the first
+    // Gen 7. Each target converts exactly the species its dex holds.
+    #[test]
+    fn transfer_gen456_dex_cut() {
+        for (ndex, gen, ok) in [
+            (493u16, 4u32, true),
+            (494u16, 4u32, false),
+            (494u16, 5u32, true),
+            (649u16, 5u32, true),
+            (650u16, 5u32, false),
+            (650u16, 6u32, true),
+            (721u16, 6u32, true),
+            (722u16, 6u32, false),
+            (722u16, 4u32, false),
+            (722u16, 5u32, false),
+        ] {
+            let mut handle = PkmHandle {
+                ohpkm: make_test_ohpkm_gen(ndex),
+            };
+            let ptr = &mut handle as *mut PkmHandle;
+            let out = openhome_transfer_pkm(ptr, gen);
+            if ok {
+                assert!(!out.is_null(), "ndex={} gen={} must convert", ndex, gen);
+                openhome_free_pkm(out);
+            } else {
+                assert!(out.is_null(), "ndex={} gen={} must fail explicitly", ndex, gen);
+            }
+        }
+    }
+
+    // Gen 4/5/6 round-trip through the FFI: Sword Pikachu with Gen1-legal
+    // moves converts, materializes to box bytes, and parses back with
+    // species and all four moves intact.
+    #[test]
+    fn transfer_gen456_pikachu_round_trip() {
+        use pkm_rs::traits::PkmBytes;
+        for gen in [4u32, 5u32, 6u32] {
+            let mut handle = PkmHandle {
+                ohpkm: make_test_ohpkm(OriginGame::Sword, test_moves()),
+            };
+            let ptr = &mut handle as *mut PkmHandle;
+            let out = openhome_transfer_pkm(ptr, gen);
+            assert!(!out.is_null(), "gen={} must convert Pikachu", gen);
+            let mut buf = [0u8; 512];
+            let n = openhome_get_pkm_box_bytes_for_gen(out, gen, buf.as_mut_ptr(), buf.len());
+            openhome_free_pkm(out);
+            assert!(n > 0, "gen={} must materialize box bytes", gen);
+            let back = match gen {
+                4 => pkm_rs::gen4::Pk4::from_bytes(&buf[..n as usize]).map(|p| (p.national_dex, p.moves)),
+                5 => pkm_rs::gen5::Pk5::from_bytes(&buf[..n as usize]).map(|p| (p.national_dex, p.moves)),
+                _ => pkm_rs::gen6::Pk6::from_bytes(&buf[..n as usize]).map(|p| {
+                    (
+                        p.national_dex,
+                        [
+                            p.moves.indices()[0],
+                            p.moves.indices()[1],
+                            p.moves.indices()[2],
+                            p.moves.indices()[3],
+                        ],
+                    )
+                }),
+            };
+            let (species, moves) = back.expect("box bytes must parse back");
+            assert_eq!(species, 25, "gen={} must keep Pikachu", gen);
+            assert_eq!(moves, [85, 98, 86, 87], "gen={} must keep all four moves", gen);
+        }
+    }
+
+    // Gen4 crypto self-consistency (PKHeX PokeCrypto port): a converted mon
+    // encrypts to bytes that decrypt back to identical fields, with a valid
+    // checksum and the unused ribbon block cleared (the IsEncrypted45 probe).
+    #[test]
+    fn pk4_encrypted_round_trip() {
+        use pkm_rs::ohpkm::OhpkmConvert;
+        let ohpkm = make_test_ohpkm(OriginGame::Sword, test_moves());
+        let pk4 = pkm_rs::gen4::Pk4::from_ohpkm(
+            &ohpkm,
+            pkm_rs::convert_strategy::ConvertStrategy::default(),
+        )
+        .expect("Pikachu must convert to Pk4");
+        let enc = pk4.to_encrypted_box_bytes();
+        assert_eq!(enc.len(), 136);
+        // Encrypted at rest: unused block nonzero.
+        assert_ne!(&enc[0x64..0x68], &[0, 0, 0, 0]);
+        let back = pkm_rs::gen4::Pk4::from_bytes(&enc).expect("must decrypt and parse");
+        assert_eq!(back.national_dex, 25);
+        assert_eq!(back.personality_value, pk4.personality_value);
+        assert_eq!(back.trainer_id, 0x1234);
+        assert_eq!(back.calculate_checksum(), back.checksum);
+    }
+
+    // Same crypto self-consistency for Gen5 (same scheme, 220-byte party).
+    #[test]
+    fn pk5_encrypted_round_trip() {
+        use pkm_rs::ohpkm::OhpkmConvert;
+        let ohpkm = make_test_ohpkm(OriginGame::Sword, test_moves());
+        let pk5 = pkm_rs::gen5::Pk5::from_ohpkm(
+            &ohpkm,
+            pkm_rs::convert_strategy::ConvertStrategy::default(),
+        )
+        .expect("Pikachu must convert to Pk5");
+        let enc = pk5.to_encrypted_box_bytes();
+        assert_eq!(enc.len(), 136);
+        assert_ne!(&enc[0x64..0x68], &[0, 0, 0, 0]);
+        let back = pkm_rs::gen5::Pk5::from_bytes(&enc).expect("must decrypt and parse");
+        assert_eq!(back.national_dex, 25);
+        assert_eq!(back.nature, pk5.nature);
+        assert_eq!(back.calculate_checksum(), back.checksum);
+    }
+
     // Downgraded records carry the real EXP-derived level (from_ohpkm writes
     // 0): Pikachu at 50_000 EXP, Medium Fast -> level 36, never 0.
     #[test]
@@ -1952,7 +2421,7 @@ mod tests {
     // lossless-return check re-runs a conversion and compares bytes.
     #[test]
     fn transfer_is_deterministic_per_target() {
-        for target in [1u32, 3, 8, 9] {
+        for target in [1u32, 3, 4, 5, 6, 8, 9] {
             let mut handle = PkmHandle {
                 ohpkm: make_test_ohpkm(OriginGame::Sword, test_moves()),
             };
@@ -1968,6 +2437,56 @@ mod tests {
             };
             assert_eq!(run(ptr), run(ptr), "target={} must be deterministic", target);
         }
+    }
+
+    // Real-file regression (upstream Ho-Oh.pk2, 73B party): parse gives
+    // Ho-Oh L60 (the 0xFF-header quirk applies), and a Gen2 round-trip
+    // through the FFI preserves species, level and moves.
+    #[test]
+    fn load_real_hooh_pk2_round_trip() {
+        let raw = include_bytes!("../../../tools/test save/Ho-Oh.pk2");
+        assert_eq!(raw.len(), 73);
+        let pk2 = Pk2::from_bytes(&raw[..]).expect("real Ho-Oh bytes must parse");
+        assert_eq!(pk2.national_dex, 250);
+        assert_eq!(pk2.level, 60);
+        assert_eq!(pk2.moves, [16, 105, 126, 241]);
+        let handle = openhome_load_pkm_from_gen(raw.as_ptr(), raw.len(), 2);
+        assert!(!handle.is_null(), "gen=2 load must return a valid handle");
+        let out = openhome_transfer_pkm(handle, 2);
+        openhome_free_pkm(handle);
+        assert!(!out.is_null(), "Gen2 self-transfer must succeed");
+        let converted = unsafe { &*out };
+        assert_eq!(move_indices(&converted.ohpkm), [16, 105, 126, 241]);
+        let mut buf = [0u8; 64];
+        let n = openhome_get_pkm_box_bytes_for_gen(out, 2, buf.as_mut_ptr(), buf.len());
+        assert_eq!(n, 32);
+        let re = Pk2::from_bytes(&buf[..n as usize]).expect("must re-parse");
+        assert_eq!((re.national_dex, re.level), (250, 60));
+        openhome_free_pkm(out);
+    }
+
+    // Level-up learnset viewer data (verified per file: entry == national dex).
+    // Table ids mirror the C++ learnsetTableFor(): 1=RB 2=Y 3=GS 4=C 5=RS
+    // 6=E 7=FR 8=GG(LGPE) 9=SWSH 10=BDSP 11=LA 12=SV 13=ZA.
+    #[test]
+    fn learnset_tables_hold_kanto_starters() {
+        use pkm_rs_resources::levelup::LearnsetFileReader;
+        // RB omits level-1 starters (Bulbasaur entry starts at Leech Seed 73);
+        // SV lists Tackle (33) first. Both prove entry == dex indexing.
+        let rb = LearnsetFileReader::from_pkl_bytes(include_bytes!(
+            "../../pkm_rs_resources/src/pkhex_bin/levelup/lvlmove_rb.pkl"
+        ));
+        let rb_first = rb
+            .learnset_at_index(1)
+            .map(|r| r.all_moves().into_iter().next().map(|m| m.move_id_raw()));
+        assert_eq!(rb_first, Some(Some(73)));
+        let sv = LearnsetFileReader::from_pkl_bytes(include_bytes!(
+            "../../pkm_rs_resources/src/pkhex_bin/levelup/lvlmove_sv.pkl"
+        ));
+        let sv_first = sv
+            .learnset_at_index(1)
+            .map(|r| r.all_moves().into_iter().next().map(|m| m.move_id_raw()));
+        assert_eq!(sv_first, Some(Some(33)));
     }
 
     // Gen2 load path: Pk2 box bytes -> OHPKM with a Pk2-tagged OriginalBackup.
@@ -2003,6 +2522,17 @@ mod tests {
             move_indices(&converted.ohpkm),
             [84, 45, 39, 86],
             "emptied Gen2 record must carry Pikachu's base moves"
+        );
+        let remembered: Vec<u16> = converted
+            .ohpkm
+            .get_learned_moves()
+            .iter()
+            .filter_map(|m| m.to_raw())
+            .collect();
+        assert_eq!(
+            remembered,
+            [500, 501, 502, 503],
+            "pre-drop moves must survive in LearnedMoves"
         );
         let mut buf = [0u8; 64];
         let n = openhome_get_pkm_box_bytes_for_gen(out, 2, buf.as_mut_ptr(), buf.len());

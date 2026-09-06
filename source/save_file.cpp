@@ -51,6 +51,8 @@ bool SaveFile::load(const std::string& path) {
         return loadGBA(path);
     if (isGen1File(gameType_))
         return loadGB(path);
+    if (isGen2File(gameType_))
+        return loadGBC(path);
     if (isBDSP(gameType_))
         return loadBDSP(path);
     if (isLGPE(gameType_))
@@ -65,6 +67,8 @@ bool SaveFile::save(const std::string& path) {
     bool ok;
     if (isGen1File(gameType_))
         ok = saveGB(path);
+    else if (isGen2File(gameType_))
+        ok = saveGBC(path);
     else if (isFRLG(gameType_) || isImportedFile(gameType_))
         ok = saveGBA(path);
     else if (isBDSP(gameType_))
@@ -396,8 +400,8 @@ void SaveFile::clearBoxSlot(int box, int slot) {
     if (offset + sizeBoxSlot_ > static_cast<int>(boxDataLen_))
         return;
 
-    if (isFRLG(gameType_) || isImportedFile(gameType_) || isLGPE(gameType_) || isGen1File(gameType_)) {
-        // FRLG/LGPE/Gen1: empty slots are all-zero bytes (not encrypted blank).
+    if (isFRLG(gameType_) || isImportedFile(gameType_) || isLGPE(gameType_) || isGen1File(gameType_) || isGen2File(gameType_)) {
+        // FRLG/LGPE/GB: empty slots are all-zero bytes (not encrypted blank).
         std::memset(boxData_ + offset, 0, sizeBoxSlot_);
     } else {
         // Write encrypted blank PKM (matching PKHeX behavior) instead of raw zeros.
@@ -567,6 +571,17 @@ std::string SaveFile::getBoxName(int box) const {
         if (nameOfs + GBA_BOXNAME_LEN > static_cast<int>(boxLayoutLen_))
             return "Box " + std::to_string(box + 1);
         std::string name = decodeGen3String(boxLayoutData_ + nameOfs, GBA_BOXNAME_LEN, isFRLG_JA(gameType_));
+        if (name.empty())
+            return "Box " + std::to_string(box + 1);
+        return name;
+    }
+
+    if (isGen2File(gameType_)) {
+        // Gen2 box names: 9B GB-encoded at the per-version base (real names,
+        // unlike Gen1). boxLayoutData_ stays null; decode straight from raw.
+        if (gbcBoxNamesBase_ < 0)
+            return "Box " + std::to_string(box + 1);
+        std::string name = Gen1::decodeGbString(rawData_.data() + gbcBoxNamesBase_ + box * 9, 9);
         if (name.empty())
             return "Box " + std::to_string(box + 1);
         return name;
@@ -1192,6 +1207,183 @@ bool SaveFile::saveGB(const std::string& path) {
     file.write(reinterpret_cast<const char*>(rawData_.data()), rawData_.size());
     file.close();
     DebugLog::line("saveGB: %s -> OK", path.c_str());
+    return true;
+}
+
+// --- GB(C) save format (Gen 2 G/S/C SRAM, PKHeX SAV2.cs) ---
+
+// INT offsets per version (SAV2Offsets.INT). v1 supports INT saves only;
+// JP/KR fail the INT checksums and are rejected without touching anything.
+struct GbcLayout {
+    int party, curBoxIdx, boxNames, dexCaught, dexSeen, curBox;
+    int cksEnd, cksPos1, cksPos2;
+};
+constexpr GbcLayout GBC_GS = {0x288A, 0x2724, 0x2727, 0x2A4C, 0x2A6C, 0x2D6C, 0x2D68, 0x2D69, 0x7E6D};
+constexpr GbcLayout GBC_C = {0x2865, 0x2700, 0x2703, 0x2A27, 0x2A47, 0x2D10, 0x2B82, 0x2D0D, 0x1F0D};
+constexpr size_t GB2_SAVE_SIZE = 0x8000;
+constexpr int GB2_BOX_COUNT = 14;
+constexpr int GB2_SLOTS_PER_BOX = 20;
+constexpr int GB2_SLOT_STRIDE = 54; // 32B record + 11B OT + 11B nick
+constexpr int GB2_BOX_LIST = 0x44E; // ((11*2)+32+1)*20+2
+constexpr int GB2_BOX_STRIDE = 0x450; // list + 2B gap (preserved verbatim, never parsed)
+int gbcStoredBoxBase(int box) {
+    return box < 7 ? 0x4000 + box * GB2_BOX_STRIDE : 0x6000 + (box - 7) * GB2_BOX_STRIDE;
+}
+bool gbcChecksumValid(const uint8_t* d, const GbcLayout& L) {
+    uint16_t s = 0;
+    for (int i = 0x2009; i <= L.cksEnd; i++) s += d[i];
+    auto rd = [&](int o) -> uint16_t { return d[o] | (d[o + 1] << 8); };
+    return rd(L.cksPos1) == s && rd(L.cksPos2) == s;
+}
+// Unpack one PokeList2 ([count][species x cap+1][records][OT x cap][nick x cap])
+// into flat 54B slots. Returns count, or -1 when corrupt. Erased (0xFF)
+// count means an empty box, not corruption.
+int gbcUnpackList(const uint8_t* list, int cap, uint8_t* out) {
+    int n = list[0];
+    if (n == 0xFF) n = 0;
+    if (n < 0 || n > cap) return -1;
+    const uint8_t* recs = list + 1 + cap + 1;
+    const uint8_t* ots = recs + 32 * cap;
+    const uint8_t* nicks = ots + 11 * cap;
+    for (int i = 0; i < n; i++) {
+        uint8_t* dst = out + i * GB2_SLOT_STRIDE;
+        std::memcpy(dst, recs + i * 32, 32);
+        std::memcpy(dst + 32, ots + i * 11, 11);
+        std::memcpy(dst + 43, nicks + i * 11, 11);
+    }
+    return n;
+}
+// Mirror of gbcUnpackList: only non-empty slots are stored, rest zeroed.
+// Mirror of gbUnpackList: only slots with ANY nonzero record byte are
+// stored (not just species != 0): Gen2 eggs ride in the header marker
+// (0xFD) with an opaque body, and must survive the round-trip even though
+// the UI can't display them yet (shows baby species or nothing).
+static bool gbcSlotPresent(const uint8_t* flat, int s) {
+    for (int i = 0; i < 32; i++)
+        if (flat[s * GB2_SLOT_STRIDE + i] != 0) return true;
+    return false;
+}
+void gbcPackList(uint8_t* list, int cap, const uint8_t* flat) {
+    int idx[GB2_SLOTS_PER_BOX], n = 0;
+    for (int s = 0; s < cap; s++)
+        if (gbcSlotPresent(flat, s)) idx[n++] = s;
+    std::memset(list, 0, static_cast<size_t>(GB2_BOX_LIST));
+    list[0] = static_cast<uint8_t>(n);
+    for (int i = 0; i < n; i++) list[1 + i] = flat[idx[i] * GB2_SLOT_STRIDE];
+    list[1 + n] = 0xFF;
+    uint8_t* recs = list + 1 + cap + 1;
+    uint8_t* ots = recs + 32 * cap;
+    uint8_t* nicks = ots + 11 * cap;
+    for (int i = 0; i < n; i++) {
+        const uint8_t* f = flat + idx[i] * GB2_SLOT_STRIDE;
+        std::memcpy(recs + i * 32, f, 32);
+        std::memcpy(ots + i * 11, f + 32, 11);
+        std::memcpy(nicks + i * 11, f + 43, 11);
+    }
+}
+
+bool SaveFile::loadGBC(const std::string& path) {
+    std::ifstream file(path, std::ios::binary | std::ios::ate);
+    if (!file.is_open())
+        return false;
+
+    auto fileSize = static_cast<size_t>(file.tellg());
+    if (fileSize != GB2_SAVE_SIZE)
+        return false;
+
+    file.seekg(0);
+    rawData_.resize(GB2_SAVE_SIZE);
+    file.read(reinterpret_cast<char*>(rawData_.data()), GB2_SAVE_SIZE);
+    file.close();
+
+    // Version from the caller's game type (scan detects via checksums first,
+    // so a mismatch here fails closed on the checksum below instead of
+    // misparsing). The +2B inter-box gaps are never parsed.
+    gbcIsCrystal_ = (gameType_ == GameType::CRYSTAL);
+    const GbcLayout& L = gbcIsCrystal_ ? GBC_C : GBC_GS;
+    if (!gbcChecksumValid(rawData_.data(), L)) {
+        DebugLog::line("loadGBC: %s -> bad checksum for %s, rejected",
+                       path.c_str(), gbcIsCrystal_ ? "Crystal" : "GS");
+        return false;
+    }
+
+    // Unlike Gen1 there is no current-box mirror and no initialized flag:
+    // stored regions are always authoritative. Clamp (never crash) + log.
+    gbcStorage_.assign(GB2_BOX_COUNT * GB2_SLOTS_PER_BOX * GB2_SLOT_STRIDE, 0);
+    gbcStoredOrig_.assign(GB2_BOX_COUNT * GB2_BOX_LIST, 0);
+    for (int b = 0; b < GB2_BOX_COUNT; b++) {
+        uint8_t* dst = gbcStorage_.data() + b * GB2_SLOTS_PER_BOX * GB2_SLOT_STRIDE;
+        const uint8_t* src = rawData_.data() + gbcStoredBoxBase(b);
+        std::memcpy(gbcStoredOrig_.data() + b * GB2_BOX_LIST, src, GB2_BOX_LIST);
+        if (gbcUnpackList(src, GB2_SLOTS_PER_BOX, dst) < 0) {
+            DebugLog::line("loadGBC: %s box %d corrupt count, emptied", path.c_str(), b);
+            gbcBoxTrusted_[b] = false;
+        } else {
+            gbcBoxTrusted_[b] = true;
+        }
+    }
+    gbcBoxNamesBase_ = L.boxNames;
+
+    boxData_ = gbcStorage_.data();
+    boxDataLen_ = gbcStorage_.size();
+    boxLayoutData_ = nullptr;
+    boxLayoutLen_ = 0;
+
+    loaded_ = true;
+    DebugLog::line("loadGBC: %s -> OK (%s)", path.c_str(), gbcIsCrystal_ ? "Crystal" : "GS");
+    return true;
+}
+
+bool SaveFile::saveGBC(const std::string& path) {
+    if (!loaded_)
+        return false;
+
+    const GbcLayout& L = gbcIsCrystal_ ? GBC_C : GBC_GS;
+    int curBox = rawData_[L.curBoxIdx];
+    if (curBox < 0 || curBox >= GB2_BOX_COUNT) curBox = 0;
+    for (int b = 0; b < GB2_BOX_COUNT; b++) {
+        const uint8_t* src = gbcStorage_.data() + b * GB2_SLOTS_PER_BOX * GB2_SLOT_STRIDE;
+        bool hasContent = false;
+        for (int s = 0; s < GB2_SLOTS_PER_BOX; s++)
+            if (gbcSlotPresent(src, s)) { hasContent = true; break; }
+        if (gbcBoxTrusted_[b] || hasContent) {
+            gbcPackList(rawData_.data() + gbcStoredBoxBase(b), GB2_SLOTS_PER_BOX, src);
+            // Mirror the current box into the live region too (PKHeX parity;
+            // the game/Stadium ignore it, but keep it in sync anyway).
+            if (b == curBox)
+                gbcPackList(rawData_.data() + L.curBox, GB2_SLOTS_PER_BOX, src);
+        } else {
+            std::memcpy(rawData_.data() + gbcStoredBoxBase(b),
+                        gbcStoredOrig_.data() + b * GB2_BOX_LIST, GB2_BOX_LIST);
+        }
+    }
+
+    // Pokedex seen+caught for every boxed species (bit species-1).
+    for (int b = 0; b < GB2_BOX_COUNT; b++) {
+        const uint8_t* src = gbcStorage_.data() + b * GB2_SLOTS_PER_BOX * GB2_SLOT_STRIDE;
+        for (int s = 0; s < GB2_SLOTS_PER_BOX; s++) {
+            int ndex = src[s * GB2_SLOT_STRIDE];
+            if (ndex < 1 || ndex > 251) continue;
+            int bit = ndex - 1;
+            rawData_[L.dexSeen + (bit >> 3)] |= (1 << (bit & 7));
+            rawData_[L.dexCaught + (bit >> 3)] |= (1 << (bit & 7));
+        }
+    }
+
+    // File checksums (u16 LE sum) at both positions (PKHeX SetChecksums).
+    uint16_t cks = 0;
+    for (int i = 0x2009; i <= L.cksEnd; i++) cks += rawData_[i];
+    rawData_[L.cksPos1] = cks & 0xFF;
+    rawData_[L.cksPos1 + 1] = (cks >> 8) & 0xFF;
+    rawData_[L.cksPos2] = cks & 0xFF;
+    rawData_[L.cksPos2 + 1] = (cks >> 8) & 0xFF;
+
+    std::ofstream file(path, std::ios::binary | std::ios::trunc);
+    if (!file.is_open())
+        return false;
+    file.write(reinterpret_cast<const char*>(rawData_.data()), rawData_.size());
+    file.close();
+    DebugLog::line("saveGBC: %s -> OK", path.c_str());
     return true;
 }
 

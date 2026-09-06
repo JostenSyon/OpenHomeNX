@@ -139,6 +139,10 @@ uint8_t getMoveType(uint16_t moveId, GameType game) {
         // Gust #16 (-> Flying) and Bite #44 (-> Dark). Everything else
         // matches the modern table.
         if (moveId == 16 || moveId == 44) return 0; // Normal
+    } else if (isGen2File(game)) {
+        // Bite is already Dark in Gen 2; only Gust #16 is still Normal
+        // (became Flying in Gen 3).
+        if (moveId == 16) return 0; // Normal
     }
     if (isFRLG(game) || isImportedFile(game)) {
         table = s_moveTypes5;

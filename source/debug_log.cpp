@@ -123,6 +123,35 @@ bool flushAndReopenForUpload(std::string& outPath) {
         s_file = nullptr;
     }
     outPath = logPath();
+    // Tetto upload: il log cresce senza limiti e l'invio rallenta (480KB+).
+    // Tieni solo gli ultimi 256KB — la coda è quella che serve per
+    // diagnosticare. Eseguito qui così il file su SD resta piccolo sempre.
+    constexpr long KEEP_TAIL = 256L * 1024L;
+    FILE* rf = std::fopen(outPath.c_str(), "rb");
+    if (!rf) return false;
+    std::fseek(rf, 0, SEEK_END);
+    long sz = std::ftell(rf);
+    if (sz > KEEP_TAIL) {
+        std::fseek(rf, sz - KEEP_TAIL, SEEK_SET);
+        std::string tmp = outPath + ".tail";
+        FILE* wf = std::fopen(tmp.c_str(), "wb");
+        if (wf) {
+            char buf[8192];
+            size_t n;
+            bool ok = true;
+            while ((n = std::fread(buf, 1, sizeof(buf), rf)) > 0) {
+                if (std::fwrite(buf, 1, n, wf) != n) { ok = false; break; }
+            }
+            std::fclose(wf);
+            if (ok) {
+                std::remove(outPath.c_str());
+                std::rename(tmp.c_str(), outPath.c_str());
+            } else {
+                std::remove(tmp.c_str());
+            }
+        }
+    }
+    std::fclose(rf);
     // verifica che esista (senza riaprire subito: il file resta chiuso così
     // update_net.cpp può fare fopen("rb") senza I/O error su Horizon)
     FILE* f = std::fopen(outPath.c_str(), "rb");

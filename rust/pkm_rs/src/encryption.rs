@@ -137,6 +137,116 @@ fn rearrange_blocks(
 const ENCRYPTION_CONSTANT_MASK: u32 = 0x3e000;
 const ENCRYPTION_CONSTANT_SHIFT: u32 = 0xd;
 
+/// Gen4/5 block shuffle tables (PKHeX PokeCrypto BlockPosition/BlockPositionInvert).
+/// 32 rows: sv = (pid >> 13) & 31 indexes directly (rows 24-31 duplicate 0-7).
+pub const SHUFFLE_BLOCK_ORDERS_45: [[u8; BLOCK_COUNT]; 32] = [
+    [0, 1, 2, 3], [0, 1, 3, 2], [0, 2, 1, 3], [0, 3, 1, 2],
+    [0, 2, 3, 1], [0, 3, 2, 1], [1, 0, 2, 3], [1, 0, 3, 2],
+    [2, 0, 1, 3], [3, 0, 1, 2], [2, 0, 3, 1], [3, 0, 2, 1],
+    [1, 2, 0, 3], [1, 3, 0, 2], [2, 1, 0, 3], [3, 1, 0, 2],
+    [2, 3, 0, 1], [3, 2, 0, 1], [1, 2, 3, 0], [1, 3, 2, 0],
+    [2, 1, 3, 0], [3, 1, 2, 0], [2, 3, 1, 0], [3, 2, 1, 0],
+    [0, 1, 2, 3], [0, 1, 3, 2], [0, 2, 1, 3], [0, 3, 1, 2],
+    [0, 2, 3, 1], [0, 3, 2, 1], [1, 0, 2, 3], [1, 0, 3, 2],
+];
+
+pub const UNSHUFFLE_BLOCK_ORDERS_45: [u8; 32] = [
+    0, 1, 2, 4, 3, 5, 6, 7,
+    12, 18, 13, 19, 8, 10, 14, 20,
+    16, 22, 9, 11, 15, 21, 17, 23,
+    0, 1, 2, 4, 3, 5, 6, 7,
+];
+
+const BLOCK_SIZE_45: usize = 32;
+const BLOCKS_OFFSET_45: usize = 8;
+const STORED_SIZE_45: usize = 136;
+
+/// Swap-based block shuffle (PKHeX PokeCrypto Shuffle, T = u64).
+fn shuffle_blocks_45(data: &mut [u8], sv: usize, table: &[[u8; BLOCK_COUNT]]) {
+    if sv == 0 {
+        return;
+    }
+    let mut perm = [0u8, 1, 2, 3];
+    let mut slot_of = [0u8, 1, 2, 3];
+    let shuffle = table[sv];
+    for i in 0..BLOCK_COUNT - 1 {
+        let desired = shuffle[i];
+        let j = slot_of[desired as usize];
+        if j as usize == i {
+            continue;
+        }
+        let (a, b) = (i * BLOCK_SIZE_45, j as usize * BLOCK_SIZE_45);
+        for k in 0..BLOCK_SIZE_45 {
+            data.swap(a + k, b + k);
+        }
+        let block_at_i = perm[i];
+        perm[j as usize] = block_at_i;
+        slot_of[block_at_i as usize] = j;
+    }
+}
+
+fn shuffle_45(data: &mut [u8], sv: usize) {
+    shuffle_blocks_45(&mut data[BLOCKS_OFFSET_45..BLOCKS_OFFSET_45 + 4 * BLOCK_SIZE_45], sv, &SHUFFLE_BLOCK_ORDERS_45);
+}
+
+/// Gen4/5 xor stream (PKHeX PokeCrypto CryptArray): LCRNG per u16 word.
+fn crypt_array_45(data: &mut [u8], seed: u32) {
+    crypt_pkm_blocks(data, seed, 0, data.len());
+}
+
+/// Gen4/5 checksum: 16-bit LE word sum over [0x08..136) (PKHeX PKM CalculateChecksum, Gen 4+).
+pub fn checksum_45(data: &[u8]) -> u16 {
+    let mut chk: u32 = 0;
+    let mut i = 8;
+    while i + 1 < STORED_SIZE_45.min(data.len()) {
+        chk += u16::from_le_bytes([data[i], data[i + 1]]) as u32;
+        i += 2;
+    }
+    (chk & 0xFFFF) as u16
+}
+
+/// Encrypted at rest when the unused ribbon block is nonzero (PKHeX IsEncrypted45).
+pub fn is_encrypted_45(data: &[u8]) -> bool {
+    data.len() >= 0x68 && u32::from_le_bytes([data[0x64], data[0x65], data[0x66], data[0x67]]) != 0
+}
+
+/// PKHeX PokeCrypto Decrypt45.
+pub fn decrypt_45(data: &mut [u8]) {
+    let pid = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
+    let chk = u16::from_le_bytes([data[6], data[7]]) as u32;
+    let sv = ((pid >> 13) & 31) as usize;
+    {
+        let shuffle = &mut data[BLOCKS_OFFSET_45..STORED_SIZE_45];
+        crypt_array_45(shuffle, chk);
+    }
+    if data.len() > STORED_SIZE_45 {
+        crypt_array_45(&mut data[STORED_SIZE_45..], pid);
+    }
+    shuffle_45(data, sv);
+}
+
+/// PKHeX PokeCrypto Encrypt45 (checksum must already be set).
+pub fn encrypt_45(data: &mut [u8]) {
+    let pid = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
+    let chk = u16::from_le_bytes([data[6], data[7]]) as u32;
+    let sv = UNSHUFFLE_BLOCK_ORDERS_45[((pid >> 13) & 31) as usize] as usize;
+    shuffle_45(data, sv);
+    {
+        let shuffle = &mut data[BLOCKS_OFFSET_45..STORED_SIZE_45];
+        crypt_array_45(shuffle, chk);
+    }
+    if data.len() > STORED_SIZE_45 {
+        crypt_array_45(&mut data[STORED_SIZE_45..], pid);
+    }
+}
+
+/// PKHeX PokeCrypto DecryptIfEncrypted45.
+pub fn decrypt_if_encrypted_45(data: &mut [u8]) {
+    if is_encrypted_45(data) {
+        decrypt_45(data);
+    }
+}
+
 #[cfg(any(feature = "wasm", feature = "alloc"))]
 #[derive(Debug, Clone, Copy)]
 pub enum BlockCrypto {

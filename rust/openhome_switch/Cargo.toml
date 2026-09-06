@@ -8,7 +8,7 @@ description = "OpenHomeNX - OpenHome port for Nintendo Switch"
 crate-type = ["staticlib"]
 
 [dependencies]
-pkm_rs = { path = "../pkm_rs", default-features = false, features = ["alloc"], optional = true }
+pkm_rs = { path = "../pkm_rs", default-features = false, features = ["alloc", "newgen"], optional = true }
 pkm_rs_types = { path = "../pkm_rs_types", default-features = false, optional = true }
 
 [dev-dependencies]

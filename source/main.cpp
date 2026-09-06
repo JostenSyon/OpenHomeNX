@@ -191,11 +191,25 @@ int main(int argc, char* argv[]) {
     ledExit();
 
 #ifdef OH_USB_UPDATE
+    // Smonta tutto prima di usbHsFsExit: uscire con un device montato
+    // crasha/hang (visto in uscita con chiavetta inserita).
+    {
+        u32 n = usbHsFsGetMountedDeviceCount();
+        if (n > 8) n = 8;
+        if (n > 0) {
+            UsbHsFsDevice devs[8];
+            u32 got = usbHsFsListMountedDevices(devs, n);
+            for (u32 i = 0; i < got; i++)
+                usbHsFsUnmountDevice(&devs[i], true);
+            DebugLog::line("exit: unmounted %u usb device(s)", got);
+        }
+    }
     usbHsFsExit();
 #endif
 
     if (netReady) socketExit();
 
     romfsExit();
+    DebugLog::line("exit: shutdown complete");
     return 0;
 }

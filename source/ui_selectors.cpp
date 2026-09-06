@@ -251,7 +251,7 @@ void UI::rescanImportedGames() {
     // this on every hotplug doesn't pile up duplicates.
     availableGames_.erase(
         std::remove_if(availableGames_.begin(), availableGames_.end(),
-                       [](GameType g) { return isImportedFile(g) || isGen1File(g); }),
+                       [](GameType g) { return isImportedFile(g) || isGen1File(g) || isGen2File(g); }),
         availableGames_.end());
 
     importedGames_ = scanImportPaths(importPaths_, autoCheckUsb_);
@@ -316,7 +316,7 @@ void UI::loadGameIcons() {
         // Imported games (Ruby/Sapphire/Emerald/Gen1 from a scanned file) have no
         // real titleId and no NS control data — they always use the abbrev.
         // placeholder in drawGameSelectorFrame() instead of a fetched icon.
-        if (isImportedFile(game) || isGen1File(game))
+        if (isImportedFile(game) || isGen1File(game) || isGen2File(game))
             continue;
         // Try loading from cache first
         char hexId[32];
@@ -347,7 +347,7 @@ void UI::loadGameIcons() {
     if (needSystem) {
         nsInitialize();
         for (GameType game : availableGames_) {
-            if (isImportedFile(game) || isGen1File(game))
+            if (isImportedFile(game) || isGen1File(game) || isGen2File(game))
                 continue; // no titleId, no NS control data — placeholder only
             if (gameIconCache_.count(game))
                 continue; // already loaded from cache
@@ -492,7 +492,7 @@ void UI::drawGameSelectorFrame() {
         if (it != gameIconCache_.end() && it->second) {
             SDL_Rect dst = {iconX, iconY, ICON_SIZE, ICON_SIZE};
             SDL_RenderCopy(renderer_, it->second, nullptr, &dst);
-        } else if (isImportedFile(availableGames_[i]) || isGen1File(availableGames_[i])) {
+        } else if (isImportedFile(availableGames_[i]) || isGen1File(availableGames_[i]) || isGen2File(availableGames_[i])) {
             // No NS control data (no titleId) — a fixed per-game background
             // (Bulbapedia color templates, same values pkm_rs_types uses for
             // OriginGame::color()) plus the OpenHome logo PNG, letterboxed to
@@ -504,6 +504,9 @@ void UI::drawGameSelectorFrame() {
                 case GameType::RED:      bg = {0xE0, 0x20, 0x20, 255}; break;
                 case GameType::BLUE:     bg = {0x20, 0x60, 0xE0, 255}; break;
                 case GameType::YELLOW:   bg = {0xE8, 0xC8, 0x10, 255}; break;
+                case GameType::GOLD:     bg = {0xD8, 0xA8, 0x20, 255}; break;
+                case GameType::SILVER:   bg = {0xA0, 0xB0, 0xC0, 255}; break;
+                case GameType::CRYSTAL:  bg = {0x40, 0xC0, 0xE0, 255}; break;
                 case GameType::EMERALD: default: bg = {0x50, 0xC8, 0x78, 255}; break;
             }
             drawRect(iconX, iconY, ICON_SIZE, ICON_SIZE, bg);
@@ -532,22 +535,30 @@ void UI::drawGameSelectorFrame() {
                     int texW = 0, texH = 0;
                     SDL_QueryTexture(artIt->second, nullptr, nullptr, &texW, &texH);
                     if (texW > 0 && texH > 0) {
-                        // +15% di dimensione, spostato a destra del 15% e in
-                        // basso del 5% (percentuali su ICON_SIZE). L'eccesso
-                        // viene tagliato netto sul bordo riquadro via clip.
-                        // Solo Ruby: Groudon indietro di 10pp (netto +5%) —
-                        // il logo sopra resta identico per tutti i giochi.
+                        // Base +15% di dimensione, a destra del 15% e in basso
+                        // del 5% (percentuali su ICON_SIZE). L'eccesso viene
+                        // tagliato netto sul bordo riquadro via clip.
+                        // Ruby: Groudon centrato orizzontalmente.
+                        // Sapphire: Kyogre centrato, +10% dimensione e +5pp in
+                        // basso rispetto alla base. Logo identico per tutti.
                         constexpr int SPR = 117;
                         constexpr int SHIFT_X = (128 * 15) / 100;
                         constexpr int SHIFT_Y = (128 * 5) / 100;
                         int shiftX = SHIFT_X;
+                        int spr = SPR;
+                        int shiftY = SHIFT_Y;
                         if (availableGames_[i] == GameType::RUBY)
-                            shiftX -= (128 * 10) / 100;
-                        float scale = std::min((float)SPR / texW, (float)SPR / texH);
+                            shiftX = 0;
+                        if (availableGames_[i] == GameType::SAPPHIRE) {
+                            shiftX = (128 * 5) / 100;
+                            spr = (SPR * 110) / 100;
+                            shiftY = (128 * 15) / 100;
+                        }
+                        float scale = std::min((float)spr / texW, (float)spr / texH);
                         int dstW = (int)(texW * scale);
                         int dstH = (int)(texH * scale);
                         SDL_Rect dst = {iconX + (ICON_SIZE - dstW) / 2 + shiftX,
-                                        iconY + ICON_SIZE - dstH + SHIFT_Y, dstW, dstH};
+                                        iconY + ICON_SIZE - dstH + shiftY, dstW, dstH};
                         SDL_Rect clip = {iconX, iconY, ICON_SIZE, ICON_SIZE};
                         SDL_RenderSetClipRect(renderer_, &clip);
                         SDL_RenderCopy(renderer_, artIt->second, nullptr, &dst);

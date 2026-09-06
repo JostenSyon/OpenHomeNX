@@ -202,6 +202,16 @@ private:
     // byte-wise on save (never zeroed): we don't write what we didn't read.
     bool gbBoxTrusted_[12] = {false};
     std::vector<uint8_t> gbStoredOrig_;
+    // Gen 2 (G/S/C SRAM, G2c): same model, 14 boxes x 20 x 54B stride
+    // (32B record + 11B OT + 11B nick). No current-box mirror in Gen2
+    // (Stadium desyncs it): only stored regions are truth.
+    bool loadGBC(const std::string& path);
+    bool saveGBC(const std::string& path);
+    std::vector<uint8_t> gbcStorage_;
+    bool gbcBoxTrusted_[14] = {false};
+    std::vector<uint8_t> gbcStoredOrig_;
+    bool gbcIsCrystal_ = false;
+    int gbcBoxNamesBase_ = -1; // 9B box-name stride base in rawData_ (-1 none)
 
     static bool isBDSPSize(size_t size);
 

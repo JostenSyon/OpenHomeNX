@@ -933,6 +933,16 @@ impl DsRibbonSet {
         bytes
     }
 
+    /// Raw 12 bytes in PK4/PK5 layout order: Sinnoh standard (0x24),
+    /// Hoenn (0x3C), Sinnoh contest (0x60).
+    pub fn to_bytes_12(self) -> [u8; 12] {
+        let mut out = [0u8; 12];
+        out[0..4].copy_from_slice(&self.gen4_standard.to_bytes());
+        out[4..8].copy_from_slice(&self.gen3.to_bytes());
+        out[8..12].copy_from_slice(&self.gen4_contest.to_bytes());
+        out
+    }
+
     pub const fn clear_ribbons(&mut self) {
         self.gen3.clear_ribbons();
         self.gen4_standard.clear_ribbons();

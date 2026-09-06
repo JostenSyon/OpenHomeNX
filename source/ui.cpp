@@ -972,13 +972,13 @@ void UI::selectGame(GameType game) {
     if (!isDualBankMode()) {
         showWorking(i18n::get(StrKey::LoadingSaveData));
 
-        if (isImportedFile(game) || isGen1File(game)) {
+        if (isImportedFile(game) || isGen1File(game) || isGen2File(game)) {
             // File-backed game (scanned emulator save) — no titleId, no
             // AccountManager mount/backup: load straight from the resolved
             // path found by appendImportedGames(). Read/write both go
             // through this same file (SaveFile::load()/save() already route
-            // GBA through loadGBA()/saveGBA() and GB through loadGB();
-            // Gen1 save() refuses until the G1d writer lands), so GBA writes
+            // GBA through loadGBA()/saveGBA(), GB through loadGB()/saveGB()
+            // and GBC through loadGBC()/saveGBC), so GBA writes
             // land directly on the user's own emulator save.
             savePath_ = importedSavePath(game);
             if (savePath_.empty()) {
@@ -1049,7 +1049,7 @@ void UI::selectGame(GameType game) {
         }
 
         // Debug: verify encryption round-trip (encrypt(decrypt(file)) == file)
-        if (!isBDSP(game) && !isLGPE(game) && !isFRLG(game) && !isImportedFile(game) && !isGen1File(game)) {
+        if (!isBDSP(game) && !isLGPE(game) && !isFRLG(game) && !isImportedFile(game) && !isGen1File(game) && !isGen2File(game)) {
             std::string rtResult = save_.verifyRoundTrip();
             if (rtResult != "OK")
                 showMessageAndWait(i18n::get(StrKey::RoundTripCheck), rtResult);

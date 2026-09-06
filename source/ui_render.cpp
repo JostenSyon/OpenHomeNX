@@ -555,6 +555,16 @@ void UI::drawFrame() {
     if (showWondercardList_) {
         drawWondercardListPopup();
     }
+
+    // PK file import list popup
+    if (showPkImportList_) {
+        drawPkImportListPopup();
+    }
+
+    // Learnset viewer popup
+    if (showLearnset_) {
+        drawLearnsetPopup();
+    }
 }
 
 // --- Polygon rendering helpers for radar charts ---
@@ -949,10 +959,11 @@ void UI::drawDetailPopup(const Pokemon& pkm) {
 int UI::menuVisibleCount() const {
     // Layout voci: vedi labelsNormal/labelsApplet in drawMenuPopup().
     // Indice 5 = Wondercard (solo se il gioco le supporta),
-    // indice 6 = Export Selected (solo se ci sono slot selezionati).
+    // indice 6 = Export Selected (solo se ci sono slot selezionati),
+    // indice 7 = Import PK files (sempre visibile).
     bool hasWC = gameInfo(selectedGame_).hasWondercards;
     bool hasExport = !selectedSlots_.empty();
-    int allCount = isDualBankMode() ? 12 : 11;
+    int allCount = isDualBankMode() ? 13 : 12;
     int count = 0;
     for (int i = 0; i < allCount; i++) {
         if (!hasWC && i == 5) continue;
@@ -987,6 +998,7 @@ void UI::drawMenuPopup() {
         i18n::get(StrKey::MenuSearch),
         i18n::get(StrKey::MenuWondercard),
         exportBuf,
+        i18n::get(StrKey::MenuImportPk),
         i18n::get(StrKey::MenuSwitchBank),
         i18n::get(StrKey::MenuChangeGame),
         i18n::get(StrKey::MenuSaveQuit),
@@ -1000,6 +1012,7 @@ void UI::drawMenuPopup() {
         i18n::get(StrKey::MenuSearch),
         i18n::get(StrKey::MenuWondercard),
         exportBuf,
+        i18n::get(StrKey::MenuImportPk),
         i18n::get(StrKey::MenuSwitchLeft),
         i18n::get(StrKey::MenuSwitchRight),
         i18n::get(StrKey::MenuChangeGame),
@@ -1009,7 +1022,7 @@ void UI::drawMenuPopup() {
     // Build label list, skipping conditional items — menuCount = vi
     std::string visibleLabels[14];
     const std::string* allLabels = isDualBankMode() ? labelsApplet : labelsNormal;
-    int allCount = isDualBankMode() ? 12 : 11;
+    int allCount = isDualBankMode() ? 13 : 12;
     int vi = 0;
     for (int i = 0; i < allCount; i++) {
         if (!hasWC && i == 5) continue;
@@ -1720,6 +1733,170 @@ void UI::drawWondercardListPopup() {
         ? i18n::get(StrKey::BClose)
         : i18n::get(StrKey::WCFooter);
     drawTextCentered(footer, popX + POP_W / 2, popY + POP_H - 18, T().textDim, fontSmall_);
+}
+
+void UI::drawPkImportListPopup() {
+    drawRect(0, 0, SCREEN_W, SCREEN_H, T().overlay);
+
+    constexpr int POP_W = 900;
+    constexpr int POP_H = 550;
+    int popX = (SCREEN_W - POP_W) / 2;
+    int popY = (SCREEN_H - POP_H) / 2;
+
+    drawRect(popX, popY, POP_W, POP_H, T().panelBg);
+    drawRectOutline(popX, popY, POP_W, POP_H, T().cursor, 2);
+
+    std::string title = i18n::fmt(StrKey::PkImportTitle, std::to_string(pkImportList_.size()));
+    drawTextCentered(title, popX + POP_W / 2, popY + 22, T().text, font_);
+
+    if (pkImportList_.empty()) {
+        drawTextCentered(i18n::get(StrKey::PkImportNone), popX + POP_W / 2, popY + POP_H / 2 - 20, T().textDim, font_);
+        std::string hint = i18n::fmt(StrKey::PlaceFilesIn, std::string(".pk1/.pk2"));
+        drawTextCentered(hint, popX + POP_W / 2, popY + POP_H / 2 + 10, T().textDim, fontSmall_);
+        std::string path = basePath_ + "import/ (o export/)";
+        drawTextCentered(path, popX + POP_W / 2, popY + POP_H / 2 + 30, T().textDim, fontSmall_);
+    } else {
+        constexpr int ROW_H = 36;
+        int listY = popY + 50;
+        int listBottom = popY + POP_H - 40;
+        int visibleRows = (listBottom - listY) / ROW_H;
+        int listX = popX + 20;
+        int listW = POP_W - 40;
+
+        int maxScroll = std::max(0, (int)pkImportList_.size() - visibleRows);
+        if (pkImportScroll_ > maxScroll) pkImportScroll_ = maxScroll;
+
+        if (pkImportScroll_ > 0)
+            drawTextCentered("^", popX + POP_W / 2, listY - 12, T().arrow, fontSmall_);
+        if (pkImportScroll_ + visibleRows < (int)pkImportList_.size())
+            drawTextCentered("v", popX + POP_W / 2, listBottom + 2, T().arrow, fontSmall_);
+
+        for (int i = 0; i < visibleRows && (pkImportScroll_ + i) < (int)pkImportList_.size(); i++) {
+            int idx = pkImportScroll_ + i;
+            const auto& pk = pkImportList_[idx];
+            int rowY = listY + i * ROW_H;
+
+            if (idx == pkImportCursor_) {
+                drawRect(listX, rowY, listW, ROW_H - 4, T().menuHighlight);
+                drawRectOutline(listX, rowY, listW, ROW_H - 4, T().cursor, 2);
+            }
+
+            int textY = rowY + (ROW_H - 4) / 2 - 9;
+            int x = listX + 10;
+
+            if (!pk.valid) {
+                drawText(i18n::get(StrKey::BadgeInvalid), x, textY, T().genderFemale, font_);
+                x += 110;
+                std::string fn = pk.filename;
+                if (fn.length() > 40) fn = fn.substr(0, 39) + ".";
+                drawText(fn, x, textY, T().textDim, font_);
+            } else {
+                // Sprite
+                SDL_Texture* sprite = getSprite(pk.species, 0);
+                if (sprite) {
+                    int tw = 0, th = 0;
+                    SDL_QueryTexture(sprite, nullptr, nullptr, &tw, &th);
+                    int maxH = ROW_H - 6;
+                    float scale = std::min(static_cast<float>(maxH) / tw,
+                                           static_cast<float>(maxH) / th);
+                    int dw = static_cast<int>(tw * scale);
+                    int dh = static_cast<int>(th * scale);
+                    SDL_Rect dst = {x + (maxH - dw) / 2, rowY + 2 + (maxH - dh) / 2, dw, dh};
+                    SDL_RenderCopy(renderer_, sprite, nullptr, &dst);
+                }
+                x += ROW_H;
+
+                // Species name
+                const std::string& name = SpeciesName::get(pk.species);
+                std::string displayName = name;
+                if (displayName.length() > 14) displayName = displayName.substr(0, 13) + ".";
+                drawText(displayName, x, textY, T().text, font_);
+                x += 170;
+
+                // Gen tag
+                drawText(pk.gen == 1 ? "Gen 1" : "Gen 2", x, textY, T().textDim, font_);
+                x += 70;
+
+                // Filename (truncate to fit)
+                int maxW = listX + listW - x - 5;
+                std::string fn = pk.filename;
+                while (fn.size() > 4) {
+                    int tw = getTextEntry(fn, fontSmall_, T().textDim).w;
+                    if (tw <= maxW) break;
+                    fn = fn.substr(0, fn.size() - 5) + "..";
+                }
+                drawText(fn, x, textY, T().textDim, fontSmall_);
+            }
+        }
+    }
+
+    std::string footer = pkImportList_.empty()
+        ? i18n::get(StrKey::BClose)
+        : i18n::get(StrKey::AConfirmBCancelMenu);
+    drawTextCentered(footer, popX + POP_W / 2, popY + POP_H - 18, T().textDim, fontSmall_);
+}
+
+void UI::drawLearnsetPopup() {
+    drawRect(0, 0, SCREEN_W, SCREEN_H, T().overlay);
+
+    constexpr int POP_W = 700;
+    constexpr int POP_H = 550;
+    int popX = (SCREEN_W - POP_W) / 2;
+    int popY = (SCREEN_H - POP_H) / 2;
+
+    drawRect(popX, popY, POP_W, POP_H, T().panelBg);
+    drawRectOutline(popX, popY, POP_W, POP_H, T().cursor, 2);
+
+    std::string title = i18n::fmt(StrKey::LearnsetTitle, SpeciesName::get(learnsetSpecies_));
+    drawTextCentered(title, popX + POP_W / 2, popY + 22, T().text, font_);
+
+    if (learnset_.empty()) {
+        drawTextCentered(i18n::get(StrKey::LearnsetNone), popX + POP_W / 2, popY + POP_H / 2 - 10, T().textDim, font_);
+    } else {
+        constexpr int ROW_H = 36;
+        int listY = popY + 50;
+        int listBottom = popY + POP_H - 40;
+        int visibleRows = (listBottom - listY) / ROW_H;
+        int listX = popX + 20;
+        int listW = POP_W - 40;
+
+        int maxScroll = std::max(0, (int)learnset_.size() - visibleRows);
+        if (learnsetScroll_ > maxScroll) learnsetScroll_ = maxScroll;
+
+        if (learnsetScroll_ > 0)
+            drawTextCentered("^", popX + POP_W / 2, listY - 12, T().arrow, fontSmall_);
+        if (learnsetScroll_ + visibleRows < (int)learnset_.size())
+            drawTextCentered("v", popX + POP_W / 2, listBottom + 2, T().arrow, fontSmall_);
+
+        for (int i = 0; i < visibleRows && (learnsetScroll_ + i) < (int)learnset_.size(); i++) {
+            int idx = learnsetScroll_ + i;
+            uint16_t moveId = learnset_[idx].first;
+            uint8_t lvl = learnset_[idx].second;
+            int rowY = listY + i * ROW_H;
+
+            if (idx == learnsetCursor_) {
+                drawRect(listX, rowY, listW, ROW_H - 4, T().menuHighlight);
+                drawRectOutline(listX, rowY, listW, ROW_H - 4, T().cursor, 2);
+            }
+
+            int textY = rowY + (ROW_H - 4) / 2 - 9;
+            int x = listX + 10;
+
+            bool equipped = (moveId == learnsetEquipped_[0] || moveId == learnsetEquipped_[1] ||
+                             moveId == learnsetEquipped_[2] || moveId == learnsetEquipped_[3]);
+            std::string name = MoveName::get(moveId);
+            if (name.length() > 16) name = name.substr(0, 15) + ".";
+            if (equipped) name += " *";
+            drawText(name, x, textY, equipped ? T().shiny : T().text, font_);
+            x += 260;
+
+            // Level (0 = evolution move)
+            std::string lv = (lvl == 0) ? "Evo" : ("Lv " + std::to_string(lvl));
+            drawText(lv, x, textY, T().textDim, font_);
+        }
+    }
+
+    drawTextCentered(i18n::get(StrKey::BClose), popX + POP_W / 2, popY + POP_H - 18, T().textDim, fontSmall_);
 }
 
 void UI::drawAboutPopup() {

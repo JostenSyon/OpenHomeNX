@@ -21,13 +21,20 @@ struct RemoteUpdateInfo {
 bool updateNetAvailable();
 void updateNetSetReady(bool ready);
 
+// Helper: URL base per GitHub Releases (ultimo .nro).
+// Uso: updateNetFetchInfo(githubReleasesUrl("utente", "repo"), token, info, err);
+inline std::string githubReleasesUrl(const std::string& owner, const std::string& repo) {
+    return "https://github.com/" + owner + "/" + repo + "/releases/latest/download";
+}
+
 // GET "<baseUrl>/latest.json". `token` non vuoto → header "Authorization: Bearer <token>".
 // false + `err` su qualunque problema (rete, HTTP != 200, JSON senza i campi).
 bool updateNetFetchInfo(const std::string& baseUrl, const std::string& token,
                         RemoteUpdateInfo& out, std::string& err);
 
-// Scarica `url` (assoluto) in `destPath`. Se `expectSha256` non è vuoto, verifica
-// e cancella il file se non combacia. false + `err` su errore.
+// Scarica `url` (assoluto) in `destPath` in due fasi: rete -> RAM (tetto
+// 256MB, mai OOM silenzioso) poi un'unica scrittura sequenziale su SD.
+// Se `expectSha256` non è vuoto, verifica in RAM e fallisce esplicito.
 bool updateNetDownload(const std::string& url, const std::string& token,
                        const std::string& destPath, const std::string& expectSha256,
                        std::string& err, UpdateProgressFn progress = nullptr);

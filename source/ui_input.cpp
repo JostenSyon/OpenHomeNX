@@ -16,6 +16,7 @@
 #include <cmath>
 #include <cctype>
 #include <cstdio>
+#include <dirent.h>
 #include <sys/stat.h>
 
 // --- Joystick ---
@@ -99,6 +100,8 @@ void UI::handleInput(bool& running) {
         if (showSearchFilter_)       { handleSearchFilterInput(event); continue; }
         if (showSearchResults_)      { handleSearchResultsInput(event); continue; }
         if (showWondercardList_)     { handleWondercardListInput(event); continue; }
+        if (showPkImportList_)       { handlePkImportListInput(event); continue; }
+        if (showLearnset_)           { handleLearnsetInput(event); continue; }
         if (showBoxView_)            { handleBoxViewInput(event); continue; }
         if (showDetail_)             { handleDetailInput(event); continue; }
 
@@ -181,7 +184,18 @@ void UI::handleMenuInput(const SDL_Event& event, bool& running) {
             showMessageAndWait(i18n::get(StrKey::ExportComplete), body);
             return;
         }
-        int sel = menuSelection_ - (hasWC ? 6 : 5) - (hasExport ? 1 : 0);
+        // Import PK files: always visible, right after Export Selected.
+        // Opens the .pk1/.pk2 picker (mirrors the wondercard list).
+        int importIdx = exportIdx + (hasExport ? 1 : 0);
+        if (menuSelection_ == importIdx) {
+            showMenu_ = false;
+            pkImportList_ = scanPkImportFiles();
+            pkImportCursor_ = 0;
+            pkImportScroll_ = 0;
+            showPkImportList_ = true;
+            return;
+        }
+        int sel = menuSelection_ - (hasWC ? 6 : 5) - (hasExport ? 1 : 0) - 1;
         if (isDualBankMode()) {
             // sel: 0=Switch Left Bank, 1=Switch Right Bank, 2=Change Game,
             // 3=Save Banks, 4=Quit
@@ -338,7 +352,7 @@ void UI::handleDetailInput(const SDL_Event& event) {
             case SDL_CONTROLLER_BUTTON_A: // Switch B
                 showDetail_ = false;
                 break;
-            case SDL_CONTROLLER_BUTTON_Y: { // Switch X — export
+            case SDL_CONTROLLER_BUTTON_Y: { // Switch X — export (alias di +)
                 Pokemon pkm = getPokemonAt(cursor_.box, cursor_.slot(gridCols()), cursor_.panel);
                 if (!pkm.isEmpty()) {
                     std::string name = exportPokemon(pkm);
@@ -349,8 +363,29 @@ void UI::handleDetailInput(const SDL_Event& event) {
                 }
                 break;
             }
-            case SDL_CONTROLLER_BUTTON_B: // Switch A
+            case SDL_CONTROLLER_BUTTON_START: { // Switch + — export
+                Pokemon pkm = getPokemonAt(cursor_.box, cursor_.slot(gridCols()), cursor_.panel);
+                if (!pkm.isEmpty()) {
+                    std::string name = exportPokemon(pkm);
+                    if (!name.empty())
+                        showMessageAndWait(i18n::get(StrKey::Exported), name);
+                    else
+                        showMessageAndWait(i18n::get(StrKey::ExportFailed), i18n::get(StrKey::CouldNotWrite));
+                }
+                break;
+            }
+            case SDL_CONTROLLER_BUTTON_B: // Switch A — chiudi (rilascio spostato su -)
+                showDetail_ = false;
+                break;
+            case SDL_CONTROLLER_BUTTON_BACK: // Switch - — rilascia
                 tryRelease();
+                break;
+            case SDL_CONTROLLER_BUTTON_X: // Switch Y = learnset viewer
+                {
+                    Pokemon pkm = getPokemonAt(cursor_.box, cursor_.slot(gridCols()), cursor_.panel);
+                    if (!pkm.isEmpty())
+                        openLearnset(pkm);
+                }
                 break;
             case SDL_CONTROLLER_BUTTON_LEFTSHOULDER:
                 detailNav(-1);
@@ -582,6 +617,32 @@ void UI::handleStickRepeat() {
             else if (wcListCursor_ >= wcListScroll_ + visibleRows)
                 wcListScroll_ = wcListCursor_ - visibleRows + 1;
         }
+    } else if (showPkImportList_) {
+        if (stickDirY_ != 0 && !pkImportList_.empty()) {
+            int count = static_cast<int>(pkImportList_.size());
+            pkImportCursor_ += stickDirY_ > 0 ? 1 : -1;
+            if (pkImportCursor_ < 0) pkImportCursor_ = count - 1;
+            if (pkImportCursor_ >= count) pkImportCursor_ = 0;
+            constexpr int ROW_H = 36;
+            int visibleRows = (550 - 40 - 50) / ROW_H;
+            if (pkImportCursor_ < pkImportScroll_)
+                pkImportScroll_ = pkImportCursor_;
+            else if (pkImportCursor_ >= pkImportScroll_ + visibleRows)
+                pkImportScroll_ = pkImportCursor_ - visibleRows + 1;
+        }
+    } else if (showLearnset_) {
+        if (stickDirY_ != 0 && !learnset_.empty()) {
+            int count = static_cast<int>(learnset_.size());
+            learnsetCursor_ += stickDirY_ > 0 ? 1 : -1;
+            if (learnsetCursor_ < 0) learnsetCursor_ = count - 1;
+            if (learnsetCursor_ >= count) learnsetCursor_ = 0;
+            constexpr int ROW_H = 36;
+            int visibleRows = (550 - 40 - 50) / ROW_H;
+            if (learnsetCursor_ < learnsetScroll_)
+                learnsetScroll_ = learnsetCursor_;
+            else if (learnsetCursor_ >= learnsetScroll_ + visibleRows)
+                learnsetScroll_ = learnsetCursor_ - visibleRows + 1;
+        }
     } else if (showBoxView_) {
         if (stickDirX_ != 0) moveBoxViewCursor(stickDirX_, 0);
         if (stickDirY_ != 0) moveBoxViewCursor(0, stickDirY_);
@@ -756,7 +817,7 @@ Pokemon UI::getPokemonAt(int box, int slot, Panel panel) const {
             static const struct { uint32_t gen; GameType gt; } kPreviewFmts[] = {
                 {9, GameType::S},  {8, GameType::Sw}, {13, GameType::GP},
                 {10, GameType::LA}, {12, GameType::BD}, {11, GameType::ZA},
-                {3, GameType::FR}, {1, GameType::RED},
+                {3, GameType::FR}, {1, GameType::RED}, {2, GameType::GOLD},
             };
             bool rendered = false;
             for (const auto& f : kPreviewFmts) {
@@ -855,6 +916,7 @@ static bool monEditedSinceBackup(const Pokemon& cur, const std::vector<uint8_t>&
     GameType bkGame;
     switch (bkTag) {
         case 1:  bkGame = GameType::RED; break; // Pk1 (offsets via Gen1 branches)
+        case 2:  bkGame = GameType::GOLD; break; // Pk2 (offsets via Gen2 branches)
         case 3:  bkGame = GameType::FR; break; // Pk3
         case 8:  bkGame = GameType::GP; break; // Pb7 (LGPE)
         case 9:  bkGame = GameType::Sw; break; // Pk8
@@ -875,8 +937,8 @@ static bool monEditedSinceBackup(const Pokemon& cur, const std::vector<uint8_t>&
         return true;
     if (cur.level() != old.level())
         return true;
-    if (bkTag == 1)
-        return false; // Pk1 backup = 33B record only (no OT/nick/item to compare)
+    if (bkTag == 1 || bkTag == 2)
+        return false; // Pk1/Pk2 backups are bare records (no OT/nick/item to compare)
     if (cur.nickname() != old.nickname())
         return true;
     if (cur.heldItem() != old.heldItem())
@@ -1275,7 +1337,7 @@ void UI::actionSelect() {
                 OpenHomeNX::freePkm(ih);
                 if (dropped != UINT32_MAX && dropped > 0) {
                     if (!showConfirmDialog(i18n::get(StrKey::Gen1DropsTitle),
-                            i18n::fmt(StrKey::Gen1DropsBody, heldMulti_[i].displayName(), std::to_string(dropped))))
+                            i18n::fmt(StrKey::Gen1DropsBody, heldMulti_[i].displayName(), std::to_string(dropped), "1")))
                         return; // B: cancel, everything stays in hand, untouched
                     break; // A once: convert the whole batch below
                 }
@@ -1381,7 +1443,7 @@ void UI::actionSelect() {
                         OpenHomeNX::freePkm(ih);
                         if (dropped != UINT32_MAX && dropped > 0 &&
                             !showConfirmDialog(i18n::get(StrKey::Gen1DropsTitle),
-                                i18n::fmt(StrKey::Gen1DropsBody, heldPkm_.displayName(), std::to_string(dropped)))) {
+                                i18n::fmt(StrKey::Gen1DropsBody, heldPkm_.displayName(), std::to_string(dropped), "1"))) {
                             return; // B: cancel, mon untouched in hand
                         }
                     }
@@ -1682,6 +1744,8 @@ void UI::buildAvailableSpeciesList() {
             return species >= 1 && species <= 386;
         } else if (isGen1File(selectedGame_)) {
             return species >= 1 && species <= 151;
+        } else if (isGen2File(selectedGame_)) {
+            return species >= 1 && species <= 251;
         }
         return false;
     };
@@ -2494,8 +2558,323 @@ void UI::injectWondercard(const WCInfo& info) {
                   std::to_string(box + 1), std::to_string(slot + 1)));
 }
 
+void UI::handlePkImportListInput(const SDL_Event& event) {
+    if (event.type == SDL_CONTROLLERAXISMOTION) {
+        if (event.caxis.axis == SDL_CONTROLLER_AXIS_LEFTX ||
+            event.caxis.axis == SDL_CONTROLLER_AXIS_LEFTY) {
+            int16_t lx = SDL_GameControllerGetAxis(pad_, SDL_CONTROLLER_AXIS_LEFTX);
+            int16_t ly = SDL_GameControllerGetAxis(pad_, SDL_CONTROLLER_AXIS_LEFTY);
+            updateStick(lx, ly);
+        }
+    }
+
+    int count = static_cast<int>(pkImportList_.size());
+    if (count == 0) {
+        // Only B to close
+        if (event.type == SDL_CONTROLLERBUTTONDOWN && event.cbutton.button == SDL_CONTROLLER_BUTTON_A)
+            showPkImportList_ = false;
+        return;
+    }
+
+    auto scrollIntoView = [&]() {
+        constexpr int ROW_H = 36;
+        int visibleRows = (550 - 40 - 50) / ROW_H; // matches popup layout
+        if (pkImportCursor_ < pkImportScroll_)
+            pkImportScroll_ = pkImportCursor_;
+        else if (pkImportCursor_ >= pkImportScroll_ + visibleRows)
+            pkImportScroll_ = pkImportCursor_ - visibleRows + 1;
+    };
+
+    if (event.type == SDL_CONTROLLERBUTTONDOWN) {
+        switch (event.cbutton.button) {
+            case SDL_CONTROLLER_BUTTON_DPAD_UP:
+                if (pkImportCursor_ > 0) pkImportCursor_--;
+                else pkImportCursor_ = count - 1;
+                scrollIntoView();
+                break;
+            case SDL_CONTROLLER_BUTTON_DPAD_DOWN:
+                if (pkImportCursor_ < count - 1) pkImportCursor_++;
+                else pkImportCursor_ = 0;
+                scrollIntoView();
+                break;
+            case SDL_CONTROLLER_BUTTON_LEFTSHOULDER: // L = page up
+                pkImportCursor_ = std::max(0, pkImportCursor_ - 10);
+                scrollIntoView();
+                break;
+            case SDL_CONTROLLER_BUTTON_RIGHTSHOULDER: // R = page down
+                pkImportCursor_ = std::min(count - 1, pkImportCursor_ + 10);
+                scrollIntoView();
+                break;
+            case SDL_CONTROLLER_BUTTON_B: // Switch A = confirm/import
+                importPkFile(pkImportList_[pkImportCursor_]);
+                break;
+            case SDL_CONTROLLER_BUTTON_A: // Switch B = cancel
+                showPkImportList_ = false;
+                break;
+        }
+    }
+}
+
+std::vector<UI::PkFileInfo> UI::scanPkImportFiles() {
+    std::vector<PkFileInfo> out;
+    // Radici scansionate: import/ più l'intero albero export/ (un livello di
+    // sottocartelle: CrossGen + cartelle gioco), così un file appena esportato
+    // da giochi o banche è subito reimportabile senza spostarlo a mano.
+    std::vector<std::string> dirs = { basePath_ + "import/", basePath_ + "export/" };
+    {
+        DIR* ed = opendir((basePath_ + "export/").c_str());
+        if (ed) {
+            struct dirent* e;
+            while ((e = readdir(ed)) != nullptr) {
+                std::string n = e->d_name;
+                if (n.empty() || n[0] == '.') continue;
+                std::string full = basePath_ + "export/" + n;
+                struct stat st;
+                if (stat(full.c_str(), &st) == 0 && S_ISDIR(st.st_mode))
+                    dirs.push_back(full + "/");
+            }
+            closedir(ed);
+        }
+    }
+    for (const std::string& dir : dirs) {
+        // Etichetta cartella per disambiguare omonimi ("" per le radici).
+        std::string tag;
+        if (dir != basePath_ + "import/" && dir != basePath_ + "export/") {
+            std::string t = dir;
+            while (!t.empty() && t.back() == '/') t.pop_back();
+            auto pos = t.find_last_of('/');
+            tag = (pos == std::string::npos) ? t : t.substr(pos + 1);
+        }
+        DIR* d = opendir(dir.c_str());
+        if (!d) continue;
+        struct dirent* entry;
+        while ((entry = readdir(d)) != nullptr) {
+            std::string name = entry->d_name;
+            if (name.empty() || name[0] == '.') continue;
+            std::string low = name;
+            for (char& c : low) c = std::tolower((unsigned char)c);
+            int gen = 0;
+            size_t want = 0;
+            if (low.size() >= 4 && low.compare(low.size() - 4, 4, ".pk1") == 0) { gen = 1; want = 33; }
+            else if (low.size() >= 4 && low.compare(low.size() - 4, 4, ".pk2") == 0) { gen = 2; want = 32; }
+            else continue;
+            PkFileInfo info;
+            info.filename = tag.empty() ? name : (name + " · " + tag);
+            info.path = dir + name;
+            info.gen = gen;
+            // Strict sizes only (box records we write ourselves): anything else
+            // is listed invalid instead of parsed as garbage. PKHeX-size party
+            // files come later with fixture verification (F4).
+            FILE* f = std::fopen(info.path.c_str(), "rb");
+            if (!f) continue;
+            std::vector<uint8_t> bytes(want);
+            size_t got = std::fread(bytes.data(), 1, want, f);
+            int extra = std::fgetc(f);
+            std::fclose(f);
+            if (got != want || extra != EOF) continue; // wrong size: not listed
+            PkmHandle* h = OpenHomeNX::loadPkmFromGen(bytes, static_cast<uint32_t>(gen));
+            if (!h) continue; // unparseable: not listed
+            info.species = OpenHomeNX::ohpkmSpecies(h);
+            OpenHomeNX::freePkm(h);
+            info.valid = (info.species != 0);
+            out.push_back(std::move(info));
+        }
+        closedir(d);
+    }
+    return out;
+}
+
+void UI::openLearnset(const Pokemon& pkm) {
+    learnset_.clear();
+    learnsetSpecies_ = pkm.species();
+    learnsetCursor_ = 0;
+    learnsetScroll_ = 0;
+    learnsetEquipped_[0] = pkm.move1();
+    learnsetEquipped_[1] = pkm.move2();
+    learnsetEquipped_[2] = pkm.move3();
+    learnsetEquipped_[3] = pkm.move4();
+    // Table by the mon's own format (preview format for bank blobs:
+    // shows what it can learn HERE).
+    int table = learnsetTableFor(pkm.gameType_);
+    if (table != 0 && learnsetSpecies_ != 0)
+        learnset_ = OpenHomeNX::getLearnset(static_cast<uint32_t>(table), learnsetSpecies_);
+    showLearnset_ = true;
+}
+
+void UI::handleLearnsetInput(const SDL_Event& event) {
+    if (event.type == SDL_CONTROLLERAXISMOTION) {
+        if (event.caxis.axis == SDL_CONTROLLER_AXIS_LEFTX ||
+            event.caxis.axis == SDL_CONTROLLER_AXIS_LEFTY) {
+            int16_t lx = SDL_GameControllerGetAxis(pad_, SDL_CONTROLLER_AXIS_LEFTX);
+            int16_t ly = SDL_GameControllerGetAxis(pad_, SDL_CONTROLLER_AXIS_LEFTY);
+            updateStick(lx, ly);
+        }
+    }
+
+    int count = static_cast<int>(learnset_.size());
+    if (count == 0) {
+        // Only B to close
+        if (event.type == SDL_CONTROLLERBUTTONDOWN && event.cbutton.button == SDL_CONTROLLER_BUTTON_A)
+            showLearnset_ = false;
+        return;
+    }
+
+    auto scrollIntoView = [&]() {
+        constexpr int ROW_H = 36;
+        int visibleRows = (550 - 40 - 50) / ROW_H; // matches popup layout
+        if (learnsetCursor_ < learnsetScroll_)
+            learnsetScroll_ = learnsetCursor_;
+        else if (learnsetCursor_ >= learnsetScroll_ + visibleRows)
+            learnsetScroll_ = learnsetCursor_ - visibleRows + 1;
+    };
+
+    if (event.type == SDL_CONTROLLERBUTTONDOWN) {
+        switch (event.cbutton.button) {
+            case SDL_CONTROLLER_BUTTON_DPAD_UP:
+                if (learnsetCursor_ > 0) learnsetCursor_--;
+                else learnsetCursor_ = count - 1;
+                scrollIntoView();
+                break;
+            case SDL_CONTROLLER_BUTTON_DPAD_DOWN:
+                if (learnsetCursor_ < count - 1) learnsetCursor_++;
+                else learnsetCursor_ = 0;
+                scrollIntoView();
+                break;
+            case SDL_CONTROLLER_BUTTON_LEFTSHOULDER: // L = page up
+                learnsetCursor_ = std::max(0, learnsetCursor_ - 10);
+                scrollIntoView();
+                break;
+            case SDL_CONTROLLER_BUTTON_RIGHTSHOULDER: // R = page down
+                learnsetCursor_ = std::min(count - 1, learnsetCursor_ + 10);
+                scrollIntoView();
+                break;
+            case SDL_CONTROLLER_BUTTON_B: // Switch A = close
+            case SDL_CONTROLLER_BUTTON_A: // Switch B = close
+                showLearnset_ = false;
+                break;
+        }
+    }
+}
+
+void UI::importPkFile(const PkFileInfo& info) {
+    if (!info.valid) {
+        showMessageAndWait(i18n::get(StrKey::ImportPkTitle), info.filename);
+        return;
+    }
+    if (!bank_.isCrossGen()) {
+        showMessageAndWait(i18n::get(StrKey::ImportPkTitle), i18n::get(StrKey::ImportPkNeedBank));
+        return;
+    }
+    FILE* f = std::fopen(info.path.c_str(), "rb");
+    if (!f) {
+        showMessageAndWait(i18n::get(StrKey::ImportPkTitle), i18n::get(StrKey::CouldNotWrite));
+        return;
+    }
+    size_t want = (info.gen == 1) ? 33 : 32;
+    std::vector<uint8_t> bytes(want);
+    size_t got = std::fread(bytes.data(), 1, want, f);
+    std::fclose(f);
+    if (got != want) {
+        showMessageAndWait(i18n::get(StrKey::ImportPkTitle), i18n::get(StrKey::CouldNotWrite));
+        return;
+    }
+    PkmHandle* h = OpenHomeNX::loadPkmFromGen(bytes, static_cast<uint32_t>(info.gen));
+    if (!h) {
+        showMessageAndWait(i18n::get(StrKey::ImportPkTitle), i18n::get(StrKey::CouldNotWrite));
+        return;
+    }
+    std::vector<uint8_t> blob = OpenHomeNX::getOhpkmBytes(h);
+    OpenHomeNX::freePkm(h);
+    if (blob.empty()) {
+        showMessageAndWait(i18n::get(StrKey::ImportPkTitle), i18n::get(StrKey::CouldNotWrite));
+        return;
+    }
+    for (int b = 0; b < bank_.boxCount(); b++) {
+        for (int s = 0; s < bank_.slotsPerBox(); s++) {
+            if (bank_.ohpkmAt(b, s).empty()) {
+                bank_.setOhpkmAt(b, s, blob);
+                markDirty();
+                invalidateSlotDisplay(Panel::Bank, b);
+                showPkImportList_ = false;
+                showMessageAndWait(i18n::get(StrKey::ImportPkTitle), info.filename);
+                return;
+            }
+        }
+    }
+    showMessageAndWait(i18n::get(StrKey::ImportPkTitle), i18n::get(StrKey::CouldNotWrite));
+}
+
+std::string UI::exportCrossGenBlob(const Pokemon& pkm) {
+    // A = Gen 1 (.pk1), B = Gen 2 (.pk2).
+    const bool gen1 = showConfirmDialog(i18n::get(StrKey::ExportGenTitle),
+                                        i18n::get(StrKey::ExportGenBody));
+    const uint32_t gen = gen1 ? 1 : 2;
+    const char* ext = gen1 ? "pk1" : "pk2";
+    const char* genStr = gen1 ? "1" : "2";
+
+    PkmHandle* h = OpenHomeNX::loadOhpkm(pkm.ohpkmBlob_);
+    if (!h) {
+        DebugLog::line("export blob: loadOhpkm failed (%zu B)", pkm.ohpkmBlob_.size());
+        return "";
+    }
+
+    // Drop warning BEFORE converting (same policy as native drops).
+    uint16_t sp = OpenHomeNX::ohpkmSpecies(h);
+    std::string dispName = OpenHomeNX::ohpkmNickname(h);
+    if (dispName.empty()) dispName = SpeciesName::get(sp);
+    uint32_t dropped = OpenHomeNX::countMovesNotInGen(h, gen);
+    if (dropped != UINT32_MAX && dropped > 0 &&
+        !showConfirmDialog(i18n::get(StrKey::Gen1DropsTitle),
+            i18n::fmt(StrKey::Gen1DropsBody, dispName, std::to_string(dropped), genStr))) {
+        OpenHomeNX::freePkm(h);
+        return ""; // B: cancel, nothing written
+    }
+
+    PkmHandle* out = PokemonFFI::transfer(h, gen);
+    OpenHomeNX::freePkm(h);
+    if (!out) {
+        // Usually dex-cut (species beyond 151/251): logged with the species
+        // so the log tells it apart from corrupt data.
+        DebugLog::line("export blob: transfer to gen%u failed (species %u)", gen, sp);
+        return "";
+    }
+    std::vector<uint8_t> bytes = OpenHomeNX::getPkmBoxBytesForGen(out, gen);
+    sp = OpenHomeNX::ohpkmSpecies(out);
+    uint16_t fm = OpenHomeNX::ohpkmForm(out);
+    std::string nick = OpenHomeNX::ohpkmNickname(out);
+    if (nick.empty()) nick = SpeciesName::get(sp);
+    PokemonFFI::free(out);
+    if (bytes.empty()) return "";
+
+    char buf[512];
+    if (fm != 0)
+        std::snprintf(buf, sizeof(buf), "GEN%s - %04u-%u - %s.%s", genStr, sp, fm, nick.c_str(), ext);
+    else
+        std::snprintf(buf, sizeof(buf), "GEN%s - %04u - %s.%s", genStr, sp, nick.c_str(), ext);
+    std::string filename = buf;
+    for (char& c : filename) {
+        if (c == '/' || c == '\\' || c == ':' || c == '*' ||
+            c == '?' || c == '"' || c == '<' || c == '>' || c == '|')
+            c = '_';
+    }
+
+    std::string dir = basePath_ + "export/CrossGen/";
+    mkdir(dir.c_str(), 0755);
+    std::string fullPath = dir + filename;
+    FILE* f = std::fopen(fullPath.c_str(), "wb");
+    if (!f) return "";
+    std::fwrite(bytes.data(), 1, bytes.size(), f);
+    std::fclose(f);
+    return filename;
+}
+
 std::string UI::exportPokemon(const Pokemon& pkm) {
     if (pkm.isEmpty()) return "";
+
+    // Cross-gen bank mon: the blob is the truth, the preview bytes are not
+    // exportable as-is — materialize the chosen Gen1/Gen2 record instead.
+    if (!pkm.ohpkmBlob_.empty())
+        return exportCrossGenBlob(pkm);
 
     // Build export directory: basePath/export/{bankFolder}/
     std::string dir = basePath_ + "export/";

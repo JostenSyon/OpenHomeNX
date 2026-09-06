@@ -788,6 +788,18 @@ impl OhpkmV2 {
             .unwrap_or_default()
     }
 
+    /// Seed move memory (upstream #924 pattern): records current + past
+    /// moves so a future move selector (or desktop, which already reads this
+    /// section) can re-equip them. Called by downgrade paths whose
+    /// materialization may drop moves the record cannot hold.
+    pub fn set_learned_moves(&mut self, moves: Vec<MoveIndex>) {
+        let mut learned = self.learned_moves.take().unwrap_or_default();
+        learned.add_moves(moves);
+        if learned.count() > 0 {
+            self.learned_moves = Some(learned);
+        }
+    }
+
     pub const fn home_tracker(&self) -> Option<u64> {
         self.main_data.home_tracker
     }
