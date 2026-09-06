@@ -2398,6 +2398,104 @@ mod tests {
         assert_eq!(back.calculate_checksum(), back.checksum);
     }
 
+    // Real-file regression (upstream OpenHome test-files, decrypted blobs):
+    // Typhlosion.pk4 parses with valid checksum and transfers to Gen 4
+    // (its home gen) with species and all four moves intact. Gen 8 is
+    // correctly refused: Typhlosion is not in the SwSh dex (Pk8-level
+    // dex-cut, explicit NULL).
+    #[test]
+    fn load_real_upstream_pk4_typhlosion() {
+        let raw = include_bytes!("../../../tools/test save/upstream/typhlosion.pkm");
+        assert_eq!(raw.len(), 136);
+        let loaded = openhome_load_pkm_from_gen(raw.as_ptr(), raw.len(), 4);
+        assert!(!loaded.is_null(), "valid Typhlosion.pk4 must load");
+        let pk4 = pkm_rs::gen4::Pk4::from_bytes(raw).expect("must parse");
+        assert_eq!(pk4.national_dex, 157);
+        assert_eq!(pk4.calculate_checksum(), pk4.checksum);
+        let out = openhome_transfer_pkm(loaded, 4);
+        openhome_free_pkm(loaded);
+        assert!(!out.is_null(), "Typhlosion must convert to Gen 4");
+        let back = unsafe { &*out };
+        let species = back.ohpkm.species_and_form().get_ndex() as u16;
+        assert_eq!(species, 157);
+        let moves: alloc::vec::Vec<u16> = back.ohpkm.moves().indices().into_iter().collect();
+        assert_eq!(moves, alloc::vec![332, 89, 29, 53]);
+        openhome_free_pkm(out);
+        // ...but not to Gen 8 (not in SwSh dex): explicit NULL.
+        let loaded2 = openhome_load_pkm_from_gen(raw.as_ptr(), raw.len(), 4);
+        assert!(!loaded2.is_null());
+        let out2 = openhome_transfer_pkm(loaded2, 8);
+        openhome_free_pkm(loaded2);
+        assert!(out2.is_null(), "Typhlosion must not convert to Gen 8");
+    }
+
+    // Real-file regression: upstream Magmortar.pk4 checksum validates.
+    #[test]
+    fn load_real_upstream_pk4_magmortar_checksum() {
+        let raw = include_bytes!("../../../tools/test save/upstream/magmortar.pkm");
+        let pk4 = pkm_rs::gen4::Pk4::from_bytes(raw).expect("must parse");
+        assert_eq!(pk4.national_dex, 467);
+        assert_eq!(pk4.calculate_checksum(), pk4.checksum);
+    }
+
+    // Real-file regression: the Gen4 custom charset decodes the shared OT
+    // ("RoC", same trainer as the Gen5 files) through the FFI load path.
+    #[test]
+    fn load_real_upstream_pk4_typhlosion_ot() {
+        let raw = include_bytes!("../../../tools/test save/upstream/typhlosion.pkm");
+        let loaded = openhome_load_pkm_from_gen(raw.as_ptr(), raw.len(), 4);
+        assert!(!loaded.is_null());
+        let back = unsafe { &*loaded };
+        let ot = alloc::string::String::from(&back.ohpkm.trainer_name());
+        assert_eq!(ot, "RoC");
+        openhome_free_pkm(loaded);
+    }
+
+    // Real-file regression (upstream, 220-byte party): Emboar.pk5 loads,
+    // converts to Gen 6, and keeps species.
+    #[test]
+    fn load_real_upstream_pk5_emboar_to_gen6() {
+        let raw = include_bytes!("../../../tools/test save/upstream/z002 - Emboar {Wilbur}.pkm");
+        assert_eq!(raw.len(), 220);
+        let loaded = openhome_load_pkm_from_gen(raw.as_ptr(), raw.len(), 5);
+        assert!(!loaded.is_null(), "valid Emboar party record must load");
+        let out = openhome_transfer_pkm(loaded, 6);
+        openhome_free_pkm(loaded);
+        assert!(!out.is_null(), "Emboar must convert to Gen 6");
+        let back = unsafe { &*out };
+        assert_eq!(back.ohpkm.species_and_form().get_ndex() as u16, 500);
+        openhome_free_pkm(out);
+    }
+
+    // Real-file regression: upstream Dragonite party record keeps its OT
+    // ("RoC") through the Gen5 charset decode.
+    #[test]
+    fn load_real_upstream_pk5_dragonite_ot() {
+        let raw = include_bytes!("../../../tools/test save/upstream/z006 - Dragonite {Komodo}.pkm");
+        let loaded = openhome_load_pkm_from_gen(raw.as_ptr(), raw.len(), 5);
+        assert!(!loaded.is_null(), "valid Dragonite party record must load");
+        let back = unsafe { &*loaded };
+        let ot = alloc::string::String::from(&back.ohpkm.trainer_name());
+        assert_eq!(ot, "RoC");
+        openhome_free_pkm(loaded);
+    }
+
+    // Real-file regression: upstream Ditto.pk5 (Transform only) converts to
+    // Gen 4 with its single move intact.
+    #[test]
+    fn load_real_upstream_pk5_ditto_to_gen4() {
+        let raw = include_bytes!("../../../tools/test save/upstream/Ditto.pkm");
+        let loaded = openhome_load_pkm_from_gen(raw.as_ptr(), raw.len(), 5);
+        assert!(!loaded.is_null(), "valid Ditto must load");
+        let out = openhome_transfer_pkm(loaded, 4);
+        openhome_free_pkm(loaded);
+        assert!(!out.is_null(), "Ditto must convert to Gen 4");
+        let back = unsafe { &*out };
+        let moves: alloc::vec::Vec<u16> = back.ohpkm.moves().indices().into_iter().collect();
+        assert_eq!(moves[0], 144);
+        openhome_free_pkm(out);
+    }
+
     // Downgraded records carry the real EXP-derived level (from_ohpkm writes
     // 0): Pikachu at 50_000 EXP, Medium Fast -> level 36, never 0.
     #[test]

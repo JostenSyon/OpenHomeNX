@@ -1,5 +1,4 @@
 use super::OhpkmConvert;
-use crate::conversion::gen4_string_encoding;
 use crate::convert_strategy::{ConvertStrategy, PkmConverter};
 use crate::format::PkmFormat;
 use crate::gen5::{self, Pk5};
@@ -14,8 +13,9 @@ use pkm_rs_resources::ribbons::DsRibbonSet;
 use pkm_rs_types::strings::SizedUtf16String;
 use pkm_rs_types::{AbilityNumber, MarkingsFourShapes, OriginGame};
 
-/// Gen5 strings share the Gen4 charset (PKHeX StringConverter345/TransferGlyphs45).
-/// Unknown codes pass through raw (documented, lossless).
+/// Gen5 strings are direct UTF-16LE (PKHeX StringConverter5), 0xFFFF
+/// terminated — NOT the Gen4 custom table. Copy code units until the
+/// terminator into the OHPKM 0x0000-terminated buffer.
 fn gen5_name_to_ohpkm(codes: &[u16]) -> SizedUtf16String<26> {
     let mut raw = [0u8; 26];
     let mut o = 0;
@@ -23,8 +23,7 @@ fn gen5_name_to_ohpkm(codes: &[u16]) -> SizedUtf16String<26> {
         if code == 0xFFFF || o + 2 > raw.len() {
             break;
         }
-        let uni = gen4_string_encoding::decode(code).unwrap_or(code);
-        raw[o..o + 2].copy_from_slice(&uni.to_le_bytes());
+        raw[o..o + 2].copy_from_slice(&code.to_le_bytes());
         o += 2;
     }
     SizedUtf16String::from_bytes(raw)
@@ -39,7 +38,7 @@ fn ohpkm_name_to_gen5<const N: usize>(name: SizedUtf16String<26>) -> [u16; N] {
         if uni == 0x0000 {
             break;
         }
-        out[i] = gen4_string_encoding::encode(uni).unwrap_or(uni);
+        out[i] = uni;
         i += 1;
     }
     out
