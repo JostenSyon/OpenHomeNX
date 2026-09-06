@@ -771,6 +771,15 @@ fn convert_to_pk1(
 
     let existing_backup = ohpkm.original_data_bytes();
     let strategy = pkm_rs::convert_strategy::ConvertStrategy::default();
+    // Dex-cut (same data PKHeX/HOME enforce): Gen 1 holds 1-151 only.
+    // Anything else fails explicitly instead of producing a species-0 shell.
+    let ndex = ohpkm.species_and_form().get_ndex() as u16;
+    if !pkm_rs::gen1::species_legal_in_gen1(ndex) {
+        return Err(pkm_rs::result::Error::FormIndex {
+            national_dex: ohpkm.species_and_form().get_ndex(),
+            form_index: 0,
+        });
+    }
     let mut pk1 = Pk1::from_ohpkm(ohpkm, strategy)?;
 
     // Our policy (NOT upstream): Gen 1 only has moves 1-165. Anything else
@@ -799,6 +808,9 @@ fn convert_to_pk1(
         pk1.moves = base;
         pk1.move_pp = base_pp;
     }
+    // Real level from EXP (from_ohpkm writes 0; only a growth table can
+    // derive it — same upstream pattern as Pk3/Pk8 calculate_level).
+    pk1.level = pkm_rs::gen1::level_for_exp(ndex, ohpkm.exp());
 
     let mut new_ohpkm = OhpkmV2::convert_without_backup(&pk1);
 
@@ -827,6 +839,14 @@ fn convert_to_pk2(
 
     let existing_backup = ohpkm.original_data_bytes();
     let strategy = pkm_rs::convert_strategy::ConvertStrategy::default();
+    // Dex-cut (same data PKHeX/HOME enforce): Gen 2 holds 1-251 only.
+    let ndex = ohpkm.species_and_form().get_ndex() as u16;
+    if !pkm_rs::gen2::species_legal_in_gen2(ndex) {
+        return Err(pkm_rs::result::Error::FormIndex {
+            national_dex: ohpkm.species_and_form().get_ndex(),
+            form_index: 0,
+        });
+    }
     let mut pk2 = Pk2::from_ohpkm(ohpkm, strategy)?;
 
     // Our policy (NOT upstream): Gen 2 only has moves 1-251. Anything else
@@ -853,6 +873,8 @@ fn convert_to_pk2(
         pk2.moves = base;
         pk2.move_pp = base_pp;
     }
+    // Real level from EXP (from_ohpkm writes 0), same as Gen 1 above.
+    pk2.level = pkm_rs::gen2::level_for_exp(ndex, ohpkm.exp());
 
     let mut new_ohpkm = OhpkmV2::convert_without_backup(&pk2);
 
@@ -984,17 +1006,27 @@ pub extern "C" fn openhome_get_pkm_box_bytes_for_gen(
     let strategy = pkm_rs::convert_strategy::ConvertStrategy::default();
     let bytes_vec: alloc::vec::Vec<u8> = match gen {
         1 => {
-            let pk = match pkm_rs::gen1::Pk1::from_ohpkm(&pkm.ohpkm, strategy) {
+            let mut pk = match pkm_rs::gen1::Pk1::from_ohpkm(&pkm.ohpkm, strategy) {
                 Ok(p) => p,
                 Err(_) => return 0,
             };
+            // Real level from EXP (from_ohpkm writes 0): same derivation as
+            // convert_to_pk1. Every materialization funnels through here.
+            pk.level = pkm_rs::gen1::level_for_exp(
+                pkm.ohpkm.species_and_form().get_ndex() as u16,
+                pkm.ohpkm.exp(),
+            );
             pk.to_box_bytes().to_vec()
         }
         2 => {
-            let pk = match pkm_rs::gen2::Pk2::from_ohpkm(&pkm.ohpkm, strategy) {
+            let mut pk = match pkm_rs::gen2::Pk2::from_ohpkm(&pkm.ohpkm, strategy) {
                 Ok(p) => p,
                 Err(_) => return 0,
             };
+            pk.level = pkm_rs::gen2::level_for_exp(
+                pkm.ohpkm.species_and_form().get_ndex() as u16,
+                pkm.ohpkm.exp(),
+            );
             pk.to_box_bytes().to_vec()
         }
         3 => {
@@ -1459,6 +1491,16 @@ mod tests {
         m
     }
 
+    // Same builder with parameterized species (for dex-cut tests): a plain
+    // Pikachu-shaped mon of any national dex that OhpkmV2 accepts.
+    fn make_test_ohpkm_gen(ndex: u16) -> OhpkmV2 {
+        let mut m = OhpkmV2::new(ndex, 0).expect("valid species");
+        m.set_exp(50_000);
+        m.set_moves(test_moves());
+        m.set_game_of_origin(OriginGame::Sword);
+        m
+    }
+
     // Standard Gen7-legal Pikachu moves, all introduced in Gen1 so they exist
     // in every target generation.
     fn test_moves() -> MoveSlots {
@@ -1742,6 +1784,190 @@ mod tests {
         assert_eq!(pk2.national_dex, PIKACHU as u8, "species must survive");
         assert_eq!(pk2.moves, [85, 98, 86, 87], "moves must survive");
         openhome_free_pkm(out);
+    }
+
+    // Species sweep Gen8 -> Gen1: every Kanto species must survive the
+    // downgrade with moves intact (regression hunt: NidoranF showed as
+    // Gyarados on HW after a SwSh -> Red drop).
+    #[test]
+    fn transfer_gen1_preserves_all_kanto_species() {
+        let mut failures = alloc::vec::Vec::new();
+        for ndex in 1u16..=151 {
+            let mut m = match OhpkmV2::new(ndex, 0) {
+                Ok(m) => m,
+                Err(_) => {
+                    failures.push((ndex, "new"));
+                    continue;
+                }
+            };
+            m.set_moves(test_moves());
+            let mut handle = PkmHandle { ohpkm: m };
+            let ptr = &mut handle as *mut PkmHandle;
+            let out = openhome_transfer_pkm(ptr, 1);
+            if out.is_null() {
+                failures.push((ndex, "transfer NULL"));
+                continue;
+            }
+            let converted = unsafe { &*out };
+            if move_indices(&converted.ohpkm) != [85, 98, 86, 87] {
+                failures.push((ndex, "moves"));
+            }
+            let mut buf = [0u8; 64];
+            let n = openhome_get_pkm_box_bytes_for_gen(out, 1, buf.as_mut_ptr(), buf.len());
+            match Pk1::from_bytes(&buf[..n as usize]) {
+                Ok(pk1) => {
+                    if pk1.national_dex != ndex {
+                        failures.push((ndex, "species mismatch"));
+                    }
+                }
+                Err(_) => failures.push((ndex, "reparse")),
+            }
+            openhome_free_pkm(out);
+        }
+        assert!(
+            failures.is_empty(),
+            "species failures: {:?}",
+            &failures[..failures.len().min(10)]
+        );
+    }
+
+    // Same species check but entering through REAL Pk8 bytes (from_ohpkm ->
+    // to_box_bytes -> loadPkmFromGen -> transfer), i.e. the exact path a
+    // SwSh box drop takes. Catches species bugs in Pk8::to_main_data that
+    // synthetic OHPKMs miss.
+    #[test]
+    fn transfer_gen1_from_real_pk8_bytes_preserves_species() {
+        use pkm_rs::traits::PkmBytes;
+        let mut failures = alloc::vec::Vec::new();
+        for ndex in [29u16, 32, 130, 25, 150, 151, 1] {
+            let mut m = match OhpkmV2::new(ndex, 0) {
+                Ok(m) => m,
+                Err(_) => {
+                    failures.push((ndex, "new"));
+                    continue;
+                }
+            };
+            m.set_moves(test_moves());
+            let pk8 = match pkm_rs::gen8_swsh::Pk8::from_ohpkm(&m, ConvertStrategy::default()) {
+                Ok(p) => p,
+                Err(_) => {
+                    failures.push((ndex, "to-pk8"));
+                    continue;
+                }
+            };
+            let bytes = pk8.to_box_bytes();
+            let loaded = openhome_load_pkm_from_gen(bytes.as_ptr(), bytes.len(), 8);
+            if loaded.is_null() {
+                failures.push((ndex, "load-pk8"));
+                continue;
+            }
+            let out = openhome_transfer_pkm(loaded, 1);
+            openhome_free_pkm(loaded);
+            if out.is_null() {
+                failures.push((ndex, "transfer NULL"));
+                continue;
+            }
+            let mut buf = [0u8; 64];
+            let n = openhome_get_pkm_box_bytes_for_gen(out, 1, buf.as_mut_ptr(), buf.len());
+            match Pk1::from_bytes(&buf[..n as usize]) {
+                Ok(pk1) => {
+                    if pk1.national_dex != ndex {
+                        failures.push((ndex, "species mismatch"));
+                    }
+                }
+                Err(_) => failures.push((ndex, "reparse")),
+            }
+            openhome_free_pkm(out);
+        }
+        assert!(
+            failures.is_empty(),
+            "species failures: {:?}",
+            &failures[..failures.len().min(10)]
+        );
+    }
+
+    // Real-cart DEX-CUT documentation (Ruby Pidgey, 80B, checksum-valid):
+    // Pidgey is not in Sword/Shield (Dexit — vendored personal table has no
+    // entry, same as PKHeX/HOME which refuse it), so Gen3 -> Gen8 must fail
+    // EXPLICITLY (NULL), never fake a conversion. Failed on HW 2026-09-06
+    // and misread as a bug; the refusal IS the correct behavior.
+    #[test]
+    fn transfer_ruby_pidgey_to_swsh_fails_dex_cut() {        let raw: [u8; 80] = [
+            0xf8u8, 0x3a, 0x48, 0xa5, 0x43, 0xbf, 0x07, 0xa8, 0xca, 0xc3, 0xbe,
+            0xc1, 0xbf, 0xd3, 0xff, 0x00, 0x00, 0x00, 0x04, 0x02, 0xcd, 0xe8,
+            0xd9, 0xda, 0xd5, 0xe2, 0xe3, 0x00, 0xac, 0x54, 0x00, 0x00, 0x10,
+            0x00, 0x00, 0x00, 0xe0, 0x27, 0x00, 0x00, 0x00, 0x46, 0x00, 0x00,
+            0x11, 0x00, 0x12, 0x00, 0x61, 0x00, 0x00, 0x00, 0x23, 0x14, 0x1e,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0xfe, 0x98, 0x22, 0x55, 0x7c, 0x0a, 0x35, 0x00,
+            0x00, 0x00, 0x00,
+        ];
+        assert_eq!(raw.len(), 80);
+        let loaded = openhome_load_pkm_from_gen(raw.as_ptr(), raw.len(), 3);
+        assert!(!loaded.is_null(), "valid Ruby Pidgey must load");
+        let out = openhome_transfer_pkm(loaded, 8);
+        openhome_free_pkm(loaded);
+        assert!(out.is_null(), "Pidgey (not in SwSh dex) must fail explicitly");
+    }
+
+    // Dex-cut Gen 1 (Lucario #448, Chikorita #152 are not Kanto): explicit
+    // NULL, never a species-0 shell. Chikorita converts to Gen 2 (Johto).
+    #[test]
+    fn transfer_gen1_gen2_dex_cut() {
+        for (ndex, gen, ok) in [(448u16, 1u32, false), (152u16, 1u32, false), (448u16, 2u32, false), (152u16, 2u32, true)] {
+            let mut handle = PkmHandle {
+                ohpkm: make_test_ohpkm_gen(ndex),
+            };
+            let ptr = &mut handle as *mut PkmHandle;
+            let out = openhome_transfer_pkm(ptr, gen);
+            if ok {
+                assert!(!out.is_null(), "ndex={} gen={} must convert", ndex, gen);
+                openhome_free_pkm(out);
+            } else {
+                assert!(out.is_null(), "ndex={} gen={} must fail explicitly", ndex, gen);
+            }
+        }
+    }
+
+    // Downgraded records carry the real EXP-derived level (from_ohpkm writes
+    // 0): Pikachu at 50_000 EXP, Medium Fast -> level 36, never 0.
+    #[test]
+    fn transfer_gen1_gen2_level_from_exp() {
+        for gen in [1u32, 2u32] {
+            let mut handle = PkmHandle {
+                ohpkm: make_test_ohpkm(OriginGame::Sword, test_moves()),
+            };
+            let ptr = &mut handle as *mut PkmHandle;
+            let out = openhome_transfer_pkm(ptr, gen);
+            assert!(!out.is_null());
+            let mut buf = [0u8; 128];
+            let n = openhome_get_pkm_box_bytes_for_gen(out, gen, buf.as_mut_ptr(), buf.len());
+            // Level byte: Pk1 box [3], Pk2 box [31] (0x1f).
+            let lvl = if gen == 1 { buf[3] } else { buf[31] };
+            assert_eq!(lvl, 36, "gen={} level must derive from EXP", gen);
+            openhome_free_pkm(out);
+        }
+    }
+    // Transfers must be byte-deterministic for the same input: the C++
+    // lossless-return check re-runs a conversion and compares bytes.
+    #[test]
+    fn transfer_is_deterministic_per_target() {
+        for target in [1u32, 3, 8, 9] {
+            let mut handle = PkmHandle {
+                ohpkm: make_test_ohpkm(OriginGame::Sword, test_moves()),
+            };
+            let ptr = &mut handle as *mut PkmHandle;
+            let run = |h: *mut PkmHandle| -> Vec<u8> {
+                let out = openhome_transfer_pkm(h, target);
+                assert!(!out.is_null(), "target={} must convert", target);
+                let mut buf = [0u8; 512];
+                let n = openhome_get_pkm_box_bytes_for_gen(out, target, buf.as_mut_ptr(), buf.len());
+                let bytes = buf[..n as usize].to_vec();
+                openhome_free_pkm(out);
+                bytes
+            };
+            assert_eq!(run(ptr), run(ptr), "target={} must be deterministic", target);
+        }
     }
 
     // Gen2 load path: Pk2 box bytes -> OHPKM with a Pk2-tagged OriginalBackup.

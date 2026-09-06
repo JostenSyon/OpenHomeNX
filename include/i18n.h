@@ -351,6 +351,14 @@ namespace StrKey {
     constexpr const char* SendLogSent          = "sendlog_sent";
     constexpr const char* SendLogSentBoth      = "sendlog_sent_both";
     constexpr const char* SendLogFailed        = "sendlog_failed";
+    constexpr const char* SendSaveTitle        = "sendsave_title";
+    constexpr const char* SendSaveNoUrl        = "sendsave_no_url";
+    constexpr const char* SendSaveNetOff       = "sendsave_net_off";
+    constexpr const char* SendSaveUploading    = "sendsave_uploading";
+    constexpr const char* SendSaveSent         = "sendsave_sent";
+    constexpr const char* SendSaveFailed       = "sendsave_failed";
+    constexpr const char* SendSaveNoGame       = "sendsave_no_game";
+    constexpr const char* SendSaveOnlyImported = "sendsave_only_imported";
 
     // Cross-gen transfer (ui_input.cpp prepareForPlacement + drop dialogs)
     constexpr const char* TransferTitle        = "transfer_title";

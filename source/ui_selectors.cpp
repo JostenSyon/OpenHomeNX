@@ -897,6 +897,35 @@ void UI::handleGameSelectorInput(bool& running) {
                                 }
                                 break;
                             }
+                            case GameSelMenuAction::SendSave: {
+                                // Debug-only: upload the save file of the game
+                                // under the grid cursor. v1 resolves imported
+                                // (file-backed) games only — account saves need
+                                // mount/read/unmount (v2, same resolver shape).
+                                UpdateCfg cfg;
+                                std::string err;
+                                if (!readUpdateCfg(basePath_, cfg) || cfg.url.empty()) {
+                                    showMessageAndWait(i18n::get(StrKey::SendSaveTitle), i18n::get(StrKey::SendSaveNoUrl));
+                                } else if (!updateNetAvailable()) {
+                                    showMessageAndWait(i18n::get(StrKey::SendSaveTitle), i18n::get(StrKey::SendSaveNetOff));
+                                } else if (gameSelOnAllBanks_ || gameSelOnChevron_ != 0 ||
+                                           gameSelCursor_ < 0 || gameSelCursor_ >= (int)availableGames_.size()) {
+                                    showMessageAndWait(i18n::get(StrKey::SendSaveTitle), i18n::get(StrKey::SendSaveNoGame));
+                                } else {
+                                    GameType g = availableGames_[gameSelCursor_];
+                                    std::string path = importedSavePath(g);
+                                    if (path.empty()) {
+                                        showMessageAndWait(i18n::get(StrKey::SendSaveTitle), i18n::get(StrKey::SendSaveOnlyImported));
+                                    } else {
+                                        showWorking(i18n::fmt(StrKey::SendSaveUploading, gameInfo(g).gameTag));
+                                        if (updateNetUploadSave(cfg.url, cfg.token, path, gameInfo(g).gameTag, err))
+                                            showMessageAndWait(i18n::get(StrKey::SendSaveTitle), i18n::get(StrKey::SendSaveSent));
+                                        else
+                                            showMessageAndWait(i18n::get(StrKey::SendSaveTitle), i18n::fmt(StrKey::SendSaveFailed, err));
+                                    }
+                                }
+                                break;
+                            }
                             case GameSelMenuAction::ImportSettings:
                                 showGameSelMenu_ = false;
                                 showImportSettings_ = true;
@@ -1461,8 +1490,10 @@ bool UI::checkForUpdate(bool usbOnly) {
 
 std::vector<GameSelMenuAction> UI::gameSelMenuActions() const {
     std::vector<GameSelMenuAction> v = { GameSelMenuAction::SwitchCore, GameSelMenuAction::DebugLog };
-    if (DebugLog::enabled())
+    if (DebugLog::enabled()) {
         v.push_back(GameSelMenuAction::SendLog);
+        v.push_back(GameSelMenuAction::SendSave);
+    }
     v.push_back(GameSelMenuAction::ImportSettings);
     v.push_back(GameSelMenuAction::CheckUpdate);
     v.push_back(GameSelMenuAction::Exit);
@@ -1502,6 +1533,7 @@ void UI::drawGameSelMenuPopup() {
             case GameSelMenuAction::SwitchCore:      label = std::string("Switch Core") + (useOpenHome() ? " (OH)" : " (PK)"); break;
             case GameSelMenuAction::DebugLog:        label = std::string("Debug log") + (DebugLog::enabled() ? " (on)" : " (off)"); break;
             case GameSelMenuAction::SendLog:         label = "Send log"; break;
+            case GameSelMenuAction::SendSave:        label = "Send save"; break;
             case GameSelMenuAction::ImportSettings:  label = "Import settings"; break;
             case GameSelMenuAction::CheckUpdate:     label = "Check for update"; break;
             case GameSelMenuAction::Exit:             label = "Exit"; break;

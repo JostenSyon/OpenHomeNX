@@ -1067,7 +1067,8 @@ bool UI::prepareForPlacement(Pokemon& pkm, Panel panel, std::string& whyNot) con
     // preferred, so moves/levels gained meanwhile survive by construction.
 
     // Gen1 records carry no names: snapshot OT/nick from the CURRENT format
-    // now (pkm.data is overwritten by the conversion below).
+    // now (pkm.data is overwritten by the conversion below). The level byte
+    // is derived from EXP inside Rust (level_for_exp), no snapshot needed.
     std::string gen1Ot, gen1Nick;
     if (dstGen == 1) {
         gen1Ot = pkm.otName();
@@ -1081,6 +1082,45 @@ bool UI::prepareForPlacement(Pokemon& pkm, Panel panel, std::string& whyNot) con
     if (srcGen == 0) {
         whyNot = i18n::fmt(StrKey::TransferCantReadSrcXfer, gameDisplayNameOf(pkm.gameType_));
         return false;
+    }
+
+    // Lossless return (GenPorting.md rev.3): when coming BACK to the format of
+    // a carried OriginalBackup, test whether the user changed anything since
+    // conversion by re-running that same conversion now (deterministic, see
+    // transfer_is_deterministic_per_target): backup -> current format.
+    // Identical bytes mean untouched -> restore the backup verbatim, so
+    // origin-only data and original moves come back. Nothing the user did is
+    // lost (they did nothing; battle-state reset on transfer is standard).
+    // Anything else (edited, or any failure) falls through to the normal
+    // reconstruct below — fail-open: worst case is current behavior.
+    if (pkm.ohBackup_.size() >= 2) {
+        const int bkTag = pkm.ohBackup_[0] | (pkm.ohBackup_[1] << 8);
+        const size_t bkRec = pkm.ohBackup_.size() - 2;
+        const int bkGen = ohGenForBackupTag(bkTag);
+        const size_t curRec = static_cast<size_t>(ohRecordBytesFor(srcGen));
+        if (bkGen != 0 && bkGen == dstGen && bkRec > 0 && bkRec <= pkm.data.size() &&
+            curRec > 0 && curRec <= pkm.data.size()) {
+            std::vector<uint8_t> bkBytes(pkm.ohBackup_.begin() + 2, pkm.ohBackup_.end());
+            PkmHandle* th = OpenHomeNX::loadPkmFromGen(bkBytes, static_cast<uint32_t>(bkGen));
+            if (th) {
+                PkmHandle* tout = PokemonFFI::transfer(th, static_cast<uint32_t>(srcGen));
+                OpenHomeNX::freePkm(th);
+                if (tout) {
+                    std::vector<uint8_t> trial = OpenHomeNX::getPkmBoxBytesForGen(tout, static_cast<uint32_t>(srcGen));
+                    OpenHomeNX::freePkm(tout);
+                    if (trial.size() >= curRec &&
+                        std::memcmp(trial.data(), pkm.data.data(), curRec) == 0) {
+                        pkm.data.fill(0);
+                        std::memcpy(pkm.data.data(), pkm.ohBackup_.data() + 2, bkRec);
+                        pkm.gameType_ = dest;
+                        DebugLog::line("xfer: lossless return from backup (tag %d)", bkTag);
+                        dbgBlob("returned", pkm.data.data(), bkRec);
+                        return true;
+                    }
+                    DebugLog::line("xfer: return-trip edited, reconstructing");
+                }
+            }
+        }
     }
 
     // Source stored record -> OHPKM. openhome_load_pkm is NOT usable here: it
@@ -1219,6 +1259,27 @@ void UI::actionSelect() {
         // converted we place none, so a partial multi-drop is impossible.
         // Covers both the position-preserving and first-available branches.
         {
+            // Gen1-dest move-drop warning (F2): count non-native moves BEFORE
+            // anything converts (preview load, no mutation). A proceeds,
+            // B keeps the whole batch in hand, untouched. One dialog per drop.
+            for (int i = 0; i < (int)heldMulti_.size(); i++) {
+                const int dg0 = ohTargetGenFor(destGameFor(cursor_.panel));
+                if (!useOpenHome() || dg0 != 1) break;
+                const int sg0 = ohSourceGenFor(heldMulti_[i].gameType_);
+                const int sz0 = ohRecordBytesFor(sg0);
+                if (sg0 == 0 || sz0 <= 0 || sz0 > (int)heldMulti_[i].data.size()) continue;
+                std::vector<uint8_t> src0(heldMulti_[i].data.begin(), heldMulti_[i].data.begin() + sz0);
+                PkmHandle* ih = OpenHomeNX::loadPkmFromGen(src0, static_cast<uint32_t>(sg0));
+                if (!ih) continue;
+                uint32_t dropped = OpenHomeNX::countMovesNotInGen(ih, static_cast<uint32_t>(dg0));
+                OpenHomeNX::freePkm(ih);
+                if (dropped != UINT32_MAX && dropped > 0) {
+                    if (!showConfirmDialog(i18n::get(StrKey::Gen1DropsTitle),
+                            i18n::fmt(StrKey::Gen1DropsBody, heldMulti_[i].displayName(), std::to_string(dropped))))
+                        return; // B: cancel, everything stays in hand, untouched
+                    break; // A once: convert the whole batch below
+                }
+            }
             std::vector<Pokemon> converted = heldMulti_;
             for (int i = 0; i < (int)converted.size(); i++) {
                 std::string whyNot;
@@ -1306,6 +1367,26 @@ void UI::actionSelect() {
         // format before it is written. Covers both the place-on-empty and the
         // swap branch below, since both place heldPkm_ into this same panel.
         {
+            // Same Gen1-dest move-drop check as the multi drop above, on the
+            // single held mon. B cancels with the mon untouched in hand.
+            const int dg0 = ohTargetGenFor(destGameFor(cursor_.panel));
+            if (useOpenHome() && dg0 == 1) {
+                const int sg0 = ohSourceGenFor(heldPkm_.gameType_);
+                const int sz0 = ohRecordBytesFor(sg0);
+                if (sg0 != 0 && sz0 > 0 && sz0 <= (int)heldPkm_.data.size()) {
+                    std::vector<uint8_t> src0(heldPkm_.data.begin(), heldPkm_.data.begin() + sz0);
+                    PkmHandle* ih = OpenHomeNX::loadPkmFromGen(src0, static_cast<uint32_t>(sg0));
+                    if (ih) {
+                        uint32_t dropped = OpenHomeNX::countMovesNotInGen(ih, static_cast<uint32_t>(dg0));
+                        OpenHomeNX::freePkm(ih);
+                        if (dropped != UINT32_MAX && dropped > 0 &&
+                            !showConfirmDialog(i18n::get(StrKey::Gen1DropsTitle),
+                                i18n::fmt(StrKey::Gen1DropsBody, heldPkm_.displayName(), std::to_string(dropped)))) {
+                            return; // B: cancel, mon untouched in hand
+                        }
+                    }
+                }
+            }
             std::string whyNot;
             if (!prepareForPlacement(heldPkm_, cursor_.panel, whyNot)) {
                 showMessageAndWait(i18n::get(StrKey::TransferTitle), whyNot);

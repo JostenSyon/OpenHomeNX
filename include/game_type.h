@@ -270,7 +270,8 @@ inline int ohSourceGenFor(GameType g) {
 // laid out largest-format-first, so a prefix is the exact record.
 inline int ohRecordBytesFor(int gen) {
     switch (gen) {
-        case 1:  return 33;   // Pk1 (box record; party 44 = box33 + level + stats)        case 3:  return 80;   // Pk3
+        case 1:  return 33;   // Pk1 (box record; party 44 = box33 + level + stats)
+        case 3:  return 80;   // Pk3
         case 8:  return 344;  // Pk8  (box == party)
         case 9:  return 344;  // Pk9  (Rust core: box == party == 344)
         case 10: return 360;  // Pa8  (box; PKHeX party record is 376)
@@ -281,12 +282,30 @@ inline int ohRecordBytesFor(int gen) {
     }
 }
 
+// Generation id for openhome_*_from_gen/transfer matching an OriginalBackup
+// tag, or 0 if unknown. Inverse of ohBackupTagForGen (same numbering).
+inline int ohGenForBackupTag(int tag) {
+    switch (tag) {
+        case 1:  return 1;   // Pk1
+        case 3:  return 3;   // Pk3
+        case 7:  return 7;   // Pk7
+        case 8:  return 13;  // Pb7
+        case 9:  return 8;   // Pk8
+        case 10: return 10;  // Pa8
+        case 11: return 12;  // Pb8
+        case 12: return 9;   // Pk9
+        case 13: return 11;  // Pa9
+        default: return 0;
+    }
+}
+
 // pkm_rs::ohpkm::v2_sections::pkm_bytes::Tag id for the given OH generation, as
 // it appears in the 2-byte LE prefix of an OriginalBackup blob. 0 if the gen
 // has no single tag here.
 inline int ohBackupTagForGen(int gen) {
     switch (gen) {
-        case 1:  return 1;   // Tag::Pk1        case 3:  return 3;   // Tag::Pk3
+        case 1:  return 1;   // Tag::Pk1
+        case 3:  return 3;   // Tag::Pk3
         case 8:  return 9;   // Tag::Pk8
         case 9:  return 12;  // Tag::Pk9
         case 10: return 10;  // Tag::Pa8

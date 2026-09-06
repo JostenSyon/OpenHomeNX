@@ -36,3 +36,10 @@ bool updateNetDownload(const std::string& url, const std::string& token,
 bool updateNetUploadLog(const std::string& baseUrl, const std::string& token,
                         const std::string& basePath, std::string& err,
                         bool* outSentLibLog = nullptr);
+
+// POST di un file save a `baseUrl/upload-save?f=<gameTag>`. Il server lo
+// archivia in saves/ con estensione .sav. Nessun limite di formato dal lato
+// client oltre maxBytes (i save Switch superano i 4MB dei log).
+bool updateNetUploadSave(const std::string& baseUrl, const std::string& token,
+                         const std::string& filePath, const std::string& gameTag,
+                         std::string& err);

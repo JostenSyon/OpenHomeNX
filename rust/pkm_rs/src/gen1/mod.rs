@@ -7,7 +7,8 @@ pub(crate) const PARTY_SIZE: usize = 66;
 
 use pkm_rs_resources::levelup::LearnsetFileReader;
 use pkm_rs_resources::moves::MoveIndex;
-use pkm_rs_types::Generation;
+use pkm_rs_resources::species::SpeciesForm;
+use pkm_rs_types::{Generation, NationalDex};
 
 // PKHeX Red/Blue level-up learnset table, indexed by national dex
 // (verified: entry 0 is empty, entry 1 is Bulbasaur, entry 25 is Pikachu).
@@ -16,6 +17,26 @@ use pkm_rs_types::Generation;
 static RB_LEARNSETS: LearnsetFileReader = LearnsetFileReader::from_pkl_bytes(
     include_bytes!("../../../pkm_rs_resources/src/pkhex_bin/levelup/lvlmove_rb.pkl"),
 );
+
+/// True if this species exists in Gen 1 (Red/Blue metadata): the dex-cut
+/// gate for downgrades. Same data PKHeX/HOME enforce (not a hand range).
+pub fn species_legal_in_gen1(ndex: u16) -> bool {
+    pkm_rs_resources::species::form_metadata::source_has_form_metadata(
+        pkm_rs_resources::metadata_source::MetadataSource::RedBlue,
+        ndex,
+        0,
+    )
+}
+
+/// Level for this species at the given EXP (upstream pattern, same as
+/// Pk3/Pk8 `calculate_level`). from_ohpkm writes level 0; our FFI layer
+/// restores the real level with this instead of inventing a growth table.
+pub fn level_for_exp(ndex: u16, exp: u32) -> u8 {
+    SpeciesForm::base_form(NationalDex::assert_valid(ndex))
+        .get_species_metadata()
+        .level_up_type
+        .calculate_level(exp)
+}
 
 /// True if this move id may appear on a Gen 1 record: empty slot or a move
 /// introduced in Gen 1. Anything else would silently become another move

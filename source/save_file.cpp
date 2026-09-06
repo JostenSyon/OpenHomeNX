@@ -1104,15 +1104,23 @@ bool SaveFile::loadGB(const std::string& path) {
     bool flushed = (rawData_[GB_CURBOXIDX] & 0x80) != 0;
 
     gbStorage_.assign(GB_BOX_COUNT * GB_SLOTS_PER_BOX * GB_SLOT_STRIDE, 0);
+    gbStoredOrig_.assign(GB_BOX_COUNT * GB_BOX_LIST, 0);
     for (int b = 0; b < GB_BOX_COUNT; b++) {
         uint8_t* dst = gbStorage_.data() + b * GB_SLOTS_PER_BOX * GB_SLOT_STRIDE;
+        gbBoxTrusted_[b] = false;
         if (b == cur) {
             if (gbUnpackList(rawData_.data() + GB_CURBOX, GB_SLOTS_PER_BOX, 33, dst) < 0)
                 return false;
+            gbBoxTrusted_[b] = true;
         } else if (flushed) {
             if (gbUnpackList(rawData_.data() + gbStoredBoxBase(b), GB_SLOTS_PER_BOX, 33, dst) < 0)
                 return false;
+            gbBoxTrusted_[b] = true;
         }
+        // Snapshot the stored bytes either way: untrusted boxes are written
+        // back verbatim on save (never zeroed).
+        std::memcpy(gbStoredOrig_.data() + b * GB_BOX_LIST,
+                    rawData_.data() + gbStoredBoxBase(b), GB_BOX_LIST);
         // else: leave zeros (empty) — never trust unflushed storage.
     }
 
@@ -1133,18 +1141,28 @@ bool SaveFile::saveGB(const std::string& path) {
     // Pack every box from the flat buffer back into its PokeList1 region.
     // The current box is mirrored into the live CurrentBox region as well
     // (PKHeX SAV1.GetFinalData): the game reads party-adjacent state from it.
+    // Boxes never trusted at load (unflushed storage) and still empty are
+    // restored byte-wise from the load snapshot instead of packed: never
+    // write what we didn't read.
     int cur = rawData_[GB_CURBOXIDX] & 0x7F;
     if (cur < 0 || cur >= GB_BOX_COUNT) cur = 0;
     bool anyContent = false;
     for (int b = 0; b < GB_BOX_COUNT; b++) {
         const uint8_t* src = gbStorage_.data() + b * GB_SLOTS_PER_BOX * GB_SLOT_STRIDE;
+        bool hasContent = false;
         for (int s = 0; s < GB_SLOTS_PER_BOX; s++)
-            if (src[s * GB_SLOT_STRIDE] != 0) { anyContent = true; break; }
-        if (b == cur) {
-            gbPackList(rawData_.data() + GB_CURBOX, GB_SLOTS_PER_BOX, src);
-            gbPackList(rawData_.data() + gbStoredBoxBase(b), GB_SLOTS_PER_BOX, src);
+            if (src[s * GB_SLOT_STRIDE] != 0) { hasContent = true; break; }
+        if (hasContent) anyContent = true;
+        if (b == cur || gbBoxTrusted_[b] || hasContent) {
+            if (b == cur) {
+                gbPackList(rawData_.data() + GB_CURBOX, GB_SLOTS_PER_BOX, src);
+                gbPackList(rawData_.data() + gbStoredBoxBase(b), GB_SLOTS_PER_BOX, src);
+            } else {
+                gbPackList(rawData_.data() + gbStoredBoxBase(b), GB_SLOTS_PER_BOX, src);
+            }
         } else {
-            gbPackList(rawData_.data() + gbStoredBoxBase(b), GB_SLOTS_PER_BOX, src);
+            std::memcpy(rawData_.data() + gbStoredBoxBase(b),
+                        gbStoredOrig_.data() + b * GB_BOX_LIST, GB_BOX_LIST);
         }
     }
     if (anyContent)

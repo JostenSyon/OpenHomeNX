@@ -257,22 +257,24 @@ bool updateNetDownload(const std::string& url, const std::string& token,
     return true;
 }
 
-// POST binario di un file su <baseUrl>/upload[?f=nome]. Ritorna false + err
-// su qualunque problema. Usato sia per debug.log che per libusbhsfs.log.
+// POST binario di un file su <baseUrl><endpoint>[?f=nome]. Ritorna false + err
+// su qualunque problema. Usato sia per debug.log che per libusbhsfs.log
+// (endpoint /upload) che per i save (endpoint /upload-save).
 static bool uploadOneFile(const std::string& baseUrl, const std::string& token,
                           const std::string& path, const std::string& remoteName,
-                          std::string& err) {
+                          std::string& err, const std::string& endpoint = "/upload",
+                          long maxBytes = 4 * 1024 * 1024) {
     FILE* f = std::fopen(path.c_str(), "rb");
     if (!f) { err = path + " non trovato (errno " + std::strerror(errno) + ")"; return false; }
     std::fseek(f, 0, SEEK_END);
     long sz = std::ftell(f);
     std::fseek(f, 0, SEEK_SET);
     if (sz <= 0) { std::fclose(f); err = path + " vuoto"; return false; }
-    if (sz > 4 * 1024 * 1024) { std::fclose(f); err = path + " troppo grande (>4MB)"; return false; }
+    if (sz > maxBytes) { std::fclose(f); err = path + " troppo grande (>" + std::to_string(maxBytes / (1024 * 1024)) + "MB)"; return false; }
 
     std::string url = baseUrl;
     while (!url.empty() && url.back() == '/') url.pop_back();
-    url += "/upload";
+    url += endpoint;
     if (!remoteName.empty()) url += "?f=" + remoteName;
 
     CURL* c = curl_easy_init();
@@ -343,5 +345,16 @@ bool updateNetUploadLog(const std::string& baseUrl, const std::string& token,
             DebugLog::line("upload: sdmc:/libusbhsfs.log assente, invio solo debug.log");
         }
     }
+    return true;
+}
+
+bool updateNetUploadSave(const std::string& baseUrl, const std::string& token,
+                         const std::string& filePath, const std::string& gameTag,
+                         std::string& err) {
+    if (!g_netReady) { err = "rete non inizializzata"; return false; }
+    // 128MB: i save Switch superano di molto il tetto 4MB dei log.
+    if (!uploadOneFile(baseUrl, token, filePath, gameTag, err, "/upload-save",
+                       128L * 1024 * 1024))
+        return false;
     return true;
 }

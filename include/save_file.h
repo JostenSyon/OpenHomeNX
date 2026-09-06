@@ -197,6 +197,11 @@ private:
     bool saveGB(const std::string& path);
     // Flat unpacked Gen1 box storage (12*20*55B), backing boxData_.
     std::vector<uint8_t> gbStorage_;
+    // Per-box trust from loadGB(): only the current box + (when the save was
+    // flushed) the stored boxes were parsed. Untrusted boxes are preserved
+    // byte-wise on save (never zeroed): we don't write what we didn't read.
+    bool gbBoxTrusted_[12] = {false};
+    std::vector<uint8_t> gbStoredOrig_;
 
     static bool isBDSPSize(size_t size);
 

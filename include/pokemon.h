@@ -56,6 +56,14 @@ inline const PokemonOffsets& pokemonOffsetsFor(GameType g) {
     static constexpr PokemonOffsets PK8 = {0x08, 0x0A, 0x1C, 0x20, 0x22, 0,  0x22, 2,  0x24, 0,  0x124, 0x14, false, 0x26, 0x0C, 0x0E, 0x72, 0x8C, 0x58, 0xF8, 0x148, -1,  -1,  false, 0xE2, 0xE4, 0x16, -1,  -1,  0xA8};
     static constexpr PokemonOffsets PA8 = {0x08, 0x0A, 0x1C, 0x20, 0x22, 0,  0x22, 2,  0x24, 0,  0x137, 0x14, false, 0x26, 0x0C, 0x0E, 0x54, 0x94, 0x60, 0x110, -1,   0x10, 0x16, false, 0xF2, 0xE4, -1,   -1,  -1,  0xB8};
     static constexpr PokemonOffsets PA9 = {0x08, 0x0A, 0x1C, 0x20, 0x22, 0,  0x22, 1,  0x24, 0,  0x124, 0x14, false, 0x26, 0x0C, 0x0E, 0x72, 0x8C, 0x58, 0xF8, 0x148, -1,  0x23, true,  0xD5, 0xD0, -1,   -1,  -1,  0xA8};
+    // PK1 (Gen1 33B + OT/nick): every accessor branches on isGen1File()
+    // BEFORE consulting ofs(), so these values are only a backstop. All -1
+    // (with evBase 0) so a missed branch degrades to defaults, never to
+    // another format's garbage. CRITICAL: without this row Gen1 fell through
+    // to PK8, making sameStoredFormat() claim SwSh==Red and silently dumping
+    // raw Pk8 bytes into Gen1 slots (NidoranF shown as Gyarados, 2026-09-06).
+    static constexpr PokemonOffsets PK1 = {-1,  -1,  -1,  -1,  -1,  0,   -1,  0,   -1,  0,   -1,  -1,  false, 0,    -1,  -1,   -1,   -1,   -1,   -1,   -1,   -1,   -1,  false, -1,   -1,   -1,   -1,  -1,  -1};
+    if (isGen1File(g)) return PK1;
     if (isFRLG(g) || isImportedFile(g)) return PK3;
     if (isLGPE(g)) return PB7;
     if (g == GameType::LA) return PA8;
