@@ -40,6 +40,10 @@ uint32_t openhome_count_moves_not_in_gen(const PkmHandle *pkm_handle, uint32_t g
 // null buffer returns the move count for sizing; with a buffer writes all or
 // nothing (0 on undersize/unknown). Never truncates silently.
 uint32_t openhome_get_learnset(uint32_t table, uint32_t species, uint8_t *out_buf, size_t out_len);
+// Real level from EXP for Gen 4/5/6 (verified growth data in Rust).
+uint8_t openhome_level_for_exp(uint32_t gen, uint32_t ndex, uint32_t exp);
+// Gen4 charset decode to UTF-8+NUL; returns bytes written (no NUL), 0 on error.
+uint32_t openhome_gen4_decode(const uint16_t* codes, uint32_t count, char* out_utf8, size_t out_len);
 bool openhome_save_pkm_to_file(PkmHandle *pkm_handle, uint32_t slot);
 uint32_t openhome_get_pkm_box_bytes(PkmHandle *pkm_handle, uint8_t *out_buf, size_t out_len);
 uint32_t openhome_get_pkm_box_bytes_for_gen(PkmHandle *pkm_handle, uint32_t gen, uint8_t *out_buf, size_t out_len);
@@ -96,9 +100,18 @@ inline std::vector<uint8_t> getPkmBoxBytes(PkmHandle* pkm_handle) {
 inline PkmHandle* loadPkmFromGen(const std::vector<uint8_t>& data, uint32_t gen) {
     return openhome_load_pkm_from_gen(data.data(), data.size(), gen);
 }
-// Mosse droppate da un transfer verso `gen` (solo Gen 1); u32::MAX = sconosciuto.
 inline uint32_t countMovesNotInGen(const PkmHandle* pkm_handle, uint32_t gen) {
     return openhome_count_moves_not_in_gen(pkm_handle, gen);
+}
+inline uint8_t levelForExp(uint32_t gen, uint32_t ndex, uint32_t exp) {
+    return openhome_level_for_exp(gen, ndex, exp);
+}
+// Gen4 charset codes -> UTF-8 std::string (empty on error, never truncated).
+inline std::string gen4DecodeString(const uint16_t* codes, uint32_t count) {
+    char buf[64];
+    uint32_t n = openhome_gen4_decode(codes, count, buf, sizeof(buf));
+    if (n == 0 || n >= sizeof(buf)) return "";
+    return std::string(buf, n);
 }
 // Learnset level-up come coppie (move id, level): level 0 = mossa evoluzione.
 inline std::vector<std::pair<uint16_t, uint8_t>> getLearnset(uint32_t table, uint32_t species) {
@@ -114,7 +127,11 @@ inline std::vector<std::pair<uint16_t, uint8_t>> getLearnset(uint32_t table, uin
 inline std::vector<uint8_t> getPkmBoxBytesForGen(PkmHandle* pkm_handle, uint32_t gen) {
     size_t max_len = 344;
     if (gen == 1) max_len = 33; // Pk1 (Gen 1 R/B/Y box record)
+    else if (gen == 2) max_len = 32; // Pk2 (Gen 2 G/S/C box record)
     else if (gen == 3) max_len = 80;
+    else if (gen == 4) max_len = 136; // Pk4 (Gen 4 DPPt/HGSS box record)
+    else if (gen == 5) max_len = 136; // Pk5 (Gen 5 BW box record)
+    else if (gen == 6) max_len = 232; // Pk6 (Gen 6 XY/ORAS box record)
     else if (gen == 7) max_len = 232;
     else if (gen == 9) max_len = 344;
     else if (gen == 10) max_len = 360; // Pa8 (Legends: Arceus)

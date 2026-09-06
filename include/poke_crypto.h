@@ -28,6 +28,13 @@ namespace PokeCrypto {
     constexpr int SIZE_3HEADER = 32;     // unencrypted header
     constexpr int SIZE_3BLOCK  = 12;     // 12 bytes per block
 
+    // Gen4/Gen5 (PK4/PK5 — DPPt/HGSS, BW/B2W2)
+    constexpr int SIZE_4STORED = 136;    // 136 bytes (box format)
+    constexpr int SIZE_4PARTY  = 236;    // 236 bytes (party format)
+    constexpr int SIZE_5STORED = 136;    // 136 bytes (box format)
+    constexpr int SIZE_5PARTY  = 220;    // 220 bytes (party format)
+    constexpr int SIZE_45BLOCK = 32;     // 32 bytes per block
+
     // Largest party size across all formats (for Pokemon data array sizing)
     constexpr int MAX_PARTY_SIZE = SIZE_8APARTY; // 0x178
 
@@ -50,5 +57,13 @@ namespace PokeCrypto {
     // Gen3 uses PID^OID seed with constant XOR (not LCG) + 4x12-byte block shuffle.
     void decryptArray3(const uint8_t* ekm, size_t len, uint8_t* outBuf);
     void encryptArray3(const uint8_t* pk, size_t len, uint8_t* outBuf);
+
+    // Decrypt/encrypt Gen4/Gen5 Pokemon data (PK4/PK5 — DPPt/HGSS, BW/B2W2).
+    // Same LCG stream as Gen6+ but seeded by CHECKSUM (party tail by PID),
+    // 4x32-byte blocks, sv = (pid >> 13) & 31 (PKHeX PokeCrypto Decrypt45).
+    void decryptArray45(const uint8_t* ekm, size_t len, uint8_t* outBuf);
+    void encryptArray45(const uint8_t* pk, size_t len, uint8_t* outBuf);
+    // Encrypted at rest when the unused ribbon block is nonzero (PKHeX IsEncrypted45).
+    bool isEncrypted45(const uint8_t* data, size_t len);
 
 } // namespace PokeCrypto

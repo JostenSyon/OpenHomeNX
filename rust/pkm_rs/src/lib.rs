@@ -4,7 +4,7 @@ extern crate alloc;
 mod checksum;
 #[cfg(any(feature = "wasm", feature = "alloc"))]
 mod encryption;
-mod conversion;
+pub mod conversion;
 mod rom_hacks;
 mod strings;
 mod util;

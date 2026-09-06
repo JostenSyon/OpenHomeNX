@@ -159,6 +159,52 @@ std::string lastPathSegment(const std::string& dir) {
     return pos == std::string::npos ? d : d.substr(pos + 1);
 }
 
+// Gen 4/5 (DS .sav dumps, 512KB NDS flash). Layouts are byte-distinguishable
+// (DP/Pt/HGSS sizes, BW Game byte), so the filename only breaks the D/P tie
+// (byte-identical layouts) — multi-language keywords, DIAMOND default.
+bool detectDSVersion(const std::string& filename, const std::string& full, GameType& outType) {
+    struct stat st;
+    if (stat(full.c_str(), &st) != 0 || !S_ISREG(st.st_mode))
+        return false;
+    if (static_cast<size_t>(st.st_size) != 0x80000)
+        return false;
+    // Gen5 first: the PlayerData.Game byte is exact (20 = White, 21 = Black).
+    {
+        SaveFile probe;
+        probe.setGameType(GameType::BLACK);
+        if (probe.load(full)) {
+            uint8_t gb = probe.dsGameByte();
+            if (gb == 20) { outType = GameType::WHITE; return true; }
+            if (gb == 21) { outType = GameType::BLACK; return true; }
+            return false; // loadDS5 rejects non-BW explicitly; be safe
+        }
+    }
+    // Gen4: any layout loads under a placeholder; refine below.
+    SaveFile probe;
+    probe.setGameType(GameType::DIAMOND);
+    if (!probe.load(full))
+        return false;
+    if (probe.dsLayout() == SaveFile::Ds4Layout::PT) {
+        outType = GameType::PLATINUM;
+        return true;
+    }
+    if (probe.dsLayout() == SaveFile::Ds4Layout::HGSS) {
+        uint8_t rc = probe.dsRomCode();
+        if (rc == 8) { outType = GameType::SOULSILVER; return true; }
+        if (rc == 7) { outType = GameType::HEARTGOLD; return true; }
+        std::string low = toLower(filename);
+        if (low.find("soulsilver") != std::string::npos) { outType = GameType::SOULSILVER; return true; }
+        if (low.find("heartgold") != std::string::npos) { outType = GameType::HEARTGOLD; return true; }
+        outType = GameType::HEARTGOLD;
+        return true;
+    }
+    std::string low = toLower(filename);
+    auto has = [&](const char* k) { return low.find(k) != std::string::npos; };
+    if (has("pearl") || has("perla") || has("perle")) { outType = GameType::PEARL; return true; }
+    outType = GameType::DIAMOND; // default (also on diamond/diamante/diamant)
+    return true;
+}
+
 void scanDir(const std::string& dir, std::vector<ImportedGame>& out, std::vector<bool>& claimed) {
     DIR* d = opendir(dir.c_str());
     if (!d) {
@@ -180,6 +226,23 @@ void scanDir(const std::string& dir, std::vector<ImportedGame>& out, std::vector
         if (stat(full.c_str(), &st) != 0 || !S_ISREG(st.st_mode))
             continue;
         regularFiles++;
+
+        // Gen 4/5 (DS dumps, 512KB): detection is byte-driven (layouts, Game
+        // byte); the filename only breaks the D/P tie inside detectDSVersion.
+        GameType dsType = GameType::DIAMOND;
+        if (detectDSVersion(entry->d_name, full, dsType)) {
+            int idx = static_cast<int>(dsType);
+            if (claimed[idx]) {
+                DebugLog::line("import scan: skip %s (doppione %s, vince il primo)",
+                               entry->d_name, gameInfo(dsType).gameTag);
+                continue;
+            }
+            claimed[idx] = true;
+            matched++;
+            out.push_back({dsType, full, lastPathSegment(dir)});
+            DebugLog::line("import scan: %s -> %s", full.c_str(), gameInfo(dsType).gameTag);
+            continue;
+        }
 
         // Any isImportedFile() GameType routes SaveFile::load() through the
         // same loadGBA() — which one doesn't matter yet, detectGen3Version()

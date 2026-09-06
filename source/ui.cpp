@@ -115,19 +115,26 @@ bool UI::init() {
         gameLogoCache_[GameType::EMERALD]  = loadLogo("Emerald");
     }
 
-    // HD box art for the RSE tiles (user-provided PNGs, aspect-preserved).
+    // HD box art for the tiles (user-provided PNGs, aspect-preserved).
+    // Tries .png first, then .jpg (RBY art ships as optimized jpg).
     {
         auto loadArt = [&](const char* name) -> SDL_Texture* {
-            std::string path = std::string("romfs:/boxart/") + name + ".png";
-            SDL_Surface* s = IMG_Load(path.c_str());
-            if (!s) return nullptr;
-            SDL_Texture* t = SDL_CreateTextureFromSurface(renderer_, s);
-            SDL_FreeSurface(s);
-            return t;
+            for (const char* ext : {".png", ".jpg"}) {
+                std::string path = std::string("romfs:/boxart/") + name + ext;
+                SDL_Surface* s = IMG_Load(path.c_str());
+                if (!s) continue;
+                SDL_Texture* t = SDL_CreateTextureFromSurface(renderer_, s);
+                SDL_FreeSurface(s);
+                if (t) return t;
+            }
+            return nullptr;
         };
         boxArtCache_[GameType::RUBY]     = loadArt("ruby");
         boxArtCache_[GameType::SAPPHIRE] = loadArt("sapphire");
         boxArtCache_[GameType::EMERALD]  = loadArt("emerald");
+        boxArtCache_[GameType::RED]      = loadArt("red");
+        boxArtCache_[GameType::BLUE]     = loadArt("blue");
+        boxArtCache_[GameType::YELLOW]   = loadArt("yellow");
     }
 
     // Tile backgrounds (user-provided). Missing file = flat color stays.

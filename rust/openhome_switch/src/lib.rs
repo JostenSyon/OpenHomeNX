@@ -1247,6 +1247,87 @@ pub extern "C" fn openhome_get_learnset(
     written
 }
 
+/// Real level from EXP for the C++ detail view (same derivation the FFI
+/// transfer layer uses; verified growth data, never a C++-side table).
+#[cfg(not(any(feature = "alloc", feature = "std")))]
+#[no_mangle]
+pub extern "C" fn openhome_level_for_exp(_gen: u32, _ndex: u32, _exp: u32) -> u8 {
+    0
+}
+#[cfg(any(feature = "alloc", feature = "std"))]
+#[no_mangle]
+pub extern "C" fn openhome_level_for_exp(gen: u32, ndex: u32, exp: u32) -> u8 {
+    let ndex = ndex as u16;
+    match gen {
+        4 => pkm_rs::gen4::level_for_exp(ndex, exp),
+        5 => pkm_rs::gen5::level_for_exp(ndex, exp),
+        6 => pkm_rs::gen6::level_for_exp(ndex, exp),
+        _ => 0,
+    }
+}
+
+/// Gen4 charset decode for the C++ detail view (reuses the verified
+/// conversion table; no duplicated 2KB array in C++). Writes UTF-8 + NUL,
+/// returns bytes written excluding NUL, 0 on undersize/empty (explicit,
+/// never truncated silently: 11 codes need at most 33 bytes + NUL).
+#[cfg(not(any(feature = "alloc", feature = "std")))]
+#[no_mangle]
+pub extern "C" fn openhome_gen4_decode(
+    _codes: *const u16,
+    _count: u32,
+    _out_utf8: *mut u8,
+    _out_len: usize,
+) -> u32 {
+    0
+}
+#[cfg(any(feature = "alloc", feature = "std"))]
+#[no_mangle]
+pub extern "C" fn openhome_gen4_decode(
+    codes: *const u16,
+    count: u32,
+    out_utf8: *mut u8,
+    out_len: usize,
+) -> u32 {
+    use pkm_rs::conversion::gen4_string_encoding;
+    if codes.is_null() || out_utf8.is_null() || out_len == 0 {
+        return 0;
+    }
+    let codes = unsafe { core::slice::from_raw_parts(codes, count as usize) };
+    let out = unsafe { core::slice::from_raw_parts_mut(out_utf8, out_len) };
+    let mut o = 0usize;
+    for &code in codes {
+        if code == 0xFFFF {
+            break;
+        }
+        let uni = gen4_string_encoding::decode(code).unwrap_or(code) as u32;
+        // UTF-8 encode (Gen4 maps to BMP only); +1 room for the NUL.
+        if uni < 0x80 {
+            if o + 2 > out.len() {
+                return 0;
+            }
+            out[o] = uni as u8;
+            o += 1;
+        } else if uni < 0x800 {
+            if o + 3 > out.len() {
+                return 0;
+            }
+            out[o] = (0xC0 | (uni >> 6)) as u8;
+            out[o + 1] = (0x80 | (uni & 0x3F)) as u8;
+            o += 2;
+        } else {
+            if o + 4 > out.len() {
+                return 0;
+            }
+            out[o] = (0xE0 | (uni >> 12)) as u8;
+            out[o + 1] = (0x80 | ((uni >> 6) & 0x3F)) as u8;
+            out[o + 2] = (0x80 | (uni & 0x3F)) as u8;
+            o += 3;
+        }
+    }
+    out[o] = 0;
+    o as u32
+}
+
 #[no_mangle]
 pub extern "C" fn openhome_save_pkm_to_file(
     _pkm_handle: *mut PkmHandle,
@@ -2449,6 +2530,40 @@ mod tests {
         let ot = alloc::string::String::from(&back.ohpkm.trainer_name());
         assert_eq!(ot, "RoC");
         openhome_free_pkm(loaded);
+    }
+
+    // Real ENCRYPTED box slots from the user's Diamond/Platinum saves:
+    // from_bytes decrypts (IsEncrypted45 probe) and parses with valid
+    // checksum — Piplup/Bidoof/Kricketot (Pt) and Buizel/Staravia (DP).
+    #[test]
+    fn load_real_encrypted_dp_pt_slots() {
+        for (path, species) in [
+            ("../../../tools/test save/upstream/dp_box0_slot0.pk4", 390u16),
+            ("../../../tools/test save/upstream/dp_box0_slot1.pk4", 396u16),
+            ("../../../tools/test save/upstream/pt_box0_slot0.pk4", 393u16),
+            ("../../../tools/test save/upstream/pt_box0_slot1.pk4", 399u16),
+            ("../../../tools/test save/upstream/pt_box0_slot2.pk4", 401u16),
+        ] {
+            let raw: &[u8] = match path {
+                "../../../tools/test save/upstream/dp_box0_slot0.pk4" => {
+                    include_bytes!("../../../tools/test save/upstream/dp_box0_slot0.pk4")
+                }
+                "../../../tools/test save/upstream/dp_box0_slot1.pk4" => {
+                    include_bytes!("../../../tools/test save/upstream/dp_box0_slot1.pk4")
+                }
+                "../../../tools/test save/upstream/pt_box0_slot0.pk4" => {
+                    include_bytes!("../../../tools/test save/upstream/pt_box0_slot0.pk4")
+                }
+                "../../../tools/test save/upstream/pt_box0_slot1.pk4" => {
+                    include_bytes!("../../../tools/test save/upstream/pt_box0_slot1.pk4")
+                }
+                _ => include_bytes!("../../../tools/test save/upstream/pt_box0_slot2.pk4"),
+            };
+            let pk = pkm_rs::gen4::Pk4::from_bytes(raw)
+                .unwrap_or_else(|_| panic!("{} must decrypt and parse", path));
+            assert_eq!(pk.national_dex, species, "{}", path);
+            assert_eq!(pk.calculate_checksum(), pk.checksum, "{}", path);
+        }
     }
 
     // Real-file regression (upstream, 220-byte party): Emboar.pk5 loads,

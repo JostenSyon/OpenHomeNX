@@ -52,6 +52,12 @@ struct PokemonOffsets {
 inline const PokemonOffsets& pokemonOffsetsFor(GameType g) {
     //                              spec  held  pid   nat  fate fBit gend gShf form fShf ball  abi  aU8  ev    tid   sid   move  iv32  nick  ot    lvl   exp   alph aNZ  lang  fArg  gmax hSca wSca htName
     static constexpr PokemonOffsets PK3 = {0x20, 0x22, 0x00, -1,  -1,  31,  -1,  0,   -1,  0,   -1,  -1,  false, 0x38, 0x04, 0x06, 0x2C, 0x48, -1,   -1,   -1,   0x24, -1,  false, 0x12, -1,   -1,   -1,  -1,  -1};
+    // PK4 (Gen4 DPPt/HGSS, decrypted 236B): nature = pid%25, ball = max(0x83,0x86)
+    // via branch, names via Gen4 codec branch (rows -1), level from EXP.
+    static constexpr PokemonOffsets PK4 = {0x08, 0x0A, 0x00, -1,  0x40, 0,  0x40, 1,  0x40, 3,  0x83, 0x15, true, 0x18, 0x0C, 0x0E, 0x28, 0x38, -1,   -1,   -1,   0x10, -1,  false, 0x17, -1,   -1,   -1,  -1,  -1};
+    // PK5 (Gen5 BW, decrypted 220B): nature byte at 0x41, ball at 0x83,
+    // names direct UTF-16LE (0xFFFF-terminated) via branch.
+    static constexpr PokemonOffsets PK5 = {0x08, 0x0A, 0x00, 0x41, 0x40, 0,  0x40, 1,  0x40, 3,  0x83, 0x15, true, 0x18, 0x0C, 0x0E, 0x28, 0x38, -1,   -1,   -1,   0x10, -1,  false, 0x17, -1,   -1,   -1,  -1,  -1};
     static constexpr PokemonOffsets PB7 = {0x08, 0x0A, 0x18, 0x1C, 0x1D, 0,  0x1D, 1,  0x1D, 3,  0xDC, 0x14, true, 0x1E, 0x0C, 0x0E, 0x5A, 0x74, 0x40, 0xB0, 0xEC, -1,   -1,  false, 0xE3, 0x3C, -1,   0x3A,0x3B, 0x78};
     static constexpr PokemonOffsets PK8 = {0x08, 0x0A, 0x1C, 0x20, 0x22, 0,  0x22, 2,  0x24, 0,  0x124, 0x14, false, 0x26, 0x0C, 0x0E, 0x72, 0x8C, 0x58, 0xF8, 0x148, -1,  -1,  false, 0xE2, 0xE4, 0x16, -1,  -1,  0xA8};
     static constexpr PokemonOffsets PA8 = {0x08, 0x0A, 0x1C, 0x20, 0x22, 0,  0x22, 2,  0x24, 0,  0x137, 0x14, false, 0x26, 0x0C, 0x0E, 0x54, 0x94, 0x60, 0x110, -1,   0x10, 0x16, false, 0xF2, 0xE4, -1,   -1,  -1,  0xB8};
@@ -64,6 +70,8 @@ inline const PokemonOffsets& pokemonOffsetsFor(GameType g) {
     // raw Pk8 bytes into Gen1 slots (NidoranF shown as Gyarados, 2026-09-06).
     static constexpr PokemonOffsets PK1 = {-1,  -1,  -1,  -1,  -1,  0,   -1,  0,   -1,  0,   -1,  -1,  false, 0,    -1,  -1,   -1,   -1,   -1,   -1,   -1,   -1,   -1,  false, -1,   -1,   -1,   -1,  -1,  -1};
     if (isGen1File(g)) return PK1;
+    if (isGen4File(g)) return PK4;
+    if (isGen5File(g)) return PK5;
     if (isFRLG(g) || isImportedFile(g)) return PK3;
     if (isLGPE(g)) return PB7;
     if (g == GameType::LA) return PA8;
@@ -176,6 +184,7 @@ struct Pokemon {
     // (0 = no icon drawn, see ui_render ball display).
     uint8_t ball() const {
         if (isGbFile(gameType_)) return 0;
+        if (isGen4File(gameType_)) return std::max(data[0x83], data[0x86]); // DPPT vs HGSS byte
         int o = ofs().ball;
         return o >= 0 ? data[o] : static_cast<uint8_t>((readU16(0x46) >> 11) & 0xF);
     }
@@ -209,14 +218,14 @@ struct Pokemon {
         return readU16(ofs().sid);
     }
 
-    // Display TID/SID: Gen7+ uses 6-digit/4-digit format, Gen3/GB raw 16-bit
+    // Display TID/SID: Gen7+ uses 6-digit/4-digit format, Gen3/Gen4/Gen5/GB raw 16-bit
     uint32_t displayTid() const {
-        if (isFRLG(gameType_) || isImportedFile(gameType_) || isGbFile(gameType_)) return tid();
+        if (isFRLG(gameType_) || isImportedFile(gameType_) || isGbFile(gameType_) || isGen45File(gameType_)) return tid();
         uint32_t combined = (static_cast<uint32_t>(sid()) << 16) | tid();
         return combined % 1000000;
     }
     uint32_t displaySid() const {
-        if (isFRLG(gameType_) || isImportedFile(gameType_) || isGbFile(gameType_)) return sid();
+        if (isFRLG(gameType_) || isImportedFile(gameType_) || isGbFile(gameType_) || isGen45File(gameType_)) return sid();
         uint32_t combined = (static_cast<uint32_t>(sid()) << 16) | tid();
         return combined / 1000000;
     }

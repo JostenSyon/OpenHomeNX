@@ -501,6 +501,13 @@ void UI::drawGameSelectorFrame() {
             switch (availableGames_[i]) {
                 case GameType::RUBY:     bg = {0xCD, 0x22, 0x36, 255}; break;
                 case GameType::SAPPHIRE: bg = {0x3D, 0x51, 0xA7, 255}; break;
+                case GameType::DIAMOND:  bg = {0x7E, 0xC8, 0xE8, 255}; break;
+                case GameType::PEARL:    bg = {0xE8, 0xA0, 0xC0, 255}; break;
+                case GameType::PLATINUM: bg = {0x90, 0x90, 0x98, 255}; break;
+                case GameType::HEARTGOLD: bg = {0xE8, 0xB8, 0x28, 255}; break;
+                case GameType::SOULSILVER: bg = {0x98, 0xB8, 0xD8, 255}; break;
+                case GameType::BLACK:    bg = {0x28, 0x28, 0x30, 255}; break;
+                case GameType::WHITE:    bg = {0xE8, 0xE8, 0xE8, 255}; break;
                 case GameType::RED:      bg = {0xE0, 0x20, 0x20, 255}; break;
                 case GameType::BLUE:     bg = {0x20, 0x60, 0xE0, 255}; break;
                 case GameType::YELLOW:   bg = {0xE8, 0xC8, 0x10, 255}; break;
@@ -526,7 +533,10 @@ void UI::drawGameSelectorFrame() {
             }
             if (availableGames_[i] == GameType::RUBY ||
                 availableGames_[i] == GameType::SAPPHIRE ||
-                availableGames_[i] == GameType::EMERALD) {
+                availableGames_[i] == GameType::EMERALD ||
+                availableGames_[i] == GameType::RED ||
+                availableGames_[i] == GameType::BLUE ||
+                availableGames_[i] == GameType::YELLOW) {
                 // RSE tile: box art grande quasi tutto il riquadro (box 120px
                 // dentro 128, non esce mai), logo sopra come titolo. Entrambi
                 // con sfondo trasparente verificato, quindi sovrapponibili.
@@ -535,6 +545,16 @@ void UI::drawGameSelectorFrame() {
                     int texW = 0, texH = 0;
                     SDL_QueryTexture(artIt->second, nullptr, nullptr, &texW, &texH);
                     if (texW > 0 && texH > 0) {
+                        if (availableGames_[i] == GameType::RED ||
+                            availableGames_[i] == GameType::BLUE ||
+                            availableGames_[i] == GameType::YELLOW) {
+                            // RBY: artwork full-bleed su tutto il riquadro
+                            // (center-crop quadrato, nessun valore custom).
+                            int side = std::min(texW, texH);
+                            SDL_Rect src = {(texW - side) / 2, (texH - side) / 2, side, side};
+                            SDL_Rect dst = {iconX, iconY, ICON_SIZE, ICON_SIZE};
+                            SDL_RenderCopy(renderer_, artIt->second, &src, &dst);
+                        } else {
                         // Base +15% di dimensione, a destra del 15% e in basso
                         // del 5% (percentuali su ICON_SIZE). L'eccesso viene
                         // tagliato netto sul bordo riquadro via clip.
@@ -563,6 +583,7 @@ void UI::drawGameSelectorFrame() {
                         SDL_RenderSetClipRect(renderer_, &clip);
                         SDL_RenderCopy(renderer_, artIt->second, nullptr, &dst);
                         SDL_RenderSetClipRect(renderer_, nullptr);
+                        } // else (RSE con valori custom)
                     }
                 }
                 auto logoIt = gameLogoCache_.find(availableGames_[i]);

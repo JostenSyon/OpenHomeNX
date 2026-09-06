@@ -1,5 +1,6 @@
 #include "save_file.h"
 #include "save_file_ffi.h"
+#include "poke_crypto.h"
 #include "gen1_tables.h"
 #include "handler_update.h"
 #include "openhome_ffi.h"
@@ -53,6 +54,10 @@ bool SaveFile::load(const std::string& path) {
         return loadGB(path);
     if (isGen2File(gameType_))
         return loadGBC(path);
+    if (isGen4File(gameType_))
+        return loadDS4(path);
+    if (isGen5File(gameType_))
+        return loadDS5(path);
     if (isBDSP(gameType_))
         return loadBDSP(path);
     if (isLGPE(gameType_))
@@ -69,6 +74,12 @@ bool SaveFile::save(const std::string& path) {
         ok = saveGB(path);
     else if (isGen2File(gameType_))
         ok = saveGBC(path);
+    else if (isGen45File(gameType_)) {
+        // Read-only v1: never write what the layout code cannot re-checksum
+        // (Gen5 block footers especially). Explicit failure, never silent.
+        DebugLog::line("save: Gen4/5 read-only v1, rifiuto scrittura %s", path.c_str());
+        ok = false;
+    }
     else if (isFRLG(gameType_) || isImportedFile(gameType_))
         ok = saveGBA(path);
     else if (isBDSP(gameType_))
@@ -1532,4 +1543,240 @@ uint8_t* SaveFile::findGbaSectorData(int sectionId) {
             return rawData_.data() + sectorOfs;
     }
     return nullptr;
+}
+
+// --- Gen 4/5 (DS .sav dumps, PKHeX SAV4*/SAV5BW.cs) — read-only v1 ---
+
+// CRC16-CCITT-FALSE (poly 0x1021, init 0xFFFF, no xorout): PKHeX
+// Checksums.CRC16_CCITT, block checksum for Gen4/Gen5 saves. Verified
+// against a real Diamond save (General block -> stored u16).
+static uint16_t crc16CcittFalse(const uint8_t* data, size_t len) {
+    uint16_t crc = 0xFFFF;
+    for (size_t i = 0; i < len; i++) {
+        crc ^= static_cast<uint16_t>(data[i]) << 8;
+        for (int b = 0; b < 8; b++)
+            crc = (crc & 0x8000) ? static_cast<uint16_t>((crc << 1) ^ 0x1021)
+                                 : static_cast<uint16_t>(crc << 1);
+    }
+    return crc;
+}
+
+bool SaveFile::loadDS4(const std::string& path) {
+    // Gen4 NDS flash (PKHeX SAV4*.cs): 512KB = 2 partitions x 256KB.
+    dsRomCode_ = 0;
+    dsGameByte_ = 0;
+    // block + Storage block; layouts differ per game (DP/Pt/HGSS sizes
+    // below), so bytes alone pick the layout: footer magic (INT/KOR) on both
+    // blocks of some partition, plus slots that decrypt to valid checksums.
+    struct Layout { Ds4Layout id; int gSize; int sSize; int sStart; int footer; int boxBase; int boxStride; };
+    static constexpr Layout LAYOUTS[3] = {
+        { Ds4Layout::DP,   0xC100, 0x121E0, 0xC100, 0x14, 4, 0xFF0 },
+        { Ds4Layout::PT,   0xCF2C, 0x121E4, 0xCF2C, 0x14, 4, 0xFF0 },
+        { Ds4Layout::HGSS, 0xF628, 0x12310, 0xF700, 0x10, 0, 0x1000 },
+    };
+    std::ifstream file(path, std::ios::binary | std::ios::ate);
+    if (!file.is_open())
+        return false;
+    if (static_cast<size_t>(file.tellg()) != DS_SAVE_SIZE)
+        return false;
+    file.seekg(0);
+    rawData_.resize(DS_SAVE_SIZE);
+    file.read(reinterpret_cast<char*>(rawData_.data()), DS_SAVE_SIZE);
+    if (!file)
+        return false;
+
+    auto u32le = [&](size_t o) -> uint32_t {
+        return static_cast<uint32_t>(rawData_[o]) |
+               (static_cast<uint32_t>(rawData_[o + 1]) << 8) |
+               (static_cast<uint32_t>(rawData_[o + 2]) << 16) |
+               (static_cast<uint32_t>(rawData_[o + 3]) << 24);
+    };
+    auto magicOk = [&](const uint8_t* blk, int len) -> bool {
+        uint32_t m = static_cast<uint32_t>(blk[len - 8]) |
+                     (static_cast<uint32_t>(blk[len - 7]) << 8) |
+                     (static_cast<uint32_t>(blk[len - 6]) << 16) |
+                     (static_cast<uint32_t>(blk[len - 5]) << 24);
+        return m == 0x20060623 || m == 0x20070903; // INT / KOR
+    };
+    // A box slot holds a real mon when it decrypts to a valid PK4 checksum.
+    // Zero slots are skipped before decrypt (crypting zeros != zeros).
+    auto slotValid = [&](const uint8_t* slot) -> bool {
+        static const uint8_t ZERO[136] = {};
+        if (std::memcmp(slot, ZERO, sizeof(ZERO)) == 0)
+            return false;
+        uint8_t dec[136];
+        PokeCrypto::decryptArray45(slot, sizeof(dec), dec);
+        uint32_t sum = 0;
+        for (int i = 8; i < 136; i += 2)
+            sum += static_cast<uint32_t>(dec[i] | (dec[i + 1] << 8));
+        uint16_t stored = static_cast<uint16_t>(dec[6] | (dec[7] << 8));
+        return (sum & 0xFFFF) == stored;
+    };
+
+    const Layout* best = nullptr;
+    int bestPart = 0;
+    int bestScore = -1;
+    int bestSlots = 0;
+    for (const Layout& L : LAYOUTS) {
+        for (int p = 0; p < 2; p++) {
+            size_t gBase = static_cast<size_t>(p) * DS_PARTITION;
+            size_t sBase = gBase + static_cast<size_t>(L.sStart);
+            if (sBase + static_cast<size_t>(L.sSize) > DS_SAVE_SIZE)
+                continue;
+            const uint8_t* gBlk = rawData_.data() + gBase;
+            const uint8_t* sBlk = rawData_.data() + sBase;
+            if (!magicOk(gBlk, L.gSize) || !magicOk(sBlk, L.sSize))
+                continue;
+            // Block CRCs must validate (PKHeX GetBlockChecksumValid).
+            uint16_t gStored = static_cast<uint16_t>(gBlk[L.gSize - 2] | (gBlk[L.gSize - 1] << 8));
+            uint16_t sStored = static_cast<uint16_t>(sBlk[L.sSize - 2] | (sBlk[L.sSize - 1] << 8));
+            if (crc16CcittFalse(gBlk, static_cast<size_t>(L.gSize) - static_cast<size_t>(L.footer)) != gStored)
+                continue;
+            if (crc16CcittFalse(sBlk, static_cast<size_t>(L.sSize) - static_cast<size_t>(L.footer)) != sStored)
+                continue;
+            int n = 0;
+            for (int b = 0; b < 18 && n < 3; b++)
+                for (int s = 0; s < DS_BOX_SLOTS && n < 3; s++) {
+                    size_t o = (sBase + static_cast<size_t>(L.boxBase)) +
+                               static_cast<size_t>(b) * static_cast<size_t>(L.boxStride) +
+                               static_cast<size_t>(s) * DS_SLOT_SIZE;
+                    if (slotValid(rawData_.data() + o))
+                        n++;
+                }
+            // Score prefers partitions with real mons, but CRC+magic alone
+            // accept (an empty fresh save has no slots yet).
+            int score = 1000 + n;
+            if (score > bestScore) {
+                bestScore = score;
+                bestSlots = n;
+                best = &L;
+                bestPart = p;
+            }
+        }
+    }
+    if (!best) {
+        DebugLog::line("loadDS4: %s -> nessun layout valido (magic/crc)", path.c_str());
+        return false;
+    }
+    // Active partition: higher save index (u32 at block end - footer size);
+    // ties keep the probed partition. Logged, assumption documented.
+    {
+        size_t g0 = 0, g1 = DS_PARTITION;
+        uint32_t i0 = u32le(g0 + static_cast<size_t>(best->gSize) - static_cast<size_t>(best->footer));
+        uint32_t i1 = u32le(g1 + static_cast<size_t>(best->gSize) - static_cast<size_t>(best->footer));
+        if (i0 != i1)
+            bestPart = (i1 > i0) ? 1 : 0;
+        DebugLog::line("loadDS4: %s -> layout %d part %d (idx %u vs %u, slot validi %d)",
+                       path.c_str(), (int)best->id, bestPart, i0, i1, bestSlots);
+    }
+    ds4Layout_ = best->id;
+    // HGSS exact game from the ROMCode byte (General+Trainer1+0x1C).
+    dsRomCode_ = 0;
+    if (best->id == Ds4Layout::HGSS) {
+        size_t gBase = static_cast<size_t>(bestPart) * DS_PARTITION;
+        dsRomCode_ = rawData_[gBase + 0x64 + 0x1C];
+    }
+    size_t sBase = static_cast<size_t>(bestPart) * DS_PARTITION + static_cast<size_t>(best->sStart);
+    const int BOXES = 18;
+    dsStorage_.assign(static_cast<size_t>(BOXES) * DS_BOX_SLOTS * DS_SLOT_SIZE, 0);
+    int badSlots = 0;
+    for (int b = 0; b < BOXES; b++)
+        for (int s = 0; s < DS_BOX_SLOTS; s++) {
+            size_t o = (sBase + static_cast<size_t>(best->boxBase)) +
+                       static_cast<size_t>(b) * static_cast<size_t>(best->boxStride) +
+                       static_cast<size_t>(s) * DS_SLOT_SIZE;
+            const uint8_t* slot = rawData_.data() + o;
+            uint8_t* dst = dsStorage_.data() + (static_cast<size_t>(b) * DS_BOX_SLOTS + s) * DS_SLOT_SIZE;
+            static const uint8_t ZERO[136] = {};
+            if (std::memcmp(slot, ZERO, sizeof(ZERO)) == 0)
+                continue;
+            if (!slotValid(slot)) {
+                badSlots++;
+                continue; // corrupt: hidden + counted, never shown as garbage
+            }
+            std::memcpy(dst, slot, DS_SLOT_SIZE);
+        }
+    if (badSlots > 0)
+        DebugLog::line("loadDS4: %s -> %d slot corrotti nascosti", path.c_str(), badSlots);
+    boxData_ = dsStorage_.data();
+    boxDataLen_ = dsStorage_.size();
+    boxLayoutData_ = nullptr; // TODO v2: nomi box (Gen4 codec via FFI)
+    boxLayoutLen_ = 0;
+    loaded_ = true;
+    return true;
+}
+
+bool SaveFile::loadDS5(const std::string& path) {
+    // Gen5 BW (PKHeX SAV5BW): flat 512KB, no partitions.
+    dsRomCode_ = 0;
+    dsGameByte_ = 0;
+    // Gen5 BW (PKHeX SAV5BW): flat 512KB, no partitions. Boxes at
+    // 0x400 + box*0x1000 (30 x 136B slots), party at 0x18E08 (count at
+    // 0x18E04, 6 x 220B), PlayerData block at 0x19400 (OT at +4, Game at
+    // +0x1F: 20 = White, 21 = Black). B2W2 has another block map (later).
+    std::ifstream file(path, std::ios::binary | std::ios::ate);
+    if (!file.is_open())
+        return false;
+    if (static_cast<size_t>(file.tellg()) != DS_SAVE_SIZE)
+        return false;
+    file.seekg(0);
+    rawData_.resize(DS_SAVE_SIZE);
+    file.read(reinterpret_cast<char*>(rawData_.data()), DS_SAVE_SIZE);
+    if (!file)
+        return false;
+
+    uint8_t game = rawData_[0x19400 + 0x1F];
+    if (game != 20 && game != 21) {
+        DebugLog::line("loadDS5: %s -> Game byte %u non BW (B2W2 dopo)", path.c_str(), game);
+        return false;
+    }
+    auto slotValid = [&](const uint8_t* slot) -> bool {
+        static const uint8_t ZERO[136] = {};
+        if (std::memcmp(slot, ZERO, sizeof(ZERO)) == 0)
+            return false;
+        uint8_t dec[136];
+        PokeCrypto::decryptArray45(slot, sizeof(dec), dec);
+        uint32_t sum = 0;
+        for (int i = 8; i < 136; i += 2)
+            sum += static_cast<uint32_t>(dec[i] | (dec[i + 1] << 8));
+        uint16_t stored = static_cast<uint16_t>(dec[6] | (dec[7] << 8));
+        return (sum & 0xFFFF) == stored;
+    };
+    int validSlots = 0;
+    for (int b = 0; b < 24 && validSlots < 3; b++)
+        for (int s = 0; s < DS_BOX_SLOTS && validSlots < 3; s++) {
+            size_t o = 0x400 + static_cast<size_t>(b) * 0x1000 + static_cast<size_t>(s) * DS_SLOT_SIZE;
+            if (slotValid(rawData_.data() + o))
+                validSlots++;
+        }
+    if (validSlots <= 0)
+        DebugLog::line("loadDS5: %s -> nessuno slot valido (save vuoto o box vuoti)", path.c_str());
+    const int BOXES = 24;
+    dsStorage_.assign(static_cast<size_t>(BOXES) * DS_BOX_SLOTS * DS_SLOT_SIZE, 0);
+    int badSlots = 0;
+    for (int b = 0; b < BOXES; b++)
+        for (int s = 0; s < DS_BOX_SLOTS; s++) {
+            size_t o = 0x400 + static_cast<size_t>(b) * 0x1000 + static_cast<size_t>(s) * DS_SLOT_SIZE;
+            const uint8_t* slot = rawData_.data() + o;
+            uint8_t* dst = dsStorage_.data() + (static_cast<size_t>(b) * DS_BOX_SLOTS + s) * DS_SLOT_SIZE;
+            static const uint8_t ZERO[136] = {};
+            if (std::memcmp(slot, ZERO, sizeof(ZERO)) == 0)
+                continue;
+            if (!slotValid(slot)) {
+                badSlots++;
+                continue;
+            }
+            std::memcpy(dst, slot, DS_SLOT_SIZE);
+        }
+    if (badSlots > 0)
+        DebugLog::line("loadDS5: %s -> %d slot corrotti nascosti", path.c_str(), badSlots);
+    DebugLog::line("loadDS5: %s -> Game %u (%s), slot validi %d",
+                   path.c_str(), game, game == 20 ? "White" : "Black", validSlots);
+    dsGameByte_ = game;
+    boxData_ = dsStorage_.data();
+    boxDataLen_ = dsStorage_.size();
+    boxLayoutData_ = nullptr; // TODO v2: nomi box (blocco 0) + party
+    boxLayoutLen_ = 0;
+    loaded_ = true;
+    return true;
 }

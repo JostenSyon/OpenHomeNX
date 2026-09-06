@@ -238,3 +238,48 @@ void PokeCrypto::encryptArray3(const uint8_t* pk, size_t len, uint8_t* outBuf) {
     uint32_t seed = pid ^ oid;
     cryptArray3(outBuf, seed);
 }
+
+// --- PK4/PK5 (Gen4/Gen5 — DPPt/HGSS, BW/B2W2) ---
+
+bool PokeCrypto::isEncrypted45(const uint8_t* data, size_t len) {
+    if (len < 0x68) return false;
+    return readU32LE(data + 0x64) != 0;
+}
+
+void PokeCrypto::decryptArray45(const uint8_t* ekm, size_t len, uint8_t* outBuf) {
+    uint8_t tmp[SIZE_4PARTY];
+    size_t sz = len > SIZE_4PARTY ? SIZE_4PARTY : len;
+    std::memcpy(tmp, ekm, sz);
+    if (sz < SIZE_4PARTY)
+        std::memset(tmp + sz, 0, SIZE_4PARTY - sz);
+
+    uint32_t pid = readU32LE(tmp);
+    uint32_t chk = readU16LE(tmp + 6);
+    uint32_t sv = (pid >> 13) & 31;
+
+    // Decrypt blocks (offset 8 to 136) seeded by CHECKSUM
+    cryptArray(tmp + 8, SIZE_4STORED - 8, chk);
+
+    // Decrypt party stats tail (if present) seeded by PID
+    if (sz > SIZE_4STORED)
+        cryptArray(tmp + SIZE_4STORED, sz - SIZE_4STORED, pid);
+
+    // Unshuffle blocks
+    shuffleArray(tmp, sz, sv, SIZE_45BLOCK, outBuf);
+}
+
+void PokeCrypto::encryptArray45(const uint8_t* pk, size_t len, uint8_t* outBuf) {
+    uint32_t pid = readU32LE(pk);
+    uint32_t chk = readU16LE(pk + 6);
+    uint32_t sv = (pid >> 13) & 31;
+
+    // Inverse shuffle
+    shuffleArray(pk, len, BLOCK_POSITION_INVERT[sv], SIZE_45BLOCK, outBuf);
+
+    // Encrypt blocks seeded by CHECKSUM (must already be set — it seeds the xor)
+    cryptArray(outBuf + 8, SIZE_4STORED - 8, chk);
+
+    // Encrypt party stats tail seeded by PID
+    if (len > SIZE_4STORED)
+        cryptArray(outBuf + SIZE_4STORED, len - SIZE_4STORED, pid);
+}

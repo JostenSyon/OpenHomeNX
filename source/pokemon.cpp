@@ -245,6 +245,12 @@ uint8_t Pokemon::level() const {
         uint8_t growth = (sp < 387) ? FRLG_GROWTH_RATES[sp] : 0;
         return levelFromExp(exp, growth);
     }
+    if (isGen45File(gameType_)) {
+        // Verified growth data lives in Rust (same derivation as transfers).
+        int gen = isGen4File(gameType_) ? 4 : 5;
+        return OpenHomeNX::levelForExp(static_cast<uint32_t>(gen),
+                                       static_cast<uint32_t>(species()), exp);
+    }
     // LA
     uint16_t sp = speciesInternal();
     uint8_t growth = (sp < 1276) ? LA_GROWTH_RATES[sp] : 0;
@@ -258,6 +264,7 @@ uint16_t Pokemon::species() const {
         return data[0]; // national dex stored directly, no index table
     if (isFRLG(gameType_) || isImportedFile(gameType_))
         return SpeciesConverter::getNational3(speciesInternal());
+    if (isGen45File(gameType_)) return speciesInternal(); // PK4/PK5 store ndex directly
     if (isSwSh(gameType_) || isBDSP(gameType_) || gameType_ == GameType::LA || isLGPE(gameType_))
         return speciesInternal(); // PK8/PB8/PA8/PB7 stores national dex ID directly
     return SpeciesConverter::getNational9(speciesInternal());
@@ -425,6 +432,28 @@ static std::string readGen3String(const uint8_t* base, int offset, int maxBytes,
     return result;
 }
 
+// Helper: read UTF-16LE string with 0xFFFF terminator (Gen5 PKM strings)
+static std::string readUtf16StringFFFF(const uint8_t* base, int offset, int maxChars) {
+    std::string result;
+    for (int i = 0; i < maxChars; i++) {
+        uint16_t ch;
+        std::memcpy(&ch, base + offset + i * 2, 2);
+        if (ch == 0xFFFF || ch == 0)
+            break;
+        if (ch < 0x80) {
+            result += static_cast<char>(ch);
+        } else if (ch < 0x800) {
+            result += static_cast<char>(0xC0 | (ch >> 6));
+            result += static_cast<char>(0x80 | (ch & 0x3F));
+        } else {
+            result += static_cast<char>(0xE0 | (ch >> 12));
+            result += static_cast<char>(0x80 | ((ch >> 6) & 0x3F));
+            result += static_cast<char>(0x80 | (ch & 0x3F));
+        }
+    }
+    return result;
+}
+
 // Helper: read UTF-16LE string from given offset
 static std::string readUtf16String(const uint8_t* base, int offset, int maxChars) {
     std::string result;
@@ -450,6 +479,13 @@ static std::string readUtf16String(const uint8_t* base, int offset, int maxChars
 std::string Pokemon::nickname() const {
     if (isGen1File(gameType_)) return Gen1::decodeGbString(data.data() + 44, 11);
     if (isGen2File(gameType_)) return Gen1::decodeGbString(data.data() + 43, 11);
+    if (isGen4File(gameType_)) {
+        // Gen4 custom charset via the verified Rust table (11 codes max).
+        uint16_t codes[11];
+        for (int i = 0; i < 11; i++) codes[i] = readU16(0x48 + i * 2);
+        return OpenHomeNX::gen4DecodeString(codes, 11);
+    }
+    if (isGen5File(gameType_)) return readUtf16StringFFFF(data.data(), 0x48, 11);
     auto& o = ofs();
     if (o.nickname < 0)
         return readGen3String(data.data(), 0x08, 10, language() == 1);
@@ -459,6 +495,12 @@ std::string Pokemon::nickname() const {
 std::string Pokemon::otName() const {
     if (isGen1File(gameType_)) return Gen1::decodeGbString(data.data() + 33, 11);
     if (isGen2File(gameType_)) return Gen1::decodeGbString(data.data() + 32, 11);
+    if (isGen4File(gameType_)) {
+        uint16_t codes[8];
+        for (int i = 0; i < 8; i++) codes[i] = readU16(0x68 + i * 2);
+        return OpenHomeNX::gen4DecodeString(codes, 8);
+    }
+    if (isGen5File(gameType_)) return readUtf16StringFFFF(data.data(), 0x68, 8);
     auto& o = ofs();
     if (o.otName < 0)
         return readGen3String(data.data(), 0x14, 7, language() == 1);
@@ -658,6 +700,7 @@ std::vector<Pokemon::RibbonInfo> Pokemon::getRibbonsAndMarks() const {
     std::vector<RibbonInfo> result;
 
     if (isGbFile(gameType_)) return result; // no ribbons/marks on GB
+    if (isGen45File(gameType_)) return result; // TODO: DS ribbon bytes (3 spots) need name tables
     if (isFRLG(gameType_) || isImportedFile(gameType_)) {
         // Gen3: single uint32 at 0x4C
         uint32_t rib = readU32(0x4C);
@@ -721,6 +764,8 @@ void Pokemon::loadFromEncrypted(const uint8_t* encrypted, size_t len) {
     }
     if (isFRLG(gameType_) || isImportedFile(gameType_))
         PokemonFFI::decryptArray3(encrypted, len, data.data());
+    else if (isGen45File(gameType_))
+        PokemonFFI::decryptArray45(encrypted, len, data.data());
     else if (isLGPE(gameType_))
         PokemonFFI::decryptArray6(encrypted, len, data.data());
     else if (gameType_ == GameType::LA)
@@ -740,8 +785,10 @@ void Pokemon::refreshChecksum() {
         return;
     }
     // Checksum = sum of all 16-bit words from byte 8 to SIZE_STORED
+    // (PKHeX PKM CalculateChecksum, Gen 4+; Gen3 uses its own range above).
     int end;
-    if (isLGPE(gameType_))       end = PokemonFFI::SIZE_6STORED;
+    if (isGen45File(gameType_))      end = PokemonFFI::SIZE_4STORED;
+    else if (isLGPE(gameType_))       end = PokemonFFI::SIZE_6STORED;
     else if (gameType_ == GameType::LA) end = PokemonFFI::SIZE_8ASTORED;
     else                                end = PokemonFFI::SIZE_9STORED;
     uint16_t chk = 0;
@@ -762,6 +809,8 @@ void Pokemon::getEncrypted(uint8_t* outBuf) {
     }
     if (isFRLG(gameType_) || isImportedFile(gameType_))
         PokemonFFI::encryptArray3(data.data(), PokemonFFI::SIZE_3STORED, outBuf);
+    else if (isGen45File(gameType_))
+        PokemonFFI::encryptArray45(data.data(), PokemonFFI::SIZE_4STORED, outBuf);
     else if (isLGPE(gameType_))
         PokemonFFI::encryptArray6(data.data(), PokemonFFI::SIZE_6PARTY, outBuf);
     else if (gameType_ == GameType::LA)

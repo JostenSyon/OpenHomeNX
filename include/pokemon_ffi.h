@@ -32,6 +32,17 @@ inline void encryptArray3(const uint8_t* pk, size_t len, uint8_t* outBuf) {
     if (useOpenHome()) { PokeCrypto::encryptArray3(pk, len, outBuf); return; }
     PokeCrypto::encryptArray3(pk, len, outBuf);
 }
+inline void decryptArray45(const uint8_t* ekm, size_t len, uint8_t* outBuf) {
+    if (useOpenHome()) { PokeCrypto::decryptArray45(ekm, len, outBuf); return; }
+    PokeCrypto::decryptArray45(ekm, len, outBuf);
+}
+inline void encryptArray45(const uint8_t* pk, size_t len, uint8_t* outBuf) {
+    if (useOpenHome()) { PokeCrypto::encryptArray45(pk, len, outBuf); return; }
+    PokeCrypto::encryptArray45(pk, len, outBuf);
+}
+inline bool isEncrypted45(const uint8_t* data, size_t len) {
+    return PokeCrypto::isEncrypted45(data, len);
+}
 inline void decryptArray6(const uint8_t* ekm, size_t len, uint8_t* outBuf) {
     if (useOpenHome()) { PokeCrypto::decryptArray6(ekm, len, outBuf); return; }
     PokeCrypto::decryptArray6(ekm, len, outBuf);
@@ -60,6 +71,10 @@ inline void encryptArray9(const uint8_t* pk, size_t len, uint8_t* outBuf) {
 // Size constants — re-export per evitare PokeCrypto:: in pokemon.cpp
 constexpr int SIZE_3STORED = PokeCrypto::SIZE_3STORED;
 constexpr int SIZE_3PARTY  = PokeCrypto::SIZE_3PARTY;
+constexpr int SIZE_4STORED = PokeCrypto::SIZE_4STORED;
+constexpr int SIZE_4PARTY  = PokeCrypto::SIZE_4PARTY;
+constexpr int SIZE_5STORED = PokeCrypto::SIZE_5STORED;
+constexpr int SIZE_5PARTY  = PokeCrypto::SIZE_5PARTY;
 constexpr int SIZE_6STORED = PokeCrypto::SIZE_6STORED;
 constexpr int SIZE_6PARTY  = PokeCrypto::SIZE_6PARTY;
 constexpr int SIZE_8ASTORED = PokeCrypto::SIZE_8ASTORED;

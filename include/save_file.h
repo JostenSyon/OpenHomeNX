@@ -21,6 +21,14 @@ public:
     bool load(const std::string& path);
     bool save(const std::string& path);
 
+    // Gen4 layout picked by loadDS4 (DP/Pt/HGSS sizes differ).
+    enum class Ds4Layout { DP, PT, HGSS };
+    Ds4Layout dsLayout() const { return ds4Layout_; }
+    // HGSS ROMCode (Trainer1+0x1C: 7 = HeartGold, 8 = SoulSilver), 0 if N/A.
+    uint8_t dsRomCode() const { return dsRomCode_; }
+    // Gen5 PlayerData.Game byte (20 = White, 21 = Black), 0 if N/A.
+    uint8_t dsGameByte() const { return dsGameByte_; }
+
     Pokemon getBoxSlot(int box, int slot) const;
     void setBoxSlot(int box, int slot, Pokemon pkm);
     void clearBoxSlot(int box, int slot);
@@ -212,6 +220,21 @@ private:
     std::vector<uint8_t> gbcStoredOrig_;
     bool gbcIsCrystal_ = false;
     int gbcBoxNamesBase_ = -1; // 9B box-name stride base in rawData_ (-1 none)
+
+    // Gen 4/5 (DS .sav dumps, 512KB NDS flash). Read-only v1 (save later:
+    // Gen5 block footers are intricate): boxes copied slot-verified into
+    // dsStorage_ (flat 136B slots, bad-checksum slots zeroed + logged).
+    // Party/box-names v2 (UI falls back to "Box N", party hidden as GBA).
+    static constexpr size_t DS_SAVE_SIZE = 0x80000;  // 512KB
+    static constexpr int DS_PARTITION   = 0x40000;  // 256KB per partition
+    static constexpr int DS_BOX_SLOTS   = 30;
+    static constexpr int DS_SLOT_SIZE   = 136;       // PK4/PK5 box record
+    bool loadDS4(const std::string& path);
+    bool loadDS5(const std::string& path);
+    std::vector<uint8_t> dsStorage_;
+    Ds4Layout ds4Layout_ = Ds4Layout::DP;
+    uint8_t dsRomCode_ = 0;
+    uint8_t dsGameByte_ = 0;
 
     static bool isBDSPSize(size_t size);
 
