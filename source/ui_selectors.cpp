@@ -48,6 +48,7 @@ bool readUpdateCfg(const std::string& basePath, UpdateCfg& out) {
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
+#include <dirent.h>
 #include <sys/stat.h>
 
 #include <switch.h>
@@ -251,7 +252,8 @@ void UI::rescanImportedGames() {
     // this on every hotplug doesn't pile up duplicates.
     availableGames_.erase(
         std::remove_if(availableGames_.begin(), availableGames_.end(),
-                       [](GameType g) { return isImportedFile(g) || isGen1File(g) || isGen2File(g); }),
+                       [](GameType g) { return isImportedFile(g) || isGen1File(g) || isGen2File(g) ||
+                                               isGen45File(g) || isGen6XY(g) || isGen7SM(g); }),
         availableGames_.end());
 
     importedGames_ = scanImportPaths(importPaths_, autoCheckUsb_);
@@ -292,6 +294,143 @@ void UI::rescanImportedGames() {
     }
     showMessageAndWait(i18n::get(StrKey::ImportFoundTitle), names);
     markDirty();
+}
+
+// --- Folder browser ("+ Add path..." without swkbd) ---
+
+void UI::openFolderBrowser() {
+    folderBrowserPath_.clear(); // roots view
+    folderCursor_ = 0;
+    folderScroll_ = 0;
+    refreshFolderEntries();
+    showFolderBrowser_ = true;
+    markDirty();
+}
+
+void UI::refreshFolderEntries() {
+    folderEntries_.clear();
+    folderCursor_ = 0;
+    folderScroll_ = 0;
+    if (folderBrowserPath_.empty()) {
+        // Roots: SD always, USB devices when mounted.
+        folderEntries_.push_back("sdmc:/");
+#ifdef OH_USB_UPDATE
+        u32 n = usbHsFsGetMountedDeviceCount();
+        if (n > 8) n = 8;
+        if (n > 0) {
+            std::vector<UsbHsFsDevice> devs(n);
+            u32 got = usbHsFsListMountedDevices(devs.data(), n);
+            for (u32 i = 0; i < got; i++) {
+                std::string name = devs[i].name;
+                if (!name.empty() && name.back() != '/') name += '/';
+                if (!name.empty()) folderEntries_.push_back(name);
+            }
+        }
+#endif
+        return;
+    }
+    DIR* d = opendir(folderBrowserPath_.c_str());
+    if (!d) {
+        folderEntries_.push_back("..");
+        return;
+    }
+    struct dirent* entry;
+    while ((entry = readdir(d)) != nullptr) {
+        if (entry->d_name[0] == '.')
+            continue;
+        std::string full = folderBrowserPath_ + entry->d_name;
+        struct stat st;
+        if (stat(full.c_str(), &st) != 0 || !S_ISDIR(st.st_mode))
+            continue; // files are not selectable
+        folderEntries_.push_back(entry->d_name);
+    }
+    closedir(d);
+    std::sort(folderEntries_.begin(), folderEntries_.end());
+}
+
+void UI::handleFolderBrowserInput(const SDL_Event& event) {
+    if (event.type != SDL_CONTROLLERBUTTONDOWN)
+        return;
+    int count = static_cast<int>(folderEntries_.size());
+    auto scrollIntoView = [&](int visibleRows) {
+        if (folderCursor_ < folderScroll_)
+            folderScroll_ = folderCursor_;
+        else if (folderCursor_ >= folderScroll_ + visibleRows)
+            folderScroll_ = folderCursor_ - visibleRows + 1;
+        if (folderScroll_ < 0) folderScroll_ = 0;
+    };
+    constexpr int VISIBLE = 10;
+    switch (event.cbutton.button) {
+        case SDL_CONTROLLER_BUTTON_DPAD_UP:
+            if (count > 0) {
+                folderCursor_ = (folderCursor_ + count - 1) % count;
+                scrollIntoView(VISIBLE);
+            }
+            markDirty();
+            break;
+        case SDL_CONTROLLER_BUTTON_DPAD_DOWN:
+            if (count > 0) {
+                folderCursor_ = (folderCursor_ + 1) % count;
+                scrollIntoView(VISIBLE);
+            }
+            markDirty();
+            break;
+        case SDL_CONTROLLER_BUTTON_A: // Switch B = cancel
+            showFolderBrowser_ = false;
+            markDirty();
+            break;
+        case SDL_CONTROLLER_BUTTON_B: // Switch A = enter / go up
+            if (folderBrowserPath_.empty()) {
+                // Roots view: enter the selected root.
+                if (count > 0) {
+                    folderBrowserPath_ = folderEntries_[folderCursor_];
+                    refreshFolderEntries();
+                }
+            } else if (count > 0) {
+                std::string next = folderBrowserPath_ + folderEntries_[folderCursor_] + "/";
+                DIR* probe = opendir(next.c_str());
+                if (probe) {
+                    closedir(probe);
+                    folderBrowserPath_ = next;
+                    refreshFolderEntries();
+                }
+            }
+            markDirty();
+            break;
+        case SDL_CONTROLLER_BUTTON_Y: // Switch X = up one level
+            if (!folderBrowserPath_.empty()) {
+                // Strip trailing '/' then last segment; a bare "xxx:/"
+                // goes back to the roots view.
+                std::string p = folderBrowserPath_;
+                while (!p.empty() && p.back() == '/') p.pop_back();
+                auto pos = p.find_last_of('/');
+                if (pos == std::string::npos || pos + 1 >= p.size() - 1) {
+                    folderBrowserPath_.clear(); // was at "xxx:/" -> roots
+                } else {
+                    folderBrowserPath_ = p.substr(0, pos + 1);
+                }
+                refreshFolderEntries();
+            }
+            markDirty();
+            break;
+        case SDL_CONTROLLER_BUTTON_START: // + = use this folder
+            if (!folderBrowserPath_.empty()) {
+                bool dup = false;
+                for (const auto& e : importPaths_)
+                    if (e.path == folderBrowserPath_) { dup = true; break; }
+                if (dup) {
+                    showMessageAndWait(i18n::get(StrKey::FolderBrowserExists), folderBrowserPath_);
+                } else {
+                    importPaths_.push_back({folderBrowserPath_, true});
+                    saveImportPaths(basePath_, importPaths_);
+                    rescanImportedGames();
+                    showMessageAndWait(i18n::get(StrKey::FolderBrowserAdded), folderBrowserPath_);
+                }
+                showFolderBrowser_ = false;
+            }
+            markDirty();
+            break;
+    }
 }
 
 // --- Game Icons ---

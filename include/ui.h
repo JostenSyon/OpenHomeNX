@@ -235,6 +235,20 @@ private:
     std::vector<GameSelMenuAction> gameSelMenuActions() const;
     void drawImportSettingsPopup();
 
+    // Folder browser state (opened from "+ Add path..."): pick a directory
+    // to scan instead of typing it via swkbd. Empty folderBrowserPath_ =
+    // roots view (sdmc:/ + mounted umsN:/); otherwise a path with trailing
+    // '/'. Entries are subdirectory names, sorted.
+    bool showFolderBrowser_ = false;
+    std::string folderBrowserPath_;
+    std::vector<std::string> folderEntries_;
+    int folderCursor_  = 0;
+    int folderScroll_  = 0;
+    void openFolderBrowser();
+    void refreshFolderEntries();
+    void handleFolderBrowserInput(const SDL_Event& event);
+    void drawFolderBrowserPopup();
+
     // Games found by scanning importPaths_ + (if autoCheckUsb_) every mounted
     // USB device's /roms/saves and /roms (Ruby/Sapphire/Emerald so far — see
     // isImportedFile()). Rescanned whenever availableGames_ is rebuilt

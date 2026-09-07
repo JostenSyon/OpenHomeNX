@@ -1150,6 +1150,53 @@ void UI::drawImportSettingsPopup() {
     drawTextCentered(i18n::get(StrKey::ImportSettingsFooter), popX + POP_W / 2, popY + POP_H - 18, T().textDim, fontSmall_);
 }
 
+void UI::drawFolderBrowserPopup() {
+    drawRect(0, 0, SCREEN_W, SCREEN_H, T().overlay);
+
+    constexpr int POP_W = 700;
+    constexpr int ROW_H = 36;
+    constexpr int VISIBLE = 10; // matches handleFolderBrowserInput
+    int POP_H = 50 + 28 + VISIBLE * ROW_H + 30;
+    int popX = (SCREEN_W - POP_W) / 2;
+    int popY = (SCREEN_H - POP_H) / 2;
+
+    drawRect(popX, popY, POP_W, POP_H, T().panelBg);
+    drawRectOutline(popX, popY, POP_W, POP_H, T().cursor, 2);
+
+    drawTextCentered(i18n::get(StrKey::FolderBrowserTitle), popX + POP_W / 2, popY + 22, T().text, font_);
+
+    // Current path (roots view shows "/").
+    std::string cur = folderBrowserPath_.empty() ? "/" : folderBrowserPath_;
+    if (cur.size() > 52) cur = "..." + cur.substr(cur.size() - 49);
+    drawTextCentered(cur, popX + POP_W / 2, popY + 46, T().textDim, fontSmall_);
+
+    int listY = popY + 50 + 28;
+    int count = static_cast<int>(folderEntries_.size());
+    if (folderScroll_ > count - 1) folderScroll_ = std::max(0, count - 1);
+    if (count == 0) {
+        drawTextCentered("-", popX + POP_W / 2, listY + 10, T().textDim, font_);
+    } else {
+        if (folderScroll_ > 0)
+            drawTextCentered("^", popX + POP_W / 2, listY - 12, T().arrow, fontSmall_);
+        if (folderScroll_ + VISIBLE < count)
+            drawTextCentered("v", popX + POP_W / 2, listY + VISIBLE * ROW_H + 2, T().arrow, fontSmall_);
+        for (int i = 0; i < VISIBLE && (folderScroll_ + i) < count; i++) {
+            int idx = folderScroll_ + i;
+            int rowY = listY + i * ROW_H;
+            if (idx == folderCursor_) {
+                drawRect(popX + 20, rowY, POP_W - 40, ROW_H - 4, T().menuHighlight);
+                drawRectOutline(popX + 20, rowY, POP_W - 40, ROW_H - 4, T().cursor, 2);
+            }
+            std::string name = folderEntries_[idx];
+            if (!folderBrowserPath_.empty() && name.back() != '/') name += "/";
+            if (name.size() > 58) name = name.substr(0, 55) + "...";
+            drawText(name, popX + 30, rowY + (ROW_H - 4) / 2 - 9, T().text, font_);
+        }
+    }
+
+    drawTextCentered(i18n::get(StrKey::FolderBrowserFooter), popX + POP_W / 2, popY + POP_H - 18, T().textDim, fontSmall_);
+}
+
 void UI::drawLanguageSelectorPopup() {
     drawRect(0, 0, SCREEN_W, SCREEN_H, T().overlay);
 

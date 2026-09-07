@@ -208,6 +208,10 @@ namespace StrKey {
     constexpr const char* ImportSettingsTitle  = "import_settings_title";
     constexpr const char* ImportAddPath        = "import_add_path";
     constexpr const char* ImportSettingsFooter = "import_settings_footer";
+    constexpr const char* FolderBrowserTitle   = "folderbrowser_title";
+    constexpr const char* FolderBrowserFooter  = "folderbrowser_footer";
+    constexpr const char* FolderBrowserAdded   = "folderbrowser_added";
+    constexpr const char* FolderBrowserExists  = "folderbrowser_exists";
     constexpr const char* ImportPathInputHdr   = "import_path_input_hdr";
     constexpr const char* ImportFoundTitle     = "import_found_title";
     constexpr const char* ImportAutoCheckUsb   = "import_autocheck_usb";

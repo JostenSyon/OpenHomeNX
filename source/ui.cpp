@@ -614,6 +614,33 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
             continue;
         }
 
+        // Folder browser (opened from "+ Add path...") sits on top of the
+        // import settings popup.
+        if (showFolderBrowser_) {
+            SDL_Event event;
+            while (SDL_PollEvent(&event)) {
+                if (event.type == SDL_QUIT) { running = false; break; }
+                handleFolderBrowserInput(event);
+            }
+            if (!showFolderBrowser_) continue; // dismissed — let main draw section handle it
+            if (dirty_) {
+                if (theme_ != lastTheme_) { clearTextCache(); lastTheme_ = theme_; }
+                if (screen_ == AppScreen::ProfileSelector) drawProfileSelectorFrame();
+                else if (screen_ == AppScreen::GameSelector) {
+                    drawGameSelectorFrame();
+                    if (showGameSelMenu_) drawGameSelMenuPopup();
+                }
+                else if (screen_ == AppScreen::BankSelector) drawBankSelectorFrame();
+                else drawFrame();
+                drawImportSettingsPopup();
+                drawFolderBrowserPopup();
+                SDL_RenderPresent(renderer_);
+                dirty_ = false;
+            }
+            SDL_Delay(16);
+            continue;
+        }
+
         // Import-path settings intercepts input from any screen
         if (showImportSettings_) {
             SDL_Event event;
@@ -644,9 +671,9 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
                                 autoCheckUsb_ = !autoCheckUsb_;
                                 saveAutoCheckUsb(basePath_, autoCheckUsb_);
                             } else if (importSettingsCursor_ == (int)importPaths_.size() + 1) {
-                                // "+ Add path..." — swkbd is a blocking call;
-                                // commitTextInput() appends+saves on success.
-                                beginTextInput(TextInputPurpose::ImportPathEntry);
+                                // "+ Add path..." — folder browser instead of
+                                // swkbd (typing paths with a pad is painful).
+                                openFolderBrowser();
                             } else {
                                 int pi = importSettingsCursor_ - 1;
                                 importPaths_[pi].enabled = !importPaths_[pi].enabled;
