@@ -38,6 +38,16 @@ pub fn level_for_exp(ndex: u16, exp: u32) -> u8 {
         .calculate_level(exp)
 }
 
+/// Minimum EXP for this species at the given level (inverse of
+/// level_for_exp). Gen1 records store level, not EXP: the FFI load layer
+/// materializes this so downstream transfers never carry exp=0.
+pub fn exp_for_level(ndex: u16, level: u8) -> u32 {
+    SpeciesForm::base_form(NationalDex::assert_valid(ndex))
+        .get_species_metadata()
+        .level_up_type
+        .get_min_exp_for_level(level)
+}
+
 /// True if this move id may appear on a Gen 1 record: empty slot or a move
 /// introduced in Gen 1. Anything else would silently become another move
 /// through the `as u8` cast in `Pk1::from_ohpkm`, so our FFI layer drops it

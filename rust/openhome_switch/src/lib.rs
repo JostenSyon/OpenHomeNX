@@ -275,14 +275,27 @@ pub extern "C" fn openhome_load_pkm_from_gen(
         // 1 = PK1 (Gen 1 R/B/Y). 33-byte box record (66-byte party also
         // parses: try_from_bytes skips the 0xFF party header and fills
         // trainer/nickname from species when the extra bytes are absent).
+        // Gen1 records store LEVEL, not EXP: materialize the minimum EXP
+        // for (species growth, level) so downstream transfers don't carry
+        // exp=0 (which downstream games/UI would read as level 0/1).
         1 => match pkm_rs::gen1::Pk1::from_bytes(slice) {
-            Ok(pk) => match pkm_rs::ohpkm::OhpkmV2::convert_with_backup(
-                &pk,
-                &pkm_rs::traits::PkmBytes::to_party_bytes(&pk),
-            ) {
-                Ok(o) => o,
-                Err(_) => return core::ptr::null_mut(),
-            },
+            Ok(pk) => {
+                let lvl = pk.level;
+                match pkm_rs::ohpkm::OhpkmV2::convert_with_backup(
+                    &pk,
+                    &pkm_rs::traits::PkmBytes::to_party_bytes(&pk),
+                ) {
+                    Ok(mut o) => {
+                        if o.exp() == 0 && lvl > 1 {
+                            let ndex = o.species_and_form().get_ndex() as u16;
+                            let exp = pkm_rs::gen1::exp_for_level(ndex, lvl);
+                            o.set_exp(exp);
+                        }
+                        o
+                    }
+                    Err(_) => return core::ptr::null_mut(),
+                }
+            }
             Err(_) => return core::ptr::null_mut(),
         },
         // 2 = PK2 (Gen 2 G/S/C). 32-byte box record (73-byte party also
@@ -2710,6 +2723,28 @@ mod tests {
         let moves: alloc::vec::Vec<u16> = back.ohpkm.moves().indices().into_iter().collect();
         assert_eq!(moves[0], 144);
         openhome_free_pkm(out);
+    }
+
+    // Gen1 box records store LEVEL, not EXP: loading them must materialize
+    // the minimum EXP for (species growth, level), or downstream transfers
+    // carry exp=0 (read as level 0/1 downstream). Pikachu internal index
+    // 0x54 at level 25 -> exp>0, and level_for_exp(exp) == 25.
+    #[test]
+    fn load_gen1_box_materializes_exp() {
+        let mut raw = [0u8; 33];
+        raw[0] = 0x54; // Pikachu (internal index)
+        raw[3] = 25; // level (box records have no EXP field)
+        let loaded = openhome_load_pkm_from_gen(raw.as_ptr(), raw.len(), 1);
+        assert!(!loaded.is_null(), "valid Pikachu box record must load");
+        let back = unsafe { &*loaded };
+        let exp = back.ohpkm.exp();
+        assert!(exp > 0, "exp must be materialized, got 0");
+        assert_eq!(
+            pkm_rs::gen1::level_for_exp(25, exp),
+            25,
+            "level must round-trip"
+        );
+        openhome_free_pkm(loaded);
     }
 
     // Downgraded records carry the real EXP-derived level (from_ohpkm writes

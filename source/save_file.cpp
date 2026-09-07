@@ -1159,6 +1159,32 @@ bool SaveFile::loadGB(const std::string& path) {
     boxLayoutData_ = nullptr; // Gen 1 has no custom box names ("Box N")
     boxLayoutLen_ = 0;
 
+    // Identity strip: OT @0x2598 (11B GB), TID BE @0x2605, party @0x2F2C
+    // (count + 6 x 44B records, head 33B = box layout).
+    dsParty_.clear();
+    dsOtName_.clear();
+    dsTid_ = 0;
+    dsOtName_ = Gen1::decodeGbString(rawData_.data() + 0x2598, 11);
+    dsTid_ = static_cast<uint16_t>((rawData_[0x2605] << 8) | rawData_[0x2606]);
+    {
+        int pcount = rawData_[0x2F2C];
+        if (pcount > 6) pcount = 6;
+        for (int i = 0; i < pcount; i++) {
+            const uint8_t* rec = rawData_.data() + 0x2F2C + 8 + static_cast<size_t>(i) * 44;
+            if (rec[0] == 0)
+                continue;
+            uint8_t buf[55] = {};
+            std::memcpy(buf, rec, 33);
+            Pokemon p;
+            p.gameType_ = gameType_;
+            p.loadFromEncrypted(buf, sizeof(buf));
+            if (!p.isEmpty())
+                dsParty_.push_back(p);
+        }
+        DebugLog::line("loadGB: %s -> OT '%s' TID %u party %zu",
+                       path.c_str(), dsOtName_.c_str(), dsTid_, dsParty_.size());
+    }
+
     loaded_ = true;
     DebugLog::line("loadGB: %s -> OK (curbox %d, flushed %d)", path.c_str(), cur, (int)flushed);
     return true;
@@ -1343,6 +1369,33 @@ bool SaveFile::loadGBC(const std::string& path) {
     boxDataLen_ = gbcStorage_.size();
     boxLayoutData_ = nullptr;
     boxLayoutLen_ = 0;
+
+    // Identity strip: OT @0x200B (11B GB), TID BE @0x2009, party @0x288A
+    // (GS) / 0x2865 (Crystal): count + 6 x 48B records, head 32B = box.
+    dsParty_.clear();
+    dsOtName_.clear();
+    dsTid_ = 0;
+    dsOtName_ = Gen1::decodeGbString(rawData_.data() + 0x200B, 11);
+    dsTid_ = static_cast<uint16_t>((rawData_[0x2009] << 8) | rawData_[0x200A]);
+    {
+        size_t pbase = gbcIsCrystal_ ? 0x2865 : 0x288A;
+        int pcount = rawData_[pbase];
+        if (pcount > 6) pcount = 6;
+        for (int i = 0; i < pcount; i++) {
+            const uint8_t* rec = rawData_.data() + pbase + 8 + static_cast<size_t>(i) * 48;
+            if (rec[0] == 0)
+                continue;
+            uint8_t buf[54] = {};
+            std::memcpy(buf, rec, 32);
+            Pokemon p;
+            p.gameType_ = gameType_;
+            p.loadFromEncrypted(buf, sizeof(buf));
+            if (!p.isEmpty())
+                dsParty_.push_back(p);
+        }
+        DebugLog::line("loadGBC: %s -> OT '%s' TID %u party %zu",
+                       path.c_str(), dsOtName_.c_str(), dsTid_, dsParty_.size());
+    }
 
     loaded_ = true;
     DebugLog::line("loadGBC: %s -> OK (%s)", path.c_str(), gbcIsCrystal_ ? "Crystal" : "GS");
