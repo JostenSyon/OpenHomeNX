@@ -423,7 +423,9 @@ struct Pokemon {
     }
 };
 
-// Write OT/nickname (UTF-8) into a Gen1 mon's GB regions ([33:44]/[44:55]).
+// Decode a Gen3-encoded string (PKHeX StringConverter3) to UTF-8.
+// Public for save_file.cpp (GBA save OT names); implemented in pokemon.cpp.
+std::string decodeGen3String(const uint8_t* base, int offset, int maxBytes, bool jp = false);
 // Used after a cross-gen conversion materializes the 33B record: the record
 // alone carries no names, so they travel explicitly (OT stays the original
 // trainer, like a real transfer). Unknown chars become '?', padded 0x50.

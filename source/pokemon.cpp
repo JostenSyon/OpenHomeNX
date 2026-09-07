@@ -413,8 +413,9 @@ static const uint16_t G3_JP[256] = {
     0x2193, 0x2190, 0x2192, 0xFF0B, 0x0000, 0x0000, 0x0000, 0x0000,
 };
 
-// Decode a Gen3 encoded string to UTF-8
-static std::string readGen3String(const uint8_t* base, int offset, int maxBytes, bool jp = false) {
+// Decode a Gen3 encoded string to UTF-8 (public: reused by save_file.cpp
+// for GBA save OT names; same PKHeX StringConverter3 G3_EN table).
+std::string decodeGen3String(const uint8_t* base, int offset, int maxBytes, bool jp) {
     std::string result;
     const uint16_t* table = jp ? G3_JP : G3_EN;
     for (int i = 0; i < maxBytes; i++) {
@@ -437,6 +438,11 @@ static std::string readGen3String(const uint8_t* base, int offset, int maxBytes,
         }
     }
     return result;
+}
+
+// Internal alias (nickname/otName predate the public helper).
+static std::string readGen3String(const uint8_t* base, int offset, int maxBytes, bool jp = false) {
+    return decodeGen3String(base, offset, maxBytes, jp);
 }
 
 // Helper: read UTF-16LE string with 0xFFFF terminator (Gen5 PKM strings)

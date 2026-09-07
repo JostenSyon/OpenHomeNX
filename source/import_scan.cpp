@@ -159,6 +159,17 @@ std::string lastPathSegment(const std::string& dir) {
     return pos == std::string::npos ? d : d.substr(pos + 1);
 }
 
+// On-tile source badge with device prefix ("USB:saves" vs "SD:import"), so
+// two copies of the same game from different devices are distinguishable.
+std::string sourceTagFor(const std::string& dir) {
+    std::string tag = lastPathSegment(dir);
+    if (dir.rfind("ums", 0) == 0)
+        return "USB:" + tag;
+    if (dir.rfind("sdmc:", 0) == 0)
+        return "SD:" + tag;
+    return tag;
+}
+
 // Gen 4/5 (DS .sav dumps, 512KB NDS flash). Layouts are byte-distinguishable
 // (DP/Pt/HGSS sizes, BW Game byte), so the filename only breaks the D/P tie
 // (byte-identical layouts) — multi-language keywords, DIAMOND default.
@@ -287,7 +298,7 @@ void scanDir(const std::string& dir, std::vector<ImportedGame>& out, std::vector
             }
             claimed[idx] = true;
             matched++;
-            out.push_back({ds3Type, full, lastPathSegment(dir)});
+            out.push_back({ds3Type, full, sourceTagFor(dir)});
             DebugLog::line("import scan: %s -> %s", full.c_str(), gameInfo(ds3Type).gameTag);
             continue;
         }
@@ -304,7 +315,7 @@ void scanDir(const std::string& dir, std::vector<ImportedGame>& out, std::vector
             }
             claimed[idx] = true;
             matched++;
-            out.push_back({dsType, full, lastPathSegment(dir)});
+            out.push_back({dsType, full, sourceTagFor(dir)});
             DebugLog::line("import scan: %s -> %s", full.c_str(), gameInfo(dsType).gameTag);
             continue;
         }
@@ -332,7 +343,7 @@ void scanDir(const std::string& dir, std::vector<ImportedGame>& out, std::vector
             }
             claimed[idx] = true;
             matched++;
-            out.push_back({type, full, lastPathSegment(dir)});
+            out.push_back({type, full, sourceTagFor(dir)});
             DebugLog::line("import scan: %s -> %s", full.c_str(), gameInfo(type).gameTag);
             continue;
         }
@@ -361,7 +372,7 @@ void scanDir(const std::string& dir, std::vector<ImportedGame>& out, std::vector
             }
             claimed[idx] = true;
             matched++;
-            out.push_back({gbType, full, lastPathSegment(dir)});
+            out.push_back({gbType, full, sourceTagFor(dir)});
             DebugLog::line("import scan: %s -> %s", full.c_str(), gameInfo(gbType).gameTag);
             continue;
         }
@@ -377,7 +388,7 @@ void scanDir(const std::string& dir, std::vector<ImportedGame>& out, std::vector
             }
             claimed[idx] = true;
             matched++;
-            out.push_back({gbcType, full, lastPathSegment(dir)});
+            out.push_back({gbcType, full, sourceTagFor(dir)});
             DebugLog::line("import scan: %s -> %s", full.c_str(), gameInfo(gbcType).gameTag);
             continue;
         }

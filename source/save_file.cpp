@@ -1552,6 +1552,17 @@ bool SaveFile::loadGBA(const std::string& path) {
         boxLayoutLen_ = 0;
     }
 
+    // Identity strip: OT name = first 8 bytes of section 0 (Small object,
+    // PKHeX SAV3: "OT name is the first 8 bytes of Small", Gen3-encoded).
+    // Party minis deferred (party offsets differ RS/E/FR/LG, unverified).
+    dsParty_.clear();
+    dsOtName_.clear();
+    dsTid_ = 0;
+    if (uint8_t* sec0 = findGbaSectorData(0)) {
+        dsOtName_ = decodeGen3String(sec0, 0, 8, false);
+        DebugLog::line("loadGBA: %s -> OT '%s'", path.c_str(), dsOtName_.c_str());
+    }
+
     loaded_ = true;
     return true;
 }
