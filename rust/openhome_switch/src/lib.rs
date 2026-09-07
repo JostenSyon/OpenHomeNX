@@ -2537,32 +2537,59 @@ mod tests {
     // checksum — Piplup/Bidoof/Kricketot (Pt) and Buizel/Staravia (DP).
     #[test]
     fn load_real_encrypted_dp_pt_slots() {
-        for (path, species) in [
-            ("../../../tools/test save/upstream/dp_box0_slot0.pk4", 390u16),
-            ("../../../tools/test save/upstream/dp_box0_slot1.pk4", 396u16),
-            ("../../../tools/test save/upstream/pt_box0_slot0.pk4", 393u16),
-            ("../../../tools/test save/upstream/pt_box0_slot1.pk4", 399u16),
-            ("../../../tools/test save/upstream/pt_box0_slot2.pk4", 401u16),
+        fn check(raw: &[u8], species: u16, path: &str) {
+            let pk = pkm_rs::gen4::Pk4::from_bytes(raw)
+                .unwrap_or_else(|_| panic!("{} must decrypt and parse", path));
+            assert_eq!(pk.national_dex, species, "{}", path);
+            assert_eq!(pk.calculate_checksum(), pk.checksum, "{}", path);
+        }
+        check(
+            include_bytes!("../../../tools/test save/upstream/dp_box0_slot0.pk4"),
+            390,
+            "dp_box0_slot0",
+        );
+        check(
+            include_bytes!("../../../tools/test save/upstream/dp_box0_slot1.pk4"),
+            396,
+            "dp_box0_slot1",
+        );
+        check(
+            include_bytes!("../../../tools/test save/upstream/pt_box0_slot0.pk4"),
+            393,
+            "pt_box0_slot0",
+        );
+        check(
+            include_bytes!("../../../tools/test save/upstream/pt_box0_slot1.pk4"),
+            399,
+            "pt_box0_slot1",
+        );
+        check(
+            include_bytes!("../../../tools/test save/upstream/pt_box0_slot2.pk4"),
+            401,
+            "pt_box0_slot2",
+        );
+        // HGSS slots carry extended egg/met locations (0x44/0x46): Totodile
+        // met at 126, Ledyba and Pidgey at 178 (Johto routes).
+        for (path, species, ext_met) in [
+            ("hgss_box0_slot0", 158u16, 126u16),
+            ("hgss_box0_slot1", 165u16, 178u16),
+            ("hgss_box0_slot2", 16u16, 178u16),
         ] {
             let raw: &[u8] = match path {
-                "../../../tools/test save/upstream/dp_box0_slot0.pk4" => {
-                    include_bytes!("../../../tools/test save/upstream/dp_box0_slot0.pk4")
+                "hgss_box0_slot0" => {
+                    include_bytes!("../../../tools/test save/upstream/hgss_box0_slot0.pk4")
                 }
-                "../../../tools/test save/upstream/dp_box0_slot1.pk4" => {
-                    include_bytes!("../../../tools/test save/upstream/dp_box0_slot1.pk4")
+                "hgss_box0_slot1" => {
+                    include_bytes!("../../../tools/test save/upstream/hgss_box0_slot1.pk4")
                 }
-                "../../../tools/test save/upstream/pt_box0_slot0.pk4" => {
-                    include_bytes!("../../../tools/test save/upstream/pt_box0_slot0.pk4")
-                }
-                "../../../tools/test save/upstream/pt_box0_slot1.pk4" => {
-                    include_bytes!("../../../tools/test save/upstream/pt_box0_slot1.pk4")
-                }
-                _ => include_bytes!("../../../tools/test save/upstream/pt_box0_slot2.pk4"),
+                _ => include_bytes!("../../../tools/test save/upstream/hgss_box0_slot2.pk4"),
             };
             let pk = pkm_rs::gen4::Pk4::from_bytes(raw)
                 .unwrap_or_else(|_| panic!("{} must decrypt and parse", path));
             assert_eq!(pk.national_dex, species, "{}", path);
             assert_eq!(pk.calculate_checksum(), pk.checksum, "{}", path);
+            assert_eq!(pk.egg_location_index_pthgss, 0, "{}", path);
+            assert_eq!(pk.met_location_index_pthgss, ext_met, "{}", path);
         }
     }
 
