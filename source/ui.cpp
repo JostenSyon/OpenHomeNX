@@ -655,11 +655,12 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
                     folderRepeatFast_ = false;
                 } else {
                     if (folderRepeatDir_ == 0) {
+                        // First step immediately (like BUTTONDOWN), then repeat.
+                        folderMoveCursor(dir);
                         folderRepeatDir_ = dir;
                         folderRepeatTime_ = now;
                         folderRepeatFast_ = false;
-                    }
-                    if (dir == folderRepeatDir_) {
+                    } else if (dir == folderRepeatDir_) {
                         uint32_t delay = folderRepeatFast_ ? 70 : 400;
                         if (now - folderRepeatTime_ >= delay) {
                             folderMoveCursor(dir);
