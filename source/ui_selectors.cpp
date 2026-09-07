@@ -228,18 +228,37 @@ void UI::appendImportedGames() {
         availableGames_.push_back(ig.type);
 }
 
-std::string UI::importedSavePath(GameType game) const {
+std::string UI::importedSavePath(GameType game, int occurrence) const {
+    int seen = 0;
     for (const auto& ig : importedGames_)
-        if (ig.type == game)
-            return ig.filePath;
+        if (ig.type == game) {
+            if (seen == occurrence)
+                return ig.filePath;
+            seen++;
+        }
     return "";
 }
 
-std::string UI::importedSourceTag(GameType game) const {
+std::string UI::importedSourceTag(GameType game, int occurrence) const {
+    int seen = 0;
     for (const auto& ig : importedGames_)
-        if (ig.type == game)
-            return ig.sourceTag;
+        if (ig.type == game) {
+            if (seen == occurrence)
+                return ig.sourceTag;
+            seen++;
+        }
     return "";
+}
+
+int UI::importedOccurrence(int cursor) const {
+    if (cursor < 0 || cursor >= (int)availableGames_.size())
+        return 0;
+    GameType game = availableGames_[cursor];
+    int n = 0;
+    for (int i = 0; i < cursor; i++)
+        if (availableGames_[i] == game)
+            n++;
+    return n;
 }
 
 void UI::rescanImportedGames() {
@@ -791,7 +810,7 @@ void UI::drawGameSelectorFrame() {
             // than only-on-ambiguity, which would need an extra pass to
             // detect and would still surprise the user the first time a
             // second source shows up.
-            std::string tag = importedSourceTag(availableGames_[i]);
+            std::string tag = importedSourceTag(availableGames_[i], importedOccurrence(i));
             if (!tag.empty()) {
                 if (tag.length() > 10) tag = tag.substr(0, 9) + ".";
                 const auto& te = getTextEntry(tag, fontSmall_, T().text);
@@ -1108,7 +1127,7 @@ void UI::handleGameSelectorInput(bool& running) {
                                     showMessageAndWait(i18n::get(StrKey::SendSaveTitle), i18n::get(StrKey::SendSaveNoGame));
                                 } else {
                                     GameType g = availableGames_[gameSelCursor_];
-                                    std::string path = importedSavePath(g);
+                                    std::string path = importedSavePath(g, importedOccurrence(gameSelCursor_));
                                     if (path.empty()) {
                                         showMessageAndWait(i18n::get(StrKey::SendSaveTitle), i18n::get(StrKey::SendSaveOnlyImported));
                                     } else {
@@ -1197,7 +1216,7 @@ void UI::handleGameSelectorInput(bool& running) {
                     } else if (gameSelOnAllBanks_)
                         enterAllBanksMode();
                     else
-                        selectGame(availableGames_[gameSelCursor_]);
+                        selectGame(availableGames_[gameSelCursor_], importedOccurrence(gameSelCursor_));
                     break;
                 case SDL_CONTROLLER_BUTTON_A: // Switch B = back
                     DebugLog::line("nav: B in games profile=%d -> %s", selectedProfile_,

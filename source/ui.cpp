@@ -1029,7 +1029,7 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
     account_.shutdown();
 }
 
-void UI::selectGame(GameType game) {
+void UI::selectGame(GameType game, int occurrence) {
     selectedGame_ = game;
     invalidateAllSlotDisplays();
     availableSpecies_.clear(); // rebuild on next species picker open
@@ -1051,15 +1051,17 @@ void UI::selectGame(GameType game) {
     if (!isDualBankMode()) {
         showWorking(i18n::get(StrKey::LoadingSaveData));
 
-        if (isImportedFile(game) || isGen1File(game) || isGen2File(game)) {
+        if (isImportedFile(game) || isGen1File(game) || isGen2File(game) ||
+            isGen45File(game) || isGen6XY(game) || isGen7SM(game)) {
             // File-backed game (scanned emulator save) — no titleId, no
             // AccountManager mount/backup: load straight from the resolved
             // path found by appendImportedGames(). Read/write both go
             // through this same file (SaveFile::load()/save() already route
             // GBA through loadGBA()/saveGBA(), GB through loadGB()/saveGB()
             // and GBC through loadGBC()/saveGBC), so GBA writes
-            // land directly on the user's own emulator save.
-            savePath_ = importedSavePath(game);
+            // land directly on the user's own emulator save. DS/3DS are
+            // read-only v1 (SaveFile::save refuses explicitly).
+            savePath_ = importedSavePath(game, occurrence);
             if (savePath_.empty()) {
                 showMessageAndWait(i18n::get(StrKey::MountError), i18n::get(StrKey::FailedMountSave));
                 return;

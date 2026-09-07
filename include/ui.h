@@ -264,8 +264,11 @@ private:
     std::vector<ImportedGame> importedGames_;
     void appendImportedGames();               // scans importPaths_, extends availableGames_
     void rescanImportedGames();      // re-scan in place + popup on newly found games
-    std::string importedSavePath(GameType game) const;
-    std::string importedSourceTag(GameType game) const; // small on-tile badge text
+    std::string importedSavePath(GameType game, int occurrence = 0) const;
+    std::string importedSourceTag(GameType game, int occurrence = 0) const; // small on-tile badge text
+    // Which occurrence of `game` is the tile at availableGames_[cursor]?
+    // Counts same-type tiles before it (duplicates = same game, other device).
+    int importedOccurrence(int cursor) const;
 
     // Cross-gen transfer selector state (M6a)
     bool showGenSelector_ = false;
@@ -499,7 +502,7 @@ private:
     // Game selector
     void drawGameSelectorFrame();
     void handleGameSelectorInput(bool& running);
-    void selectGame(GameType game);
+    void selectGame(GameType game, int occurrence = 0);
     std::string buildBackupDir(GameType game) const;
     bool saveBankFiles();
     // Write the game save (+ account commit + "Saving…" mask + LED) only when a

@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstring>
+#include <set>
 #include <cerrno>
 #include <cstdint>
 #include <fstream>
@@ -265,12 +266,25 @@ bool detect3DSVersion(const std::string& full, GameType& outType) {
     return false;
 }
 
-void scanDir(const std::string& dir, std::vector<ImportedGame>& out, std::vector<bool>& claimed) {
+void scanDir(const std::string& dir, std::vector<ImportedGame>& out, std::set<std::string>& claimed) {
     DIR* d = opendir(dir.c_str());
     if (!d) {
         DebugLog::line("import scan: %s -> opendir failed (errno=%d)", dir.c_str(), errno);
         return;
     }
+    // Claim key = game type + source tag: the SAME game from two devices
+    // (SD "roms" + USB "roms") shows two tiles with different badges;
+    // the same folder scanned twice still dedupes.
+    auto tryClaim = [&](GameType t, const std::string& tag) -> bool {
+        std::string key = std::to_string(static_cast<int>(t)) + '\x1f' + tag;
+        if (claimed.count(key) != 0) {
+            DebugLog::line("import scan: skip %s %s (doppione, vince il primo)",
+                           tag.c_str(), gameInfo(t).gameTag);
+            return false;
+        }
+        claimed.insert(key);
+        return true;
+    };
     int filesSeen = 0, regularFiles = 0, gbaSized = 0, matched = 0;
     struct dirent* entry;
     while ((entry = readdir(d)) != nullptr) {
@@ -290,13 +304,9 @@ void scanDir(const std::string& dir, std::vector<ImportedGame>& out, std::vector
         // Gen 6 XY / Gen 7 SM first (large files; byte-driven detection).
         GameType ds3Type = GameType::X;
         if (detect3DSVersion(full, ds3Type)) {
-            int idx = static_cast<int>(ds3Type);
-            if (claimed[idx]) {
-                DebugLog::line("import scan: skip %s (doppione %s, vince il primo)",
-                               entry->d_name, gameInfo(ds3Type).gameTag);
+            if (!tryClaim(ds3Type, sourceTagFor(dir))) {
                 continue;
             }
-            claimed[idx] = true;
             matched++;
             out.push_back({ds3Type, full, sourceTagFor(dir)});
             DebugLog::line("import scan: %s -> %s", full.c_str(), gameInfo(ds3Type).gameTag);
@@ -307,13 +317,9 @@ void scanDir(const std::string& dir, std::vector<ImportedGame>& out, std::vector
         // byte); the filename only breaks the D/P tie inside detectDSVersion.
         GameType dsType = GameType::DIAMOND;
         if (detectDSVersion(entry->d_name, full, dsType)) {
-            int idx = static_cast<int>(dsType);
-            if (claimed[idx]) {
-                DebugLog::line("import scan: skip %s (doppione %s, vince il primo)",
-                               entry->d_name, gameInfo(dsType).gameTag);
+            if (!tryClaim(dsType, sourceTagFor(dir))) {
                 continue;
             }
-            claimed[idx] = true;
             matched++;
             out.push_back({dsType, full, sourceTagFor(dir)});
             DebugLog::line("import scan: %s -> %s", full.c_str(), gameInfo(dsType).gameTag);
@@ -335,13 +341,9 @@ void scanDir(const std::string& dir, std::vector<ImportedGame>& out, std::vector
                 continue;
             }
 
-            int idx = static_cast<int>(type);
-            if (claimed[idx]) {
-                DebugLog::line("import scan: skip %s (doppione %s, vince il primo)",
-                               entry->d_name, gameInfo(type).gameTag);
-                continue; // first match per GameType wins
+            if (!tryClaim(type, sourceTagFor(dir))) {
+                continue; // same game+source already listed
             }
-            claimed[idx] = true;
             matched++;
             out.push_back({type, full, sourceTagFor(dir)});
             DebugLog::line("import scan: %s -> %s", full.c_str(), gameInfo(type).gameTag);
@@ -364,13 +366,9 @@ void scanDir(const std::string& dir, std::vector<ImportedGame>& out, std::vector
         // (same policy as Ruby-over-Sapphire above).
         GameType gbType = GameType::RED;
         if (detectGen1Version(entry->d_name, full, gbType)) {
-            int idx = static_cast<int>(gbType);
-            if (claimed[idx]) {
-                DebugLog::line("import scan: skip %s (doppione %s, vince il primo)",
-                               entry->d_name, gameInfo(gbType).gameTag);
+            if (!tryClaim(gbType, sourceTagFor(dir))) {
                 continue;
             }
-            claimed[idx] = true;
             matched++;
             out.push_back({gbType, full, sourceTagFor(dir)});
             DebugLog::line("import scan: %s -> %s", full.c_str(), gameInfo(gbType).gameTag);
@@ -380,13 +378,9 @@ void scanDir(const std::string& dir, std::vector<ImportedGame>& out, std::vector
         // Gen 2 (G/S/C SRAM): checksum-driven version detection.
         GameType gbcType = GameType::GOLD;
         if (detectGen2Version(entry->d_name, full, gbcType)) {
-            int idx = static_cast<int>(gbcType);
-            if (claimed[idx]) {
-                DebugLog::line("import scan: skip %s (doppione %s, vince il primo)",
-                               entry->d_name, gameInfo(gbcType).gameTag);
+            if (!tryClaim(gbcType, sourceTagFor(dir))) {
                 continue;
             }
-            claimed[idx] = true;
             matched++;
             out.push_back({gbcType, full, sourceTagFor(dir)});
             DebugLog::line("import scan: %s -> %s", full.c_str(), gameInfo(gbcType).gameTag);
@@ -406,7 +400,7 @@ void scanDir(const std::string& dir, std::vector<ImportedGame>& out, std::vector
 
 std::vector<ImportedGame> scanImportPaths(const std::vector<ImportPathEntry>& paths, bool autoCheckUsb) {
     std::vector<ImportedGame> out;
-    std::vector<bool> claimed(GAME_TYPE_COUNT, false);
+    std::set<std::string> claimed;
 
     DebugLog::line("import scan: %zu configured path(s), autoCheckUsb=%d", paths.size(), (int)autoCheckUsb);
     for (const auto& entry : paths) {
