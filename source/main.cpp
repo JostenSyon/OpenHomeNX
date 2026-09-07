@@ -83,6 +83,7 @@ int main(int argc, char* argv[]) {
     // fonts + icons, all fast) — and keep it up (no fade) while the setup
     // below runs, so there is never a black gap between logo and app.
     ui.showSplash(2500, false);
+    bootMark("splash on");
 
     // Rete per l'updater remoto (Layer 1). Non su un boot-bounce di update, e
     // mai fatale: se fallisce, "Check for update" resta solo SD/USB.
@@ -95,6 +96,7 @@ int main(int argc, char* argv[]) {
                        (unsigned)netRc, netReady ? "on" : "off", pendingUpdate ? 1 : 0);
         updateNetSetReady(netReady);
     }
+    bootMark("rete");
 
 #ifdef OH_USB_UPDATE
     // USB Mass Storage host: lets "Check for update" scan an inserted USB drive
@@ -115,8 +117,11 @@ int main(int argc, char* argv[]) {
         // timeout. Retry up to 3x3s, bailing out early the moment something
         // mounts, so a fast drive still shows up in ~0-3s and a slow one gets
         // up to 9s total instead of being declared "not there" after 2s.
+        // NEVER wait when no drive is present (phys==0): nothing can mount
+        // and each wait is 3s of dead boot time (9s total — was the slow boot
+        // with debug on and no USB inserted).
         UEvent* ev = usbHsFsGetStatusChangeUserEvent();
-        for (int attempt = 1; n == 0 && ev && attempt <= 3; attempt++) {
+        for (int attempt = 1; phys > 0 && n == 0 && ev && attempt <= 3; attempt++) {
             waitSingle(waiterForUEvent(ev), 3000000000ULL); // 3s
             phys = usbHsFsGetPhysicalDeviceCount();
             n = usbHsFsGetMountedDeviceCount();
@@ -126,6 +131,7 @@ int main(int argc, char* argv[]) {
         if (phys > 0 && n == 0)
             DebugLog::line("boot USB: drive present but no FAT volume mounted (blank MBR? reformat MBR+FAT32)");
     }
+    bootMark("usb");
 #endif
 
     std::string savePath = basePath + "main";
