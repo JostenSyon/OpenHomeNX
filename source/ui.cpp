@@ -615,7 +615,9 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
         }
 
         // Folder browser (opened from "+ Add path...") sits on top of the
-        // import settings popup.
+        // import settings popup. Always redraws while open: the import block
+        // below clears dirty_ in the same frame the browser opens, so a
+        // dirty_-gated draw here would never fire (black popup bug).
         if (showFolderBrowser_) {
             SDL_Event event;
             while (SDL_PollEvent(&event)) {
@@ -623,20 +625,18 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
                 handleFolderBrowserInput(event);
             }
             if (!showFolderBrowser_) continue; // dismissed — let main draw section handle it
-            if (dirty_) {
-                if (theme_ != lastTheme_) { clearTextCache(); lastTheme_ = theme_; }
-                if (screen_ == AppScreen::ProfileSelector) drawProfileSelectorFrame();
-                else if (screen_ == AppScreen::GameSelector) {
-                    drawGameSelectorFrame();
-                    if (showGameSelMenu_) drawGameSelMenuPopup();
-                }
-                else if (screen_ == AppScreen::BankSelector) drawBankSelectorFrame();
-                else drawFrame();
-                drawImportSettingsPopup();
-                drawFolderBrowserPopup();
-                SDL_RenderPresent(renderer_);
-                dirty_ = false;
+            if (theme_ != lastTheme_) { clearTextCache(); lastTheme_ = theme_; }
+            if (screen_ == AppScreen::ProfileSelector) drawProfileSelectorFrame();
+            else if (screen_ == AppScreen::GameSelector) {
+                drawGameSelectorFrame();
+                if (showGameSelMenu_) drawGameSelMenuPopup();
             }
+            else if (screen_ == AppScreen::BankSelector) drawBankSelectorFrame();
+            else drawFrame();
+            drawImportSettingsPopup();
+            drawFolderBrowserPopup();
+            SDL_RenderPresent(renderer_);
+            dirty_ = false;
             SDL_Delay(16);
             continue;
         }

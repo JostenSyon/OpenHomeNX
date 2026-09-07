@@ -304,6 +304,7 @@ void UI::openFolderBrowser() {
     folderScroll_ = 0;
     refreshFolderEntries();
     showFolderBrowser_ = true;
+    DebugLog::line("folderbrowser: aperto, %zu root", folderEntries_.size());
     markDirty();
 }
 
