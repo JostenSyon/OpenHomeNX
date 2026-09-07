@@ -17,6 +17,13 @@ MAX_SAVE = 128 * 1024 * 1024
 class Handler(SimpleHTTPRequestHandler):
     def __init__(self, *a, **kw):
         super().__init__(*a, directory=str(DIST), **kw)
+    def end_headers(self):
+        # Niente cache sul .nro/latest.json: la Switch deve sempre vedere
+        # l'ultima build senza dover riavviare il server.
+        self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
+        self.send_header("Pragma", "no-cache")
+        self.send_header("Expires", "0")
+        super().end_headers()
     def copyfile(self, source, outputfile):
         # Chunk da 1MB invece dei 64KB di default: meno syscall/segmenti
         # TCP, meglio su WiFi verso Switch.

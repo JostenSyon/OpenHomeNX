@@ -709,11 +709,129 @@ static const RibbonDef GEN3_RIBBON_DEFS[] = {
     {"World",              "ribbonworld",             false},
 };
 
+static const RibbonDef DS_RIBBON_DEFS[] = {
+    // 0x24 RIB0
+    {"Sinnoh Champion",      "ribbonchampionsinnoh",  false},
+    {"Ability",              "ribbonability",         false},
+    {"Ability Great",        "ribbonabilitygreat",    false},
+    {"Ability Double",       "ribbonabilitydouble",   false},
+    {"Ability Multi",        "ribbonabilitymulti",    false},
+    {"Ability Pair",         "ribbonabilitypair",     false},
+    {"Ability World",        "ribbonabilityworld",    false},
+    {"Alert",                "ribbonalert",           false},
+    // 0x25 RIB1
+    {"Shock",                "ribbonshock",           false},
+    {"Downcast",             "ribbondowncast",        false},
+    {"Careless",             "ribboncareless",        false},
+    {"Relax",                "ribbonrelax",           false},
+    {"Snooze",               "ribbonsnooze",          false},
+    {"Smile",                "ribbonsmile",           false},
+    {"Gorgeous",             "ribbongorgeous",        false},
+    {"Royal",                "ribbonroyal",           false},
+    // 0x26 RIB2
+    {"Gorgeous Royal",       "ribbongorgeousroyal",   false},
+    {"Footprint",            "ribbonfootprint",       false},
+    {"Record",               "ribbonrecord",          false},
+    {"Event",                "ribbonevent",           false},
+    {"Legend",               "ribbonlegend",          false},
+    {"World Champion",       "ribbonchampionworld",   false},
+    {"Birthday",             "ribbonbirthday",        false},
+    {"Special",              "ribbonspecial",         false},
+    // 0x27 RIB3
+    {"Souvenir",             "ribbonsouvenir",        false},
+    {"Wishing",              "ribbonwishing",         false},
+    {"Classic",              "ribbonclassic",         false},
+    {"Premier",              "ribbonpremier",         false},
+    // 0x3C RIB4 (Hoenn contest)
+    {"Cool",                 "ribbong3cool",          false},
+    {"Cool Super",           "ribbong3coolsuper",     false},
+    {"Cool Hyper",           "ribbong3coolhyper",     false},
+    {"Cool Master",          "ribbong3coolmaster",    false},
+    {"Beauty",               "ribbong3beauty",        false},
+    {"Beauty Super",         "ribbong3beautysuper",   false},
+    {"Beauty Hyper",         "ribbong3beautyhyper",   false},
+    {"Beauty Master",        "ribbong3beautymaster",  false},
+    // 0x3D RIB5
+    {"Cute",                 "ribbong3cute",          false},
+    {"Cute Super",           "ribbong3cutesuper",     false},
+    {"Cute Hyper",           "ribbong3cutehyper",     false},
+    {"Cute Master",          "ribbong3cutemaster",    false},
+    {"Smart",                "ribbong3smart",         false},
+    {"Smart Super",          "ribbong3smartsuper",    false},
+    {"Smart Hyper",          "ribbong3smarthyper",    false},
+    {"Smart Master",         "ribbong3smartmaster",   false},
+    // 0x3E RIB6
+    {"Tough",                "ribbong3tough",         false},
+    {"Tough Super",          "ribbong3toughsuper",    false},
+    {"Tough Hyper",          "ribbong3toughhyper",    false},
+    {"Tough Master",         "ribbong3toughmaster",   false},
+    {"Champion",             "ribbonchampiong3",      false},
+    {"Winning",              "ribbonwinning",         false},
+    {"Victory",              "ribbonvictory",         false},
+    {"Artist",               "ribbonartist",          false},
+    // 0x3F RIB7
+    {"Effort",               "ribboneffort",          false},
+    {"Battle Champion",      "ribbonchampionbattle",  false},
+    {"Regional Champion",    "ribbonchampionregional",false},
+    {"National Champion",    "ribbonchampionnational",false},
+    {"Country",              "ribboncountry",         false},
+    {"National",             "ribbonnational",        false},
+    {"Earth",                "ribbonearth",           false},
+    {"World",                "ribbonworld",           false},
+    // 0x60 RIB8 (Sinnoh contest)
+    {"Cool",                 "ribbong4cool",          false},
+    {"Cool Great",           "ribbong4coolgreat",     false},
+    {"Cool Ultra",           "ribbong4coolultra",     false},
+    {"Cool Master",          "ribbong4coolmaster",    false},
+    {"Beauty",               "ribbong4beauty",        false},
+    {"Beauty Great",         "ribbong4beautygreat",   false},
+    {"Beauty Ultra",         "ribbong4beautyultra",   false},
+    {"Beauty Master",        "ribbong4beautymaster",  false},
+    // 0x61 RIB9
+    {"Cute",                 "ribbong4cute",          false},
+    {"Cute Great",           "ribbong4cutegreat",     false},
+    {"Cute Ultra",           "ribbong4cuteultra",     false},
+    {"Cute Master",          "ribbong4cutemaster",    false},
+    {"Smart",                "ribbong4smart",         false},
+    {"Smart Great",          "ribbong4smartgreat",    false},
+    {"Smart Ultra",          "ribbong4smartultra",    false},
+    {"Smart Master",         "ribbong4smartmaster",   false},
+    // 0x62 RIBA
+    {"Tough",                "ribbong4tough",         false},
+    {"Tough Great",          "ribbong4toughgreat",    false},
+    {"Tough Ultra",          "ribbong4toughultra",    false},
+    {"Tough Master",         "ribbong4toughmaster",   false},
+};
+
 std::vector<Pokemon::RibbonInfo> Pokemon::getRibbonsAndMarks() const {
     std::vector<RibbonInfo> result;
 
     if (isGbFile(gameType_)) return result; // no ribbons/marks on GB
-    if (isGen45File(gameType_)) return result; // TODO: DS ribbon bytes (3 spots) need name tables
+    if (isGen45File(gameType_)) {
+        // DS: 12 bytes across 3 spots mirrors PK4.cs RIB0-RIBB layout.
+        // 0x24-0x27 (4B), 0x3C-0x3F (4B), 0x60-0x63 (4B) — last 4 bits of 0x62-0x63 unused.
+        static const int offsets[] = {0x24, 0x25, 0x26, 0x27, 0x3C, 0x3D, 0x3E, 0x3F, 0x60, 0x61, 0x62, 0x63};
+        for (int i = 0; i < 12; i++) {
+            uint8_t b = data[offsets[i]];
+            // RIB3 bits 4-7, RIBA bits 4-7, RIBB all unused
+            int maxBit = 8;
+            if (i == 3) maxBit = 4; // RIB3
+            if (i == 10) maxBit = 4; // RIBA
+            if (i == 11) maxBit = 0; // RIBB unused
+            for (int bit = 0; bit < maxBit; bit++) {
+                if ((b >> bit) & 1) {
+                    int idx = i * 8 + bit;
+                    // Adjust for skipped unused bits
+                    if (i >= 4) idx -= 4; // skip RIB3 upper 4
+                    if (i >= 11) idx -= 4; // skip RIBA upper 4 (RIBB is 0 anyway)
+                    if (i == 11) continue;
+                    auto& d = DS_RIBBON_DEFS[idx];
+                    result.push_back({d.name, d.filename, d.isMark});
+                }
+            }
+        }
+        return result;
+    }
     if (isFRLG(gameType_) || isImportedFile(gameType_)) {
         // Gen3: single uint32 at 0x4C
         uint32_t rib = readU32(0x4C);

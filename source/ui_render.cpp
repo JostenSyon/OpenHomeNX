@@ -388,24 +388,49 @@ void UI::drawPanel(int panelX, const std::string& boxName, int boxIdx,
             tw = getTextEntry(left, fontSmall_, hdrColor).w;
         }
         drawText(left, panelX + 45, BOX_HDR_Y + (BOX_HDR_H - 14) / 2, hdrColor, fontSmall_);
-        // Party minis right after the OT text (not right-aligned).
-        int mx = panelX + 45 + tw + 12;
-        int shown = 0;
+        // Party minis right after the OT text: show only when party has data.
+        // Before: always 6 grey balls even on empty saves — misleading. Now:
+        // empty party = just OT, no placeholders.
         const auto& party = save->dsParty();
-        for (size_t pi = 0; pi < party.size() && shown < 6; pi++) {
-            if (party[pi].isEmpty())
-                continue;
-            SDL_Texture* spr = getSprite(party[pi].species(), party[pi].form());
-            if (spr && mx + 24 < panelX + PANEL_W - 45) {
-                SDL_Rect dst = {mx, BOX_HDR_Y + (BOX_HDR_H - 24) / 2, 24, 24};
-                SDL_RenderCopy(renderer_, spr, nullptr, &dst);
-                if (DebugLog::enabled() && (int)pi == partyCursor_) {
-                    SDL_SetRenderDrawColor(renderer_, T().cursor.r, T().cursor.g, T().cursor.b, 255);
-                    SDL_RenderDrawRect(renderer_, &dst);
+        if (!party.empty()) {
+            int mx = panelX + 45 + tw + 12;
+            SDL_Texture* emptyFallback = iconBoxEmpty_;
+            for (int pi = 0; pi < 6; pi++) {
+                bool isEmpty = (pi >= (int)party.size() || party[pi].isEmpty());
+                SDL_Texture* tex = nullptr;
+                if (!isEmpty) {
+                    tex = getSprite(party[pi].species(), party[pi].form());
+                    if (!tex) tex = getSprite(party[pi].species(), 0);
+                    if (!tex) tex = getBallSprite(party[pi].ball());
+                    if (!tex) tex = getBallSprite(4);
+                } else {
+                    tex = getBallSprite(4);
+                    if (!tex) tex = emptyFallback;
                 }
+                if (tex && mx + 24 <= panelX + PANEL_W - 20) {
+                    SDL_Rect dst = {mx, BOX_HDR_Y + (BOX_HDR_H - 24) / 2, 24, 24};
+                    if (isEmpty) {
+                        SDL_SetTextureColorMod(tex, 110, 110, 110);
+                        SDL_SetTextureAlphaMod(tex, 110);
+                    }
+                    SDL_RenderCopy(renderer_, tex, nullptr, &dst);
+                    if (isEmpty) {
+                        SDL_SetTextureColorMod(tex, 255, 255, 255);
+                        SDL_SetTextureAlphaMod(tex, 255);
+                        SDL_SetRenderDrawColor(renderer_, 110, 110, 110, 90);
+                        SDL_RenderDrawRect(renderer_, &dst);
+                    }
+                    if (DebugLog::enabled() && pi == partyCursor_) {
+                        SDL_SetRenderDrawColor(renderer_, T().cursor.r, T().cursor.g, T().cursor.b, 255);
+                        SDL_RenderDrawRect(renderer_, &dst);
+                    }
+                } else if (!tex) {
+                    SDL_SetRenderDrawColor(renderer_, T().textDim.r, T().textDim.g, T().textDim.b, 80);
+                    SDL_Rect r = {mx, BOX_HDR_Y + (BOX_HDR_H - 10) / 2, 24, 10};
+                    SDL_RenderFillRect(renderer_, &r);
+                }
+                mx += 28;
             }
-            mx += 28;
-            shown++;
         }
         drawTextCentered(">", panelX + PANEL_W - 20, BOX_HDR_Y + BOX_HDR_H / 2, T().arrow, font_);
     } else {

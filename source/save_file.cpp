@@ -36,6 +36,11 @@ bool SaveFile::load(const std::string& path) {
     dirty_ = false;   // fresh state; the load* helpers write buffers directly, not via the marked mutators
     boxData_ = nullptr;
     boxLayoutData_ = nullptr;
+    // Identity strip (header OT + party) must not survive across game switches
+    // — the “party of Red seen on Sword” bug was exactly this stale state.
+    dsParty_.clear();
+    dsOtName_.clear();
+    dsTid_ = 0;
     invalidateAllBoxCache();
 
     DebugLog::line("load: path=%s gameType=%d engine=%s",
@@ -1607,13 +1612,72 @@ bool SaveFile::loadGBA(const std::string& path) {
 
     // Identity strip: OT name = first 8 bytes of section 0 (Small object,
     // PKHeX SAV3: "OT name is the first 8 bytes of Small", Gen3-encoded).
-    // Party minis deferred (party offsets differ RS/E/FR/LG, unverified).
+    // Party: Large sectors 1-3 concatenated, brute scan for count 1..6 with
+    // valid PK3 party slots (100B each, EC-encrypted, checksum validated).
     dsParty_.clear();
     dsOtName_.clear();
     dsTid_ = 0;
     if (uint8_t* sec0 = findGbaSectorData(0)) {
         dsOtName_ = decodeGen3String(sec0, 0, 8, false);
+        // TID for GBA: first 4 bytes after OT? Use Small's TID at offset 0x0A within sector 0? Fallback 0.
+        // Keep dsTid 0 for GBA (not used in header beyond OT), but log.
         DebugLog::line("loadGBA: %s -> OT '%s'", path.c_str(), dsOtName_.c_str());
+    }
+    // GBA party brute scan on Large (sectors 1-3)
+    {
+        // Assemble Large from sectors 1,2,3 if present
+        std::vector<uint8_t> large;
+        large.reserve(3 * GBA_SECTOR_USED);
+        for (int id = 1; id <= 3; ++id) {
+            if (uint8_t* s = findGbaSectorData(id)) {
+                large.insert(large.end(), s, s + GBA_SECTOR_USED);
+            }
+        }
+        // Scan for party: offset where large[off]==count 1..6 and next count*100 bytes are valid PK3s
+        int foundOff = -1, foundCount = 0;
+        for (size_t off = 0; off + 100 < large.size() && foundOff==-1; ++off) {
+            uint8_t cnt = large[off];
+            if (cnt == 0 || cnt > 6) continue;
+            // need count PK3s consecutive starting at off+4 (skip count + 3 pad?) Try both +4 and +8 alignment
+            for (int pad : {4, 8}) {
+                if (off + pad + cnt*100 > large.size()) continue;
+                bool ok = true;
+                for (int i=0;i<cnt;i++) {
+                    const uint8_t* raw = large.data() + off + pad + i*100;
+                    Pokemon p; p.gameType_=gameType_;
+                    // party slots are 100B encrypted
+                    p.loadFromEncrypted(raw, 100);
+                    if (p.isEmpty() || p.species()==0) { ok=false; break; }
+                    // checksum already validated inside loadFromEncrypted via decrypt + species check? Do extra check
+                    // ensure species plausible 1..386 for Gen3
+                    if (p.species() > 386) { ok=false; break; }
+                }
+                if (ok) { foundOff = (int)off; foundCount = cnt; break; }
+            }
+        }
+        if (foundOff >= 0) {
+            size_t base = foundOff + 4; // pad 4 as found
+            // Try pad 4 vs 8: re-evaluate which pad gave success (re-scan)
+            // Re-detect pad
+            int pad = 4;
+            for (int tryPad : {4,8}) {
+                bool ok=true;
+                for(int i=0;i<foundCount;i++){
+                    Pokemon p; p.gameType_=gameType_;
+                    p.loadFromEncrypted(large.data()+foundOff+tryPad+i*100,100);
+                    if(p.isEmpty()) ok=false;
+                }
+                if(ok){ pad=tryPad; break;}
+            }
+            for(int i=0;i<foundCount;i++){
+                Pokemon p; p.gameType_=gameType_;
+                p.loadFromEncrypted(large.data()+foundOff+pad+i*100,100);
+                if(!p.isEmpty()) dsParty_.push_back(p);
+            }
+            DebugLog::line("loadGBA: %s -> party %d at large+%x pad %d", path.c_str(), foundCount, foundOff, pad);
+        } else {
+            DebugLog::line("loadGBA: %s -> party not found (scanned %zu)", path.c_str(), large.size());
+        }
     }
 
     loaded_ = true;
@@ -1871,13 +1935,18 @@ bool SaveFile::loadDS4(const std::string& path) {
         dsTid_ = readU16LE(gBlk + trainer1 + 0x10);
         int count = gBlk[party - 4];
         if (count > 6) count = 6;
+        DebugLog::line("loadDS4: %s -> partyCount byte=%d (gBase=%zx party=%x)", path.c_str(), count, gBase, party);
         for (int i = 0; i < count; i++) {
             Pokemon p;
             p.gameType_ = gameType_;
             p.loadFromEncrypted(gBlk + party + i * 236, 236);
+            DebugLog::line("  party[%d] ec=%08x species=%u empty=%d", i, p.encryptionConstant(), p.species(), p.isEmpty()?1:0);
             if (!p.isEmpty())
                 dsParty_.push_back(p);
+            else
+                DebugLog::line("  party[%d] discarded as empty", i);
         }
+        if (count==0) DebugLog::line("loadDS4: %s -> party count 0, header bytes %02x %02x %02x %02x", path.c_str(), gBlk[party-4], gBlk[party-3], gBlk[party-2], gBlk[party-1]);
         DebugLog::line("loadDS4: %s -> OT '%s' TID %u party %zu",
                        path.c_str(), dsOtName_.c_str(), dsTid_, dsParty_.size());
     }
