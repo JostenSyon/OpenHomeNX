@@ -348,11 +348,16 @@ void UI::handleDetailInput(const SDL_Event& event) {
         }
     };
     if (event.type == SDL_CONTROLLERBUTTONDOWN) {
+        // Debug OT-strip focus: read-only party detail. Export/release and
+        // box navigation are blocked; close + learnset stay (view-only).
+        const bool partyRO = (detailParty_ >= 0);
         switch (event.cbutton.button) {
             case SDL_CONTROLLER_BUTTON_A: // Switch B
                 showDetail_ = false;
+                detailParty_ = -1;
                 break;
             case SDL_CONTROLLER_BUTTON_Y: { // Switch X — export (alias di +)
+                if (partyRO) break;
                 Pokemon pkm = getPokemonAt(cursor_.box, cursor_.slot(gridCols()), cursor_.panel);
                 if (!pkm.isEmpty()) {
                     std::string name = exportPokemon(pkm);
@@ -364,6 +369,7 @@ void UI::handleDetailInput(const SDL_Event& event) {
                 break;
             }
             case SDL_CONTROLLER_BUTTON_START: { // Switch + — export
+                if (partyRO) break;
                 Pokemon pkm = getPokemonAt(cursor_.box, cursor_.slot(gridCols()), cursor_.panel);
                 if (!pkm.isEmpty()) {
                     std::string name = exportPokemon(pkm);
@@ -376,8 +382,10 @@ void UI::handleDetailInput(const SDL_Event& event) {
             }
             case SDL_CONTROLLER_BUTTON_B: // Switch A — chiudi (rilascio spostato su -)
                 showDetail_ = false;
+                detailParty_ = -1;
                 break;
             case SDL_CONTROLLER_BUTTON_BACK: // Switch - — rilascia
+                if (partyRO) break;
                 tryRelease();
                 break;
             case SDL_CONTROLLER_BUTTON_X: // Switch Y = learnset viewer
@@ -388,12 +396,14 @@ void UI::handleDetailInput(const SDL_Event& event) {
                 }
                 break;
             case SDL_CONTROLLER_BUTTON_LEFTSHOULDER:
+                if (partyRO) break;
                 detailNav(-1);
                 lHeld_ = true;
                 bumperRepeatTime_ = SDL_GetTicks();
                 bumperMoved_ = false;
                 break;
             case SDL_CONTROLLER_BUTTON_RIGHTSHOULDER:
+                if (partyRO) break;
                 detailNav(1);
                 rHeld_ = true;
                 bumperRepeatTime_ = SDL_GetTicks();
@@ -439,10 +449,26 @@ void UI::handleNormalInput(const SDL_Event& event) {
     if (event.type == SDL_CONTROLLERBUTTONDOWN) {
         switch (event.cbutton.button) {
             case SDL_CONTROLLER_BUTTON_B: // Switch A (right) = SDL B
-                if (!yHeld_) { actionSelect(); refreshHighlightSet(); }
+                if (!yHeld_) {
+                    if (partyCursor_ >= 0) {
+                        // Debug party focus: read-only detail popup.
+                        detailParty_ = partyCursor_;
+                        showDetail_ = true;
+                    } else {
+                        actionSelect();
+                    }
+                    refreshHighlightSet();
+                }
                 break;
             case SDL_CONTROLLER_BUTTON_A: // Switch B (bottom) = SDL A
-                if (!yHeld_) { actionCancel(); refreshHighlightSet(); }
+                if (!yHeld_) {
+                    if (partyCursor_ >= 0) {
+                        partyCursor_ = -1; // leave the OT strip
+                    } else {
+                        actionCancel();
+                    }
+                    refreshHighlightSet();
+                }
                 break;
             case SDL_CONTROLLER_BUTTON_Y: // Switch X (top) = SDL Y
             {
@@ -502,16 +528,42 @@ void UI::handleNormalInput(const SDL_Event& event) {
                 }
                 break;
             case SDL_CONTROLLER_BUTTON_DPAD_UP:
-                moveCursor(0, -1);
+                if (DebugLog::enabled() && partyCursor_ < 0 && !holding_ && selectedSlots_.empty() &&
+                    cursor_.panel == Panel::Game && cursor_.row == 0 && !save_.dsParty().empty()) {
+                    partyCursor_ = 0; // focus the OT strip (debug only)
+                    markDirty();
+                } else if (partyCursor_ >= 0) {
+                    partyCursor_ = -1; // back to grid
+                    markDirty();
+                } else {
+                    moveCursor(0, -1);
+                }
                 break;
             case SDL_CONTROLLER_BUTTON_DPAD_DOWN:
-                moveCursor(0, +1);
+                if (partyCursor_ >= 0) {
+                    partyCursor_ = -1;
+                    markDirty();
+                } else {
+                    moveCursor(0, +1);
+                }
                 break;
             case SDL_CONTROLLER_BUTTON_DPAD_LEFT:
-                moveCursor(-1, 0);
+                if (partyCursor_ >= 0) {
+                    int n = (int)save_.dsParty().size();
+                    partyCursor_ = (partyCursor_ + n - 1) % n;
+                    markDirty();
+                } else {
+                    moveCursor(-1, 0);
+                }
                 break;
             case SDL_CONTROLLER_BUTTON_DPAD_RIGHT:
-                moveCursor(+1, 0);
+                if (partyCursor_ >= 0) {
+                    int n = (int)save_.dsParty().size();
+                    partyCursor_ = (partyCursor_ + 1) % n;
+                    markDirty();
+                } else {
+                    moveCursor(+1, 0);
+                }
                 break;
         }
     }
@@ -2653,27 +2705,52 @@ std::vector<UI::PkFileInfo> UI::scanPkImportFiles() {
             if (name.empty() || name[0] == '.') continue;
             std::string low = name;
             for (char& c : low) c = std::tolower((unsigned char)c);
-            int gen = 0;
-            size_t want = 0;
-            if (low.size() >= 4 && low.compare(low.size() - 4, 4, ".pk1") == 0) { gen = 1; want = 33; }
-            else if (low.size() >= 4 && low.compare(low.size() - 4, 4, ".pk2") == 0) { gen = 2; want = 32; }
-            else continue;
+            // Extension -> candidate gens. Our own native export writes
+            // decrypted party-size records, cross-gen export writes box
+            // records: both must list, so no strict size gate here — the
+            // Rust parsers (box/party sizes, decrypt-if-encrypted) decide.
+            // ".pkm" is ambiguous: try every gen until one parses.
+            static const char* kExts[] = {
+                ".pk1", ".pk2", ".pk3", ".pk4", ".pk5", ".pk6", ".pk7",
+                ".pk8", ".pk9", ".pa8", ".pa9", ".pb7", ".pb8", ".pkm",
+            };
+            // Gen per extension (0 = ambiguous .pkm: try 1..9 below).
+            static const uint32_t kGenForExt[] = {
+                1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 0,
+            };
+            static const uint32_t kPkmGens[] = {1, 2, 3, 4, 5, 6, 7, 8, 9};
+            int extIdx = -1;
+            for (int i = 0; i < 14; i++) {
+                const char* e = kExts[i];
+                size_t el = std::strlen(e);
+                if (low.size() > el && low.compare(low.size() - el, el, e) == 0) { extIdx = i; break; }
+            }
+            if (extIdx < 0) continue;
             PkFileInfo info;
             info.filename = tag.empty() ? name : (name + " · " + tag);
             info.path = dir + name;
-            info.gen = gen;
-            // Strict sizes only (box records we write ourselves): anything else
-            // is listed invalid instead of parsed as garbage. PKHeX-size party
-            // files come later with fixture verification (F4).
+            // Read whole file (cap 376B = largest party record); parsers
+            // validate size and content, garbage never lists.
             FILE* f = std::fopen(info.path.c_str(), "rb");
             if (!f) continue;
-            std::vector<uint8_t> bytes(want);
-            size_t got = std::fread(bytes.data(), 1, want, f);
-            int extra = std::fgetc(f);
+            std::vector<uint8_t> bytes(376);
+            size_t got = std::fread(bytes.data(), 1, bytes.size(), f);
             std::fclose(f);
-            if (got != want || extra != EOF) continue; // wrong size: not listed
-            PkmHandle* h = OpenHomeNX::loadPkmFromGen(bytes, static_cast<uint32_t>(gen));
+            if (got == 0 || got > 376) continue;
+            bytes.resize(got);
+            PkmHandle* h = nullptr;
+            uint32_t foundGen = 0;
+            if (kGenForExt[extIdx] != 0) {
+                h = OpenHomeNX::loadPkmFromGen(bytes, kGenForExt[extIdx]);
+                foundGen = kGenForExt[extIdx];
+            } else {
+                for (int gi = 0; gi < 9 && !h; gi++) {
+                    h = OpenHomeNX::loadPkmFromGen(bytes, kPkmGens[gi]);
+                    if (h) foundGen = kPkmGens[gi];
+                }
+            }
             if (!h) continue; // unparseable: not listed
+            info.gen = static_cast<int>(foundGen);
             info.species = OpenHomeNX::ohpkmSpecies(h);
             OpenHomeNX::freePkm(h);
             info.valid = (info.species != 0);

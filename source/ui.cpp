@@ -1031,6 +1031,8 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
 
 void UI::selectGame(GameType game, int occurrence) {
     selectedGame_ = game;
+    partyCursor_ = -1; // save changes: drop any OT-strip focus
+    detailParty_ = -1;
     invalidateAllSlotDisplays();
     availableSpecies_.clear(); // rebuild on next species picker open
     save_.setGameType(game);

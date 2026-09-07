@@ -299,6 +299,12 @@ private:
     int  pkImportScroll_  = 0;
     std::vector<PkFileInfo> pkImportList_;
 
+    // Party-strip focus (DS saves, DEBUG ONLY): DPad-UP from the top grid
+    // row moves focus to the OT strip minis; A opens a READ-ONLY detail
+    // popup (release/export blocked there). -1 = grid focused.
+    int partyCursor_ = -1;
+    int detailParty_ = -1;
+
     // Learnset viewer state (X in the detail view)
     bool showLearnset_ = false;
     int  learnsetCursor_  = 0;

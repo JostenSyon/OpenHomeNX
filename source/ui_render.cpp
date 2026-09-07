@@ -380,44 +380,48 @@ void UI::drawPanel(int panelX, const std::string& boxName, int boxIdx,
         drawTextCentered("<", panelX + 20, BOX_HDR_Y + BOX_HDR_H / 2, T().arrow, font_);
         std::string left = boxName + " (" + std::to_string(boxIdx + 1) + "/" + std::to_string(totalBoxes) + ")";
         left += " · OT " + save->dsOtName();
-        int maxLeftW = PANEL_W - 80 - 180; // room for minis + arrows
-        int tw = getTextEntry(left, fontSmall_, hdrColor).w;
-        if (tw > maxLeftW) {
-            while (left.size() > 5 && tw > maxLeftW) {
-                left = left.substr(0, left.size() - 5) + "(..)";
-                tw = getTextEntry(left, fontSmall_, hdrColor).w;
-            }
+        int tw = getTextEntry(left, fontLarge_, hdrColor).w;
+        // Never collide with the ">" arrow: truncate the text first.
+        int maxLeftW = PANEL_W - 90 - 6 * 28;
+        while (left.size() > 5 && tw > maxLeftW) {
+            left = left.substr(0, left.size() - 5) + "(..)";
+            tw = getTextEntry(left, fontLarge_, hdrColor).w;
         }
-        drawText(left, panelX + 45, BOX_HDR_Y + BOX_HDR_H / 2 - 8, hdrColor, fontSmall_);
-        int mx = panelX + PANEL_W - 45;
+        drawText(left, panelX + 45, BOX_HDR_Y + (BOX_HDR_H - 28) / 2, hdrColor, fontLarge_);
+        // Party minis right after the OT text (not right-aligned).
+        int mx = panelX + 45 + tw + 12;
         int shown = 0;
-        for (auto it = save->dsParty().rbegin(); it != save->dsParty().rend() && shown < 6; ++it) {
-            if (it->isEmpty())
+        const auto& party = save->dsParty();
+        for (size_t pi = 0; pi < party.size() && shown < 6; pi++) {
+            if (party[pi].isEmpty())
                 continue;
-            SDL_Texture* spr = getSprite(it->species(), it->form());
-            mx -= 26;
-            if (spr) {
+            SDL_Texture* spr = getSprite(party[pi].species(), party[pi].form());
+            if (spr && mx + 24 < panelX + PANEL_W - 45) {
                 SDL_Rect dst = {mx, BOX_HDR_Y + (BOX_HDR_H - 24) / 2, 24, 24};
                 SDL_RenderCopy(renderer_, spr, nullptr, &dst);
+                if (DebugLog::enabled() && (int)pi == partyCursor_) {
+                    SDL_SetRenderDrawColor(renderer_, T().cursor.r, T().cursor.g, T().cursor.b, 255);
+                    SDL_RenderDrawRect(renderer_, &dst);
+                }
             }
-            mx -= 4;
+            mx += 28;
             shown++;
         }
         drawTextCentered(">", panelX + PANEL_W - 20, BOX_HDR_Y + BOX_HDR_H / 2, T().arrow, font_);
     } else {
-    drawTextCentered("<", panelX + 20, BOX_HDR_Y + BOX_HDR_H / 2, T().arrow, font_);
+    drawTextCentered("<", panelX + 20, BOX_HDR_Y + BOX_HDR_H / 2, T().arrow, fontLarge_);
     std::string hdrText = boxName + " (" + std::to_string(boxIdx + 1) + "/" + std::to_string(totalBoxes) + ")";
     // Truncate if too wide for panel (leave room for arrows)
     int maxHdrW = PANEL_W - 80;
-    int tw = getTextEntry(hdrText, font_, hdrColor).w;
+    int tw = getTextEntry(hdrText, fontLarge_, hdrColor).w;
     if (tw > maxHdrW) {
         while (hdrText.size() > 5 && tw > maxHdrW) {
             hdrText = hdrText.substr(0, hdrText.size() - 5) + "(..)";
-            tw = getTextEntry(hdrText, font_, hdrColor).w;
+            tw = getTextEntry(hdrText, fontLarge_, hdrColor).w;
         }
     }
-    drawTextCentered(hdrText, panelX + PANEL_W / 2, BOX_HDR_Y + BOX_HDR_H / 2, hdrColor, font_);
-    drawTextCentered(">", panelX + PANEL_W - 20, BOX_HDR_Y + BOX_HDR_H / 2, T().arrow, font_);
+    drawTextCentered(hdrText, panelX + PANEL_W / 2, BOX_HDR_Y + BOX_HDR_H / 2, hdrColor, fontLarge_);
+    drawTextCentered(">", panelX + PANEL_W - 20, BOX_HDR_Y + BOX_HDR_H / 2, T().arrow, fontLarge_);
     } // else (classic header)
 
     // Grid: dynamic columns x 5 rows, sized from THIS panel's own source.
@@ -551,11 +555,16 @@ void UI::drawFrame() {
 
     // Detail popup overlay
     if (showDetail_) {
-        Pokemon pkm = getPokemonAt(cursor_.box, cursor_.slot(gridCols()), cursor_.panel);
-        if (pkm.isEmpty()) {
-            showDetail_ = false;
+        if (detailParty_ >= 0 && (size_t)detailParty_ < save_.dsParty().size()) {
+            // Debug OT-strip focus: read-only party detail (no release/export).
+            drawDetailPopup(save_.dsParty()[(size_t)detailParty_]);
         } else {
-            drawDetailPopup(pkm);
+            Pokemon pkm = getPokemonAt(cursor_.box, cursor_.slot(gridCols()), cursor_.panel);
+            if (pkm.isEmpty()) {
+                showDetail_ = false;
+            } else {
+                drawDetailPopup(pkm);
+            }
         }
     }
 
