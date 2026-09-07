@@ -1129,8 +1129,11 @@ void UI::selectGame(GameType game, int occurrence) {
             return;
         }
 
-        // Debug: verify encryption round-trip (encrypt(decrypt(file)) == file)
-        if (!isBDSP(game) && !isLGPE(game) && !isFRLG(game) && !isImportedFile(game) && !isGen1File(game) && !isGen2File(game)) {
+        // Debug: verify encryption round-trip (encrypt(decrypt(file)) == file).
+        // Only for SCBlock saves: file-backed GB/GBA/DS/3DS loaders don't
+        // fill blocks_/originalFileData_ (they validate per-slot instead).
+        if (!isBDSP(game) && !isLGPE(game) && !isFRLG(game) && !isImportedFile(game) && !isGen1File(game) && !isGen2File(game) &&
+            !isGen45File(game) && !isGen6XY(game) && !isGen7SM(game)) {
             std::string rtResult = save_.verifyRoundTrip();
             if (rtResult != "OK")
                 showMessageAndWait(i18n::get(StrKey::RoundTripCheck), rtResult);
