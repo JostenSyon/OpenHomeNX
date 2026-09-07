@@ -161,6 +161,9 @@ private:
     // GBA assembled storage buffer (sectors 5-13 concatenated)
     std::vector<uint8_t> gbaStorage_;
     int gbaActiveSlot_ = 0;
+    // 16B extra di alcuni emulatori (conservati e riattaccati in scrittura).
+    std::vector<uint8_t> gbaXtra_;
+    bool gbaXtraAtEnd_ = true;
 
     // LGPE party slot tracking (indices into flat 1000-slot list)
     std::array<uint16_t, 6> lgpePartyIndices_{};

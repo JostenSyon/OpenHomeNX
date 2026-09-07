@@ -336,6 +336,16 @@ void scanDir(const std::string& dir, std::vector<ImportedGame>& out, std::vector
             DebugLog::line("import scan: %s -> %s", full.c_str(), gameInfo(type).gameTag);
             continue;
         }
+        // Load fallito su taglia solo-GBA: diagnosi mirata (le altre taglie
+        // hanno i loro detect dopo; ROM/stati finiscono nel generico sotto).
+        {
+            long long sz = (long long)st.st_size;
+            if (sz == 0x20000 || sz == 0x20010) {
+                DebugLog::line("import scan: skip %s (%lld byte, load fallito: settori/checksum?)",
+                               entry->d_name, sz);
+                continue;
+            }
+        }
 
         // Gen 1 (R/B/Y SRAM): 32KB + valid INT checksum (PKHeX SAV1).
         // Yellow is detectable from the bytes (Pikachu starter / friendship);

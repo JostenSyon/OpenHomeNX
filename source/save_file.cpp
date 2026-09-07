@@ -1419,14 +1419,57 @@ bool SaveFile::loadGBA(const std::string& path) {
     if (!file.is_open())
         return false;
 
+    gbaXtra_.clear();
+    gbaXtraAtEnd_ = true;
     auto fileSize = static_cast<size_t>(file.tellg());
-    if (fileSize != GBA_SAVE_SIZE)
+    // Alcuni emulatori aggiungono 16B (header/footer metadata) ai 128KB raw:
+    // si prova la finestra a offset 0 e a offset 16, vince la prima con tutti
+    // i 14 settori presenti. I 16B vengono conservati per la riscrittura.
+    static constexpr size_t GBA_XTRA = 16;
+    if (fileSize != GBA_SAVE_SIZE && fileSize != GBA_SAVE_SIZE + GBA_XTRA)
         return false;
 
     file.seekg(0);
-    rawData_.resize(GBA_SAVE_SIZE);
-    file.read(reinterpret_cast<char*>(rawData_.data()), GBA_SAVE_SIZE);
+    rawData_.resize(fileSize);
+    file.read(reinterpret_cast<char*>(rawData_.data()), fileSize);
     file.close();
+
+    gbaXtra_.clear();
+    gbaXtraAtEnd_ = true;
+    if (fileSize == GBA_SAVE_SIZE + GBA_XTRA) {
+        auto sectorsOk = [&](size_t base) -> bool {
+            if (base + 2 * GBA_SECTOR_COUNT * GBA_SECTOR_SIZE > fileSize)
+                return false;
+            // Basta uno dei due slot con tutti i 14 settori (come il loader).
+            for (int slot = 0; slot < 2; slot++) {
+                int bitTrack = 0;
+                for (int i = 0; i < GBA_SECTOR_COUNT; i++) {
+                    size_t o = base + static_cast<size_t>(slot * GBA_SECTOR_COUNT + i) *
+                               GBA_SECTOR_SIZE + GBA_OFS_SECTOR_ID;
+                    uint16_t id = readU16LE(rawData_.data() + o);
+                    if (id < GBA_SECTOR_COUNT)
+                        bitTrack |= (1 << id);
+                }
+                if (bitTrack == 0x3FFF)
+                    return true;
+            }
+            return false;
+        };
+        if (sectorsOk(0)) {
+            gbaXtra_.assign(rawData_.end() - GBA_XTRA, rawData_.end());
+            gbaXtraAtEnd_ = true;
+            rawData_.resize(GBA_SAVE_SIZE);
+        } else if (sectorsOk(GBA_XTRA)) {
+            gbaXtra_.assign(rawData_.begin(), rawData_.begin() + GBA_XTRA);
+            gbaXtraAtEnd_ = false;
+            rawData_.erase(rawData_.begin(), rawData_.begin() + GBA_XTRA);
+        } else {
+            DebugLog::line("loadGBA: %s -> 16B extra ma settori non validi", path.c_str());
+            return false;
+        }
+        DebugLog::line("loadGBA: %s -> 16B extra %s, rimossi per la lettura",
+                       path.c_str(), gbaXtraAtEnd_ ? "in coda" : "in testa");
+    }
 
     // Determine active save slot by comparing save counters at sector 0
     // Each slot = 14 sectors of 0x1000 bytes
@@ -1531,7 +1574,24 @@ bool SaveFile::saveGBA(const std::string& path) {
     if (!f)
         return false;
 
-    size_t written = std::fwrite(rawData_.data(), 1, rawData_.size(), f);
+    size_t written;
+    if (!gbaXtra_.empty()) {
+        // Riattacca i 16B dell'emulatore dalla stessa parte (file invariato
+        // per l'emulatore a parte i box modificati).
+        std::vector<uint8_t> out;
+        out.reserve(rawData_.size() + gbaXtra_.size());
+        if (gbaXtraAtEnd_) {
+            out.insert(out.end(), rawData_.begin(), rawData_.end());
+            out.insert(out.end(), gbaXtra_.begin(), gbaXtra_.end());
+        } else {
+            out.insert(out.end(), gbaXtra_.begin(), gbaXtra_.end());
+            out.insert(out.end(), rawData_.begin(), rawData_.end());
+        }
+        written = std::fwrite(out.data(), 1, out.size(), f);
+        std::fclose(f);
+        return written == out.size();
+    }
+    written = std::fwrite(rawData_.data(), 1, rawData_.size(), f);
     std::fclose(f);
     return written == rawData_.size();
 }
