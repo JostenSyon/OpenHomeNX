@@ -190,10 +190,11 @@ bool detectDSVersion(const std::string& filename, const std::string& full, GameT
     }
     if (probe.dsLayout() == SaveFile::Ds4Layout::HGSS) {
         uint8_t rc = probe.dsRomCode();
-        if (rc == 8) { outType = GameType::SOULSILVER; return true; }
+        if (rc == 8 || rc == 241) { outType = GameType::SOULSILVER; return true; }
         if (rc == 7) { outType = GameType::HEARTGOLD; return true; }
-        // Observed 241 on a real DeSmuME SoulSilver save: the byte is not
-        // always a clean GameVersion, so the filename decides here.
+        // 241 osservato su un vero SoulSilver DeSmuME (il byte non è un
+        // GameVersion pulito su tutti gli emulatori): vale come SoulSilver,
+        // la prova layout HGSS c'è già. Altri valori -> nome file.
         DebugLog::line("import scan: %s -> ROMCode %u ambiguo, uso il nome",
                        filename.c_str(), rc);
         std::string low = toLower(filename);
