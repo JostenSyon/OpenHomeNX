@@ -168,7 +168,8 @@ bool detectDSVersion(const std::string& filename, const std::string& full, GameT
         return false;
     if (static_cast<size_t>(st.st_size) != 0x80000)
         return false;
-    // Gen5 first: the PlayerData.Game byte is exact (20 = White, 21 = Black).
+    // Gen5 first: the PlayerData.Game byte is exact (20 = White, 21 = Black,
+    // 22 = White2, 23 = Black2 — same head offsets in BW and B2W2 maps).
     {
         SaveFile probe;
         probe.setGameType(GameType::BLACK);
@@ -176,7 +177,9 @@ bool detectDSVersion(const std::string& filename, const std::string& full, GameT
             uint8_t gb = probe.dsGameByte();
             if (gb == 20) { outType = GameType::WHITE; return true; }
             if (gb == 21) { outType = GameType::BLACK; return true; }
-            return false; // loadDS5 rejects non-BW explicitly; be safe
+            if (gb == 22) { outType = GameType::WHITE2; return true; }
+            if (gb == 23) { outType = GameType::BLACK2; return true; }
+            return false; // loadDS5 rejects other Game bytes explicitly
         }
     }
     // Gen4: any layout loads under a placeholder; refine below.

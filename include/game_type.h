@@ -2,8 +2,8 @@
 #include <cstdint>
 
 // Supported game types (sequential enum used as array index)
-enum class GameType { ZA, S, V, Sw, Sh, BD, SP, LA, GP, GE, FR, LG, FR_ES, LG_ES, FR_DE, LG_DE, FR_IT, LG_IT, FR_FR, LG_FR, FR_JA, LG_JA, RUBY, SAPPHIRE, EMERALD, RED, BLUE, YELLOW, GOLD, SILVER, CRYSTAL, DIAMOND, PEARL, PLATINUM, HEARTGOLD, SOULSILVER, BLACK, WHITE };
-static constexpr int GAME_TYPE_COUNT = 38;
+enum class GameType { ZA, S, V, Sw, Sh, BD, SP, LA, GP, GE, FR, LG, FR_ES, LG_ES, FR_DE, LG_DE, FR_IT, LG_IT, FR_FR, LG_FR, FR_JA, LG_JA, RUBY, SAPPHIRE, EMERALD, RED, BLUE, YELLOW, GOLD, SILVER, CRYSTAL, DIAMOND, PEARL, PLATINUM, HEARTGOLD, SOULSILVER, BLACK, WHITE, BLACK2, WHITE2 };
+static constexpr int GAME_TYPE_COUNT = 40;
 
 inline bool isSV(GameType g) { return g == GameType::S || g == GameType::V; }
 inline bool isSwSh(GameType g) { return g == GameType::Sw || g == GameType::Sh; }
@@ -51,9 +51,11 @@ inline bool isGen4File(GameType g) {
            g == GameType::HEARTGOLD || g == GameType::SOULSILVER;
 }
 
-// File-backed Gen 5 games (BW .sav dumps, 512KB; B2W2 later).
+// File-backed Gen 5 games (BW/B2W2 .sav dumps, 512KB; BW and B2W2 share
+// box/party/PlayerData-head offsets, only the block map tail differs).
 inline bool isGen5File(GameType g) {
-    return g == GameType::BLACK || g == GameType::WHITE;
+    return g == GameType::BLACK || g == GameType::WHITE ||
+           g == GameType::BLACK2 || g == GameType::WHITE2;
 }
 
 // Either DS generation (shared record traits: 136B encrypted PK4/PK5 box
@@ -245,6 +247,14 @@ inline const GameInfo& gameInfo(GameType g) {
         {0x10,               "",                 "Pokemon White",                  "Pokemon White",
          "White",            "White",             "pk5", 220,   24, 30, 136,   0, 136,
          false, false, "", "White"},
+        // BLACK2 (same box layout as BW)
+        {0x11,               "",                 "Pokemon Black 2",                "Pokemon Black 2",
+         "Black2",           "Black2",            "pk5", 220,   24, 30, 136,   0, 136,
+         false, false, "", "Black2"},
+        // WHITE2
+        {0x12,               "",                 "Pokemon White 2",                "Pokemon White 2",
+         "White2",           "White2",            "pk5", 220,   24, 30, 136,   0, 136,
+         false, false, "", "White2"},
     };
     return INFO[static_cast<int>(g)];
 }
@@ -278,6 +288,8 @@ inline GameType pairedGame(GameType g) {
         case GameType::SOULSILVER: return GameType::HEARTGOLD;
         case GameType::BLACK: return GameType::WHITE;
         case GameType::WHITE: return GameType::BLACK;
+        case GameType::BLACK2: return GameType::WHITE2;
+        case GameType::WHITE2: return GameType::BLACK2;
         default: return g;
     }
 }
@@ -384,6 +396,7 @@ inline int learnsetTableFor(GameType g) {
     if (g == GameType::PLATINUM) return 15;                     // Pt
     if (g == GameType::HEARTGOLD || g == GameType::SOULSILVER) return 16; // HGSS
     if (g == GameType::BLACK || g == GameType::WHITE) return 17; // BW
+    if (g == GameType::BLACK2 || g == GameType::WHITE2) return 18; // B2W2
     if (isLGPE(g)) return 8;                                    // GG
     if (isSwSh(g)) return 9;                                    // SWSH
     if (isBDSP(g)) return 10;                                   // BDSP

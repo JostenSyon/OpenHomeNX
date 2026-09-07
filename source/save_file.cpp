@@ -1710,10 +1710,11 @@ bool SaveFile::loadDS5(const std::string& path) {
     // Gen5 BW (PKHeX SAV5BW): flat 512KB, no partitions.
     dsRomCode_ = 0;
     dsGameByte_ = 0;
-    // Gen5 BW (PKHeX SAV5BW): flat 512KB, no partitions. Boxes at
-    // 0x400 + box*0x1000 (30 x 136B slots), party at 0x18E08 (count at
-    // 0x18E04, 6 x 220B), PlayerData block at 0x19400 (OT at +4, Game at
-    // +0x1F: 20 = White, 21 = Black). B2W2 has another block map (later).
+    // Gen5 BW/B2W2 (PKHeX SAV5BW/SAV5B2W2): flat 512KB, no partitions.
+    // Boxes at 0x400 + box*0x1000 (30 x 136B slots), party at 0x18E08
+    // (count at 0x18E04, 6 x 220B), PlayerData block at 0x19400 (OT at +4,
+    // Game at +0x1F: 20 = White, 21 = Black, 22 = White2, 23 = Black2 —
+    // same head offsets in both block maps).
     std::ifstream file(path, std::ios::binary | std::ios::ate);
     if (!file.is_open())
         return false;
@@ -1726,10 +1727,11 @@ bool SaveFile::loadDS5(const std::string& path) {
         return false;
 
     uint8_t game = rawData_[0x19400 + 0x1F];
-    if (game != 20 && game != 21) {
-        DebugLog::line("loadDS5: %s -> Game byte %u non BW (B2W2 dopo)", path.c_str(), game);
+    if (game < 20 || game > 23) {
+        DebugLog::line("loadDS5: %s -> Game byte %u ignoto (20-23 attesi)", path.c_str(), game);
         return false;
     }
+    dsGameByte_ = game;
     auto slotValid = [&](const uint8_t* slot) -> bool {
         static const uint8_t ZERO[136] = {};
         if (std::memcmp(slot, ZERO, sizeof(ZERO)) == 0)
@@ -1770,8 +1772,9 @@ bool SaveFile::loadDS5(const std::string& path) {
         }
     if (badSlots > 0)
         DebugLog::line("loadDS5: %s -> %d slot corrotti nascosti", path.c_str(), badSlots);
-    DebugLog::line("loadDS5: %s -> Game %u (%s), slot validi %d",
-                   path.c_str(), game, game == 20 ? "White" : "Black", validSlots);
+    DebugLog::line("loadDS5: %s -> Game %u (%s), slot validi %d", path.c_str(), game,
+                   game == 20 ? "White" : game == 21 ? "Black" : game == 22 ? "White2" : "Black2",
+                   validSlots);
     dsGameByte_ = game;
     boxData_ = dsStorage_.data();
     boxDataLen_ = dsStorage_.size();

@@ -508,6 +508,8 @@ void UI::drawGameSelectorFrame() {
                 case GameType::SOULSILVER: bg = {0x98, 0xB8, 0xD8, 255}; break;
                 case GameType::BLACK:    bg = {0x28, 0x28, 0x30, 255}; break;
                 case GameType::WHITE:    bg = {0xE8, 0xE8, 0xE8, 255}; break;
+                case GameType::BLACK2:   bg = {0x18, 0x18, 0x20, 255}; break;
+                case GameType::WHITE2:   bg = {0xF8, 0xF8, 0xF8, 255}; break;
                 case GameType::RED:      bg = {0xE0, 0x20, 0x20, 255}; break;
                 case GameType::BLUE:     bg = {0x20, 0x60, 0xE0, 255}; break;
                 case GameType::YELLOW:   bg = {0xE8, 0xC8, 0x10, 255}; break;
