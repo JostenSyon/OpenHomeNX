@@ -213,6 +213,47 @@ bool detectDSVersion(const std::string& filename, const std::string& full, GameT
     return true;
 }
 
+// Gen 6 XY / Gen 7 SM (decrypted 3DS dumps, Citra/Checkpoint style).
+// Detection is fully byte-driven: fixed MyStatus offsets carry exact Game
+// bytes (XY: 24/25, SM: 30/31), then box slots must decrypt to valid
+// checksums. Encrypted cartridge dumps fail the Game byte explicitly.
+bool detect3DSVersion(const std::string& full, GameType& outType) {
+    std::ifstream file(full, std::ios::binary | std::ios::ate);
+    if (!file.is_open())
+        return false;
+    size_t size = static_cast<size_t>(file.tellg());
+    file.seekg(0);
+    // XY boxes end at 0x22600 + 31*30*232; SM at 0x04E00 + 32*30*232.
+    if (size >= 0x22600 + static_cast<size_t>(31) * 30 * 232) {
+        std::vector<uint8_t> status(8);
+        file.seekg(0x14000);
+        file.read(reinterpret_cast<char*>(status.data()), 8);
+        if (file && (status[4] == 24 || status[4] == 25)) {
+            SaveFile probe;
+            probe.setGameType(status[4] == 24 ? GameType::X : GameType::Y);
+            if (probe.load(full)) {
+                outType = status[4] == 24 ? GameType::X : GameType::Y;
+                return true;
+            }
+        }
+    }
+    if (size >= 0x04E00 + static_cast<size_t>(32) * 30 * 232) {
+        file.clear();
+        file.seekg(0x01200);
+        std::vector<uint8_t> status(8);
+        file.read(reinterpret_cast<char*>(status.data()), 8);
+        if (file && (status[4] == 30 || status[4] == 31)) {
+            SaveFile probe;
+            probe.setGameType(status[4] == 30 ? GameType::SUN : GameType::MOON);
+            if (probe.load(full)) {
+                outType = status[4] == 30 ? GameType::SUN : GameType::MOON;
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 void scanDir(const std::string& dir, std::vector<ImportedGame>& out, std::vector<bool>& claimed) {
     DIR* d = opendir(dir.c_str());
     if (!d) {
@@ -234,6 +275,22 @@ void scanDir(const std::string& dir, std::vector<ImportedGame>& out, std::vector
         if (stat(full.c_str(), &st) != 0 || !S_ISREG(st.st_mode))
             continue;
         regularFiles++;
+
+        // Gen 6 XY / Gen 7 SM first (large files; byte-driven detection).
+        GameType ds3Type = GameType::X;
+        if (detect3DSVersion(full, ds3Type)) {
+            int idx = static_cast<int>(ds3Type);
+            if (claimed[idx]) {
+                DebugLog::line("import scan: skip %s (doppione %s, vince il primo)",
+                               entry->d_name, gameInfo(ds3Type).gameTag);
+                continue;
+            }
+            claimed[idx] = true;
+            matched++;
+            out.push_back({ds3Type, full, lastPathSegment(dir)});
+            DebugLog::line("import scan: %s -> %s", full.c_str(), gameInfo(ds3Type).gameTag);
+            continue;
+        }
 
         // Gen 4/5 (DS dumps, 512KB): detection is byte-driven (layouts, Game
         // byte); the filename only breaks the D/P tie inside detectDSVersion.

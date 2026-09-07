@@ -2,8 +2,8 @@
 #include <cstdint>
 
 // Supported game types (sequential enum used as array index)
-enum class GameType { ZA, S, V, Sw, Sh, BD, SP, LA, GP, GE, FR, LG, FR_ES, LG_ES, FR_DE, LG_DE, FR_IT, LG_IT, FR_FR, LG_FR, FR_JA, LG_JA, RUBY, SAPPHIRE, EMERALD, RED, BLUE, YELLOW, GOLD, SILVER, CRYSTAL, DIAMOND, PEARL, PLATINUM, HEARTGOLD, SOULSILVER, BLACK, WHITE, BLACK2, WHITE2 };
-static constexpr int GAME_TYPE_COUNT = 40;
+enum class GameType { ZA, S, V, Sw, Sh, BD, SP, LA, GP, GE, FR, LG, FR_ES, LG_ES, FR_DE, LG_DE, FR_IT, LG_IT, FR_FR, LG_FR, FR_JA, LG_JA, RUBY, SAPPHIRE, EMERALD, RED, BLUE, YELLOW, GOLD, SILVER, CRYSTAL, DIAMOND, PEARL, PLATINUM, HEARTGOLD, SOULSILVER, BLACK, WHITE, BLACK2, WHITE2, X, Y, SUN, MOON };
+static constexpr int GAME_TYPE_COUNT = 44;
 
 inline bool isSV(GameType g) { return g == GameType::S || g == GameType::V; }
 inline bool isSwSh(GameType g) { return g == GameType::Sw || g == GameType::Sh; }
@@ -62,6 +62,17 @@ inline bool isGen5File(GameType g) {
 // slots, Decrypt45, Gen4/5 string codecs).
 inline bool isGen45File(GameType g) {
     return isGen4File(g) || isGen5File(g);
+}
+
+// File-backed Gen 6 XY saves (decrypted Citra-style dumps; encrypted
+// cartridge dumps are rejected explicitly — no console keys on Switch).
+inline bool isGen6XY(GameType g) {
+    return g == GameType::X || g == GameType::Y;
+}
+
+// File-backed Gen 7 SM saves (same decrypted-only policy).
+inline bool isGen7SM(GameType g) {
+    return g == GameType::SUN || g == GameType::MOON;
 }
 
 // Either GB generation (shared record traits: no PID/IV32/crypto/eggs/HT,
@@ -255,6 +266,22 @@ inline const GameInfo& gameInfo(GameType g) {
         {0x12,               "",                 "Pokemon White 2",                "Pokemon White 2",
          "White2",           "White2",            "pk5", 220,   24, 30, 136,   0, 136,
          false, false, "", "White2"},
+        // X (Gen 6 XY decrypted dump; 31 boxes)
+        {0x13,               "",                 "Pokemon X",                      "Pokemon X",
+         "X",                "X",                 "pk6", 260,   31, 30, 232,   0, 232,
+         false, false, "", "X"},
+        // Y
+        {0x14,               "",                 "Pokemon Y",                      "Pokemon Y",
+         "Y",                "Y",                 "pk6", 260,   31, 30, 232,   0, 232,
+         false, false, "", "Y"},
+        // SUN (Gen 7 SM decrypted dump; 32 boxes)
+        {0x15,               "",                 "Pokemon Sun",                    "Pokemon Sun",
+         "Sun",              "Sun",               "pk7", 260,   32, 30, 232,   0, 232,
+         false, false, "", "Sun"},
+        // MOON
+        {0x16,               "",                 "Pokemon Moon",                   "Pokemon Moon",
+         "Moon",             "Moon",              "pk7", 260,   32, 30, 232,   0, 232,
+         false, false, "", "Moon"},
     };
     return INFO[static_cast<int>(g)];
 }
@@ -290,6 +317,10 @@ inline GameType pairedGame(GameType g) {
         case GameType::WHITE: return GameType::BLACK;
         case GameType::BLACK2: return GameType::WHITE2;
         case GameType::WHITE2: return GameType::BLACK2;
+        case GameType::X: return GameType::Y;
+        case GameType::Y: return GameType::X;
+        case GameType::SUN: return GameType::MOON;
+        case GameType::MOON: return GameType::SUN;
         default: return g;
     }
 }
@@ -309,6 +340,8 @@ inline int genOf(GameType g) {
     if (isFRLG(g) || isImportedFile(g)) return 3;
     if (isGen4File(g)) return 4;
     if (isGen5File(g)) return 5;
+    if (isGen6XY(g)) return 6;
+    if (isGen7SM(g)) return 7;
     if (isLGPE(g)) return 7;
     if (isSV(g) || g == GameType::ZA) return 9;
     return 8; // SwSh, BDSP, Legends Arceus
@@ -324,8 +357,8 @@ inline int genOf(GameType g) {
 // generation would let a SwSh-shaped Pk8 be written into a BDSP or Arceus slot.
 // Only SwSh (Pk8) and SV (Pk9) are claimed here; everything else returns 0 so
 // the caller fails explicitly instead of writing a wrong-format Pokemon.
-// Gen 7 is never a valid destination: the engine emits Pk7 (Alola SM/USUM),
-// and this app has no SM/USUM GameType (GP/GE are LGPE, a different layout).
+// SM/USUM Pk7 destinations were added with the Gen7SM GameTypes (GP/GE stay
+// LGPE-only: a different layout that still returns 0 here).
 inline int ohTargetGenFor(GameType g) {
     if (isGen1File(g)) return 1;  // Pk1 (R/B/Y)
     if (isGen2File(g)) return 2;  // Pk2 (G/S/C)
@@ -333,7 +366,9 @@ inline int ohTargetGenFor(GameType g) {
     if (isSV(g))   return 9;
     if (isFRLG(g) || isImportedFile(g)) return 3;
     if (isGen4File(g)) return 4;  // Pk4 (DPPt/HGSS)
-    if (isGen5File(g)) return 5;  // Pk5 (BW)
+    if (isGen5File(g)) return 5;  // Pk5 (BW/B2W2)
+    if (isGen6XY(g)) return 6;  // Pk6 (X/Y)
+    if (isGen7SM(g)) return 7;  // Pk7 (S/M)
     if (g == GameType::LA) return 10; // PA8 (Legends: Arceus)
     if (g == GameType::ZA) return 11; // PA9 (Legends: Z-A)
     if (isBDSP(g))         return 12; // PB8 (BDSP)
@@ -354,7 +389,9 @@ inline int ohSourceGenFor(GameType g) {
     if (isSV(g))   return 9;
     if (isFRLG(g) || isImportedFile(g)) return 3;
     if (isGen4File(g)) return 4;  // Pk4 (DPPt/HGSS)
-    if (isGen5File(g)) return 5;  // Pk5 (BW)
+    if (isGen5File(g)) return 5;  // Pk5 (BW/B2W2)
+    if (isGen6XY(g)) return 6;  // Pk6 (X/Y)
+    if (isGen7SM(g)) return 7;  // Pk7 (S/M)
     if (g == GameType::LA) return 10; // PA8 (Legends: Arceus)
     if (g == GameType::ZA) return 11; // PA9 (Legends: Z-A)
     if (isBDSP(g))         return 12; // PB8 (BDSP)
@@ -372,6 +409,8 @@ inline int ohRecordBytesFor(int gen) {
         case 3:  return 80;   // Pk3
         case 4:  return 136;  // Pk4 (box record; party 236)
         case 5:  return 136;  // Pk5 (box record; party 220)
+        case 6:  return 232;  // Pk6 (box; XY boxes store 232B records)
+        case 7:  return 232;  // Pk7 (box; SM boxes store 232B records)
         case 8:  return 344;  // Pk8  (box == party)
         case 9:  return 344;  // Pk9  (Rust core: box == party == 344)
         case 10: return 360;  // Pa8  (box; PKHeX party record is 376)
@@ -397,6 +436,8 @@ inline int learnsetTableFor(GameType g) {
     if (g == GameType::HEARTGOLD || g == GameType::SOULSILVER) return 16; // HGSS
     if (g == GameType::BLACK || g == GameType::WHITE) return 17; // BW
     if (g == GameType::BLACK2 || g == GameType::WHITE2) return 18; // B2W2
+    if (g == GameType::X || g == GameType::Y) return 19; // XY
+    if (g == GameType::SUN || g == GameType::MOON) return 21; // SM (22 = USUM, later)
     if (isLGPE(g)) return 8;                                    // GG
     if (isSwSh(g)) return 9;                                    // SWSH
     if (isBDSP(g)) return 10;                                   // BDSP

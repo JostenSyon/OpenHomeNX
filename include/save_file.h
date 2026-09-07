@@ -231,6 +231,10 @@ private:
     static constexpr int DS_SLOT_SIZE   = 136;       // PK4/PK5 box record
     bool loadDS4(const std::string& path);
     bool loadDS5(const std::string& path);
+    // Gen 6/7 (decrypted 3DS dumps, Citra/Checkpoint style; cartridge-encrypted
+    // dumps are rejected explicitly). Same read-only v1 model as DS.
+    bool loadDXY(const std::string& path);
+    bool loadDSM(const std::string& path);
     std::vector<uint8_t> dsStorage_;
     Ds4Layout ds4Layout_ = Ds4Layout::DP;
     uint8_t dsRomCode_ = 0;

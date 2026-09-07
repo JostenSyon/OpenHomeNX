@@ -26,6 +26,18 @@ pub const BOX_ROWS: u8 = 5;
 pub const BOX_COLS: u8 = 6;
 pub const BOX_SLOTS: u8 = BOX_ROWS * BOX_COLS;
 
+/// Level for this species at the given EXP (upstream pattern, same as
+/// Pk3/Pk8 `calculate_level`). Used by the Switch UI for box records,
+/// which carry no level byte.
+pub fn level_for_exp(ndex: u16, exp: u32) -> u8 {
+    use pkm_rs_resources::species::SpeciesForm;
+    use pkm_rs_types::NationalDex;
+    SpeciesForm::base_form(NationalDex::assert_valid(ndex))
+        .get_species_metadata()
+        .level_up_type
+        .calculate_level(exp)
+}
+
 const MAX_RIBBON_ALOLA: usize = ModernRibbon::BattleTreeMaster as usize;
 
 const NEUROFORCE: u16 = 233;

@@ -510,6 +510,10 @@ void UI::drawGameSelectorFrame() {
                 case GameType::WHITE:    bg = {0xE8, 0xE8, 0xE8, 255}; break;
                 case GameType::BLACK2:   bg = {0x18, 0x18, 0x20, 255}; break;
                 case GameType::WHITE2:   bg = {0xF8, 0xF8, 0xF8, 255}; break;
+                case GameType::X:        bg = {0x20, 0x60, 0xC0, 255}; break;
+                case GameType::Y:        bg = {0xC0, 0x30, 0x30, 255}; break;
+                case GameType::SUN:      bg = {0xE8, 0x70, 0x20, 255}; break;
+                case GameType::MOON:     bg = {0x30, 0x30, 0x60, 255}; break;
                 case GameType::RED:      bg = {0xE0, 0x20, 0x20, 255}; break;
                 case GameType::BLUE:     bg = {0x20, 0x60, 0xE0, 255}; break;
                 case GameType::YELLOW:   bg = {0xE8, 0xC8, 0x10, 255}; break;

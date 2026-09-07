@@ -72,6 +72,10 @@ inline const PokemonOffsets& pokemonOffsetsFor(GameType g) {
     if (isGen1File(g)) return PK1;
     if (isGen4File(g)) return PK4;
     if (isGen5File(g)) return PK5;
+    // XY and SM reuse the PB7 row: identical decrypted layout (species 0x08,
+    // moves 0x5A, OT 0xB0, ball 0xDC...) and 232B box records. Only Gen6
+    // shininess differs (EC-based, see isShiny); SM matches PB7's PID rule.
+    if (isGen6XY(g) || isGen7SM(g)) return PB7;
     if (isFRLG(g) || isImportedFile(g)) return PK3;
     if (isLGPE(g)) return PB7;
     if (g == GameType::LA) return PA8;
@@ -394,7 +398,8 @@ struct Pokemon {
     // Returns list of all set ribbons/marks
     std::vector<RibbonInfo> getRibbonsAndMarks() const;
 
-    // Shiny: XOR == 0 for Gen3, XOR < 16 for modern, DV rule on GB
+    // Shiny: XOR == 0 for Gen3, XOR < 16 for modern, DV rule on GB.
+    // Gen6 XY is EC-based (>>4, same data) instead of PID-based.
     // (Bank/VC rule: Atk DV in {2,3,6,7,10,11,14,15}, Def/Spe/Spc == 10).
     bool isShiny() const {
         if (isGen2File(gameType_)) return Gen2::recIsShiny(data.data());
@@ -408,6 +413,10 @@ struct Pokemon {
         uint32_t p = pid();
         uint16_t t = tid();
         uint16_t s = sid();
+        if (isGen6XY(gameType_)) {
+            uint32_t ec = readU32(0x00);
+            return ((((ec >> 16) ^ (ec & 0xFFFF) ^ t ^ s) >> 4) == 0);
+        }
         uint32_t xor_val = (p >> 16) ^ (p & 0xFFFF) ^ t ^ s;
         if (isFRLG(gameType_) || isImportedFile(gameType_)) return xor_val == 0;
         return xor_val < 16;

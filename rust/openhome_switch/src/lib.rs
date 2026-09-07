@@ -1262,6 +1262,7 @@ pub extern "C" fn openhome_level_for_exp(gen: u32, ndex: u32, exp: u32) -> u8 {
         4 => pkm_rs::gen4::level_for_exp(ndex, exp),
         5 => pkm_rs::gen5::level_for_exp(ndex, exp),
         6 => pkm_rs::gen6::level_for_exp(ndex, exp),
+        7 => pkm_rs::gen7_alola::level_for_exp(ndex, exp),
         _ => 0,
     }
 }
@@ -2622,7 +2623,38 @@ mod tests {
         openhome_free_pkm(loaded);
     }
 
-    // Real ENCRYPTED Gen5 box slots from the user's Black save: Tepig,
+    // Real ENCRYPTED Gen7 box slots from upstream's Moon save (living dex):
+    // Bulbasaur and Pikachu decrypt with valid checksum; Bulbasaur converts
+    // to Gen 6 (it IS in SwSh via IoA, so no dex-cut assertion here — that
+    // path is covered by Typhlosion and Tepig).
+    #[test]
+    fn load_real_sm_slots_bulbasaur() {
+        use pkm_rs::traits::HasSpeciesAndForm;
+        // NOTE: Pk7::from_bytes expects DECRYPTED input (like upstream's
+        // test files); save slots are EC-encrypted -> from_encrypted_bytes.
+        let raw = include_bytes!("../../../tools/test save/upstream/sm_box0_slot0_bulbasaur.pk7");
+        assert_eq!(raw.len(), 232);
+        let enc: alloc::boxed::Box<[u8]> = alloc::vec::Vec::from(&raw[..]).into_boxed_slice();
+        let pk = pkm_rs::gen7_alola::Pk7::from_encrypted_bytes(enc).expect("must decrypt and parse");
+        assert_eq!(pk.get_species_metadata().national_dex as u16, 1);
+        assert_eq!(pk.calculate_checksum(), pk.checksum);
+        let raw25 = include_bytes!("../../../tools/test save/upstream/sm_box0_slot24_pikachu.pk7");
+        let enc25: alloc::boxed::Box<[u8]> = alloc::vec::Vec::from(&raw25[..]).into_boxed_slice();
+        let pk25 = pkm_rs::gen7_alola::Pk7::from_encrypted_bytes(enc25).expect("must decrypt and parse");
+        assert_eq!(pk25.get_species_metadata().national_dex as u16, 25);
+        // FFI load arms take DECRYPTED .pk7 files: re-serialize (decrypted)
+        // then load + transfer like a real file import.
+        use pkm_rs::traits::PkmBytes;
+        let dec = pk.to_box_bytes();
+        let loaded = openhome_load_pkm_from_gen(dec.as_ptr(), dec.len(), 7);
+        assert!(!loaded.is_null(), "valid Bulbasaur must load");
+        let out6 = openhome_transfer_pkm(loaded, 6);
+        openhome_free_pkm(loaded);
+        assert!(!out6.is_null(), "Bulbasaur must convert to Gen 6");
+        let back6 = unsafe { &*out6 };
+        assert_eq!(back6.ohpkm.species_and_form().get_ndex() as u16, 1);
+        openhome_free_pkm(out6);
+    }
     // Lillipup and Patrat decrypt with valid checksum; Tepig transfers to
     // Gen 6 (dex-cut refuses Gen 4: 498 > 493) keeping species and OT.
     #[test]

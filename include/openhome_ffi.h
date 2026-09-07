@@ -40,7 +40,7 @@ uint32_t openhome_count_moves_not_in_gen(const PkmHandle *pkm_handle, uint32_t g
 // null buffer returns the move count for sizing; with a buffer writes all or
 // nothing (0 on undersize/unknown). Never truncates silently.
 uint32_t openhome_get_learnset(uint32_t table, uint32_t species, uint8_t *out_buf, size_t out_len);
-// Real level from EXP for Gen 4/5/6 (verified growth data in Rust).
+// Real level from EXP for Gen 4/5/6/7 (verified growth data in Rust).
 uint8_t openhome_level_for_exp(uint32_t gen, uint32_t ndex, uint32_t exp);
 // Gen4 charset decode to UTF-8+NUL; returns bytes written (no NUL), 0 on error.
 uint32_t openhome_gen4_decode(const uint16_t* codes, uint32_t count, char* out_utf8, size_t out_len);

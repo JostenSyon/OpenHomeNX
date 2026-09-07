@@ -58,6 +58,10 @@ bool SaveFile::load(const std::string& path) {
         return loadDS4(path);
     if (isGen5File(gameType_))
         return loadDS5(path);
+    if (isGen6XY(gameType_))
+        return loadDXY(path);
+    if (isGen7SM(gameType_))
+        return loadDSM(path);
     if (isBDSP(gameType_))
         return loadBDSP(path);
     if (isLGPE(gameType_))
@@ -74,10 +78,10 @@ bool SaveFile::save(const std::string& path) {
         ok = saveGB(path);
     else if (isGen2File(gameType_))
         ok = saveGBC(path);
-    else if (isGen45File(gameType_)) {
-        // Read-only v1: never write what the layout code cannot re-checksum
-        // (Gen5 block footers especially). Explicit failure, never silent.
-        DebugLog::line("save: Gen4/5 read-only v1, rifiuto scrittura %s", path.c_str());
+    else if (isGen45File(gameType_) || isGen6XY(gameType_) || isGen7SM(gameType_)) {
+        // Read-only v1: never write what the layout code cannot re-checksum.
+        // Explicit failure, never silent.
+        DebugLog::line("save: Gen4/5/6/7 read-only v1, rifiuto scrittura %s", path.c_str());
         ok = false;
     }
     else if (isFRLG(gameType_) || isImportedFile(gameType_))
@@ -1780,6 +1784,155 @@ bool SaveFile::loadDS5(const std::string& path) {
     boxDataLen_ = dsStorage_.size();
     boxLayoutData_ = nullptr; // TODO v2: nomi box (blocco 0) + party
     boxLayoutLen_ = 0;
+    loaded_ = true;
+    return true;
+}
+
+bool SaveFile::loadDXY(const std::string& path) {
+    // Gen6 XY decrypted dump (PKHeX SAV6XY): boxes at 0x22600 (31 x 30 x
+    // 232B EC-encrypted slots), MyStatus block at 0x14000 (Game byte at +4:
+    // 24 = X, 25 = Y; OT trash at +0x48). Min size gate only (no exact size:
+    // Citra/Checkpoint dumps vary); slots prove themselves by checksum.
+    static constexpr size_t BOX_BASE = 0x22600;
+    static constexpr int BOXES = 31;
+    static constexpr int SLOT = 232;
+    static constexpr size_t MIN_SIZE = BOX_BASE + static_cast<size_t>(BOXES) * 30 * SLOT;
+    std::ifstream file(path, std::ios::binary | std::ios::ate);
+    if (!file.is_open())
+        return false;
+    if (static_cast<size_t>(file.tellg()) < MIN_SIZE)
+        return false;
+    file.seekg(0);
+    size_t fileSize = static_cast<size_t>(file.tellg());
+    (void)fileSize;
+    file.seekg(0);
+    rawData_.resize(MIN_SIZE);
+    file.read(reinterpret_cast<char*>(rawData_.data()), MIN_SIZE);
+    if (!file)
+        return false;
+
+    uint8_t game = rawData_[0x14000 + 4];
+    if (game != 24 && game != 25) {
+        DebugLog::line("loadDXY: %s -> Game byte %u non XY (dump cifrato?)", path.c_str(), game);
+        return false;
+    }
+    auto slotValid = [&](const uint8_t* slot) -> bool {
+        static const uint8_t ZERO[232] = {};
+        if (std::memcmp(slot, ZERO, sizeof(ZERO)) == 0)
+            return false;
+        uint8_t dec[232];
+        PokeCrypto::decryptArray6(slot, sizeof(dec), dec);
+        uint32_t sum = 0;
+        for (int i = 8; i < 232; i += 2)
+            sum += static_cast<uint32_t>(dec[i] | (dec[i + 1] << 8));
+        uint16_t stored = static_cast<uint16_t>(dec[6] | (dec[7] << 8));
+        return (sum & 0xFFFF) == stored;
+    };
+    int validSlots = 0;
+    for (int b = 0; b < BOXES && validSlots < 3; b++)
+        for (int s = 0; s < 30 && validSlots < 3; s++) {
+            size_t o = BOX_BASE + static_cast<size_t>(b) * 30 * SLOT + static_cast<size_t>(s) * SLOT;
+            if (slotValid(rawData_.data() + o))
+                validSlots++;
+        }
+    if (validSlots <= 0)
+        DebugLog::line("loadDXY: %s -> nessuno slot valido (save vuoto?)", path.c_str());
+    dsStorage_.assign(static_cast<size_t>(BOXES) * 30 * SLOT, 0);
+    int badSlots = 0;
+    for (int b = 0; b < BOXES; b++)
+        for (int s = 0; s < 30; s++) {
+            size_t o = BOX_BASE + static_cast<size_t>(b) * 30 * SLOT + static_cast<size_t>(s) * SLOT;
+            const uint8_t* slot = rawData_.data() + o;
+            uint8_t* dst = dsStorage_.data() + (static_cast<size_t>(b) * 30 + s) * SLOT;
+            static const uint8_t ZERO[232] = {};
+            if (std::memcmp(slot, ZERO, sizeof(ZERO)) == 0)
+                continue;
+            if (!slotValid(slot)) {
+                badSlots++;
+                continue;
+            }
+            std::memcpy(dst, slot, SLOT);
+        }
+    if (badSlots > 0)
+        DebugLog::line("loadDXY: %s -> %d slot corrotti nascosti", path.c_str(), badSlots);
+    DebugLog::line("loadDXY: %s -> Game %u (%s)", path.c_str(), game, game == 24 ? "X" : "Y");
+    boxData_ = dsStorage_.data();
+    boxDataLen_ = dsStorage_.size();
+    // Box names: block 12 @0x04400, 31 x 0x22 UTF-16LE (generic stride).
+    boxLayoutData_ = rawData_.data() + 0x04400;
+    boxLayoutLen_ = BOXES * 0x22;
+    loaded_ = true;
+    return true;
+}
+
+bool SaveFile::loadDSM(const std::string& path) {
+    // Gen7 SM decrypted dump (PKHeX SAV7SM): BoxPokemon at 0x04E00 (32 x 30
+    // x 232B slots), MyStatus at 0x01200 (Game at +4: 30 = Sun, 31 = Moon;
+    // OT at +0x38). Box names in BOX block at 0x04800 (32 x 0x22 UTF-16LE).
+    static constexpr size_t BOX_BASE = 0x04E00;
+    static constexpr int BOXES = 32;
+    static constexpr int SLOT = 232;
+    static constexpr size_t MIN_SIZE = BOX_BASE + static_cast<size_t>(BOXES) * 30 * SLOT;
+    std::ifstream file(path, std::ios::binary | std::ios::ate);
+    if (!file.is_open())
+        return false;
+    if (static_cast<size_t>(file.tellg()) < MIN_SIZE)
+        return false;
+    file.seekg(0);
+    rawData_.resize(MIN_SIZE);
+    file.read(reinterpret_cast<char*>(rawData_.data()), MIN_SIZE);
+    if (!file)
+        return false;
+
+    uint8_t game = rawData_[0x01200 + 4];
+    if (game != 30 && game != 31) {
+        DebugLog::line("loadDSM: %s -> Game byte %u non SM (dump cifrato?)", path.c_str(), game);
+        return false;
+    }
+    auto slotValid = [&](const uint8_t* slot) -> bool {
+        static const uint8_t ZERO[232] = {};
+        if (std::memcmp(slot, ZERO, sizeof(ZERO)) == 0)
+            return false;
+        uint8_t dec[232];
+        PokeCrypto::decryptArray6(slot, sizeof(dec), dec);
+        uint32_t sum = 0;
+        for (int i = 8; i < 232; i += 2)
+            sum += static_cast<uint32_t>(dec[i] | (dec[i + 1] << 8));
+        uint16_t stored = static_cast<uint16_t>(dec[6] | (dec[7] << 8));
+        return (sum & 0xFFFF) == stored;
+    };
+    int validSlots = 0;
+    for (int b = 0; b < BOXES && validSlots < 3; b++)
+        for (int s = 0; s < 30 && validSlots < 3; s++) {
+            size_t o = BOX_BASE + static_cast<size_t>(b) * 30 * SLOT + static_cast<size_t>(s) * SLOT;
+            if (slotValid(rawData_.data() + o))
+                validSlots++;
+        }
+    if (validSlots <= 0)
+        DebugLog::line("loadDSM: %s -> nessuno slot valido (save vuoto?)", path.c_str());
+    dsStorage_.assign(static_cast<size_t>(BOXES) * 30 * SLOT, 0);
+    int badSlots = 0;
+    for (int b = 0; b < BOXES; b++)
+        for (int s = 0; s < 30; s++) {
+            size_t o = BOX_BASE + static_cast<size_t>(b) * 30 * SLOT + static_cast<size_t>(s) * SLOT;
+            const uint8_t* slot = rawData_.data() + o;
+            uint8_t* dst = dsStorage_.data() + (static_cast<size_t>(b) * 30 + s) * SLOT;
+            static const uint8_t ZERO[232] = {};
+            if (std::memcmp(slot, ZERO, sizeof(ZERO)) == 0)
+                continue;
+            if (!slotValid(slot)) {
+                badSlots++;
+                continue;
+            }
+            std::memcpy(dst, slot, SLOT);
+        }
+    if (badSlots > 0)
+        DebugLog::line("loadDSM: %s -> %d slot corrotti nascosti", path.c_str(), badSlots);
+    DebugLog::line("loadDSM: %s -> Game %u (%s)", path.c_str(), game, game == 30 ? "Sun" : "Moon");
+    boxData_ = dsStorage_.data();
+    boxDataLen_ = dsStorage_.size();
+    boxLayoutData_ = rawData_.data() + 0x04800;
+    boxLayoutLen_ = BOXES * 0x22;
     loaded_ = true;
     return true;
 }

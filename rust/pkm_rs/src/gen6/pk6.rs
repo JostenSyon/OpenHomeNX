@@ -114,6 +114,13 @@ pub struct Pk6 {
 const MAX_RIBBON_GEN6: usize = ModernRibbon::ToughnessMaster as usize;
 
 impl Pk6 {
+    /// Parse EC-encrypted save slots (mirrors Pk7::from_encrypted_bytes).
+    pub fn from_encrypted_bytes(mut bytes: Box<[u8]>) -> Result<Self> {
+        let ec = u32::from_le_bytes(bytes[0x00..0x04].try_into().unwrap());
+        crate::gen6::crypto::decrypt_in_place(&mut bytes, ec);
+        Self::try_from_bytes(&bytes)
+    }
+
     /// 16-bit little-endian sum over `0x08..0xE8`, same scheme as Pk7/Pb7
     /// (PKHeX `get16BitChecksumLittleEndian`). Tail past 0xE8 not covered.
     pub fn calculate_checksum(&self) -> u16 {

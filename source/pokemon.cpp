@@ -251,6 +251,13 @@ uint8_t Pokemon::level() const {
         return OpenHomeNX::levelForExp(static_cast<uint32_t>(gen),
                                        static_cast<uint32_t>(species()), exp);
     }
+    if (isGen6XY(gameType_) || isGen7SM(gameType_)) {
+        // XY/SM boxes store 232B records with no level byte (unlike LGPE's
+        // party-format slots): derive from EXP like Gen4/5 above.
+        int gen = isGen6XY(gameType_) ? 6 : 7;
+        return OpenHomeNX::levelForExp(static_cast<uint32_t>(gen),
+                                       static_cast<uint32_t>(species()), exp);
+    }
     // LA
     uint16_t sp = speciesInternal();
     uint8_t growth = (sp < 1276) ? LA_GROWTH_RATES[sp] : 0;
@@ -766,6 +773,8 @@ void Pokemon::loadFromEncrypted(const uint8_t* encrypted, size_t len) {
         PokemonFFI::decryptArray3(encrypted, len, data.data());
     else if (isGen45File(gameType_))
         PokemonFFI::decryptArray45(encrypted, len, data.data());
+    else if (isGen6XY(gameType_) || isGen7SM(gameType_))
+        PokemonFFI::decryptArray6(encrypted, len, data.data());
     else if (isLGPE(gameType_))
         PokemonFFI::decryptArray6(encrypted, len, data.data());
     else if (gameType_ == GameType::LA)
@@ -788,7 +797,8 @@ void Pokemon::refreshChecksum() {
     // (PKHeX PKM CalculateChecksum, Gen 4+; Gen3 uses its own range above).
     int end;
     if (isGen45File(gameType_))      end = PokemonFFI::SIZE_4STORED;
-    else if (isLGPE(gameType_))       end = PokemonFFI::SIZE_6STORED;
+    else if (isGen6XY(gameType_) || isGen7SM(gameType_) || isLGPE(gameType_))
+        end = PokemonFFI::SIZE_6STORED;
     else if (gameType_ == GameType::LA) end = PokemonFFI::SIZE_8ASTORED;
     else                                end = PokemonFFI::SIZE_9STORED;
     uint16_t chk = 0;
@@ -811,6 +821,8 @@ void Pokemon::getEncrypted(uint8_t* outBuf) {
         PokemonFFI::encryptArray3(data.data(), PokemonFFI::SIZE_3STORED, outBuf);
     else if (isGen45File(gameType_))
         PokemonFFI::encryptArray45(data.data(), PokemonFFI::SIZE_4STORED, outBuf);
+    else if (isGen6XY(gameType_) || isGen7SM(gameType_))
+        PokemonFFI::encryptArray6(data.data(), PokemonFFI::SIZE_6STORED, outBuf);
     else if (isLGPE(gameType_))
         PokemonFFI::encryptArray6(data.data(), PokemonFFI::SIZE_6PARTY, outBuf);
     else if (gameType_ == GameType::LA)

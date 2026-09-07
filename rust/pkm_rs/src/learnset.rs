@@ -4,7 +4,7 @@
 //! file (openhome_switch `learnset_tables_hold_kanto_starters`). Table ids
 //! mirror the C++ `learnsetTableFor()`: 1=RB 2=Y 3=GS 4=C 5=RS 6=E 7=FR
 //! 8=GG (LGPE) 9=SWSH 10=BDSP 11=LA 12=SV 13=ZA 14=DP 15=Pt 16=HGSS 17=BW
-//! 18=B2W2 19=XY 20=ORAS.
+//! 18=B2W2 19=XY 20=ORAS 21=SM 22=USUM.
 extern crate alloc;
 
 use alloc::vec::Vec;
@@ -37,6 +37,8 @@ learnset_table!(BW, "../../pkm_rs_resources/src/pkhex_bin/levelup/lvlmove_bw.pkl
 learnset_table!(B2W2, "../../pkm_rs_resources/src/pkhex_bin/levelup/lvlmove_b2w2.pkl");
 learnset_table!(XY, "../../pkm_rs_resources/src/pkhex_bin/levelup/lvlmove_xy.pkl");
 learnset_table!(AO, "../../pkm_rs_resources/src/pkhex_bin/levelup/lvlmove_ao.pkl");
+learnset_table!(SM, "../../pkm_rs_resources/src/pkhex_bin/levelup/lvlmove_sm.pkl");
+learnset_table!(UU, "../../pkm_rs_resources/src/pkhex_bin/levelup/lvlmove_uu.pkl");
 
 fn table_for_id(table: u32) -> Option<&'static LearnsetFileReader> {
     match table {
@@ -60,6 +62,8 @@ fn table_for_id(table: u32) -> Option<&'static LearnsetFileReader> {
         18 => Some(&B2W2),
         19 => Some(&XY),
         20 => Some(&AO),
+        21 => Some(&SM),
+        22 => Some(&UU),
         _ => None,
     }
 }
