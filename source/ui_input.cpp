@@ -443,17 +443,13 @@ void UI::handleNormalInput(const SDL_Event& event) {
                             detailParty_ = partyCursor_;
                             showDetail_ = true;
                         } else {
-                            if (save_.dsParty().size() <= 1) {
-                                if (!showConfirmDialog("Party quasi vuoto",
-                                    "Stai per prelevare l'ultimo Pokémon del party. Il salvataggio resterebbe senza party (potrebbe corrompere il gioco). Vuoi continuare? Puoi rimettere subito un Caterpie per sicurezza.")) break;
-                            }
-                            // Clone party mon into hand (read-only save: copy, don't remove from file yet)
+                            // Take from party like a regular box (clone for now, save is read-only v1)
+                            // Warning for empty party only on exit, not on take (per UX request)
                             const auto& pm = save_.dsParty()[partyCursor_];
                             if (!pm.isEmpty()) {
                                 heldPkm_ = pm;
                                 holding_ = true;
                                 heldMulti_.clear();
-                                // Visual feedback: keep partyCursor but hide grid selection
                                 refreshHighlightSet();
                             }
                         }
