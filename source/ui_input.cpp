@@ -2657,8 +2657,19 @@ void UI::handlePkImportListInput(const SDL_Event& event) {
                 pkImportCursor_ = std::min(count - 1, pkImportCursor_ + 10);
                 scrollIntoView();
                 break;
-            case SDL_CONTROLLER_BUTTON_B: // Switch A = confirm/import
-                importPkFile(pkImportList_[pkImportCursor_]);
+            case SDL_CONTROLLER_BUTTON_B: // Switch A = importa e resta (multi)
+                if (importPkFile(pkImportList_[pkImportCursor_], false))
+                    pkImportList_[pkImportCursor_].imported = true;
+                break;
+            case SDL_CONTROLLER_BUTTON_START: // + = importa ed esci
+                importPkFile(pkImportList_[pkImportCursor_], true);
+                break;
+            case SDL_CONTROLLER_BUTTON_X: // Switch Y = seleziona/deseleziona
+                pkImportList_[pkImportCursor_].selected = !pkImportList_[pkImportCursor_].selected;
+                markDirty();
+                break;
+            case SDL_CONTROLLER_BUTTON_Y: // Switch X = importa selezionati e resta
+                importSelectedPkFiles(false);
                 break;
             case SDL_CONTROLLER_BUTTON_A: // Switch B = cancel
                 showPkImportList_ = false;
@@ -2833,38 +2844,57 @@ void UI::handleLearnsetInput(const SDL_Event& event) {
     }
 }
 
-void UI::importPkFile(const PkFileInfo& info) {
+bool UI::importPkFile(const PkFileInfo& info, bool closeAfter) {
     if (!info.valid) {
         showMessageAndWait(i18n::get(StrKey::ImportPkTitle), info.filename);
-        return;
+        return false;
     }
     if (!bank_.isCrossGen()) {
         showMessageAndWait(i18n::get(StrKey::ImportPkTitle), i18n::get(StrKey::ImportPkNeedBank));
-        return;
+        return false;
     }
+    std::string err;
+    if (!importPkFileToBank(info, err)) {
+        showMessageAndWait(i18n::get(StrKey::ImportPkTitle),
+                           err.empty() ? i18n::get(StrKey::CouldNotWrite) : err);
+        return false;
+    }
+    if (closeAfter) {
+        showPkImportList_ = false;
+        showMessageAndWait(i18n::get(StrKey::ImportPkTitle), info.filename);
+    }
+    return true;
+}
+
+// Silent core: reads the whole file, parses via FFI, drops the blob in the
+// first free bank slot. No dialogs; reason goes to err (empty = generic).
+bool UI::importPkFileToBank(const PkFileInfo& info, std::string& err) {
+    err.clear();
     FILE* f = std::fopen(info.path.c_str(), "rb");
     if (!f) {
-        showMessageAndWait(i18n::get(StrKey::ImportPkTitle), i18n::get(StrKey::CouldNotWrite));
-        return;
+        DebugLog::line("import pk: %s -> fopen fallita", info.path.c_str());
+        return false;
     }
-    size_t want = (info.gen == 1) ? 33 : 32;
-    std::vector<uint8_t> bytes(want);
-    size_t got = std::fread(bytes.data(), 1, want, f);
+    // Whole file (cap 376B): native exports are party-size, cross-gen box-size.
+    std::vector<uint8_t> bytes(376);
+    size_t got = std::fread(bytes.data(), 1, bytes.size(), f);
     std::fclose(f);
-    if (got != want) {
-        showMessageAndWait(i18n::get(StrKey::ImportPkTitle), i18n::get(StrKey::CouldNotWrite));
-        return;
+    if (got == 0 || got > 376) {
+        DebugLog::line("import pk: %s -> %zu byte illeggibili", info.path.c_str(), got);
+        return false;
     }
+    bytes.resize(got);
     PkmHandle* h = OpenHomeNX::loadPkmFromGen(bytes, static_cast<uint32_t>(info.gen));
     if (!h) {
-        showMessageAndWait(i18n::get(StrKey::ImportPkTitle), i18n::get(StrKey::CouldNotWrite));
-        return;
+        DebugLog::line("import pk: %s -> parse gen%d fallito", info.path.c_str(), info.gen);
+        return false;
     }
     std::vector<uint8_t> blob = OpenHomeNX::getOhpkmBytes(h);
+    uint16_t sp = OpenHomeNX::ohpkmSpecies(h);
     OpenHomeNX::freePkm(h);
     if (blob.empty()) {
-        showMessageAndWait(i18n::get(StrKey::ImportPkTitle), i18n::get(StrKey::CouldNotWrite));
-        return;
+        DebugLog::line("import pk: %s -> blob vuoto", info.path.c_str());
+        return false;
     }
     for (int b = 0; b < bank_.boxCount(); b++) {
         for (int s = 0; s < bank_.slotsPerBox(); s++) {
@@ -2872,13 +2902,38 @@ void UI::importPkFile(const PkFileInfo& info) {
                 bank_.setOhpkmAt(b, s, blob);
                 markDirty();
                 invalidateSlotDisplay(Panel::Bank, b);
-                showPkImportList_ = false;
-                showMessageAndWait(i18n::get(StrKey::ImportPkTitle), info.filename);
-                return;
+                DebugLog::line("import pk: %s -> specie %u in banca %d:%d", info.path.c_str(), sp, b, s);
+                return true;
             }
         }
     }
-    showMessageAndWait(i18n::get(StrKey::ImportPkTitle), i18n::get(StrKey::CouldNotWrite));
+    DebugLog::line("import pk: %s -> banca piena", info.path.c_str());
+    err = i18n::get(StrKey::CouldNotWrite);
+    return false;
+}
+
+void UI::importSelectedPkFiles(bool closeAfter) {
+    int ok = 0, fail = 0;
+    for (auto& info : pkImportList_) {
+        if (!info.selected || info.imported)
+            continue;
+        std::string err;
+        if (importPkFileToBank(info, err)) {
+            info.imported = true;
+            info.selected = false;
+            ok++;
+        } else {
+            fail++;
+        }
+    }
+    markDirty();
+    if (ok == 0 && fail == 0)
+        return; // nothing selected: stay silent, stay open
+    char buf[128];
+    std::snprintf(buf, sizeof(buf), "%d ok%s", ok, fail > 0 ? " (alcuni falliti, vedi log)" : "");
+    if (closeAfter)
+        showPkImportList_ = false;
+    showMessageAndWait(i18n::get(StrKey::ImportPkTitle), buf);
 }
 
 std::string UI::exportCrossGenBlob(const Pokemon& pkm) {

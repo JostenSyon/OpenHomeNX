@@ -293,6 +293,8 @@ private:
         int gen = 0;           // 1 = .pk1, 2 = .pk2
         uint16_t species = 0;  // 0 = unreadable (listed as invalid)
         bool valid = false;
+        bool selected = false; // multi-import selection (X toggles)
+        bool imported = false; // already imported this session (stays listed)
     };
     bool showPkImportList_ = false;
     int  pkImportCursor_  = 0;
@@ -607,7 +609,9 @@ private:
     void handleWondercardListInput(const SDL_Event& event);
     void injectWondercard(const WCInfo& info);
     void handlePkImportListInput(const SDL_Event& event);
-    void importPkFile(const PkFileInfo& info);
+    bool importPkFile(const PkFileInfo& info, bool closeAfter = true);
+    bool importPkFileToBank(const PkFileInfo& info, std::string& err);
+    void importSelectedPkFiles(bool closeAfter);
     void openLearnset(const Pokemon& pkm);
     void handleLearnsetInput(const SDL_Event& event);
     std::string exportPokemon(const Pokemon& pkm);

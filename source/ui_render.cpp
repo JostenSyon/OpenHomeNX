@@ -380,14 +380,14 @@ void UI::drawPanel(int panelX, const std::string& boxName, int boxIdx,
         drawTextCentered("<", panelX + 20, BOX_HDR_Y + BOX_HDR_H / 2, T().arrow, font_);
         std::string left = boxName + " (" + std::to_string(boxIdx + 1) + "/" + std::to_string(totalBoxes) + ")";
         left += " · OT " + save->dsOtName();
-        int tw = getTextEntry(left, fontLarge_, hdrColor).w;
-        // Never collide with the ">" arrow: truncate the text first.
+        int tw = getTextEntry(left, fontSmall_, hdrColor).w;
+        // Never collide with the minis: truncate the text first.
         int maxLeftW = PANEL_W - 90 - 6 * 28;
         while (left.size() > 5 && tw > maxLeftW) {
             left = left.substr(0, left.size() - 5) + "(..)";
-            tw = getTextEntry(left, fontLarge_, hdrColor).w;
+            tw = getTextEntry(left, fontSmall_, hdrColor).w;
         }
-        drawText(left, panelX + 45, BOX_HDR_Y + (BOX_HDR_H - 28) / 2, hdrColor, fontLarge_);
+        drawText(left, panelX + 45, BOX_HDR_Y + (BOX_HDR_H - 14) / 2, hdrColor, fontSmall_);
         // Party minis right after the OT text (not right-aligned).
         int mx = panelX + 45 + tw + 12;
         int shown = 0;
@@ -409,19 +409,19 @@ void UI::drawPanel(int panelX, const std::string& boxName, int boxIdx,
         }
         drawTextCentered(">", panelX + PANEL_W - 20, BOX_HDR_Y + BOX_HDR_H / 2, T().arrow, font_);
     } else {
-    drawTextCentered("<", panelX + 20, BOX_HDR_Y + BOX_HDR_H / 2, T().arrow, fontLarge_);
+    drawTextCentered("<", panelX + 20, BOX_HDR_Y + BOX_HDR_H / 2, T().arrow, font_);
     std::string hdrText = boxName + " (" + std::to_string(boxIdx + 1) + "/" + std::to_string(totalBoxes) + ")";
     // Truncate if too wide for panel (leave room for arrows)
     int maxHdrW = PANEL_W - 80;
-    int tw = getTextEntry(hdrText, fontLarge_, hdrColor).w;
+    int tw = getTextEntry(hdrText, font_, hdrColor).w;
     if (tw > maxHdrW) {
         while (hdrText.size() > 5 && tw > maxHdrW) {
             hdrText = hdrText.substr(0, hdrText.size() - 5) + "(..)";
-            tw = getTextEntry(hdrText, fontLarge_, hdrColor).w;
+            tw = getTextEntry(hdrText, font_, hdrColor).w;
         }
     }
-    drawTextCentered(hdrText, panelX + PANEL_W / 2, BOX_HDR_Y + BOX_HDR_H / 2, hdrColor, fontLarge_);
-    drawTextCentered(">", panelX + PANEL_W - 20, BOX_HDR_Y + BOX_HDR_H / 2, T().arrow, fontLarge_);
+    drawTextCentered(hdrText, panelX + PANEL_W / 2, BOX_HDR_Y + BOX_HDR_H / 2, hdrColor, font_);
+    drawTextCentered(">", panelX + PANEL_W - 20, BOX_HDR_Y + BOX_HDR_H / 2, T().arrow, font_);
     } // else (classic header)
 
     // Grid: dynamic columns x 5 rows, sized from THIS panel's own source.
@@ -1884,6 +1884,14 @@ void UI::drawPkImportListPopup() {
                 if (fn.length() > 40) fn = fn.substr(0, 39) + ".";
                 drawText(fn, x, textY, T().textDim, font_);
             } else {
+                // Multi-select marker / imported check (ASCII only: the
+                // Switch system font renders other glyphs as tofu).
+                if (pk.selected) {
+                    drawText(">", x, textY, T().cursor, font_);
+                } else if (pk.imported) {
+                    drawText("*", x, textY, T().textDim, font_);
+                }
+                x += 24;
                 // Sprite
                 SDL_Texture* sprite = getSprite(pk.species, 0);
                 if (sprite) {
@@ -1907,7 +1915,7 @@ void UI::drawPkImportListPopup() {
                 x += 170;
 
                 // Gen tag
-                drawText(pk.gen == 1 ? "Gen 1" : "Gen 2", x, textY, T().textDim, font_);
+                drawText("Gen " + std::to_string(pk.gen), x, textY, T().textDim, font_);
                 x += 70;
 
                 // Filename (truncate to fit)
@@ -1925,7 +1933,7 @@ void UI::drawPkImportListPopup() {
 
     std::string footer = pkImportList_.empty()
         ? i18n::get(StrKey::BClose)
-        : i18n::get(StrKey::AConfirmBCancelMenu);
+        : i18n::get(StrKey::PkImportFooter);
     drawTextCentered(footer, popX + POP_W / 2, popY + POP_H - 18, T().textDim, fontSmall_);
 }
 

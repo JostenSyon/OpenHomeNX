@@ -386,6 +386,7 @@ namespace StrKey {
     constexpr const char* ImportPkNeedBank     = "import_pk_need_bank";
     constexpr const char* PkImportTitle        = "pkimport_title";
     constexpr const char* PkImportNone         = "pkimport_none";
+    constexpr const char* PkImportFooter       = "pkimport_footer";
     constexpr const char* LearnsetTitle        = "learnset_title";
     constexpr const char* LearnsetNone         = "learnset_none";
 
