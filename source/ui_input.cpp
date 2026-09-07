@@ -348,16 +348,15 @@ void UI::handleDetailInput(const SDL_Event& event) {
         }
     };
     if (event.type == SDL_CONTROLLERBUTTONDOWN) {
-        // Debug OT-strip focus: read-only party detail. Export/release and
-        // box navigation are blocked; close + learnset stay (view-only).
         const bool partyRO = (detailParty_ >= 0);
+        const bool partyROStrict = partyRO && !DebugLog::enabled();
         switch (event.cbutton.button) {
             case SDL_CONTROLLER_BUTTON_A: // Switch B
                 showDetail_ = false;
                 detailParty_ = -1;
                 break;
             case SDL_CONTROLLER_BUTTON_START: { // Switch + — export (unico)
-                if (partyRO) break;
+                if (partyROStrict) break;
                 Pokemon pkm = getPokemonAt(cursor_.box, cursor_.slot(gridCols()), cursor_.panel);
                 if (!pkm.isEmpty()) {
                     std::string name = exportPokemon(pkm);
@@ -373,7 +372,7 @@ void UI::handleDetailInput(const SDL_Event& event) {
                 detailParty_ = -1;
                 break;
             case SDL_CONTROLLER_BUTTON_BACK: // Switch - — rilascia
-                if (partyRO) break;
+                if (partyROStrict) break;
                 tryRelease();
                 break;
             case SDL_CONTROLLER_BUTTON_X: // Switch Y = learnset viewer
@@ -384,14 +383,14 @@ void UI::handleDetailInput(const SDL_Event& event) {
                 }
                 break;
             case SDL_CONTROLLER_BUTTON_LEFTSHOULDER:
-                if (partyRO) break;
+                if (partyROStrict) break;
                 detailNav(-1);
                 lHeld_ = true;
                 bumperRepeatTime_ = SDL_GetTicks();
                 bumperMoved_ = false;
                 break;
             case SDL_CONTROLLER_BUTTON_RIGHTSHOULDER:
-                if (partyRO) break;
+                if (partyROStrict) break;
                 detailNav(1);
                 rHeld_ = true;
                 bumperRepeatTime_ = SDL_GetTicks();
@@ -436,19 +435,35 @@ void UI::handleNormalInput(const SDL_Event& event) {
 
     if (event.type == SDL_CONTROLLERBUTTONDOWN) {
         switch (event.cbutton.button) {
-            case SDL_CONTROLLER_BUTTON_B: // Switch A (right) = SDL B
+            case SDL_CONTROLLER_BUTTON_B: // Switch A (right) = SDL B -> pick / take
                 if (!yHeld_) {
                     if (partyCursor_ >= 0) {
-                        // Debug party focus: read-only detail popup.
-                        detailParty_ = partyCursor_;
-                        showDetail_ = true;
+                        // Debug: pick from party like a normal mon; otherwise just view.
+                        if (!DebugLog::enabled()) {
+                            detailParty_ = partyCursor_;
+                            showDetail_ = true;
+                        } else {
+                            if (save_.dsParty().size() <= 1) {
+                                if (!showConfirmDialog("Party quasi vuoto",
+                                    "Stai per prelevare l'ultimo Pokémon del party. Il salvataggio resterebbe senza party (potrebbe corrompere il gioco). Vuoi continuare? Puoi rimettere subito un Caterpie per sicurezza.")) break;
+                            }
+                            // Clone party mon into hand (read-only save: copy, don't remove from file yet)
+                            const auto& pm = save_.dsParty()[partyCursor_];
+                            if (!pm.isEmpty()) {
+                                heldPkm_ = pm;
+                                holding_ = true;
+                                heldMulti_.clear();
+                                // Visual feedback: keep partyCursor but hide grid selection
+                                refreshHighlightSet();
+                            }
+                        }
                     } else {
                         actionSelect();
                     }
                     refreshHighlightSet();
                 }
                 break;
-            case SDL_CONTROLLER_BUTTON_A: // Switch B (bottom) = SDL A
+            case SDL_CONTROLLER_BUTTON_A: // Switch B (bottom) = SDL A -> back / cancel
                 if (!yHeld_) {
                     if (partyCursor_ >= 0) {
                         partyCursor_ = -1; // leave the OT strip
@@ -458,7 +473,7 @@ void UI::handleNormalInput(const SDL_Event& event) {
                     refreshHighlightSet();
                 }
                 break;
-            case SDL_CONTROLLER_BUTTON_Y: // Switch X (top) = SDL Y
+            case SDL_CONTROLLER_BUTTON_Y: // Switch X (top) = SDL Y -> detail (grid or party)
             {
                 if (yHeld_) break;
                 if (holding_) {
@@ -481,9 +496,18 @@ void UI::handleNormalInput(const SDL_Event& event) {
                         refreshHighlightSet();
                     }
                 } else {
-                    Pokemon pkm = getPokemonAt(cursor_.box, cursor_.slot(gridCols()), cursor_.panel);
-                    if (!pkm.isEmpty())
-                        showDetail_ = true;
+                    // Party row: same Y opens detail for the focused party mon (always viewable)
+                    if (partyCursor_ >= 0 && partyCursor_ < (int)save_.dsParty().size()) {
+                        const auto& pm = save_.dsParty()[partyCursor_];
+                        if (!pm.isEmpty()) {
+                            detailParty_ = partyCursor_;
+                            showDetail_ = true;
+                        }
+                    } else {
+                        Pokemon pkm = getPokemonAt(cursor_.box, cursor_.slot(gridCols()), cursor_.panel);
+                        if (!pkm.isEmpty())
+                            showDetail_ = true;
+                    }
                 }
                 break;
             }
@@ -516,9 +540,11 @@ void UI::handleNormalInput(const SDL_Event& event) {
                 }
                 break;
             case SDL_CONTROLLER_BUTTON_DPAD_UP:
-                if (DebugLog::enabled() && partyCursor_ < 0 && !holding_ && selectedSlots_.empty() &&
+                // Unified row: party is row -1 above grid. Both dpad and analog can enter it.
+                // Single selection: box cursor hidden when party focused.
+                if (partyCursor_ < 0 && !holding_ && selectedSlots_.empty() &&
                     cursor_.panel == Panel::Game && cursor_.row == 0 && !save_.dsParty().empty()) {
-                    partyCursor_ = 0; // focus the OT strip (debug only)
+                    partyCursor_ = 0;
                     markDirty();
                 } else if (partyCursor_ >= 0) {
                     partyCursor_ = -1; // back to grid
@@ -538,7 +564,7 @@ void UI::handleNormalInput(const SDL_Event& event) {
             case SDL_CONTROLLER_BUTTON_DPAD_LEFT:
                 if (partyCursor_ >= 0) {
                     int n = (int)save_.dsParty().size();
-                    partyCursor_ = (partyCursor_ + n - 1) % n;
+                    if (n > 0) partyCursor_ = (partyCursor_ + n - 1) % n;
                     markDirty();
                 } else {
                     moveCursor(-1, 0);
@@ -547,7 +573,7 @@ void UI::handleNormalInput(const SDL_Event& event) {
             case SDL_CONTROLLER_BUTTON_DPAD_RIGHT:
                 if (partyCursor_ >= 0) {
                     int n = (int)save_.dsParty().size();
-                    partyCursor_ = (partyCursor_ + 1) % n;
+                    if (n > 0) partyCursor_ = (partyCursor_ + 1) % n;
                     markDirty();
                 } else {
                     moveCursor(+1, 0);
@@ -692,9 +718,24 @@ void UI::handleStickRepeat() {
             int menuCount = menuVisibleCount();
             menuSelection_ = (menuSelection_ + (stickDirY_ > 0 ? 1 : menuCount - 1)) % menuCount;
         }
+    } else if (partyCursor_ >= 0) {
+        // Party row focused: stick mirrors dpad
+        if (stickDirX_ != 0) {
+            int n = (int)save_.dsParty().size();
+            if (n > 0) partyCursor_ = (partyCursor_ + (stickDirX_ > 0 ? 1 : n - 1)) % n;
+        }
+        if (stickDirY_ != 0) {
+            partyCursor_ = -1; // any vertical stick -> back to grid
+        }
     } else if (!showDetail_) {
-        if (stickDirX_ != 0) moveCursor(stickDirX_, 0);
-        if (stickDirY_ != 0) moveCursor(0, stickDirY_);
+        // Analog up from top row enters party (mirrors dpad)
+        if (stickDirY_ < 0 && cursor_.row == 0 && cursor_.panel == Panel::Game &&
+            !save_.dsParty().empty() && !holding_ && selectedSlots_.empty()) {
+            partyCursor_ = 0;
+        } else {
+            if (stickDirX_ != 0) moveCursor(stickDirX_, 0);
+            if (stickDirY_ != 0) moveCursor(0, stickDirY_);
+        }
     }
     stickMoveTime_ = now;
     stickMoved_ = true;

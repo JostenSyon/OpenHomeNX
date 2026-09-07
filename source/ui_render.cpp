@@ -464,7 +464,7 @@ void UI::drawPanel(int panelX, const std::string& boxName, int boxIdx,
 
             const auto& sd = displays[slot];
 
-            bool isCursor = isActive && cursor_.col == col && cursor_.row == row;
+            bool isCursor = isActive && cursor_.col == col && cursor_.row == row && partyCursor_ < 0;
             int selOrder = 0;
             if (!selectedSlots_.empty()
                 && panelId == selectedPanel_ && box == selectedBox_) {
