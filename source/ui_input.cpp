@@ -356,19 +356,7 @@ void UI::handleDetailInput(const SDL_Event& event) {
                 showDetail_ = false;
                 detailParty_ = -1;
                 break;
-            case SDL_CONTROLLER_BUTTON_Y: { // Switch X — export (alias di +)
-                if (partyRO) break;
-                Pokemon pkm = getPokemonAt(cursor_.box, cursor_.slot(gridCols()), cursor_.panel);
-                if (!pkm.isEmpty()) {
-                    std::string name = exportPokemon(pkm);
-                    if (!name.empty())
-                        showMessageAndWait(i18n::get(StrKey::Exported), name);
-                    else
-                        showMessageAndWait(i18n::get(StrKey::ExportFailed), i18n::get(StrKey::CouldNotWrite));
-                }
-                break;
-            }
-            case SDL_CONTROLLER_BUTTON_START: { // Switch + — export
+            case SDL_CONTROLLER_BUTTON_START: { // Switch + — export (unico)
                 if (partyRO) break;
                 Pokemon pkm = getPokemonAt(cursor_.box, cursor_.slot(gridCols()), cursor_.panel);
                 if (!pkm.isEmpty()) {
