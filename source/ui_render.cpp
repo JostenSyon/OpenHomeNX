@@ -492,6 +492,31 @@ void UI::drawFrame() {
     }
     drawStatusBar(statusMsg);
 
+    // DS identity strip: OT + party minis in the status bar when idle, so two
+    // saves of the same game are distinguishable. Self-hiding (dsParty/dsOT
+    // are only filled for DS saves) and clear of the gold label on the right.
+    {
+        bool idleStrip = !holding_ && selectedSlots_.empty() && !yHeld_ && !yDragActive_ &&
+                         !isDualBankMode() && !save_.dsOtName().empty();
+        if (idleStrip) {
+            std::string ot = "  ·  OT " + save_.dsOtName() + " " + std::to_string(save_.dsTid());
+            int tw = getTextEntry(statusMsg, fontSmall_, T().statusText).w;
+            drawText(ot, 15 + tw, SCREEN_H - 26, T().textDim, fontSmall_);
+            int ow = getTextEntry(ot, fontSmall_, T().textDim).w;
+            int x = 15 + tw + ow + 12;
+            for (const auto& p : save_.dsParty()) {
+                if (p.isEmpty())
+                    continue;
+                SDL_Texture* spr = getSprite(p.species(), p.form());
+                if (spr && x + 26 < SCREEN_W - 300) {
+                    SDL_Rect dst = {x, SCREEN_H - 32, 26, 26};
+                    SDL_RenderCopy(renderer_, spr, nullptr, &dst);
+                }
+                x += 28;
+            }
+        }
+    }
+
     // Profile | Game name | Core (bottom right, gold)
     {
         std::string label;

@@ -28,6 +28,11 @@ public:
     uint8_t dsRomCode() const { return dsRomCode_; }
     // Gen5 PlayerData.Game byte (20 = White, 21 = Black), 0 if N/A.
     uint8_t dsGameByte() const { return dsGameByte_; }
+    // DS save identity for the status-bar strip (OT/TID/party). Empty for
+    // every other game family — the strip hides itself.
+    const std::vector<Pokemon>& dsParty() const { return dsParty_; }
+    const std::string& dsOtName() const { return dsOtName_; }
+    uint16_t dsTid() const { return dsTid_; }
 
     Pokemon getBoxSlot(int box, int slot) const;
     void setBoxSlot(int box, int slot, Pokemon pkm);
@@ -242,6 +247,9 @@ private:
     Ds4Layout ds4Layout_ = Ds4Layout::DP;
     uint8_t dsRomCode_ = 0;
     uint8_t dsGameByte_ = 0;
+    std::vector<Pokemon> dsParty_;
+    std::string dsOtName_;
+    uint16_t dsTid_ = 0;
 
     static bool isBDSPSize(size_t size);
 

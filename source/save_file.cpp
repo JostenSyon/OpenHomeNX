@@ -1490,8 +1490,33 @@ bool SaveFile::loadGBA(const std::string& path) {
         valid[slot] = (bitTrack == 0x3FFF); // all 14 sectors present
     }
 
-    if (!valid[0] && !valid[1])
+    if (!valid[0] && !valid[1]) {
+        // Diagnosi remota: bitTrack + primi ID settore per slot, così dal
+        // log si capisce il layout (emulatori alternativi, overdump...).
+        std::string detail;
+        for (int slot = 0; slot < 2; slot++) {
+            int slotBase = slot * GBA_SECTOR_COUNT * GBA_SECTOR_SIZE;
+            int bitTrack = 0;
+            std::string ids;
+            for (int i = 0; i < GBA_SECTOR_COUNT; i++) {
+                int sectorOfs = slotBase + i * GBA_SECTOR_SIZE;
+                uint16_t id = readU16LE(rawData_.data() + sectorOfs + GBA_OFS_SECTOR_ID);
+                if (id < GBA_SECTOR_COUNT)
+                    bitTrack |= (1 << id);
+                if (i < 4) {
+                    char b[8];
+                    std::snprintf(b, sizeof(b), "%04x ", id);
+                    ids += b;
+                }
+            }
+            char b[64];
+            std::snprintf(b, sizeof(b), "slot%d track=%04x ids=%s", slot, bitTrack, ids.c_str());
+            if (!detail.empty()) detail += " ";
+            detail += b;
+        }
+        DebugLog::line("loadGBA: %s -> settori invalidi (%s)", path.c_str(), detail.c_str());
         return false;
+    }
     if (!valid[0]) gbaActiveSlot_ = 1;
     else if (!valid[1]) gbaActiveSlot_ = 0;
     else gbaActiveSlot_ = (counter[1] > counter[0]) ? 1 : 0;
@@ -1766,6 +1791,32 @@ bool SaveFile::loadDS4(const std::string& path) {
     boxDataLen_ = dsStorage_.size();
     boxLayoutData_ = nullptr; // TODO v2: nomi box (Gen4 codec via FFI)
     boxLayoutLen_ = 0;
+    // Identity strip: OT/TID + decrypted party from the General block.
+    dsParty_.clear();
+    dsOtName_.clear();
+    dsTid_ = 0;
+    {
+        size_t gBase = static_cast<size_t>(bestPart) * DS_PARTITION;
+        int trainer1 = (best->id == Ds4Layout::PT) ? 0x68 : 0x64;
+        int party = (best->id == Ds4Layout::PT) ? 0xA0 : 0x98;
+        const uint8_t* gBlk = rawData_.data() + gBase;
+        uint16_t codes[8];
+        for (int i = 0; i < 8; i++)
+            codes[i] = readU16LE(gBlk + trainer1 + i * 2);
+        dsOtName_ = OpenHomeNX::gen4DecodeString(codes, 8);
+        dsTid_ = readU16LE(gBlk + trainer1 + 0x10);
+        int count = gBlk[party - 4];
+        if (count > 6) count = 6;
+        for (int i = 0; i < count; i++) {
+            Pokemon p;
+            p.gameType_ = gameType_;
+            p.loadFromEncrypted(gBlk + party + i * 236, 236);
+            if (!p.isEmpty())
+                dsParty_.push_back(p);
+        }
+        DebugLog::line("loadDS4: %s -> OT '%s' TID %u party %zu",
+                       path.c_str(), dsOtName_.c_str(), dsTid_, dsParty_.size());
+    }
     loaded_ = true;
     return true;
 }
@@ -1840,6 +1891,41 @@ bool SaveFile::loadDS5(const std::string& path) {
                    game == 20 ? "White" : game == 21 ? "Black" : game == 22 ? "White2" : "Black2",
                    validSlots);
     dsGameByte_ = game;
+    // Identity strip: OT (direct UTF-16LE, FFFF-terminated) + party.
+    dsParty_.clear();
+    dsOtName_.clear();
+    dsTid_ = 0;
+    {
+        const uint8_t* pBlk = rawData_.data() + 0x19400;
+        std::string ot;
+        for (int i = 0; i < 8; i++) {
+            uint16_t ch = readU16LE(pBlk + 4 + i * 2);
+            if (ch == 0xFFFF || ch == 0)
+                break;
+            if (ch < 0x80) ot += static_cast<char>(ch);
+            else if (ch < 0x800) {
+                ot += static_cast<char>(0xC0 | (ch >> 6));
+                ot += static_cast<char>(0x80 | (ch & 0x3F));
+            } else {
+                ot += static_cast<char>(0xE0 | (ch >> 12));
+                ot += static_cast<char>(0x80 | ((ch >> 6) & 0x3F));
+                ot += static_cast<char>(0x80 | (ch & 0x3F));
+            }
+        }
+        dsOtName_ = ot;
+        dsTid_ = readU16LE(pBlk + 0x14);
+        int count = rawData_[0x18E04];
+        if (count > 6) count = 6;
+        for (int i = 0; i < count; i++) {
+            Pokemon p;
+            p.gameType_ = gameType_;
+            p.loadFromEncrypted(rawData_.data() + 0x18E08 + i * 220, 220);
+            if (!p.isEmpty())
+                dsParty_.push_back(p);
+        }
+        DebugLog::line("loadDS5: %s -> OT '%s' TID %u party %zu",
+                       path.c_str(), dsOtName_.c_str(), dsTid_, dsParty_.size());
+    }
     boxData_ = dsStorage_.data();
     boxDataLen_ = dsStorage_.size();
     boxLayoutData_ = nullptr; // TODO v2: nomi box (blocco 0) + party
