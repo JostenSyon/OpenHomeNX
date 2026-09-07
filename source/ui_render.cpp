@@ -372,6 +372,39 @@ void UI::drawPanel(int panelX, const std::string& boxName, int boxIdx,
 
     // Box name header with arrows
     SDL_Color hdrColor = isActive ? T().boxName : T().textDim;
+    // DS identity strip: OT + party minis in the header row (no grid change).
+    // Only for saves that carry it (dsOtName_); every other game keeps the
+    // classic centered header.
+    bool showDsStrip = save && !save->dsOtName().empty();
+    if (showDsStrip) {
+        drawTextCentered("<", panelX + 20, BOX_HDR_Y + BOX_HDR_H / 2, T().arrow, font_);
+        std::string left = boxName + " (" + std::to_string(boxIdx + 1) + "/" + std::to_string(totalBoxes) + ")";
+        left += " · OT " + save->dsOtName();
+        int maxLeftW = PANEL_W - 80 - 180; // room for minis + arrows
+        int tw = getTextEntry(left, fontSmall_, hdrColor).w;
+        if (tw > maxLeftW) {
+            while (left.size() > 5 && tw > maxLeftW) {
+                left = left.substr(0, left.size() - 5) + "(..)";
+                tw = getTextEntry(left, fontSmall_, hdrColor).w;
+            }
+        }
+        drawText(left, panelX + 45, BOX_HDR_Y + BOX_HDR_H / 2 - 8, hdrColor, fontSmall_);
+        int mx = panelX + PANEL_W - 45;
+        int shown = 0;
+        for (auto it = save->dsParty().rbegin(); it != save->dsParty().rend() && shown < 6; ++it) {
+            if (it->isEmpty())
+                continue;
+            SDL_Texture* spr = getSprite(it->species(), it->form());
+            mx -= 26;
+            if (spr) {
+                SDL_Rect dst = {mx, BOX_HDR_Y + (BOX_HDR_H - 24) / 2, 24, 24};
+                SDL_RenderCopy(renderer_, spr, nullptr, &dst);
+            }
+            mx -= 4;
+            shown++;
+        }
+        drawTextCentered(">", panelX + PANEL_W - 20, BOX_HDR_Y + BOX_HDR_H / 2, T().arrow, font_);
+    } else {
     drawTextCentered("<", panelX + 20, BOX_HDR_Y + BOX_HDR_H / 2, T().arrow, font_);
     std::string hdrText = boxName + " (" + std::to_string(boxIdx + 1) + "/" + std::to_string(totalBoxes) + ")";
     // Truncate if too wide for panel (leave room for arrows)
@@ -385,6 +418,7 @@ void UI::drawPanel(int panelX, const std::string& boxName, int boxIdx,
     }
     drawTextCentered(hdrText, panelX + PANEL_W / 2, BOX_HDR_Y + BOX_HDR_H / 2, hdrColor, font_);
     drawTextCentered(">", panelX + PANEL_W - 20, BOX_HDR_Y + BOX_HDR_H / 2, T().arrow, font_);
+    } // else (classic header)
 
     // Grid: dynamic columns x 5 rows, sized from THIS panel's own source.
     int cols = gridColsFor(panelId);
@@ -491,31 +525,6 @@ void UI::drawFrame() {
                     positionPreserve_ ? i18n::get(StrKey::KeepPositions) : "");
     }
     drawStatusBar(statusMsg);
-
-    // DS identity strip: OT + party minis in the status bar when idle, so two
-    // saves of the same game are distinguishable. Self-hiding (dsParty/dsOT
-    // are only filled for DS saves) and clear of the gold label on the right.
-    {
-        bool idleStrip = !holding_ && selectedSlots_.empty() && !yHeld_ && !yDragActive_ &&
-                         !isDualBankMode() && !save_.dsOtName().empty();
-        if (idleStrip) {
-            std::string ot = "  ·  OT " + save_.dsOtName() + " " + std::to_string(save_.dsTid());
-            int tw = getTextEntry(statusMsg, fontSmall_, T().statusText).w;
-            drawText(ot, 15 + tw, SCREEN_H - 26, T().textDim, fontSmall_);
-            int ow = getTextEntry(ot, fontSmall_, T().textDim).w;
-            int x = 15 + tw + ow + 12;
-            for (const auto& p : save_.dsParty()) {
-                if (p.isEmpty())
-                    continue;
-                SDL_Texture* spr = getSprite(p.species(), p.form());
-                if (spr && x + 26 < SCREEN_W - 300) {
-                    SDL_Rect dst = {x, SCREEN_H - 32, 26, 26};
-                    SDL_RenderCopy(renderer_, spr, nullptr, &dst);
-                }
-                x += 28;
-            }
-        }
-    }
 
     // Profile | Game name | Core (bottom right, gold)
     {
