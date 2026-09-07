@@ -53,25 +53,46 @@ bool SaveFile::load(const std::string& path) {
     if (saveHandleRust_)
         saveHandleRust_.reset();
 
+    bool ok = false;
     if (isFRLG(gameType_) || isImportedFile(gameType_))
-        return loadGBA(path);
-    if (isGen1File(gameType_))
-        return loadGB(path);
-    if (isGen2File(gameType_))
-        return loadGBC(path);
-    if (isGen4File(gameType_))
-        return loadDS4(path);
-    if (isGen5File(gameType_))
-        return loadDS5(path);
-    if (isGen6XY(gameType_))
-        return loadDXY(path);
-    if (isGen7SM(gameType_))
-        return loadDSM(path);
-    if (isBDSP(gameType_))
-        return loadBDSP(path);
-    if (isLGPE(gameType_))
-        return loadLGPE(path);
-    return loadSCBlock(path);
+        ok = loadGBA(path);
+    else if (isGen1File(gameType_))
+        ok = loadGB(path);
+    else if (isGen2File(gameType_))
+        ok = loadGBC(path);
+    else if (isGen4File(gameType_))
+        ok = loadDS4(path);
+    else if (isGen5File(gameType_))
+        ok = loadDS5(path);
+    else if (isGen6XY(gameType_))
+        ok = loadDXY(path);
+    else if (isGen7SM(gameType_))
+        ok = loadDSM(path);
+    else if (isBDSP(gameType_))
+        ok = loadBDSP(path);
+    else if (isLGPE(gameType_))
+        ok = loadLGPE(path);
+    else
+        ok = loadSCBlock(path);
+
+    // Fallback party = first up-to-6 box mons. Non ottimizzato (scansione
+    // lineare su boxData) ma fa funzionare subito Switch/GBA senza party block
+    // dedicato; poi si ottimizza con cache/decodifica diretta se serve.
+    if (ok && dsParty_.empty() && boxData_ && boxDataLen_ > 0) {
+        // GBA/DS hanno già party dedicato e non arriverebbero qui (già riempito).
+        // Per Switch/SCBlock e per i casi vuoti, mostra un'anteprima utile.
+        int need = 6;
+        for (int b = 0; b < boxCount_ && (int)dsParty_.size() < need; ++b) {
+            for (int s = 0; s < slotsPerBox_ && (int)dsParty_.size() < need; ++s) {
+                Pokemon p = getBoxSlot(b, s);
+                if (!p.isEmpty())
+                    dsParty_.push_back(p);
+            }
+        }
+        if (!dsParty_.empty())
+            DebugLog::line("load: %s -> fallback party %zu da box", path.c_str(), dsParty_.size());
+    }
+    return ok;
 }
 
 bool SaveFile::save(const std::string& path) {
