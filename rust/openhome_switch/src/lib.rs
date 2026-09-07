@@ -2622,6 +2622,48 @@ mod tests {
         openhome_free_pkm(loaded);
     }
 
+    // Real ENCRYPTED Gen5 box slots from the user's Black save: Tepig,
+    // Lillipup and Patrat decrypt with valid checksum; Tepig transfers to
+    // Gen 6 (dex-cut refuses Gen 4: 498 > 493) keeping species and OT.
+    #[test]
+    fn load_real_bw_slots_tepig_to_gen6() {
+        for (file, species) in [
+            ("bw_box0_slot0_tepig", 498u16),
+            ("bw_box0_slot1_lillipup", 506u16),
+            ("bw_box0_slot2_patrat", 504u16),
+        ] {
+            let raw: &[u8] = match file {
+                "bw_box0_slot0_tepig" => {
+                    include_bytes!("../../../tools/test save/upstream/bw_box0_slot0_tepig.pk5")
+                }
+                "bw_box0_slot1_lillipup" => {
+                    include_bytes!("../../../tools/test save/upstream/bw_box0_slot1_lillipup.pk5")
+                }
+                _ => {
+                    include_bytes!("../../../tools/test save/upstream/bw_box0_slot2_patrat.pk5")
+                }
+            };
+            let pk = pkm_rs::gen5::Pk5::from_bytes(raw)
+                .unwrap_or_else(|_| panic!("{} must decrypt and parse", file));
+            assert_eq!(pk.national_dex, species, "{}", file);
+            assert_eq!(pk.calculate_checksum(), pk.checksum, "{}", file);
+        }
+        let raw = include_bytes!("../../../tools/test save/upstream/bw_box0_slot0_tepig.pk5");
+        let loaded = openhome_load_pkm_from_gen(raw.as_ptr(), raw.len(), 5);
+        assert!(!loaded.is_null(), "valid Tepig must load");
+        let back = unsafe { &*loaded };
+        let ot = alloc::string::String::from(&back.ohpkm.trainer_name());
+        assert_eq!(ot, "STEFANO");
+        let out4 = openhome_transfer_pkm(loaded, 4);
+        assert!(out4.is_null(), "Tepig (498) must fail Gen 4 dex-cut");
+        let out6 = openhome_transfer_pkm(loaded, 6);
+        openhome_free_pkm(loaded);
+        assert!(!out6.is_null(), "Tepig must convert to Gen 6");
+        let back6 = unsafe { &*out6 };
+        assert_eq!(back6.ohpkm.species_and_form().get_ndex() as u16, 498);
+        openhome_free_pkm(out6);
+    }
+
     // Real-file regression: upstream Ditto.pk5 (Transform only) converts to
     // Gen 4 with its single move intact.
     #[test]
