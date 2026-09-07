@@ -430,6 +430,10 @@ void UI::showWorking(const std::string& msg) {
 void UI::run(const std::string& basePath, const std::string& savePath) {
     basePath_ = basePath;
     savePath_ = savePath;
+    uint32_t runT0 = SDL_GetTicks();
+    auto runMark = [&](const char* what) {
+        DebugLog::line("boot: +%ums %s", SDL_GetTicks() - runT0, what);
+    };
 
     // Consolidate a pending self-update before anything else, so a launch from
     // hbmenu/forwarder always ends up on the freshly installed .nro. When it
@@ -494,19 +498,26 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
         fillPresentGames();
         refreshBankCounts();
         showWorking(i18n::get(StrKey::LoadingGameIcons));
+        runMark("prima icone");
         loadGameIcons();
+        runMark("icone pronte");
         showMessageAndWait(i18n::get(StrKey::AppletTitle),
             i18n::get(StrKey::AppletBody));
     } else {
         showWorking(i18n::get(StrKey::LoadingProfiles));
+        runMark("prima profili");
         if (account_.init() && account_.loadProfiles(renderer_)) {
+            runMark("profili pronti");
             screen_ = AppScreen::ProfileSelector;
         } else {
+            runMark("no profili");
             screen_ = AppScreen::GameSelector;
             fillPresentGames();
             refreshBankCounts();
             showWorking(i18n::get(StrKey::LoadingGameIcons));
+            runMark("prima icone");
             loadGameIcons();
+            runMark("icone pronte");
         }
     }
 
@@ -625,6 +636,39 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
                 handleFolderBrowserInput(event);
             }
             if (!showFolderBrowser_) continue; // dismissed — let main draw section handle it
+            // Hold-repeat for DPad (physical state) and left stick: initial
+            // 400ms, then 70ms steps, so long lists scroll fast.
+            {
+                uint32_t now = SDL_GetTicks();
+                int holdDir = 0;
+                if (SDL_GameControllerGetButton(pad_, SDL_CONTROLLER_BUTTON_DPAD_DOWN)) holdDir = 1;
+                else if (SDL_GameControllerGetButton(pad_, SDL_CONTROLLER_BUTTON_DPAD_UP)) holdDir = -1;
+                int stickDir = 0;
+                if (holdDir == 0 && pad_) {
+                    int16_t ly = SDL_GameControllerGetAxis(pad_, SDL_CONTROLLER_AXIS_LEFTY);
+                    if (ly > 12000) stickDir = 1;
+                    else if (ly < -12000) stickDir = -1;
+                }
+                int dir = (holdDir != 0) ? holdDir : stickDir;
+                if (dir == 0) {
+                    folderRepeatDir_ = 0;
+                    folderRepeatFast_ = false;
+                } else {
+                    if (folderRepeatDir_ == 0) {
+                        folderRepeatDir_ = dir;
+                        folderRepeatTime_ = now;
+                        folderRepeatFast_ = false;
+                    }
+                    if (dir == folderRepeatDir_) {
+                        uint32_t delay = folderRepeatFast_ ? 70 : 400;
+                        if (now - folderRepeatTime_ >= delay) {
+                            folderMoveCursor(dir);
+                            folderRepeatTime_ = now;
+                            folderRepeatFast_ = true;
+                        }
+                    }
+                }
+            }
             if (theme_ != lastTheme_) { clearTextCache(); lastTheme_ = theme_; }
             if (screen_ == AppScreen::ProfileSelector) drawProfileSelectorFrame();
             else if (screen_ == AppScreen::GameSelector) {

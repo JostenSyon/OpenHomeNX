@@ -238,12 +238,19 @@ private:
     // Folder browser state (opened from "+ Add path..."): pick a directory
     // to scan instead of typing it via swkbd. Empty folderBrowserPath_ =
     // roots view (sdmc:/ + mounted umsN:/); otherwise a path with trailing
-    // '/'. Entries are subdirectory names, sorted.
+    // '/'. Entries are subdirectories (selectable) plus files (shown dimmed
+    // for orientation, not selectable), sorted dirs-first.
     bool showFolderBrowser_ = false;
     std::string folderBrowserPath_;
-    std::vector<std::string> folderEntries_;
+    struct FolderEntry { std::string name; bool isDir; };
+    std::vector<FolderEntry> folderEntries_;
     int folderCursor_  = 0;
     int folderScroll_  = 0;
+    // DPad/stick hold-repeat state (single BUTTONDOWN would crawl otherwise).
+    int folderRepeatDir_ = 0; // -1/0/+1
+    uint32_t folderRepeatTime_ = 0;
+    bool folderRepeatFast_ = false;
+    void folderMoveCursor(int dir);
     void openFolderBrowser();
     void refreshFolderEntries();
     void handleFolderBrowserInput(const SDL_Event& event);

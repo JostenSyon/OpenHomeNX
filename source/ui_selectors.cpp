@@ -314,7 +314,7 @@ void UI::refreshFolderEntries() {
     folderScroll_ = 0;
     if (folderBrowserPath_.empty()) {
         // Roots: SD always, USB devices when mounted.
-        folderEntries_.push_back("sdmc:/");
+        folderEntries_.push_back({"sdmc:/", true});
 #ifdef OH_USB_UPDATE
         u32 n = usbHsFsGetMountedDeviceCount();
         if (n > 8) n = 8;
@@ -324,71 +324,87 @@ void UI::refreshFolderEntries() {
             for (u32 i = 0; i < got; i++) {
                 std::string name = devs[i].name;
                 if (!name.empty() && name.back() != '/') name += '/';
-                if (!name.empty()) folderEntries_.push_back(name);
+                if (!name.empty()) folderEntries_.push_back({name, true});
             }
         }
 #endif
         return;
     }
     DIR* d = opendir(folderBrowserPath_.c_str());
-    if (!d) {
-        folderEntries_.push_back("..");
+    if (!d)
         return;
-    }
     struct dirent* entry;
     while ((entry = readdir(d)) != nullptr) {
         if (entry->d_name[0] == '.')
             continue;
         std::string full = folderBrowserPath_ + entry->d_name;
         struct stat st;
-        if (stat(full.c_str(), &st) != 0 || !S_ISDIR(st.st_mode))
-            continue; // files are not selectable
-        folderEntries_.push_back(entry->d_name);
+        if (stat(full.c_str(), &st) != 0)
+            continue;
+        folderEntries_.push_back({entry->d_name, S_ISDIR(st.st_mode) != 0});
     }
     closedir(d);
-    std::sort(folderEntries_.begin(), folderEntries_.end());
+    std::sort(folderEntries_.begin(), folderEntries_.end(),
+              [](const FolderEntry& a, const FolderEntry& b) {
+                  if (a.isDir != b.isDir) return a.isDir > b.isDir;
+                  return a.name < b.name;
+              });
+}
+
+void UI::folderMoveCursor(int dir) {
+    int count = static_cast<int>(folderEntries_.size());
+    if (count <= 0) return;
+    folderCursor_ += dir;
+    if (folderCursor_ < 0) folderCursor_ = count - 1;
+    if (folderCursor_ >= count) folderCursor_ = 0;
+    constexpr int VISIBLE = 10; // matches drawFolderBrowserPopup
+    if (folderCursor_ < folderScroll_)
+        folderScroll_ = folderCursor_;
+    else if (folderCursor_ >= folderScroll_ + VISIBLE)
+        folderScroll_ = folderCursor_ - VISIBLE + 1;
+    if (folderScroll_ < 0) folderScroll_ = 0;
+    markDirty();
 }
 
 void UI::handleFolderBrowserInput(const SDL_Event& event) {
+    if (event.type == SDL_CONTROLLERBUTTONUP) {
+        // Stop hold-repeat when the repeated direction is released.
+        auto btn = event.cbutton.button;
+        if ((folderRepeatDir_ < 0 && btn == SDL_CONTROLLER_BUTTON_DPAD_UP) ||
+            (folderRepeatDir_ > 0 && btn == SDL_CONTROLLER_BUTTON_DPAD_DOWN))
+            folderRepeatDir_ = 0;
+        return;
+    }
     if (event.type != SDL_CONTROLLERBUTTONDOWN)
         return;
     int count = static_cast<int>(folderEntries_.size());
-    auto scrollIntoView = [&](int visibleRows) {
-        if (folderCursor_ < folderScroll_)
-            folderScroll_ = folderCursor_;
-        else if (folderCursor_ >= folderScroll_ + visibleRows)
-            folderScroll_ = folderCursor_ - visibleRows + 1;
-        if (folderScroll_ < 0) folderScroll_ = 0;
-    };
-    constexpr int VISIBLE = 10;
     switch (event.cbutton.button) {
         case SDL_CONTROLLER_BUTTON_DPAD_UP:
-            if (count > 0) {
-                folderCursor_ = (folderCursor_ + count - 1) % count;
-                scrollIntoView(VISIBLE);
-            }
-            markDirty();
+            folderMoveCursor(-1);
+            folderRepeatDir_ = -1;
+            folderRepeatTime_ = SDL_GetTicks();
+            folderRepeatFast_ = false;
             break;
         case SDL_CONTROLLER_BUTTON_DPAD_DOWN:
-            if (count > 0) {
-                folderCursor_ = (folderCursor_ + 1) % count;
-                scrollIntoView(VISIBLE);
-            }
-            markDirty();
+            folderMoveCursor(1);
+            folderRepeatDir_ = 1;
+            folderRepeatTime_ = SDL_GetTicks();
+            folderRepeatFast_ = false;
             break;
         case SDL_CONTROLLER_BUTTON_A: // Switch B = cancel
             showFolderBrowser_ = false;
+            folderRepeatDir_ = 0;
             markDirty();
             break;
-        case SDL_CONTROLLER_BUTTON_B: // Switch A = enter / go up
+        case SDL_CONTROLLER_BUTTON_B: // Switch A = enter dir (files ignored)
             if (folderBrowserPath_.empty()) {
                 // Roots view: enter the selected root.
                 if (count > 0) {
-                    folderBrowserPath_ = folderEntries_[folderCursor_];
+                    folderBrowserPath_ = folderEntries_[folderCursor_].name;
                     refreshFolderEntries();
                 }
-            } else if (count > 0) {
-                std::string next = folderBrowserPath_ + folderEntries_[folderCursor_] + "/";
+            } else if (count > 0 && folderEntries_[folderCursor_].isDir) {
+                std::string next = folderBrowserPath_ + folderEntries_[folderCursor_].name + "/";
                 DIR* probe = opendir(next.c_str());
                 if (probe) {
                     closedir(probe);
@@ -396,6 +412,7 @@ void UI::handleFolderBrowserInput(const SDL_Event& event) {
                     refreshFolderEntries();
                 }
             }
+            folderRepeatDir_ = 0;
             markDirty();
             break;
         case SDL_CONTROLLER_BUTTON_Y: // Switch X = up one level

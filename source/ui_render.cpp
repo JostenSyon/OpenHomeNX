@@ -1187,10 +1187,13 @@ void UI::drawFolderBrowserPopup() {
                 drawRect(popX + 20, rowY, POP_W - 40, ROW_H - 4, T().menuHighlight);
                 drawRectOutline(popX + 20, rowY, POP_W - 40, ROW_H - 4, T().cursor, 2);
             }
-            std::string name = folderEntries_[idx];
-            if (!folderBrowserPath_.empty() && name.back() != '/') name += "/";
+            const auto& e = folderEntries_[idx];
+            std::string name = e.name;
+            if (!folderBrowserPath_.empty() && e.isDir && name.back() != '/') name += "/";
             if (name.size() > 58) name = name.substr(0, 55) + "...";
-            drawText(name, popX + 30, rowY + (ROW_H - 4) / 2 - 9, T().text, font_);
+            // Files shown dimmed for orientation; only dirs are enterable.
+            drawText(name, popX + 30, rowY + (ROW_H - 4) / 2 - 9,
+                     e.isDir ? T().text : T().textDim, font_);
         }
     }
 

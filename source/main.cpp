@@ -62,10 +62,15 @@ int main(int argc, char* argv[]) {
     }
 
     UI ui;
+    uint32_t bootT0 = SDL_GetTicks();
+    auto bootMark = [&](const char* what) {
+        DebugLog::line("boot: +%ums %s", SDL_GetTicks() - bootT0, what);
+    };
     if (!ui.init()) {
         romfsExit();
         return 1;
     }
+    bootMark("ui.init");
 
     if (pendingUpdate && ui.tryUpdateBounce(basePath)) {
         ui.shutdown();
@@ -172,6 +177,7 @@ int main(int argc, char* argv[]) {
     NatureName::load("romfs:/data/natures_en.txt");
     AbilityName::load("romfs:/data/abilities_en.txt");
     ItemName::load("romfs:/data/items_en.txt");
+    bootMark("nomi caricati");
 
     // Detect applet mode on Switch — bank-only access without save data
     {
@@ -182,6 +188,7 @@ int main(int argc, char* argv[]) {
 
     // Everything is ready: fade the splash out straight into the app.
     ui.showSplash(0, true);
+    bootMark("splash off, run");
 
     // Run main loop — game selection, bank selection, and save loading all handled inside
     ui.run(basePath, savePath);
