@@ -35,13 +35,40 @@ bool SaveFile::load(const std::string& path) {
     loaded_ = false;
     dirty_ = false;   // fresh state; the load* helpers write buffers directly, not via the marked mutators
     boxData_ = nullptr;
+    boxDataLen_ = 0;
     boxLayoutData_ = nullptr;
+    boxLayoutLen_ = 0;
     // Identity strip (header OT + party) must not survive across game switches
     // — the “party of Red seen on Sword” bug was exactly this stale state.
     dsParty_.clear();
     dsOtName_.clear();
     dsTid_ = 0;
     invalidateAllBoxCache();
+    // Full per-family reset: SaveFile is reused across game switches and EVERY
+    // stale buffer misroutes the next game's writes. Proven by the lost-Rhyhorn
+    // bug (Sword blocks_ survived into an LGPE load → setPartySlot wrote the
+    // LGPE party into the dead Sword SCBlock → edits silently lost on save).
+    blocks_.clear();
+    rawData_.clear();
+    originalFileData_.clear();
+    dsStorage_.clear();
+    ds4Layout_ = Ds4Layout::DP;
+    dsRomCode_ = 0;
+    dsGameByte_ = 0;
+    gbaStorage_.clear();
+    gbaActiveSlot_ = 0;
+    gbaXtra_.clear();
+    gbaXtraAtEnd_ = true;
+    lgpePartyIndices_.fill(LGPE_SLOT_EMPTY);
+    lgpePartyCount_ = 0;
+    gbStorage_.clear();
+    gbStoredOrig_.clear();
+    for (bool& t : gbBoxTrusted_) t = false;
+    gbcStorage_.clear();
+    gbcStoredOrig_.clear();
+    for (bool& t : gbcBoxTrusted_) t = false;
+    gbcIsCrystal_ = false;
+    gbcBoxNamesBase_ = -1;
 
     DebugLog::line("load: path=%s gameType=%d engine=%s",
                    path.c_str(), (int)gameType_, useOpenHome() ? "OH" : "PK");
@@ -451,8 +478,14 @@ void SaveFile::setPartySlot(int idx, const Pokemon& pkm) {
     toWrite.gameType_ = gameType_;
     DebugLog::line("setPartySlot idx %d %s (%u) %s", idx, toWrite.displayName().c_str(), toWrite.species(), toWrite.isEmpty()?"empty":"");
     if ((int)dsParty_.size() != 6) dsParty_.assign(6, Pokemon{});
-    // Persist to underlying storage per family — block index == party index
-    if (!blocks_.empty()) {
+    // Persist to underlying storage per family — block index == party index.
+    // The SCBlock branch is gated on the game REALLY being SCBlock-based, not
+    // just on blocks_ being non-empty: a stale blocks_ from a previous game
+    // used to swallow LGPE/DS writes into a dead block (lost-Rhyhorn bug).
+    // load() clears everything, this gate is the second lock on the door.
+    bool scGame = isSwSh(gameType_) || isSV(gameType_) ||
+                  gameType_ == GameType::LA || gameType_ == GameType::ZA;
+    if (scGame && !blocks_.empty()) {
         uint32_t keys[2] = {0x2985fe5d, 0x3AA1A9AD};
         SCBlock* pb = nullptr;
         for (uint32_t k: keys) { pb = SaveFileFFI::findBlock(blocks_, k); if (pb) break; }
