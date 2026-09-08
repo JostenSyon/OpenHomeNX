@@ -214,7 +214,9 @@ int main(int argc, char* argv[]) {
     // Run main loop — game selection, bank selection, and save loading all handled inside
     ui.run(basePath, savePath);
 
-    // Cleanup
+    // Cleanup — prima il worker update (se mai partito): niente socket/stringhe
+    // toccate durante lo smontaggio rete/USB.
+    autoUpdateJoin();
     ui.shutdown();
     ledExit();
 
