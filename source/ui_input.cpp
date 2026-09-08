@@ -536,30 +536,10 @@ void UI::handleNormalInput(const SDL_Event& event) {
                     refreshHighlightSet();
                 }
                 break;
-            case SDL_CONTROLLER_BUTTON_Y: // Switch X (top) = SDL Y -> detail (grid or party)
+            case SDL_CONTROLLER_BUTTON_Y: // Switch X (top) = SDL Y -> detail only (release moved to -)
             {
                 if (yHeld_) break;
-                if (holding_) {
-                    if (heldFromLGPEParty_) {
-                        showMessageAndWait(i18n::get(StrKey::PartyPokemon),
-                            i18n::get(StrKey::CantReleaseParty));
-                        break;
-                    }
-                    int count = heldMulti_.empty() ? 1 : (int)heldMulti_.size();
-                    std::string msg = i18n::fmt(StrKey::ReleaseMultiConfirm, std::to_string(count));
-                    if (showConfirmDialog(i18n::get(StrKey::ReleasePokemon), msg)) {
-                        heldMulti_.clear();
-                        heldMultiSlots_.clear();
-                        heldPkm_ = Pokemon{};
-                        swapHistory_.clear();
-                        holding_ = false;
-                        positionPreserve_ = false;
-                        heldFromLGPEParty_ = false;
-                        lgpeHeldPartyIdx_ = -1;
-                        heldFromParty_=false; heldPartyIdx_=-1; heldPartyOrig_=-1;
-                        refreshHighlightSet();
-                    }
-                } else {
+                if (!holding_) {
                     // Party row: same Y opens detail for the focused party mon (always viewable)
                     if (partyCursor_ >= 0 && partyCursor_ < (int)save_.dsParty().size()) {
                         const auto& pm = save_.dsParty()[partyCursor_];
@@ -584,8 +564,32 @@ void UI::handleNormalInput(const SDL_Event& event) {
                     menuSelection_ = 0;
                 }
                 break;
-            case SDL_CONTROLLER_BUTTON_BACK: // - (about)
-                if (!yHeld_) showAbout_ = true;
+            case SDL_CONTROLLER_BUTTON_BACK: // - : release held, else about
+                if (!yHeld_) {
+                    if (holding_) {
+                        if (heldFromLGPEParty_) {
+                            showMessageAndWait(i18n::get(StrKey::PartyPokemon),
+                                i18n::get(StrKey::CantReleaseParty));
+                            break;
+                        }
+                        int count = heldMulti_.empty() ? 1 : (int)heldMulti_.size();
+                        std::string msg = i18n::fmt(StrKey::ReleaseMultiConfirm, std::to_string(count));
+                        if (showConfirmDialog(i18n::get(StrKey::ReleasePokemon), msg)) {
+                            heldMulti_.clear();
+                            heldMultiSlots_.clear();
+                            heldPkm_ = Pokemon{};
+                            swapHistory_.clear();
+                            holding_ = false;
+                            positionPreserve_ = false;
+                            heldFromLGPEParty_ = false;
+                            lgpeHeldPartyIdx_ = -1;
+                            heldFromParty_=false; heldPartyIdx_=-1; heldPartyOrig_=-1;
+                            refreshHighlightSet();
+                        }
+                    } else {
+                        showAbout_ = true;
+                    }
+                }
                 break;
             case SDL_CONTROLLER_BUTTON_LEFTSHOULDER:
                 if (!yHeld_) {
