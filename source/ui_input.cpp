@@ -1209,10 +1209,34 @@ bool UI::prepareForPlacement(Pokemon& pkm, Panel panel, std::string& whyNot) con
     if (!pkm.ohpkmBlob_.empty()) {
         const GameType d = destGameFor(panel);
         if (sameStoredFormat(GameType::S, d) && !pkm.data.empty()) {
-            // dest is PK9-shaped: the preview bytes are already correct.
-            pkm.ohpkmBlob_.clear();
-            pkm.gameType_ = d;
-            return true;
+            // Fast path ONLY for faithful previews: the bank shows a stub
+            // preview (EC=1, species only) when no dex accepts the species,
+            // and placing it would land unparseable bytes while dropping the
+            // blob (proven: Violet party mon stuck with gen9 read error).
+            // Parse-test the preview; on failure fall through to the real
+            // transfer below, which refuses dex-cut explicitly with the blob
+            // (and the mon) intact in hand.
+            const int dg0 = ohTargetGenFor(d);
+            bool faithful = false;
+            if (dg0 != 0) {
+                int sz0 = ohRecordBytesFor(dg0);
+                if (sz0 > 0 && sz0 <= (int)pkm.data.size()) {
+                    std::vector<uint8_t> pre(pkm.data.begin(), pkm.data.begin() + sz0);
+                    PkmHandle* th = OpenHomeNX::loadPkmFromGen(pre, static_cast<uint32_t>(dg0));
+                    if (th) {
+                        OpenHomeNX::freePkm(th);
+                        faithful = true;
+                    } else {
+                        DebugLog::line("xfer: stub preview for %s, forcing real transfer",
+                                       gameDisplayNameOf(d));
+                    }
+                }
+            }
+            if (faithful) {
+                pkm.ohpkmBlob_.clear();
+                pkm.gameType_ = d;
+                return true;
+            }
         }
         if (!useOpenHome()) {
             whyNot = i18n::get(StrKey::TransferNeedOh);
@@ -1635,8 +1659,12 @@ void UI::actionSelect() {
         if (target.isEmpty()) {
             // Place on empty — commit, clear history
             setPokemonAt(box, slot, cursor_.panel, heldPkm_);
-            // Update party pointer to follow the Pokemon
-            if (lgpeHeldPartyIdx_ >= 0 && cursor_.panel == Panel::Game) {
+            // Update party pointer to follow the Pokemon — but ONLY for
+            // box-origin holds. A strip-origin hold (heldPartyOrig_ >= 0, set
+            // solely by strip pick) leaving to a box LEAVES the party: the
+            // pointer was already emptied at pick, re-pointing would silently
+            // re-add it (proven: LGPE party->box kept the mini).
+            if (lgpeHeldPartyIdx_ >= 0 && heldPartyOrig_ < 0 && cursor_.panel == Panel::Game) {
                 uint16_t newFlat = static_cast<uint16_t>(
                     box * save_.slotsPerBox() + slot);
                 save_.setLGPEPartyPointer(lgpeHeldPartyIdx_, newFlat);
@@ -1656,8 +1684,9 @@ void UI::actionSelect() {
             swapHistory_.push_back({target, cursor_.panel, box, slot});
             setPokemonAt(box, slot, cursor_.panel, heldPkm_);
 
-            // Update party pointer for the placed Pokemon
-            if (lgpeHeldPartyIdx_ >= 0 && cursor_.panel == Panel::Game) {
+            // Update party pointer for the placed Pokemon (box-origin holds
+            // only — strip-origin holds leave the party, see above).
+            if (lgpeHeldPartyIdx_ >= 0 && heldPartyOrig_ < 0 && cursor_.panel == Panel::Game) {
                 uint16_t newFlat = static_cast<uint16_t>(
                     box * save_.slotsPerBox() + slot);
                 save_.setLGPEPartyPointer(lgpeHeldPartyIdx_, newFlat);
@@ -1665,8 +1694,12 @@ void UI::actionSelect() {
             }
             // Target was a party member but held Pokemon was not (cross-panel swap):
             // the party Pokemon is now held, so invalidate its pointer until placed.
+            // Strip-origin hold swapping with a party cell: that pointer now
+            // legitimately covers the placed mon, so refresh (don't invalidate).
             if (targetPartyIdx >= 0 && lgpeHeldPartyIdx_ < 0) {
                 save_.setLGPEPartyPointer(targetPartyIdx, SaveFile::LGPE_SLOT_EMPTY);
+                save_.refreshPartyEntryFromPointer(targetPartyIdx);
+            } else if (targetPartyIdx >= 0 && heldPartyOrig_ >= 0) {
                 save_.refreshPartyEntryFromPointer(targetPartyIdx);
             }
 

@@ -492,7 +492,16 @@ void SaveFile::setPartySlot(int idx, const Pokemon& pkm) {
     Pokemon toWrite = pkm;
     toWrite.gameType_ = gameType_;
     DebugLog::line("setPartySlot idx %d %s (%u) %s", idx, toWrite.displayName().c_str(), toWrite.species(), toWrite.isEmpty()?"empty":"");
-    if ((int)dsParty_.size() != 6) dsParty_.assign(6, Pokemon{});
+    // Normalize compact vectors (GB/GBA/DS push_back) to fixed-6 WITHOUT
+    // losing content: the old assign(6) wiped every member except the incoming
+    // one (proven by log: LeafGreen party=1 -> clear slot 0 -> party=0 with a
+    // mon still present). Positions preserved, empties padded.
+    if ((int)dsParty_.size() != 6) {
+        std::vector<Pokemon> fixed(6);
+        for (size_t i = 0, j = 0; i < dsParty_.size() && j < 6; i++)
+            if (!dsParty_[i].isEmpty()) fixed[j++] = dsParty_[i];
+        dsParty_ = std::move(fixed);
+    }
     // Persist to underlying storage per family — block index == party index.
     // The SCBlock branch is gated on the game REALLY being SCBlock-based, not
     // just on blocks_ being non-empty: a stale blocks_ from a previous game
