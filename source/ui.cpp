@@ -529,8 +529,9 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
         autoUpdateLogOnceDone();
         // Auto-update al boot: se il thread in parallelo ha trovato una build
         // più recente, lancia il flusso update normale una sola volta quando
-        // siamo nella home giochi (mai durante il boot, mai due volte).
-        if (!autoPrompted_ && screen_ == AppScreen::GameSelector) {
+        // siamo nella home giochi o utenti (mai durante il boot, mai due volte).
+        if (!autoPrompted_ && (screen_ == AppScreen::GameSelector ||
+                               screen_ == AppScreen::ProfileSelector)) {
             std::string newVer;
             if (autoUpdateTakeResult(newVer)) {
                 autoPrompted_ = true;

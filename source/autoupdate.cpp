@@ -17,7 +17,7 @@ alignas(0x1000) static uint8_t s_stack[64 * 1024];
 static Thread s_thread;
 static std::atomic<bool> s_started{false};
 static std::atomic<int> s_state{0}; // 0 idle, 1 working, 2 done
-static std::atomic<int> s_stage{0}; // 0 creato, 1 in fetch, 2 fetch ok, 3 confrontato
+static std::atomic<int> s_stage{0}; // 0 creato, 1 attesa link, 2 in fetch, 3 fetch ok, 4 confrontato
 static std::atomic<bool> s_logged{false};
 static char s_version[32] = {0};
 static char s_err[160] = {0};
@@ -29,7 +29,16 @@ void workerMain(void*) {
     // Niente DebugLog qui (non thread-safe): esito+errore in statici, li
     // logga autoUpdateLogOnceDone() che gira sul main thread. Il main rifà
     // comunque la fetch veloce quando mostra il prompt.
+    // Prima aspetta il LINK vero: socketInitializeDefault riesce molto prima
+    // che il WiFi si associ, e la fetch a boot+3s moriva sempre in silenzio
+    // (mai vista dal server). Timeout ~46s, poi si prova comunque.
     s_stage.store(1, std::memory_order_release);
+    for (int i = 0; i < 23; i++) {
+        if (std::strcmp(updateNetLinkStr(), "OFF") != 0)
+            break;
+        svcSleepThread(2000000000ULL);
+    }
+    s_stage.store(2, std::memory_order_release);
     bool ok = updateNetFetchInfo(s_url, s_token, info, err);
     s_stage.store(2, std::memory_order_release);
     if (ok) {
@@ -38,7 +47,7 @@ void workerMain(void*) {
     } else if (!err.empty()) {
         std::snprintf(s_err, sizeof(s_err), "%s", err.substr(0, sizeof(s_err) - 1).c_str());
     }
-    s_stage.store(3, std::memory_order_release);
+    s_stage.store(4, std::memory_order_release);
     s_state.store(2, std::memory_order_release);
 }
 
