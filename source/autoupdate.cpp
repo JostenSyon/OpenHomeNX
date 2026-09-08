@@ -10,9 +10,10 @@
 
 namespace {
 
-// Stack dedicato al thread (libnx vuole allineamento 16). 64KB: larghi per
-// una fetch curl + parse JSON piatto.
-alignas(16) static uint8_t s_stack[64 * 1024];
+// Stack dedicato al thread. libnx threadCreate esige allineamento a PAGINA
+// (0x1000), non 16: con alignas(16) tornava LibnxError_BadInput (0x1759).
+// 64KB: larghi per una fetch curl + parse JSON piatto.
+alignas(0x1000) static uint8_t s_stack[64 * 1024];
 static Thread s_thread;
 static std::atomic<bool> s_started{false};
 static std::atomic<int> s_state{0}; // 0 idle, 1 working, 2 done
