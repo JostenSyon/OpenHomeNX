@@ -5,6 +5,7 @@
 #include "led.h"
 #include "i18n.h"
 #include "debug_log.h"
+#include "autoupdate.h"
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -524,6 +525,21 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
     bool running = true;
 
     while (running) {
+        // Auto-update al boot: se il thread in parallelo ha trovato una build
+        // più recente, lancia il flusso update normale una sola volta quando
+        // siamo nella home giochi (mai durante il boot, mai due volte).
+        if (!autoPrompted_ && screen_ == AppScreen::GameSelector) {
+            std::string newVer;
+            if (autoUpdateTakeResult(newVer)) {
+                autoPrompted_ = true;
+                DebugLog::line("autoupdate: trovata v%s, apro check", newVer.c_str());
+                markDirty();
+                if (checkForUpdate(false)) {
+                    running = false;
+                    break;
+                }
+            }
+        }
         // About popup intercepts input from any screen
         if (showAbout_) {
             SDL_Event event;

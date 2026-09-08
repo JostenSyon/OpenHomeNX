@@ -13,6 +13,7 @@ namespace {
 // update.cfg accanto all'NRO (o in sdmc:/switch/OpenHomeNX/). Righe key=value:
 //   url=http://192.168.1.50:8000            (radice con latest.json + il .nro)
 //   token=<PAT>                             (solo repo privati, header Bearer)
+//   auto=1                                  (check update in parallelo al boot)
 // Senza `url=` il check update usa le GitHub releases pubbliche
 // (githubReleasesUrl sotto); Send log/save richiedono comunque `url=`
 // (GitHub non riceve upload).

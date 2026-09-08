@@ -454,6 +454,7 @@ private:
     int    gameBox_ = 0;
     int    bankBox_ = 0;
     bool   showDetail_ = false;
+    bool   autoPrompted_ = false; // auto-update boot: prompt mostrato una sola volta
     bool   showMenu_   = false;
     int    menuSelection_ = 0;
     bool   saveNow_    = false;

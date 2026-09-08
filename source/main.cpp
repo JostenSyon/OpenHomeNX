@@ -5,6 +5,8 @@
 #include "debug_log.h"
 #include "account.h"
 #include "update_net.h"
+#include "autoupdate.h"
+#include "app_version.h"
 
 #include <switch.h>
 #include <string>
@@ -97,6 +99,19 @@ int main(int argc, char* argv[]) {
         updateNetSetReady(netReady);
     }
     bootMark("rete");
+
+    // Auto-check update in parallelo (solo se `auto=1` in update.cfg, mai sul
+    // boot-bounce): il thread fa fetch+confronto, il boot continua subito.
+    // Il prompt appare nella home giochi quando il risultato è pronto.
+    {
+        std::string url, token;
+        if (!pendingUpdate && netReady && readUpdateAutoCfg(basePath, url, token)) {
+            if (url.empty())
+                url = githubReleasesUrl("JostenSyon", "OpenHomeNX");
+            DebugLog::line("autoupdate: background check -> %s", url.c_str());
+            autoUpdateStart(url, token, APP_VERSION);
+        }
+    }
 
 #ifdef OH_USB_UPDATE
     // USB Mass Storage host: lets "Check for update" scan an inserted USB drive
