@@ -53,4 +53,5 @@ docs/archive/      documenti storici superati
 
 ## Licenza
 
-Da definire prima della pubblicazione.
+GNU GPL v3 (`LICENSE`). Combina codice GPLv2 (pkHouse) con codice GPL-3.0+
+(OpenHome): l'opera combinata è distribuita sotto GPL v3.
