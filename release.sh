@@ -15,7 +15,7 @@ set -e
 cd "$(dirname "$0")"
 export DEVKITPRO=/opt/devkitpro
 export MAKE=/usr/bin/make
-echo "==> make release (APP_VERSION=$(grep -o 'APP_VERSION :=.*' Makefile | cut -d' ' -f3))"
+echo "==> make release (APP_VERSION=$(grep '^APP_VERSION' Makefile | awk '{print $3}'))"
 MAKE=/usr/bin/make DEVKITPRO=/opt/devkitpro make release
 echo ""
 ls -lh dist/OpenHomeNX.nro dist/latest.json
