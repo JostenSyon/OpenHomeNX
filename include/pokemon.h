@@ -351,6 +351,12 @@ struct Pokemon {
     void refreshChecksum();
     void loadFromEncrypted(const uint8_t* encrypted, size_t len);
     void getEncrypted(uint8_t* outBuf);
+    // PK3 checksum verification on the (already decrypted) buffer: sum of
+    // u16 words 0x20..0x4F vs u16@0x1C (PKHeX PK3.Checksum). The GBA party
+    // scan needs it — decrypt alone accepts garbage (Smeraldo phantoms:
+    // count-0 save -> scan found fake parties in bag/record bytes and the
+    // user zeroed real data picking them). False accept ~1/65536/window.
+    bool pk3ChecksumValid() const;
 
     // Language: byte at format-specific offset
     uint8_t language() const {

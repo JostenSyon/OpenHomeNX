@@ -2134,7 +2134,13 @@ bool SaveFile::loadGBA(const std::string& path) {
                     // party slots are 100B encrypted
                     p.loadFromEncrypted(raw, 100);
                     if (p.isEmpty() || p.species()==0) { ok=false; break; }
-                    // checksum already validated inside loadFromEncrypted via decrypt + species check? Do extra check
+                    // CHECKSUM GATE (Smeraldo 2026-09-08): decrypt alone
+                    // accepts garbage — species after decrypt is ~random, so
+                    // bag/record bytes parsed as phantom party members
+                    // (spc=131/259, EC=3a010080/00000002). A zeroed real
+                    // party then re-scanned onto phantoms, and picking one
+                    // zeroed 600B of real save data. Verify PK3 checksum.
+                    if (!p.pk3ChecksumValid()) { ok=false; break; }
                     // ensure species plausible 1..386 for Gen3
                     if (p.species() > 386) { ok=false; break; }
                 }
@@ -2151,14 +2157,14 @@ bool SaveFile::loadGBA(const std::string& path) {
                 for(int i=0;i<foundCount;i++){
                     Pokemon p; p.gameType_=gameType_;
                     p.loadFromEncrypted(large.data()+foundOff+tryPad+i*100,100);
-                    if(p.isEmpty()) ok=false;
+                    if(p.isEmpty() || !p.pk3ChecksumValid()) ok=false;
                 }
                 if(ok){ pad=tryPad; break;}
             }
             for(int i=0;i<foundCount;i++){
                 Pokemon p; p.gameType_=gameType_;
                 p.loadFromEncrypted(large.data()+foundOff+pad+i*100,100);
-                if(!p.isEmpty()) dsParty_.push_back(p);
+                if(!p.isEmpty() && p.pk3ChecksumValid()) dsParty_.push_back(p);
             }
             gbaPartyLargeOff_ = foundOff;
             gbaPartyPad_ = pad;
