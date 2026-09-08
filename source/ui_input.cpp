@@ -438,7 +438,15 @@ void UI::handleNormalInput(const SDL_Event& event) {
             case SDL_CONTROLLER_BUTTON_B: // Switch A (right) = SDL B -> pick / take
                 if (!yHeld_) {
                     if (partyCursor_ >= 0) {
-                        if (holding_) {
+                        if (!canEditParty()) {
+                            // Sola lettura (no debug, o GB/GBC): dettaglio come Y,
+                            // mano intatta.
+                            Pokemon pm = save_.getPartySlot(partyCursor_);
+                            if (!pm.isEmpty()) {
+                                detailParty_ = partyCursor_;
+                                showDetail_ = true;
+                            }
+                        } else if (holding_) {
                             // Place held mon into party slot (hand stays on strip)
                             Pokemon target = save_.getPartySlot(partyCursor_);
                             if (target.isEmpty()) {
@@ -665,6 +673,17 @@ void UI::handleNormalInput(const SDL_Event& event) {
         }
     }
 
+}
+
+bool UI::canEditParty() const {
+    if (!save_.isLoaded())
+        return false;
+    // GB/GBC: party preservato byte-wise nel file, mai scritto indietro —
+    // editarlo perderebbe dati al save anche in debug. Sola lettura sempre.
+    if (isGbFile(save_.gameType()))
+        return false;
+    // Tutte le altre famiglie: solo con debug attivo (toggle dedicato in futuro).
+    return DebugLog::enabled();
 }
 
 void UI::handleStickRepeat() {

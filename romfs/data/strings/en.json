@@ -266,6 +266,8 @@
 	"sendsave_uploading": "Uploading {0} save ...",
 	"sendsave_sent": "Save sent to the server.",
 	"sendsave_failed": "Upload failed:\n{0}",
+	"save_failed_title": "Save failed",
+	"save_failed_body": "The save was not written (read-only for this generation?). Your in-memory changes are intact.",
 	"sendsave_no_game": "Highlight a game first, then open this menu.",
 	"sendsave_only_imported": "Only imported (file) saves can be sent for now.\nAccount saves come later.",
 	"transfer_title": "Transfer",

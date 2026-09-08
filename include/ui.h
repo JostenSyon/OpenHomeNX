@@ -655,6 +655,10 @@ private:
     Pokemon getPokemonAt(int box, int slot, Panel panel) const;
     void setPokemonAt(int box, int slot, Panel panel, const Pokemon& pkm);
     void clearPokemonAt(int box, int slot, Panel panel);
+    // True se lo strip party accetta pick/posa: solo con debug attivo, mai su
+    // GB/GBC (party preservato byte-wise, senza write-back: editarlo lì
+    // perderebbe dati al save). Toggle dedicato in futuro.
+    bool canEditParty() const;
 
     // M6 transfer-on-drop.
     // Game type whose stored PKM layout a placement into `panel` will use.

@@ -362,6 +362,8 @@ namespace StrKey {
     constexpr const char* SendSaveUploading    = "sendsave_uploading";
     constexpr const char* SendSaveSent         = "sendsave_sent";
     constexpr const char* SendSaveFailed       = "sendsave_failed";
+    constexpr const char* SaveFailedTitle      = "save_failed_title";
+    constexpr const char* SaveFailedBody       = "save_failed_body";
     constexpr const char* SendSaveNoGame       = "sendsave_no_game";
     constexpr const char* SendSaveOnlyImported = "sendsave_only_imported";
 

@@ -1229,7 +1229,12 @@ void UI::persistGameSaveIfDirty() {
         return;
     showWorking(i18n::get(StrKey::Saving));
     ledBlink();
-    save_.save(savePath_);
+    bool ok = save_.save(savePath_);
     account_.commitSave();
     ledOff();
+    // Mai fallimento silenzioso: i save read-only v1 (DS/3DS) e gli errori IO
+    // tornano false — l'utente deve saperlo, i dati in memoria restano intatti.
+    if (!ok)
+        showMessageAndWait(i18n::get(StrKey::SaveFailedTitle),
+                           i18n::get(StrKey::SaveFailedBody));
 }
