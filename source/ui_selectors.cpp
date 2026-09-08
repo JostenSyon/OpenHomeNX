@@ -12,8 +12,10 @@
 namespace {
 // update.cfg accanto all'NRO (o in sdmc:/switch/OpenHomeNX/). Righe key=value:
 //   url=http://192.168.1.50:8000            (radice con latest.json + il .nro)
-//   url=https://github.com/tuo/repo/releases/latest/download
 //   token=<PAT>                             (solo repo privati, header Bearer)
+// Senza `url=` il check update usa le GitHub releases pubbliche
+// (githubReleasesUrl sotto); Send log/save richiedono comunque `url=`
+// (GitHub non riceve upload).
 struct UpdateCfg { std::string url, token; };
 
 bool readUpdateCfg(const std::string& basePath, UpdateCfg& out) {
@@ -1557,32 +1559,37 @@ bool UI::checkForUpdate(bool usbOnly) {
     }
 
     // Layer 1 — sorgente di rete. Solo se nessuna build LOCALE più recente è
-    // già stata trovata (una .nro locale più nuova vince senza toccare la rete)
-    // e solo se update.cfg definisce un url. Mai in modo usbOnly.
+    // già stata trovata (una .nro locale più nuova vince senza toccare la rete).
+    // URL: update.cfg `url=` se presente, altrimenti le release GitHub
+    // pubbliche. Mai in modo usbOnly.
     bool fromNet = false;
     if (!usbOnly && foundCmp <= 0) {
         UpdateCfg cfg;
-        if (readUpdateCfg(basePath_, cfg)) {
-            DebugLog::line("update: cfg url=%s token=%s", cfg.url.c_str(),
+        readUpdateCfg(basePath_, cfg);
+        const std::string netUrl = cfg.url.empty()
+            ? githubReleasesUrl("JostenSyon", "OpenHomeNX")
+            : cfg.url;
+        {
+            DebugLog::line("update: net url=%s token=%s", netUrl.c_str(),
                            cfg.token.empty() ? "no" : "yes");
             if (!updateNetAvailable()) {
                 DebugLog::line("update: rete non disponibile, salto Layer 1");
                 showMessageAndWait(i18n::get(StrKey::UpdateTitle),
-                    i18n::fmt(StrKey::UpdateNetOff, cfg.url));
+                    i18n::fmt(StrKey::UpdateNetOff, netUrl));
             } else {
-                showWorking(i18n::fmt(StrKey::UpdateContacting, cfg.url));
+                showWorking(i18n::fmt(StrKey::UpdateContacting, netUrl));
                 RemoteUpdateInfo info;
                 std::string err;
-                if (!updateNetFetchInfo(cfg.url, cfg.token, info, err)) {
+                if (!updateNetFetchInfo(netUrl, cfg.token, info, err)) {
                     DebugLog::line("update: fetch info fallito: %s", err.c_str());
                     showMessageAndWait(i18n::get(StrKey::UpdateTitle),
-                        i18n::fmt(StrKey::UpdateUnreachable, err, cfg.url));
+                        i18n::fmt(StrKey::UpdateUnreachable, err, netUrl));
                 } else {
                     int cmp = compareVersionStrings(info.version, curVer);
                     DebugLog::line("update: remoto v%s cmp=%d", info.version.c_str(), cmp);
                     if (cmp > 0) {
                         if (!showConfirmDialog(i18n::get(StrKey::UpdateAvailNetTitle),
-                                i18n::fmt(StrKey::UpdateAvailNetBody, info.version, curVer, cfg.url)))
+                                i18n::fmt(StrKey::UpdateAvailNetBody, info.version, curVer, netUrl)))
                             return false;
                         removeStaleLocalUpdates(basePath_, runningNro);
                         showWorking(i18n::fmt(StrKey::UpdateDownloading, info.version));
