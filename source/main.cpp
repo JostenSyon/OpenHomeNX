@@ -51,10 +51,11 @@ int main(int argc, char* argv[]) {
     DebugLog::init(basePath);
 
     // A pending self-update leaves OpenHomeNX.nro.new next to the NRO. This
-    // boot only exists to consolidate it into the real .nro and bounce into
-    // that behind the "Updating…" card — so bring up JUST the renderer, do the
-    // bounce, and exit before any of the cold-boot cost (net, USB probe,
-    // text-data parse, splash fade, game-icon load).
+    // boot consolidates it into the real .nro and continues straight into the
+    // app from .new (no bounce, no "Updating…" card since 2026-09-08) — so
+    // bring up JUST the renderer, consolidate, and skip the cold-boot cost
+    // (net, USB probe, text-data parse, splash fade, game-icon load) only if
+    // tryUpdateBounce asks to exit.
     bool pendingUpdate = false;
     {
         struct stat pst;
@@ -76,7 +77,7 @@ int main(int argc, char* argv[]) {
         ui.shutdown();
         ledExit();
         romfsExit();
-        return 0;   // libnx exit -> loader chainloads the fresh OpenHomeNX.nro
+        return 0;   // dead fallback: finalize no longer bounces (2026-09-08)
     }
 
     // Show the splash as early as possible — right after ui.init() (window +
