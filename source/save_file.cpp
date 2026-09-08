@@ -135,6 +135,64 @@ bool SaveFile::loadSCBlock(const std::string& path) {
         boxLayoutLen_ = layoutBlock->data.size();
     }
 
+    // --- Party extraction for SCBlock saves (Switch: Sw/Sh, SV, ZA, LA) ---
+    // PKHeX: SWSH/LA KParty=0x2985fe5d, SV/ZA KParty=0x3AA1A9AD. DecryptArray
+    // is dispatched by gameType (Pokemon::loadFromEncrypted).
+    dsParty_.clear();
+    {
+        uint32_t partyKeys[2] = {0x2985fe5d, 0x3AA1A9AD};
+        SCBlock* partyBlock = nullptr;
+        for (uint32_t k : partyKeys) {
+            partyBlock = SaveFileFFI::findBlock(blocks_, k);
+            if (partyBlock) break;
+        }
+        if (partyBlock && partyBlock->data.size() >= 4) {
+            int pSize = gameInfo(gameType_).pkPartySize;
+            if (pSize <= 0) pSize = 0x158;
+            size_t n = partyBlock->data.size() / static_cast<size_t>(pSize);
+            if (n > 6) n = 6;
+            dsParty_.assign(6, Pokemon{});
+            int valid = 0;
+            for (size_t i = 0; i < n; i++) {
+                const uint8_t* raw = partyBlock->data.data() + i * pSize;
+                bool allZero = true;
+                for (int b = 0; b < 8 && b < pSize; b++) if (raw[b] != 0) { allZero = false; break; }
+                Pokemon p;
+                p.gameType_ = gameType_;
+                p.loadFromEncrypted(raw, pSize);
+                if (!p.isEmpty() && p.species() != 0) {
+                    dsParty_[i] = p;
+                    valid++;
+                } else if (!allZero) {
+                    DebugLog::line("loadSCBlock: %s party slot %zu decrypt empty (EC %08x)", path.c_str(), i, p.encryptionConstant());
+                }
+            }
+            DebugLog::line("loadSCBlock: %s -> party %d/%zu (block %zu bytes, slot %d)", path.c_str(), valid, n, partyBlock->data.size(), pSize);
+        } else {
+            dsParty_.assign(6, Pokemon{});
+            DebugLog::line("loadSCBlock: %s -> no party block found", path.c_str());
+        }
+    }
+    // Header OT/TID for the title strip (like DS saves): reuse getTrainerInfo().
+    // dsOtName_/dsTid_ were cleared in load(), so fill them now for SCBlock games.
+    {
+        TrainerInfo ti = getTrainerInfo();
+        if (ti.valid) {
+            // Convert u16string to UTF-8 (ASCII fast path, fallback 2/3 byte)
+            std::string out;
+            out.reserve(ti.otName.size());
+            for (char16_t c : ti.otName) {
+                if (c == 0) break;
+                if (c < 0x80) out.push_back(static_cast<char>(c));
+                else if (c < 0x800) { out.push_back(char(0xC0 | (c>>6))); out.push_back(char(0x80 | (c & 0x3F))); }
+                else { out.push_back(char(0xE0 | (c>>12))); out.push_back(char(0x80 | ((c>>6)&0x3F))); out.push_back(char(0x80 | (c & 0x3F))); }
+            }
+            if (!out.empty()) dsOtName_ = out;
+            dsTid_ = static_cast<uint16_t>(ti.id32 & 0xFFFF);
+            DebugLog::line("loadSCBlock: %s -> OT '%s' TID %u", path.c_str(), dsOtName_.c_str(), dsTid_);
+        }
+    }
+
     loaded_ = true;
 
     // Create Rust save handle for OH path (used by getCachedBox).
@@ -245,6 +303,29 @@ std::string SaveFile::debugCompareEnginesParity() const {
 }
 
 bool SaveFile::saveSCBlock(const std::string& path) {
+    // Compact party: no gaps in the 6 slots — game slids left on save. Shrink
+    // dsParty_ gaps so we never write an empty in the middle.
+    if (!blocks_.empty()) {
+        uint32_t keys[2] = {0x2985fe5d, 0x3AA1A9AD};
+        SCBlock* pb = nullptr;
+        for (uint32_t k: keys) { pb = SaveFileFFI::findBlock(blocks_, k); if (pb) break; }
+        if (pb) {
+            int pSize = gameInfo(gameType_).pkPartySize;
+            if (pSize <= 0) pSize = 0x158;
+            std::vector<Pokemon> compact;
+            for (auto &pp: dsParty_) if (!pp.isEmpty()) compact.push_back(pp);
+            if (compact.size() != dsParty_.size() || [&](){for(size_t i=0;i<compact.size();i++) if(compact[i].species()!=dsParty_[i].species()) return true; return false;}()) {
+                // rewrite block packed
+                std::memset(pb->data.data(), 0, pb->data.size());
+                for (size_t i=0;i<compact.size() && i* (size_t)pSize < pb->data.size(); ++i) {
+                    compact[i].getEncrypted(pb->data.data()+ i* pSize);
+                }
+                dsParty_.assign(6, Pokemon{});
+                for (size_t i=0;i<compact.size() && i<6; ++i) dsParty_[i]=compact[i];
+                DebugLog::line("saveSCBlock: compacted party %zu -> block", compact.size());
+            }
+        }
+    }
     std::vector<uint8_t> encrypted = SaveFileFFI::encrypt(blocks_);
 
     // Open for in-place writing (r+b) to avoid truncating the file.
@@ -292,6 +373,31 @@ bool SaveFile::loadBDSP(const std::string& path) {
         boxLayoutLen_ = BDSP_LAYOUT_SIZE;
     }
 
+    // Party: 6 x 0x158 at 0x14098 (SAV8BS PartyInfo, PKHeX)
+    dsParty_.assign(6, Pokemon{});
+    {
+        constexpr size_t PARTY_OFF = 0x14098;
+        constexpr int PARTY_SLOTS = 6;
+        int pSize = gameInfo(gameType_).pkPartySize; // 0x158
+        if (PARTY_OFF + PARTY_SLOTS * pSize <= rawData_.size()) {
+            int valid = 0;
+            for (int i = 0; i < PARTY_SLOTS; i++) {
+                const uint8_t* raw = rawData_.data() + PARTY_OFF + i * pSize;
+                Pokemon p; p.gameType_ = gameType_;
+                p.loadFromEncrypted(raw, pSize);
+                if (!p.isEmpty() && p.species() != 0) { dsParty_[i]=p; valid++; }
+            }
+            DebugLog::line("loadBDSP: %s -> party %d/6", path.c_str(), valid);
+        }
+        TrainerInfo ti = getTrainerInfo();
+        if (ti.valid) {
+            std::string out; out.reserve(ti.otName.size());
+            for (char16_t c: ti.otName) { if(c==0) break; if(c<0x80) out.push_back(char(c)); else if(c<0x800){out.push_back(char(0xC0|(c>>6))); out.push_back(char(0x80|(c&0x3F)));} else {out.push_back(char(0xE0|(c>>12))); out.push_back(char(0x80|((c>>6)&0x3F))); out.push_back(char(0x80|(c&0x3F)));}}
+            if(!out.empty()) dsOtName_ = out;
+            dsTid_ = uint16_t(ti.id32 & 0xFFFF);
+        }
+    }
+
     loaded_ = true;
     return true;
 }
@@ -299,6 +405,21 @@ bool SaveFile::loadBDSP(const std::string& path) {
 bool SaveFile::saveBDSP(const std::string& path) {
     if (rawData_.empty())
         return false;
+
+    // Compact party: pack left, no empty in middle (like game does on save)
+    {
+        constexpr size_t OFF = 0x14098;
+        int pSize = gameInfo(gameType_).pkPartySize;
+        std::vector<Pokemon> compact;
+        for (auto &pp: dsParty_) if (!pp.isEmpty()) compact.push_back(pp);
+        if (compact.size() < 6) {
+            // rewrite raw party region packed
+            std::memset(rawData_.data()+OFF, 0, 6 * pSize);
+            for (size_t i=0;i<compact.size(); ++i) compact[i].getEncrypted(rawData_.data()+OFF + i * pSize);
+            dsParty_.assign(6, Pokemon{});
+            for (size_t i=0;i<compact.size() && i<6; ++i) dsParty_[i]=compact[i];
+        }
+    }
 
     // Recalculate MD5 checksum
     // Clear existing hash, compute MD5 of entire save, write hash back
@@ -318,6 +439,109 @@ bool SaveFile::saveBDSP(const std::string& path) {
     size_t written = std::fwrite(rawData_.data(), 1, rawData_.size(), f);
     std::fclose(f);
     return written == rawData_.size();
+}
+
+Pokemon SaveFile::getPartySlot(int idx) const {
+    if (idx < 0 || idx >= (int)dsParty_.size()) return Pokemon{};
+    return dsParty_[idx];
+}
+void SaveFile::setPartySlot(int idx, const Pokemon& pkm) {
+    if (idx < 0 || idx >= 6) return;
+    Pokemon toWrite = pkm;
+    toWrite.gameType_ = gameType_;
+    DebugLog::line("setPartySlot idx %d %s (%u) %s", idx, toWrite.displayName().c_str(), toWrite.species(), toWrite.isEmpty()?"empty":"");
+    if ((int)dsParty_.size() != 6) dsParty_.assign(6, Pokemon{});
+    // Persist to underlying storage per family — block index == party index
+    if (!blocks_.empty()) {
+        uint32_t keys[2] = {0x2985fe5d, 0x3AA1A9AD};
+        SCBlock* pb = nullptr;
+        for (uint32_t k: keys) { pb = SaveFileFFI::findBlock(blocks_, k); if (pb) break; }
+        if (pb) {
+            int pSize = gameInfo(gameType_).pkPartySize;
+            if (pSize <= 0) pSize = 0x158;
+            if ((size_t)(idx * pSize + pSize) <= pb->data.size()) {
+                if (toWrite.isEmpty()) std::memset(pb->data.data() + idx * pSize, 0, pSize);
+                else toWrite.getEncrypted(pb->data.data() + idx * pSize);
+                DebugLog::line("setPartySlot block %08x idx %d pSize %d -> %s", pb->key, idx, pSize, toWrite.isEmpty()?"zero":"enc");
+            }
+        }
+    } else if (isBDSP(gameType_)) {
+        constexpr size_t OFF = 0x14098;
+        int pSize = gameInfo(gameType_).pkPartySize;
+        if (OFF + (size_t)idx * pSize + pSize <= rawData_.size()) {
+            uint8_t* dst = rawData_.data() + OFF + idx * pSize;
+            if (toWrite.isEmpty()) std::memset(dst, 0, pSize);
+            else toWrite.getEncrypted(dst);
+        }
+    } else if (gameType_ == GameType::X || gameType_ == GameType::Y) {
+        constexpr size_t OFF = 0x14200; constexpr int PS=260;
+        if (OFF + (size_t)idx*PS + PS <= rawData_.size()) {
+            uint8_t* dst = rawData_.data()+OFF+idx*PS;
+            if (toWrite.isEmpty()) std::memset(dst,0,PS); else toWrite.getEncrypted(dst);
+        }
+    } else if (gameType_ == GameType::SUN || gameType_ == GameType::MOON) {
+        constexpr size_t OFF = 0x01400; constexpr int PS=260;
+        if (OFF + (size_t)idx*PS + PS <= rawData_.size()) {
+            uint8_t* dst = rawData_.data()+OFF+idx*PS;
+            if (toWrite.isEmpty()) std::memset(dst,0,PS); else toWrite.getEncrypted(dst);
+        }
+    } else if (isLGPE(gameType_)) {
+        if (toWrite.isEmpty()) {
+            setLGPEPartyPointer(idx, LGPE_SLOT_EMPTY);
+        } else {
+            uint16_t ptr = (idx < (int)lgpePartyIndices_.size()) ? lgpePartyIndices_[idx] : LGPE_SLOT_EMPTY;
+            int total = LGPE_BOX_COUNT * LGPE_SLOTS_PER_BOX;
+            if (ptr >= total || ptr == LGPE_SLOT_EMPTY) {
+                int pSize = PokeCrypto::SIZE_6PARTY; int found=-1;
+                for(int i=0;i<total;i++){ uint32_t ec; std::memcpy(&ec, boxData_+i*pSize,4); if(ec==0){found=i;break;} }
+                if(found>=0) ptr=(uint16_t)found; else ptr=0;
+                setLGPEPartyPointer(idx, ptr);
+            }
+            size_t off=(size_t)ptr*PokeCrypto::SIZE_6PARTY;
+            if(off+PokeCrypto::SIZE_6PARTY <= boxDataLen_){ toWrite.getEncrypted(boxData_+off); }
+        }
+    }
+    dsParty_[idx]=toWrite;
+    dirty_=true; invalidateAllBoxCache();
+}
+void SaveFile::clearPartySlot(int idx) {
+    Pokemon empty; empty.gameType_ = gameType_;
+    setPartySlot(idx, empty);
+}
+
+int SaveFile::lgpeFlatOfParty(int i) const {
+    if (!isLGPE(gameType_) || i < 0 || i >= 6) return -1;
+    uint16_t v = lgpePartyIndices_[i];
+    int total = LGPE_BOX_COUNT * LGPE_SLOTS_PER_BOX;
+    if (v == LGPE_SLOT_EMPTY || v >= total) return -1;
+    return (int)v;
+}
+
+void SaveFile::lgpeZeroFlatSlot(int flat) {
+    if (!isLGPE(gameType_)) return;
+    int total = LGPE_BOX_COUNT * LGPE_SLOTS_PER_BOX;
+    if (flat < 0 || flat >= total) return;
+    size_t off = (size_t)flat * PokeCrypto::SIZE_6PARTY;
+    if (off + PokeCrypto::SIZE_6PARTY <= boxDataLen_) {
+        std::memset(boxData_ + off, 0, PokeCrypto::SIZE_6PARTY);
+        invalidateAllBoxCache();
+        dirty_ = true;
+    }
+}
+
+void SaveFile::refreshPartyEntryFromPointer(int idx) {
+    if (!isLGPE(gameType_) || idx < 0 || idx >= 6) return;
+    if ((int)dsParty_.size() != 6) dsParty_.assign(6, Pokemon{});
+    Pokemon p; p.gameType_ = gameType_;
+    int flat = lgpeFlatOfParty(idx);
+    if (flat >= 0) {
+        size_t off = (size_t)flat * PokeCrypto::SIZE_6PARTY;
+        if (off + PokeCrypto::SIZE_6PARTY <= boxDataLen_) {
+            p.loadFromEncrypted(boxData_ + off, PokeCrypto::SIZE_6PARTY);
+            if (p.isEmpty() || p.species() == 0) { p = Pokemon{}; p.gameType_ = gameType_; }
+        }
+    }
+    dsParty_[idx] = p;
 }
 
 const std::vector<Pokemon>& SaveFile::getCachedBox(int box) const {
@@ -952,6 +1176,30 @@ bool SaveFile::loadLGPE(const std::string& path) {
         std::memcpy(&idx, rawData_.data() + LGPE_HEADER_OFFSET + i * 2, 2);
         lgpePartyIndices_[i] = idx;
         if (idx < 1000) lgpePartyCount_++;
+    }
+
+    // Party: slots referenced by PokeListHeader indices (party format 0x104, same as boxes)
+    dsParty_.assign(6, Pokemon{});
+    {
+        int pSize = PokeCrypto::SIZE_6PARTY; // 0x104 for LGPE
+        for (int i = 0; i < 6; i++) {
+            uint16_t idx = lgpePartyIndices_[i];
+            if (idx >= 1000) continue;
+            size_t off = static_cast<size_t>(idx) * pSize;
+            if (off + pSize > boxDataLen_) continue;
+            const uint8_t* raw = boxData_ + off;
+            Pokemon p; p.gameType_ = gameType_;
+            p.loadFromEncrypted(raw, pSize);
+            if (!p.isEmpty() && p.species()!=0) dsParty_[i]=p;
+        }
+        DebugLog::line("loadLGPE: %s -> party %zu/6 (lgpePartyCount %d)", path.c_str(), dsParty_.size(), lgpePartyCount_);
+        TrainerInfo ti = getTrainerInfo();
+        if (ti.valid) {
+            std::string out; out.reserve(ti.otName.size());
+            for(char16_t c: ti.otName){ if(c==0) break; if(c<0x80) out.push_back(char(c)); else if(c<0x800){out.push_back(char(0xC0|(c>>6))); out.push_back(char(0x80|(c&0x3F)));} else {out.push_back(char(0xE0|(c>>12))); out.push_back(char(0x80|((c>>6)&0x3F))); out.push_back(char(0x80|(c&0x3F)));}}
+            if(!out.empty()) dsOtName_=out;
+            dsTid_=uint16_t(ti.id32 & 0xFFFF);
+        }
     }
 
     loaded_ = true;
@@ -2135,6 +2383,26 @@ bool SaveFile::loadDXY(const std::string& path) {
     if (badSlots > 0)
         DebugLog::line("loadDXY: %s -> %d slot corrotti nascosti", path.c_str(), badSlots);
     DebugLog::line("loadDXY: %s -> Game %u (%s)", path.c_str(), game, game == 24 ? "X" : "Y");
+    // Party: 6 x 260 at 0x14200 (SAV6XY Party = 0x14200, PKHeX)
+    dsParty_.assign(6, Pokemon{});
+    {
+        constexpr size_t PARTY_OFF = 0x14200;
+        constexpr int PARTY_SLOTS = 6;
+        constexpr int PARTY_SIZE = 260; // SIZE_6PARTY, PokeCrypto
+        if (PARTY_OFF + PARTY_SLOTS * PARTY_SIZE <= rawData_.size()) {
+            int valid = 0;
+            for (int i = 0; i < PARTY_SLOTS; i++) {
+                const uint8_t* raw = rawData_.data() + PARTY_OFF + i * PARTY_SIZE;
+                Pokemon p; p.gameType_ = gameType_;
+                p.loadFromEncrypted(raw, PARTY_SIZE);
+                if (!p.isEmpty() && p.species()!=0) { dsParty_[i]=p; valid++; }
+            }
+            DebugLog::line("loadDXY: %s -> party %d/6", path.c_str(), valid);
+        }
+        if (dsOtName_.empty()) {
+            for (auto &pp: dsParty_) if(!pp.isEmpty()){ dsOtName_=pp.otName(); break; }
+        }
+    }
     boxData_ = dsStorage_.data();
     boxDataLen_ = dsStorage_.size();
     // Box names: block 12 @0x04400, 31 x 0x22 UTF-16LE (generic stride).
@@ -2208,6 +2476,25 @@ bool SaveFile::loadDSM(const std::string& path) {
     if (badSlots > 0)
         DebugLog::line("loadDSM: %s -> %d slot corrotti nascosti", path.c_str(), badSlots);
     DebugLog::line("loadDSM: %s -> Game %u (%s)", path.c_str(), game, game == 30 ? "Sun" : "Moon");
+    // Party: block 04 PokePartySave at 0x01400, 6 x 260 (SAV7SM BlockInfoSM[04])
+    dsParty_.assign(6, Pokemon{});
+    {
+        constexpr size_t PARTY_OFF = 0x01400;
+        constexpr int PARTY_SLOTS = 6;
+        constexpr int PARTY_SIZE = 260;
+        if (PARTY_OFF + PARTY_SLOTS * PARTY_SIZE <= rawData_.size()) {
+            int valid = 0;
+            for (int i = 0; i < PARTY_SLOTS; i++) {
+                const uint8_t* raw = rawData_.data() + PARTY_OFF + i * PARTY_SIZE;
+                Pokemon p; p.gameType_ = gameType_;
+                p.loadFromEncrypted(raw, PARTY_SIZE);
+                if (!p.isEmpty() && p.species()!=0) { dsParty_[i]=p; valid++; }
+            }
+            DebugLog::line("loadDSM: %s -> party %d/6", path.c_str(), valid);
+        }
+        if (dsOtName_.empty()) { for(auto &pp: dsParty_) if(!pp.isEmpty()){ dsOtName_=pp.otName(); break; } }
+        if (dsOtName_.empty() && !dsParty_.empty()) dsOtName_ = dsParty_[0].otName();
+    }
     boxData_ = dsStorage_.data();
     boxDataLen_ = dsStorage_.size();
     boxLayoutData_ = rawData_.data() + 0x04800;

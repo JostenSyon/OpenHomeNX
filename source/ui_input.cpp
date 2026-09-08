@@ -438,18 +438,65 @@ void UI::handleNormalInput(const SDL_Event& event) {
             case SDL_CONTROLLER_BUTTON_B: // Switch A (right) = SDL B -> pick / take
                 if (!yHeld_) {
                     if (partyCursor_ >= 0) {
-                        // Debug: pick from party like a normal mon; otherwise just view.
-                        if (!DebugLog::enabled()) {
-                            detailParty_ = partyCursor_;
-                            showDetail_ = true;
+                        if (holding_) {
+                            // Place held mon into party slot (hand stays on strip)
+                            Pokemon target = save_.getPartySlot(partyCursor_);
+                            if (target.isEmpty()) {
+                                std::string whyNot;
+                                if (!prepareForPlacement(heldPkm_, Panel::Game, whyNot)) {
+                                    showMessageAndWait(i18n::get(StrKey::TransferTitle), whyNot);
+                                } else if (heldFromParty_) {
+                                    // Pick already cleared the origin slot: never clear heldPartyIdx_
+                                    // here — after a swap it holds the just-placed mon (box->slot1
+                                    // then hand->slot2 wiped slot1). Just place.
+                                    save_.setPartySlot(partyCursor_, heldPkm_);
+                                    holding_=false; heldPkm_=Pokemon{}; heldFromParty_=false; heldPartyIdx_=-1; heldPartyOrig_=-1;
+                                    heldFromLGPEParty_=false; lgpeHeldPartyIdx_=-1;
+                                } else {
+                                    save_.setPartySlot(partyCursor_, heldPkm_);
+                                    holding_=false; heldPkm_=Pokemon{}; heldFromParty_=false; heldPartyIdx_=-1; heldPartyOrig_=-1;
+                                    heldFromLGPEParty_=false; lgpeHeldPartyIdx_=-1;
+                                    swapHistory_.clear();
+                                }
+                            } else {
+                                std::string whyNot;
+                                Pokemon tmp = heldPkm_;
+                                DebugLog::line("party swap: held %s (%u) -> slot %d occupied %s (%u), heldFromParty=%d heldIdx=%d",
+                                    heldPkm_.displayName().c_str(), heldPkm_.species(), partyCursor_, target.displayName().c_str(), target.species(), heldFromParty_?1:0, heldPartyIdx_);
+                                if (!prepareForPlacement(tmp, Panel::Game, whyNot)) {
+                                    showMessageAndWait(i18n::get(StrKey::TransferTitle), whyNot);
+                                } else {
+                                    save_.setPartySlot(partyCursor_, tmp);
+                                    heldPkm_ = target;
+                                    heldPartyIdx_ = partyCursor_;
+                                    heldFromParty_ = true;
+                                    // heldPartyOrig_ untouched: still the pick origin (for cancel
+                                    // undo); box-origin swaps keep swapHistory for the box side.
+                                    DebugLog::line("party after: slot %d=%s hand=%s", partyCursor_, save_.getPartySlot(partyCursor_).displayName().c_str(), heldPkm_.displayName().c_str());
+                                }
+                            }
+                            refreshHighlightSet();
                         } else {
-                            // Take from party like a regular box (clone for now, save is read-only v1)
-                            // Warning for empty party only on exit, not on take (per UX request)
-                            const auto& pm = save_.dsParty()[partyCursor_];
+                            // Pick from party: hand stays on strip, mon disappears from strip
+                            Pokemon pm = save_.getPartySlot(partyCursor_);
                             if (!pm.isEmpty()) {
                                 heldPkm_ = pm;
                                 holding_ = true;
+                                heldFromParty_ = true;
+                                heldPartyIdx_ = partyCursor_;
+                                heldPartyOrig_ = partyCursor_;
                                 heldMulti_.clear();
+                                if (isLGPE(selectedGame_)) {
+                                    lgpeHeldPartyIdx_ = partyCursor_;
+                                    heldFromLGPEParty_ = true;
+                                }
+                                // LGPE: il mon vive nella cella box puntata — va svuotata
+                                // ANCHE lei, altrimenti resta un fantasma nel box che al
+                                // posaggio successivo diventa un clone (party ripetuto).
+                                int partyFlat = save_.lgpeFlatOfParty(partyCursor_);
+                                save_.clearPartySlot(partyCursor_);
+                                if (partyFlat >= 0)
+                                    save_.lgpeZeroFlatSlot(partyFlat);
                                 refreshHighlightSet();
                             }
                         }
@@ -462,7 +509,27 @@ void UI::handleNormalInput(const SDL_Event& event) {
             case SDL_CONTROLLER_BUTTON_A: // Switch B (bottom) = SDL A -> back / cancel
                 if (!yHeld_) {
                     if (partyCursor_ >= 0) {
-                        partyCursor_ = -1; // leave the OT strip
+                        if (holding_ && heldFromParty_) {
+                            // Undo without loss: box-origin swap restores the box source
+                            // too, pure-party swap restores both party slots.
+                            if (!swapHistory_.empty()) {
+                                auto src = swapHistory_.back();
+                                Pokemon inD = save_.getPartySlot(heldPartyIdx_);
+                                setPokemonAt(src.box, src.slot, src.panel, inD);
+                                save_.setPartySlot(heldPartyIdx_, heldPkm_);
+                            } else if (heldPartyOrig_ >= 0 && heldPartyOrig_ != heldPartyIdx_) {
+                                Pokemon curD = save_.getPartySlot(heldPartyIdx_);
+                                save_.setPartySlot(heldPartyIdx_, heldPkm_);
+                                save_.setPartySlot(heldPartyOrig_, curD);
+                            } else {
+                                save_.setPartySlot(heldPartyIdx_, heldPkm_);
+                            }
+                            holding_=false; heldPkm_=Pokemon{}; heldFromParty_=false; heldPartyIdx_=-1; heldPartyOrig_=-1;
+                            heldFromLGPEParty_=false; lgpeHeldPartyIdx_=-1;
+                            swapHistory_.clear();
+                        } else {
+                            partyCursor_ = -1; // leave the OT strip
+                        }
                     } else {
                         actionCancel();
                     }
@@ -489,6 +556,7 @@ void UI::handleNormalInput(const SDL_Event& event) {
                         positionPreserve_ = false;
                         heldFromLGPEParty_ = false;
                         lgpeHeldPartyIdx_ = -1;
+                        heldFromParty_=false; heldPartyIdx_=-1; heldPartyOrig_=-1;
                         refreshHighlightSet();
                     }
                 } else {
@@ -538,8 +606,9 @@ void UI::handleNormalInput(const SDL_Event& event) {
             case SDL_CONTROLLER_BUTTON_DPAD_UP:
                 // Unified row: party is row -1 above grid. Both dpad and analog can enter it.
                 // Single selection: box cursor hidden when party focused.
-                if (partyCursor_ < 0 && !holding_ && selectedSlots_.empty() &&
-                    cursor_.panel == Panel::Game && cursor_.row == 0 && !save_.dsParty().empty()) {
+                // Allow empty party when holding so you can put the last mon back (Spada 1/0 bug).
+                if (partyCursor_ < 0 && selectedSlots_.empty() &&
+                    cursor_.panel == Panel::Game && cursor_.row == 0 && (save_.hasParty() || holding_)) {
                     partyCursor_ = 0;
                     markDirty();
                 } else if (partyCursor_ >= 0) {
@@ -724,9 +793,9 @@ void UI::handleStickRepeat() {
             partyCursor_ = -1; // any vertical stick -> back to grid
         }
     } else if (!showDetail_) {
-        // Analog up from top row enters party (mirrors dpad)
+        // Analog up from top row enters party (mirrors dpad) — even while holding so you can drop back (empty party allowed when holding)
         if (stickDirY_ < 0 && cursor_.row == 0 && cursor_.panel == Panel::Game &&
-            !save_.dsParty().empty() && !holding_ && selectedSlots_.empty()) {
+            (save_.hasParty() || holding_) && selectedSlots_.empty()) {
             partyCursor_ = 0;
         } else {
             if (stickDirX_ != 0) moveCursor(stickDirX_, 0);
@@ -1473,6 +1542,7 @@ void UI::actionSelect() {
         positionPreserve_ = false;
         heldFromLGPEParty_ = false;
         lgpeHeldPartyIdx_ = -1;
+        heldFromParty_=false; heldPartyIdx_=-1; heldPartyOrig_=-1;
         return;
     }
 
@@ -1492,6 +1562,11 @@ void UI::actionSelect() {
         swapHistory_.push_back({pkm, cursor_.panel, box, slot});
 
         clearPokemonAt(box, slot, cursor_.panel);
+        // LGPE: se la cella era un membro del party, il pointer ora penzola su
+        // dati azzerati (strip stale + membro perso al reload). Invalidalo subito;
+        // il posaggio nel box lo ripunterà alla nuova cella.
+        if (lgpeHeldPartyIdx_ >= 0)
+            save_.clearPartySlot(lgpeHeldPartyIdx_);
     } else {
         // Block LGPE party Pokemon from moving to bank
         if (heldFromLGPEParty_ && cursor_.panel == Panel::Bank) {
@@ -1541,12 +1616,14 @@ void UI::actionSelect() {
                 uint16_t newFlat = static_cast<uint16_t>(
                     box * save_.slotsPerBox() + slot);
                 save_.setLGPEPartyPointer(lgpeHeldPartyIdx_, newFlat);
+                save_.refreshPartyEntryFromPointer(lgpeHeldPartyIdx_);
             }
             holding_ = false;
             heldPkm_ = Pokemon{};
             swapHistory_.clear();
             heldFromLGPEParty_ = false;
             lgpeHeldPartyIdx_ = -1;
+            heldFromParty_=false; heldPartyIdx_=-1; heldPartyOrig_=-1;
         } else {
             // Swap: check if target is also a party member BEFORE modifying
             int targetPartyIdx = (cursor_.panel == Panel::Game)
@@ -1560,16 +1637,20 @@ void UI::actionSelect() {
                 uint16_t newFlat = static_cast<uint16_t>(
                     box * save_.slotsPerBox() + slot);
                 save_.setLGPEPartyPointer(lgpeHeldPartyIdx_, newFlat);
+                save_.refreshPartyEntryFromPointer(lgpeHeldPartyIdx_);
             }
             // Target was a party member but held Pokemon was not (cross-panel swap):
             // the party Pokemon is now held, so invalidate its pointer until placed.
             if (targetPartyIdx >= 0 && lgpeHeldPartyIdx_ < 0) {
                 save_.setLGPEPartyPointer(targetPartyIdx, SaveFile::LGPE_SLOT_EMPTY);
+                save_.refreshPartyEntryFromPointer(targetPartyIdx);
             }
 
             heldPkm_ = target;
             lgpeHeldPartyIdx_ = targetPartyIdx;
             heldFromLGPEParty_ = (targetPartyIdx >= 0);
+            // Generic party: target was from box, not party, so clear party hold
+            heldFromParty_=false; heldPartyIdx_=-1; heldPartyOrig_=-1;
         }
     }
 }
@@ -1610,6 +1691,7 @@ void UI::actionCancel() {
         positionPreserve_ = false;
         heldFromLGPEParty_ = false;
         lgpeHeldPartyIdx_ = -1;
+        heldFromParty_=false; heldPartyIdx_=-1; heldPartyOrig_=-1;
         save_.setLGPEPartyIndices(lgpePartyBackup_);
         return;
     }
@@ -1664,6 +1746,25 @@ void UI::actionCancel() {
         return;
     }
 
+    // Party hold cancel: undo without loss (same branches as the A-on-strip cancel).
+    if (heldFromParty_) {
+        if (!swapHistory_.empty()) {
+            auto src = swapHistory_.back();
+            Pokemon inD = save_.getPartySlot(heldPartyIdx_);
+            setPokemonAt(src.box, src.slot, src.panel, inD);
+            save_.setPartySlot(heldPartyIdx_, heldPkm_);
+        } else if (heldPartyOrig_ >= 0 && heldPartyOrig_ != heldPartyIdx_) {
+            Pokemon curD = save_.getPartySlot(heldPartyIdx_);
+            save_.setPartySlot(heldPartyIdx_, heldPkm_);
+            save_.setPartySlot(heldPartyOrig_, curD);
+        } else {
+            save_.setPartySlot(heldPartyIdx_, heldPkm_);
+        }
+        holding_=false; heldPkm_=Pokemon{}; heldFromParty_=false; heldPartyIdx_=-1; heldPartyOrig_=-1;
+        heldFromLGPEParty_=false; lgpeHeldPartyIdx_=-1;
+        swapHistory_.clear();
+        return;
+    }
     // Single hold cancel: replay swap history in reverse to restore all slots
     for (int i = (int)swapHistory_.size() - 1; i >= 0; i--) {
         auto& rec = swapHistory_[i];
@@ -1674,6 +1775,7 @@ void UI::actionCancel() {
     heldPkm_ = Pokemon{};
     heldFromLGPEParty_ = false;
     lgpeHeldPartyIdx_ = -1;
+    heldFromParty_=false; heldPartyIdx_=-1; heldPartyOrig_=-1;
     save_.setLGPEPartyIndices(lgpePartyBackup_);
 }
 

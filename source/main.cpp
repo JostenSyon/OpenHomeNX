@@ -221,6 +221,7 @@ int main(int argc, char* argv[]) {
 #endif
 
     if (netReady) socketExit();
+    nifmExit(); // no-op se updateNetLinkStr() non ha mai inizializzato nifm:u
 
     romfsExit();
     DebugLog::line("exit: shutdown complete");

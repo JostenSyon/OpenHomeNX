@@ -147,6 +147,33 @@ std::string toLower(std::string s) {
 bool updateNetAvailable() { return g_netReady; }
 void updateNetSetReady(bool ready) { g_netReady = ready; }
 
+// Poll throttled dello stato link via nifm (nifm:u). Lazy-init: se nifm non si
+// apre, resta OFF e riprova al poll successivo. Mai fatale, mai bloccante.
+const char* updateNetLinkStr() {
+    static double lastPoll = -1e9;
+    static char cached[8] = "OFF";
+    static bool nifmReady = false;
+    double now = (double)armTicksToNs(armGetSystemTick()) / 1.0e9;
+    if (now - lastPoll < 2.0)
+        return cached;
+    lastPoll = now;
+    if (!nifmReady) {
+        if (R_FAILED(nifmInitialize(NifmServiceType_User)))
+            return cached; // resta OFF, riprova tra 2s
+        nifmReady = true;
+    }
+    NifmInternetConnectionType type = (NifmInternetConnectionType)0;
+    u32 strength = 0;
+    NifmInternetConnectionStatus st = (NifmInternetConnectionStatus)0;
+    const char* s = "OFF";
+    if (R_SUCCEEDED(nifmGetInternetConnectionStatus(&type, &strength, &st)) &&
+        st == NifmInternetConnectionStatus_Connected) {
+        s = (type == NifmInternetConnectionType_Ethernet) ? "LAN" : "WiFi";
+    }
+    std::snprintf(cached, sizeof(cached), "%s", s);
+    return cached;
+}
+
 bool updateNetFetchInfo(const std::string& baseUrl, const std::string& token,
                         RemoteUpdateInfo& out, std::string& err) {
     if (!g_netReady) { err = "rete non inizializzata"; return false; }

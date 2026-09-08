@@ -424,6 +424,7 @@ private:
         uint16_t species  = 0;  // national dex ID (for sprite lookup)
         uint8_t  form     = 0;  // form index (for form-aware sprites)
         uint8_t  level    = 0;
+        uint8_t  ball     = 0;  // ball id (party-marker icon in box cells)
         std::string name;       // truncated display name (≤10 chars)
     };
 
@@ -466,6 +467,9 @@ private:
     Pokemon heldPkm_;
     bool   heldFromLGPEParty_ = false;       // block save→bank moves for LGPE party
     int    lgpeHeldPartyIdx_ = -1;          // which party pointer (0-5) held Pokemon belongs to
+    bool   heldFromParty_ = false;           // generic party pick (Switch/DS) — hand stays on strip
+    int    heldPartyIdx_ = -1;
+    int    heldPartyOrig_ = -1;              // pick origin slot (never overwritten by swaps) for cancel/undo
     std::array<uint16_t, 6> lgpePartyBackup_{};  // backup for cancel/undo
 
     // Swap history for full undo on cancel

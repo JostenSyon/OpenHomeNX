@@ -5,6 +5,7 @@
 #include "species_converter.h"
 #include "app_version.h"
 #include "move_types.h"
+#include "update_net.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -234,6 +235,7 @@ const std::vector<UI::SlotDisplay>& UI::getSlotDisplays(Panel panel, int box) {
         sd.species = pkm.species();
         sd.form    = pkm.form();
         sd.level   = pkm.level();
+        sd.ball    = pkm.ball();
         sd.name    = pkm.displayName();
         if (sd.name.length() > 10)
             sd.name = sd.name.substr(0, 9) + ".";
@@ -339,6 +341,16 @@ void UI::drawSlot(int x, int y, const SlotDisplay& sd, bool isCursor, int select
             SDL_Rect iconDst = {x + 2, y + 2, 14, 14};
             SDL_RenderCopy(renderer_, statusIcon, nullptr, &iconDst);
         }
+
+        // Party member marker (bottom-right corner): the mon's own ball, so a
+        // party mon sitting in its box cell is recognizable at a glance.
+        if (isParty) {
+            SDL_Texture* ballTex = getBallSprite(sd.ball ? sd.ball : 4);
+            if (ballTex) {
+                SDL_Rect ballDst = {x + CELL_W - 20, y + CELL_H - 20, 16, 16};
+                SDL_RenderCopy(renderer_, ballTex, nullptr, &ballDst);
+            }
+        }
     }
 
     // Numbered badge on top of everything
@@ -392,7 +404,8 @@ void UI::drawPanel(int panelX, const std::string& boxName, int boxIdx,
         // Before: always 6 grey balls even on empty saves — misleading. Now:
         // empty party = just OT, no placeholders.
         const auto& party = save->dsParty();
-        if (!party.empty()) {
+        // Party boxes always visible (6 slots) even when empty — serve da target per drop quando party è vuoto
+        if (true) {
             int mx = panelX + 45 + tw + 12;
             SDL_Texture* emptyFallback = iconBoxEmpty_;
             for (int pi = 0; pi < 6; pi++) {
@@ -420,7 +433,7 @@ void UI::drawPanel(int panelX, const std::string& boxName, int boxIdx,
                         SDL_SetRenderDrawColor(renderer_, 110, 110, 110, 90);
                         SDL_RenderDrawRect(renderer_, &dst);
                     }
-                    if (DebugLog::enabled() && pi == partyCursor_) {
+                    if (pi == partyCursor_) {
                         SDL_SetRenderDrawColor(renderer_, T().cursor.r, T().cursor.g, T().cursor.b, 255);
                         SDL_RenderDrawRect(renderer_, &dst);
                     }
@@ -569,6 +582,7 @@ void UI::drawFrame() {
         label += useOpenHome() ? "OH" : "PK";
         if (DebugLog::enabled())
             label += " | DBG";
+        label += std::string(" | ") + updateNetLinkStr();
         const auto& entry = getTextEntry(label, fontSmall_, T().goldLabel);
         if (entry.tex)
             drawText(label, SCREEN_W - entry.w - 15, SCREEN_H - 26, T().goldLabel, fontSmall_);
@@ -2396,32 +2410,53 @@ void UI::drawHeldOverlay() {
     if (!sprite)
         return;
 
-    // Compute cursor cell screen position (same formula as drawPanel)
+    // Party hand stays on strip: whenever you're on the party row while holding, follow the mini (box->party or party->party)
     int panelX = (cursor_.panel == Panel::Game) ? PANEL_X_L : PANEL_X_R;
-    int cols = gridCols();
-    int gridStartX = panelX + (PANEL_W - (cols * (CELL_W + CELL_PAD) - CELL_PAD)) / 2;
-    int gridStartY = GRID_Y;
-    int cellX = gridStartX + cursor_.col * (CELL_W + CELL_PAD);
-    int cellY = gridStartY + cursor_.row * (CELL_H + CELL_PAD);
+    int cellX, cellY;
+    bool isPartyHeld = holding_ && partyCursor_ >= 0;
+    if (isPartyHeld) {
+        // Recompute header text width like drawPanel does to place the minis (mini 24, pitch 28)
+        std::string boxName = (cursor_.panel==Panel::Game) ? save_.getBoxName(gameBox_) : bank_.getBoxName(bankBox_);
+        int totalBoxes = (cursor_.panel==Panel::Game) ? (isDualBankMode()? bankLeft_.boxCount(): save_.boxCount()) : bank_.boxCount();
+        std::string left = boxName + " (" + std::to_string(gameBox_+1) + "/" + std::to_string(totalBoxes) + ") · OT " + save_.dsOtName();
+        int tw = getTextEntry(left, fontSmall_, T().text).w;
+        int mx = panelX + 45 + tw + 12 + partyCursor_ * 28;
+        int hdrY = BOX_HDR_Y + (BOX_HDR_H - 24)/2;
+        cellX = mx;
+        cellY = hdrY;
+    } else {
+        int cols = gridCols();
+        int gridStartX = panelX + (PANEL_W - (cols * (CELL_W + CELL_PAD) - CELL_PAD)) / 2;
+        int gridStartY = GRID_Y;
+        cellX = gridStartX + cursor_.col * (CELL_W + CELL_PAD);
+        cellY = gridStartY + cursor_.row * (CELL_H + CELL_PAD);
+    }
 
-    // Offset to create "dragging" effect
-    constexpr int DRAG_OFS = 8;
-    int baseX = cellX + DRAG_OFS;
-    int baseY = cellY + DRAG_OFS;
+    // Offset to create "dragging" effect — proportional to cell size (party mini 24 vs box 96)
+    int drag = isPartyHeld ? 3 : 8;
+    int baseX = cellX + drag;
+    int baseY = cellY + drag + (isPartyHeld ? -2 : 0);
 
-    // Scale sprite to fit SPRITE_SIZE
+    // Scale: party mini is 24, box is SPRITE_SIZE 68 — held from party stays small
+    int baseSize = isPartyHeld ? 36 : SPRITE_SIZE;
     int texW, texH;
     SDL_QueryTexture(sprite, nullptr, nullptr, &texW, &texH);
-    int dstW = SPRITE_SIZE, dstH = SPRITE_SIZE;
+    int dstW = baseSize, dstH = baseSize;
     if (texW > 0 && texH > 0) {
-        float scale = std::min(static_cast<float>(SPRITE_SIZE) / texW,
-                               static_cast<float>(SPRITE_SIZE) / texH);
+        float scale = std::min(static_cast<float>(baseSize) / texW,
+                               static_cast<float>(baseSize) / texH);
         dstW = static_cast<int>(texW * scale);
         dstH = static_cast<int>(texH * scale);
     }
 
-    int sprX = baseX + (CELL_W - dstW) / 2;
-    int sprY = baseY + 4 + (SPRITE_SIZE - dstH) / 2;
+    int sprX, sprY;
+    if (isPartyHeld) {
+        sprX = baseX + (24 - dstW) / 2;
+        sprY = baseY + (24 - dstH) / 2;
+    } else {
+        sprX = baseX + (CELL_W - dstW) / 2;
+        sprY = baseY + 4 + (baseSize - dstH) / 2;
+    }
 
     // Draw semi-transparent
     SDL_SetTextureAlphaMod(sprite, 180);

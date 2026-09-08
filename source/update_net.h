@@ -21,6 +21,11 @@ struct RemoteUpdateInfo {
 bool updateNetAvailable();
 void updateNetSetReady(bool ready);
 
+// Stato reale del link (WiFi/LAN/OFF) via nifm, throttled (~1 query ogni 2s,
+// risultato cachato). updateNetAvailable() dice solo "socket pronti" — vero
+// anche senza connessione — quindi la label usava quello e restava fissa.
+const char* updateNetLinkStr();
+
 // Helper: URL base per GitHub Releases (ultimo .nro).
 // Uso: updateNetFetchInfo(githubReleasesUrl("utente", "repo"), token, info, err);
 inline std::string githubReleasesUrl(const std::string& owner, const std::string& repo) {

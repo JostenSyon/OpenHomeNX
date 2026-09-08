@@ -33,6 +33,20 @@ public:
     const std::vector<Pokemon>& dsParty() const { return dsParty_; }
     const std::string& dsOtName() const { return dsOtName_; }
     uint16_t dsTid() const { return dsTid_; }
+    // Party slot access (Switch + DS/GB families). For SCBlock/BDSP/DXY/DSM these
+    // modify the underlying save block/raw and keep dsParty_ in sync; for the
+    // others they just proxy dsParty_. Returns empty Pokemon for out-of-range or
+    // empty slot. set/clear mark dirty.
+    Pokemon getPartySlot(int idx) const;
+    void setPartySlot(int idx, const Pokemon& pkm);
+    void clearPartySlot(int idx);
+    // LGPE: il party sono 6 pointer nella lista piatta dei box — il mon vive in
+    // UNA sola cella box. Servono per tenere pointer/cella in sync (senza: la
+    // cella resta sporca -> cloni nei box; o il pointer penzola -> mon perso).
+    int  lgpeFlatOfParty(int i) const;      // flat box index del pointer i, o -1
+    void lgpeZeroFlatSlot(int flat);        // azzera i dati della cella (pointer invariato)
+    void refreshPartyEntryFromPointer(int idx); // rileggi dsParty_[idx] dalla sua cella
+    bool hasParty() const { for (auto &p: dsParty_) if (!p.isEmpty()) return true; return false; }
 
     Pokemon getBoxSlot(int box, int slot) const;
     void setBoxSlot(int box, int slot, Pokemon pkm);
