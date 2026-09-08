@@ -1047,14 +1047,17 @@ int UI::menuVisibleCount() const {
     // Layout voci: vedi labelsNormal/labelsApplet in drawMenuPopup().
     // Indice 5 = Wondercard (solo se il gioco le supporta),
     // indice 6 = Export Selected (solo se ci sono slot selezionati),
-    // indice 7 = Import PK files (sempre visibile).
+    // indice 7 = Import PK files (sempre visibile),
+    // indice 8 (solo normal, mai dual) = Send current save (solo a save caricato).
     bool hasWC = gameInfo(selectedGame_).hasWondercards;
     bool hasExport = !selectedSlots_.empty();
-    int allCount = isDualBankMode() ? 13 : 12;
+    bool hasSend = !isDualBankMode() && save_.isLoaded();
+    int allCount = 13; // normal e applet hanno ora entrambe 13 voci totali
     int count = 0;
     for (int i = 0; i < allCount; i++) {
         if (!hasWC && i == 5) continue;
         if (!hasExport && i == 6) continue;
+        if (!hasSend && !isDualBankMode() && i == 8) continue;
         count++;
     }
     return count;
@@ -1068,6 +1071,8 @@ void UI::drawMenuPopup() {
     // SV/SwSh games get a "Wondercard" item after Search — +1 Crypto (M3d) +1 Gen (M6a)
     bool hasWC = gameInfo(selectedGame_).hasWondercards;
     bool hasExport = !selectedSlots_.empty();
+    // "Send current save": solo a save caricato e mai in dual-bank.
+    bool hasSend = !isDualBankMode() && save_.isLoaded();
 
     static char exportBuf[64];
     if (hasExport)
@@ -1086,6 +1091,7 @@ void UI::drawMenuPopup() {
         i18n::get(StrKey::MenuWondercard),
         exportBuf,
         i18n::get(StrKey::MenuImportPk),
+        i18n::get(StrKey::SendSaveTitle),
         i18n::get(StrKey::MenuSwitchBank),
         i18n::get(StrKey::MenuChangeGame),
         i18n::get(StrKey::MenuSaveQuit),
@@ -1109,11 +1115,12 @@ void UI::drawMenuPopup() {
     // Build label list, skipping conditional items — menuCount = vi
     std::string visibleLabels[14];
     const std::string* allLabels = isDualBankMode() ? labelsApplet : labelsNormal;
-    int allCount = isDualBankMode() ? 13 : 12;
+    int allCount = 13;
     int vi = 0;
     for (int i = 0; i < allCount; i++) {
         if (!hasWC && i == 5) continue;
         if (!hasExport && i == 6) continue;
+        if (!hasSend && !isDualBankMode() && i == 8) continue;
         visibleLabels[vi++] = allLabels[i];
     }
     int menuCount = vi;

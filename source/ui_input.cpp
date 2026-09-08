@@ -12,12 +12,46 @@
 #include "personal_bdsp.h"
 #include "personal_la.h"
 #include "personal_gg.h"
+#include "update_net.h"
 #include <algorithm>
 #include <cmath>
 #include <cctype>
 #include <cstdio>
+#include <fstream>
 #include <dirent.h>
 #include <sys/stat.h>
+
+namespace {
+// update.cfg accanto all'NRO (o in sdmc:/switch/OpenHomeNX/). Duplicato a
+// posta: readUpdateCfg in ui_selectors.cpp è in un anonymous namespace
+// (stesso precedente di readUpdateAutoCfg in autoupdate.cpp).
+bool readMainMenuUpdateCfg(const std::string& basePath, std::string& urlOut,
+                           std::string& tokenOut) {
+    const std::string paths[] = { basePath + "update.cfg",
+                                  "sdmc:/switch/OpenHomeNX/update.cfg" };
+    for (const auto& p : paths) {
+        std::ifstream f(p);
+        if (!f.good()) continue;
+        std::string line;
+        while (std::getline(f, line)) {
+            if (!line.empty() && line.back() == '\r') line.pop_back();
+            if (line.empty() || line[0] == '#') continue;
+            auto eq = line.find('=');
+            if (eq == std::string::npos) continue;
+            std::string k = line.substr(0, eq), v = line.substr(eq + 1);
+            auto trim = [](std::string& s) {
+                while (!s.empty() && (s.front() == ' ' || s.front() == '\t')) s.erase(s.begin());
+                while (!s.empty() && (s.back()  == ' ' || s.back()  == '\t')) s.pop_back();
+            };
+            trim(k); trim(v);
+            if (k == "url") urlOut = v;
+            else if (k == "token") tokenOut = v;
+        }
+        if (!urlOut.empty()) return true;
+    }
+    return false;
+}
+} // namespace
 
 // --- Joystick ---
 
@@ -115,6 +149,9 @@ void UI::handleInput(bool& running) {
 void UI::handleMenuInput(const SDL_Event& event, bool& running) {
     bool hasWC = gameInfo(selectedGame_).hasWondercards;
     bool hasExport = !selectedSlots_.empty();
+    // "Send current save": solo a save caricato e mai in dual-bank (lì il
+    // pannello sinistro è una banca, non il save del gioco aperto).
+    bool hasSend = !isDualBankMode() && save_.isLoaded();
     int menuCount = menuVisibleCount();
     if (menuSelection_ >= menuCount) menuSelection_ = menuCount - 1;
     if (menuSelection_ < 0) menuSelection_ = 0;
@@ -195,7 +232,27 @@ void UI::handleMenuInput(const SDL_Event& event, bool& running) {
             showPkImportList_ = true;
             return;
         }
-        int sel = menuSelection_ - (hasWC ? 6 : 5) - (hasExport ? 1 : 0) - 1;
+        // Send current save (indice importIdx+1): usa savePath_ già montato
+        // dal gioco aperto — NIENTE mount/unmount, NIENTE commit del save.
+        int sendIdx = importIdx + 1;
+        if (hasSend && menuSelection_ == sendIdx) {
+            showMenu_ = false;
+            std::string url, token;
+            std::string err;
+            if (!readMainMenuUpdateCfg(basePath_, url, token) || url.empty()) {
+                showMessageAndWait(i18n::get(StrKey::SendSaveTitle), i18n::get(StrKey::SendSaveNoUrl));
+            } else if (!updateNetAvailable()) {
+                showMessageAndWait(i18n::get(StrKey::SendSaveTitle), i18n::get(StrKey::SendSaveNetOff));
+            } else {
+                showWorking(i18n::fmt(StrKey::SendSaveUploading, gameInfo(selectedGame_).gameTag));
+                if (updateNetUploadSave(url, token, savePath_, gameInfo(selectedGame_).gameTag, err))
+                    showMessageAndWait(i18n::get(StrKey::SendSaveTitle), i18n::get(StrKey::SendSaveSent));
+                else
+                    showMessageAndWait(i18n::get(StrKey::SendSaveTitle), i18n::fmt(StrKey::SendSaveFailed, err));
+            }
+            return;
+        }
+        int sel = menuSelection_ - (hasWC ? 6 : 5) - (hasExport ? 1 : 0) - 1 - (hasSend ? 1 : 0);
         if (isDualBankMode()) {
             // sel: 0=Switch Left Bank, 1=Switch Right Bank, 2=Change Game,
             // 3=Save Banks, 4=Quit

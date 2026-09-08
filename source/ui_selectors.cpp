@@ -1140,9 +1140,14 @@ void UI::handleGameSelectorInput(bool& running) {
                                             showMessageAndWait(i18n::get(StrKey::SendSaveTitle), i18n::get(StrKey::SendSaveSent));
                                         else
                                             showMessageAndWait(i18n::get(StrKey::SendSaveTitle), i18n::fmt(StrKey::SendSaveFailed, err));
-                                    } else if (selectedProfile_ >= 0 && selectedProfile_ < account_.profileCount()) {
+                                    } else if (selectedProfile_ >= 0 && selectedProfile_ < account_.profileCount()
+                                               && titleIdOf(g) >= 0x0100000000010000ULL && saveFileNameOf(g)[0] != '\0') {
                                         // v2: save account (titoli installati) — mount
                                         // temporaneo, upload, unmount sempre.
+                                        // Il guard titleId/nome esclude i giochi
+                                        // sentinella (importati: 0x1-0x16, nome
+                                        // vuoto): senza, fsOpen riceverebbe un
+                                        // app_id falso e fpath sarebbe "save:/".
                                         std::string fpath;
                                         {
                                             std::string mnt = account_.mountSave(selectedProfile_, g);
