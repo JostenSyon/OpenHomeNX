@@ -180,6 +180,13 @@ private:
     // GBA assembled storage buffer (sectors 5-13 concatenated)
     std::vector<uint8_t> gbaStorage_;
     int gbaActiveSlot_ = 0;
+    // GBA party location from the loadGBA brute scan (count at large+off,
+    // 6x100B slots at large+off+pad). -1 = not found (party read-only then).
+    int gbaPartyLargeOff_ = -1;
+    int gbaPartyPad_ = 4;
+    // Map a Large offset (sectors 1-3 concatenated) to an absolute rawData_
+    // offset in the given save slot (default active). -1 if unmappable.
+    long gbaLargeToRaw(size_t largeOff, int slot = -1) const;
     // 16B extra di alcuni emulatori (conservati e riattaccati in scrittura).
     std::vector<uint8_t> gbaXtra_;
     bool gbaXtraAtEnd_ = true;

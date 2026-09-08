@@ -518,6 +518,43 @@ void SaveFile::setPartySlot(int idx, const Pokemon& pkm) {
             uint8_t* dst = rawData_.data()+OFF+idx*PS;
             if (toWrite.isEmpty()) std::memset(dst,0,PS); else toWrite.getEncrypted(dst);
         }
+    } else if (isFRLG(gameType_) || isImportedFile(gameType_)) {
+        // GBA: rewrite the packed party (count + 6x100B) at the scanned offset,
+        // in BOTH save slots like the box storage (saveGBA mirrors it the same
+        // way). Without this, party edits lived only in dsParty_ and were lost
+        // on save even with dirty_ set (lost-Espeon bug, Smeraldo).
+        if (gbaPartyLargeOff_ >= 0) {
+            // Compact WITH the just-written slot applied (dsParty_[idx] is
+            // only updated in the tail below).
+            std::vector<Pokemon> cur = dsParty_;
+            if ((int)cur.size() <= idx) cur.resize(idx + 1);
+            cur[idx] = toWrite;
+            std::vector<Pokemon> compact;
+            for (auto& pp : cur)
+                if (!pp.isEmpty()) compact.push_back(pp);
+            for (int slot = 0; slot < 2; slot++) {
+                long co = gbaLargeToRaw(static_cast<size_t>(gbaPartyLargeOff_), slot);
+                if (co >= 0)
+                    rawData_[static_cast<size_t>(co)] = static_cast<uint8_t>(compact.size());
+                for (int i = 0; i < 6; i++) {
+                    long so = gbaLargeToRaw(static_cast<size_t>(gbaPartyLargeOff_) +
+                                            static_cast<size_t>(gbaPartyPad_) +
+                                            static_cast<size_t>(i) * 100, slot);
+                    if (so < 0) continue;
+                    uint8_t* dst = rawData_.data() + so;
+                    std::memset(dst, 0, 100); // zero battle bytes too, game recomputes
+                    if (i < static_cast<int>(compact.size())) {
+                        Pokemon w = compact[i];
+                        w.gameType_ = gameType_;
+                        w.getEncrypted(dst); // 80B PK3 record into the 100B slot
+                    }
+                }
+            }
+            DebugLog::line("setPartySlot GBA party=%zu both slots (large+%x pad %d)",
+                           compact.size(), gbaPartyLargeOff_, gbaPartyPad_);
+        } else {
+            DebugLog::line("setPartySlot GBA: no party offset (read-only party)");
+        }
     } else if (isLGPE(gameType_)) {
         if (toWrite.isEmpty()) {
             setLGPEPartyPointer(idx, LGPE_SLOT_EMPTY);
@@ -1962,6 +1999,8 @@ bool SaveFile::loadGBA(const std::string& path) {
                 p.loadFromEncrypted(large.data()+foundOff+pad+i*100,100);
                 if(!p.isEmpty()) dsParty_.push_back(p);
             }
+            gbaPartyLargeOff_ = foundOff;
+            gbaPartyPad_ = pad;
             DebugLog::line("loadGBA: %s -> party %d at large+%x pad %d", path.c_str(), foundCount, foundOff, pad);
         } else {
             DebugLog::line("loadGBA: %s -> party not found (scanned %zu)", path.c_str(), large.size());
@@ -2035,6 +2074,27 @@ bool SaveFile::saveGBA(const std::string& path) {
     written = std::fwrite(rawData_.data(), 1, rawData_.size(), f);
     std::fclose(f);
     return written == rawData_.size();
+}
+
+long SaveFile::gbaLargeToRaw(size_t largeOff, int slot) const {
+    if (rawData_.size() < GBA_SAVE_SIZE)
+        return -1;
+    if (slot < 0) slot = gbaActiveSlot_;
+    if (slot < 0 || slot > 1)
+        return -1;
+    // Large = sectors 1,2,3 concatenated in that order (see loadGBA).
+    size_t secIdx = largeOff / GBA_SECTOR_USED;
+    size_t within = largeOff % GBA_SECTOR_USED;
+    if (secIdx > 2)
+        return -1;
+    int wantId = static_cast<int>(secIdx) + 1;
+    int slotBase = slot * GBA_SECTOR_COUNT * GBA_SECTOR_SIZE;
+    for (int i = 0; i < GBA_SECTOR_COUNT; i++) {
+        int sectorOfs = slotBase + i * GBA_SECTOR_SIZE;
+        if (readU16LE(rawData_.data() + sectorOfs + GBA_OFS_SECTOR_ID) == wantId)
+            return static_cast<long>(sectorOfs) + static_cast<long>(within);
+    }
+    return -1;
 }
 
 uint8_t* SaveFile::findGbaSectorData(int sectionId) {
