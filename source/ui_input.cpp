@@ -1577,12 +1577,13 @@ void UI::actionSelect() {
         // converted we place none, so a partial multi-drop is impossible.
         // Covers both the position-preserving and first-available branches.
         {
-            // Gen1-dest move-drop warning (F2): count non-native moves BEFORE
-            // anything converts (preview load, no mutation). A proceeds,
-            // B keeps the whole batch in hand, untouched. One dialog per drop.
+            // Move-drop warning (F2, generalizzato Gen 1-6): conta le mosse non
+            // native PRIMA di convertire (preview load, no mutation). A procede,
+            // B tiene tutto in mano, intatto. Un dialogo per drop. Il body e
+            // parametrizzato sulla gen ("Gen {2}") e drop+refill vale per 1-6.
             for (int i = 0; i < (int)heldMulti_.size(); i++) {
                 const int dg0 = ohTargetGenFor(destGameFor(cursor_.panel));
-                if (!useOpenHome() || dg0 != 1) break;
+                if (!useOpenHome() || dg0 < 1 || dg0 > 6) break;
                 const int sg0 = ohSourceGenFor(heldMulti_[i].gameType_);
                 const int sz0 = ohRecordBytesFor(sg0);
                 if (sg0 == 0 || sz0 <= 0 || sz0 > (int)heldMulti_[i].data.size()) continue;
@@ -1593,7 +1594,7 @@ void UI::actionSelect() {
                 OpenHomeNX::freePkm(ih);
                 if (dropped != UINT32_MAX && dropped > 0) {
                     if (!showConfirmDialog(i18n::get(StrKey::Gen1DropsTitle),
-                            i18n::fmt(StrKey::Gen1DropsBody, heldMulti_[i].displayName(), std::to_string(dropped), "1")))
+                            i18n::fmt(StrKey::Gen1DropsBody, heldMulti_[i].displayName(), std::to_string(dropped), std::to_string(dg0))))
                         return; // B: cancel, everything stays in hand, untouched
                     break; // A once: convert the whole batch below
                 }
@@ -1692,10 +1693,10 @@ void UI::actionSelect() {
         // format before it is written. Covers both the place-on-empty and the
         // swap branch below, since both place heldPkm_ into this same panel.
         {
-            // Same Gen1-dest move-drop check as the multi drop above, on the
+            // Same move-drop check as the multi drop above, on the
             // single held mon. B cancels with the mon untouched in hand.
             const int dg0 = ohTargetGenFor(destGameFor(cursor_.panel));
-            if (useOpenHome() && dg0 == 1) {
+            if (useOpenHome() && dg0 >= 1 && dg0 <= 6) {
                 const int sg0 = ohSourceGenFor(heldPkm_.gameType_);
                 const int sz0 = ohRecordBytesFor(sg0);
                 if (sg0 != 0 && sz0 > 0 && sz0 <= (int)heldPkm_.data.size()) {
@@ -1706,7 +1707,7 @@ void UI::actionSelect() {
                         OpenHomeNX::freePkm(ih);
                         if (dropped != UINT32_MAX && dropped > 0 &&
                             !showConfirmDialog(i18n::get(StrKey::Gen1DropsTitle),
-                                i18n::fmt(StrKey::Gen1DropsBody, heldPkm_.displayName(), std::to_string(dropped), "1"))) {
+                                i18n::fmt(StrKey::Gen1DropsBody, heldPkm_.displayName(), std::to_string(dropped), std::to_string(dg0)))) {
                             return; // B: cancel, mon untouched in hand
                         }
                     }

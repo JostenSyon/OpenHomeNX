@@ -806,8 +806,48 @@ fn convert_to_pk3(
 
     let existing_backup = ohpkm.original_data_bytes();
     let strategy = pkm_rs::convert_strategy::ConvertStrategy::default();
-    let pk3 = Pk3::from_ohpkm(ohpkm, strategy)?;
+    let mut pk3 = Pk3::from_ohpkm(ohpkm, strategy)?;
+
+    // Move drop + refill through the MoveSlots setters. Mirrors convert_to_pk6:
+    // Gen 3 only has moves introduced in Gen 3 or earlier.
+    let src_moves = ohpkm.moves().indices();
+    let mut indices = pk3.moves.indices();
+    let mut pp = pk3.moves.pp();
+    let mut pp_ups = pk3.moves.pp_ups();
+    let mut had_move = false;
+    for slot in 0..4 {
+        let src = src_moves.get(slot).copied().unwrap_or(0);
+        if src != 0 {
+            had_move = true;
+        }
+        if !pkm_rs::gen3::move_legal_in_gen3(src) {
+            indices[slot] = 0;
+            pp[slot] = 0;
+            pp_ups[slot] = 0;
+        }
+    }
+    if had_move && indices == [0, 0, 0, 0] {
+        let (base, base_pp) = pkm_rs::gen3::base_moves_for_species(
+            ohpkm.species_and_form().get_ndex() as u16,
+        );
+        indices = base.to_vec();
+        pp = base_pp.to_vec();
+    }
+    pk3.moves.set_indices(&indices);
+    pk3.moves.set_pp(&pp);
+    pk3.moves.set_pp_ups(&pp_ups);
+    pk3.refresh_checksum();
+
     let mut new_ohpkm = OhpkmV2::convert_without_backup(&pk3);
+
+    // Remember pre-drop moves (upstream #924 pattern), same as Gen 1.
+    new_ohpkm.set_learned_moves(
+        ohpkm
+            .get_learned_moves()
+            .into_iter()
+            .chain(ohpkm.moves().into_iter().map(|m| m.move_index))
+            .collect(),
+    );
 
     // Propagate fields that Pk3 cannot represent, so they survive the
     // downgrade and are available when the mon returns to a later gen.
@@ -1205,6 +1245,7 @@ pub extern "C" fn openhome_count_moves_not_in_gen(
     let legal: fn(u16) -> bool = match gen {
         1 => pkm_rs::gen1::move_legal_in_gen1,
         2 => pkm_rs::gen2::move_legal_in_gen2,
+        3 => pkm_rs::gen3::move_legal_in_gen3,
         4 => pkm_rs::gen4::move_legal_in_gen4,
         5 => pkm_rs::gen5::move_legal_in_gen5,
         6 => pkm_rs::gen6::move_legal_in_gen6,
@@ -2087,6 +2128,7 @@ mod tests {
     use super::*;
     use pkm_rs::gen1::Pk1;
     use pkm_rs::gen2::Pk2;
+    use pkm_rs::gen3::Pk3;
     use pkm_rs::gen7_alola::Pk7;
     use pkm_rs::gen8_swsh::Pk8;
     use pkm_rs::gen8_la::Pa8;
@@ -3104,8 +3146,7 @@ mod tests {
 
     // Mixed moves: legal ones survive, others become empty slots, no refill.
     #[test]
-    fn transfer_gen2_keeps_mixed_moves_without_refill() {
-        let mixed = MoveSlots::from_arrays(
+    fn transfer_gen2_keeps_mixed_moves_without_refill() {        let mixed = MoveSlots::from_arrays(
             [
                 MoveIndex::from_u16(85),
                 MoveIndex::from_u16(500),
@@ -3124,6 +3165,75 @@ mod tests {
         assert!(!out.is_null());
         let converted = unsafe { &*out };
         assert_eq!(move_indices(&converted.ohpkm), [85, 0, 98, 0]);
+        openhome_free_pkm(out);
+    }
+
+    // Gen3 (R/S/E) move drop + refill through the public FFI: Sword Pikachu
+    // with Gen5+ moves (500-503) -> target_gen == 3 -> count reports 4,
+    // transfer succeeds, record refilled with Emerald base moves (all
+    // Gen3-legal, PP>0), pre-drop moves remembered in LearnedMoves.
+    #[test]
+    fn transfer_gen3_drops_modern_moves_and_refills_base() {
+        let mut handle = PkmHandle {
+            ohpkm: make_test_ohpkm(OriginGame::Sword, modern_moves()),
+        };
+        handle.ohpkm.set_learned_moves(vec![MoveIndex::from_u16(100)]);
+        let ptr = &mut handle as *mut PkmHandle;
+        assert_eq!(
+            openhome_count_moves_not_in_gen(ptr, 3),
+            4,
+            "all four modern moves must be reported as dropped for Gen 3"
+        );
+        let out = openhome_transfer_pkm(ptr, 3);
+        assert!(
+            !out.is_null(),
+            "transfer to gen 3 must succeed with refilled moves"
+        );
+        let converted = unsafe { &*out };
+        let got = move_indices(&converted.ohpkm);
+        assert_ne!(got, [0, 0, 0, 0], "refill must leave usable moves");
+        assert!(
+            got.iter().all(|&m| pkm_rs::gen3::move_legal_in_gen3(m)),
+            "refilled moves must all be Gen3-legal, got {:?}",
+            got
+        );
+        let remembered: Vec<u16> = converted
+            .ohpkm
+            .get_learned_moves()
+            .iter()
+            .filter_map(|m| m.to_raw())
+            .collect();
+        assert_eq!(
+            remembered,
+            [100, 500, 501, 502, 503],
+            "pre-drop moves (plus prior memory) must survive in LearnedMoves"
+        );
+        // Materialize Pk3 box bytes through the FFI and re-parse them.
+        let mut buf = [0u8; 128];
+        let n = openhome_get_pkm_box_bytes_for_gen(out, 3, buf.as_mut_ptr(), buf.len());
+        assert_eq!(n, 80, "Pk3 box record must be 80 bytes");
+        let pk3 = Pk3::from_bytes(&buf[..n as usize]).expect("Pk3 bytes must re-parse");
+        assert_eq!(pk3.moves.indices(), got);
+        assert!(
+            pk3.moves.pp().iter().all(|&pp| pp > 0),
+            "refilled moves must carry base PP"
+        );
+        openhome_free_pkm(out);
+    }
+
+    // Gen3 keeps Gen1-era moves: Sword Pikachu test moves are all
+    // Gen3-legal, so nothing is reported and everything survives.
+    #[test]
+    fn transfer_gen3_keeps_legal_moves_without_refill() {
+        let mut handle = PkmHandle {
+            ohpkm: make_test_ohpkm(OriginGame::Sword, test_moves()),
+        };
+        let ptr = &mut handle as *mut PkmHandle;
+        assert_eq!(openhome_count_moves_not_in_gen(ptr, 3), 0);
+        let out = openhome_transfer_pkm(ptr, 3);
+        assert!(!out.is_null());
+        let converted = unsafe { &*out };
+        assert_eq!(move_indices(&converted.ohpkm), [85, 98, 86, 87]);
         openhome_free_pkm(out);
     }
 
