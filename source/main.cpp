@@ -100,18 +100,10 @@ int main(int argc, char* argv[]) {
     }
     bootMark("rete");
 
-    // Auto-check update in parallelo (solo se `auto=1` in update.cfg, mai sul
-    // boot-bounce): il thread fa fetch+confronto, il boot continua subito.
-    // Il prompt appare nella home giochi quando il risultato è pronto.
-    {
-        std::string url, token;
-        if (!pendingUpdate && netReady && readUpdateAutoCfg(basePath, url, token)) {
-            if (url.empty())
-                url = githubReleasesUrl("JostenSyon", "OpenHomeNX");
-            DebugLog::line("autoupdate: background check -> %s", url.c_str());
-            autoUpdateStart(url, token, APP_VERSION);
-        }
-    }
+    // Auto-check update al boot ACCANTONATO (2026-09-08): il check resta
+    // manuale da menu (GitHub di default, `url=` come override LAN).
+    // Codice in source/autoupdate.{h,cpp}, poll in UI::run — nessuno li
+    // chiama più da qui, da riattivare quando servirà.
 
 #ifdef OH_USB_UPDATE
     // USB Mass Storage host: lets "Check for update" scan an inserted USB drive
