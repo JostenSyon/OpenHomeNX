@@ -220,7 +220,7 @@ void UI::selectProfile(int index) {
     screen_ = AppScreen::GameSelector;
 }
 
-// --- File import (GEN_PLAN Fase 2/5: emulator saves on SD/USB) ---
+// --- File import (docs/archive/GEN_PLAN.md Fase 2/5: emulator saves on SD/USB) ---
 
 void UI::appendImportedGames() {
     importedGames_ = scanImportPaths(importPaths_, autoCheckUsb_);

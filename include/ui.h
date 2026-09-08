@@ -225,7 +225,7 @@ private:
     std::vector<std::string> langList_;
 
     // Import-path settings state: which folders/USB suffixes to scan for
-    // emulator save files (GEN_PLAN Fase 2/5). Row 0 of the popup is the
+    // emulator save files (docs/archive/GEN_PLAN.md Fase 2/5). Row 0 of the popup is the
     // autoCheckUsb_ toggle, rows 1..importPaths_.size() are the configured
     // paths, the last row is "+ Add path...".
     bool showImportSettings_    = false;

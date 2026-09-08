@@ -23,7 +23,7 @@ inline bool isFRLG(GameType g) {
 // configured import paths (see import_paths.h, import_scan.h) rather than
 // mounted via AccountManager::mountSave(). They share FRLG's exact GBA sector
 // container (verified against real ruby/sapphire/emerald.sav fixtures — see
-// GEN_PLAN.md Fase 5), so SaveFile::load()/save() route them through the same
+// docs/archive/GEN_PLAN.md Fase 5), so SaveFile::load()/save() route them through the same
 // loadGBA()/saveGBA() as FRLG; only the titleId-bound paths (icon fetch from
 // NS, AccountManager mount/backup) need to treat them differently.
 inline bool isImportedFile(GameType g) {

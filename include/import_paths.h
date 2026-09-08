@@ -4,7 +4,7 @@
 
 // A file-import source: a folder scanned for save files that don't come from
 // a titleId-mounted Switch game (GBA/GB emulator saves on SD or USB). See
-// GEN_PLAN.md Fase 2/5 — this is the persistence layer only; the actual
+// docs/archive/GEN_PLAN.md Fase 2/5 — this is the persistence layer only; the actual
 // directory scan / GameType wiring lands separately.
 struct ImportPathEntry {
     std::string path;      // e.g. "sdmc:/switch/OpenHomeNX/import/"
