@@ -40,6 +40,11 @@ public:
     Pokemon getPartySlot(int idx) const;
     void setPartySlot(int idx, const Pokemon& pkm);
     void clearPartySlot(int idx);
+    // Debug: piazza un Caterpie segnaposto (L5, PK3 valido) in slot 0 quando
+    // la squadra e vuota — nessun gioco accetta party 0 (Smeraldo spawnava
+    // glitch). Solo GBA (FRLG + R/S/E importati); altrove torna false e la UI
+    // rimanda a sistemare a mano. Identita OT copiata dal primo mon dei box.
+    bool placeCaterpiePlaceholder();
     // LGPE: il party sono 6 pointer nella lista piatta dei box — il mon vive in
     // UNA sola cella box. Servono per tenere pointer/cella in sync (senza: la
     // cella resta sporca -> cloni nei box; o il pointer penzola -> mon perso).

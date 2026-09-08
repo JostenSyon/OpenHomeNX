@@ -1005,6 +1005,11 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
                 if (!saveBankFiles()) {
                     saveNow_ = false;
                     running = true;
+                } else if (!running && !ensurePartyOnExit()) {
+                    // Save & Quit con party vuota + B al dialogo: annulla
+                    // l'uscita, resta nel gioco senza salvare.
+                    saveNow_ = false;
+                    running = true;
                 } else {
                     persistGameSaveIfDirty();
                     saveNow_ = false;

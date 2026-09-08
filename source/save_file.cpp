@@ -2,6 +2,7 @@
 #include "save_file_ffi.h"
 #include "poke_crypto.h"
 #include "pokemon_ffi.h"
+#include "species_converter.h"
 #include "gen1_tables.h"
 #include "handler_update.h"
 #include "openhome_ffi.h"
@@ -9,6 +10,7 @@
 #include "binary_io.h"
 #include "md5.h"
 #include "debug_log.h"
+#include <cctype>
 #include <fstream>
 #include <cstdio>
 #include <cstring>
@@ -562,10 +564,13 @@ void SaveFile::setPartySlot(int idx, const Pokemon& pkm) {
             for (auto& pp : cur)
                 if (!pp.isEmpty() && pp.species() != 0) compact.push_back(pp);
             // Mai persistere count 0: nessuno stato valido di gioco lo produce
-            // (lo Smeraldo con party vuoto spawnava glitch all'uscita). La UI
-            // blocca la presa dell'ultimo mon; questo è il secondo catenaccio.
+            // (lo Smeraldo con party vuoto spawnava glitch all'uscita).
+            // Debug: la memoria segue la mano (strip si svuota), il disco
+            // tiene l'ultimo party valido; l'exit-hook offrira il Caterpie.
             if (compact.empty()) {
-                DebugLog::line("setPartySlot GBA: refuse empty party, disk untouched");
+                dsParty_[idx] = toWrite;
+                dirty_ = true; invalidateAllBoxCache();
+                DebugLog::line("setPartySlot GBA: party emptied in memory, disk keeps last valid party");
                 return;
             }
             for (int slot = 0; slot < 2; slot++) {
@@ -627,6 +632,109 @@ void SaveFile::setPartySlot(int idx, const Pokemon& pkm) {
 void SaveFile::clearPartySlot(int idx) {
     Pokemon empty; empty.gameType_ = gameType_;
     setPartySlot(idx, empty);
+}
+
+// Gen3 text encoder, ASCII subset (PKHeX StringConverter G3: A-Z 0xBB..,
+// 0-9 0xA1.., spazio 0x00, terminatore 0xFF). Basta per nickname/OT fallback.
+static uint8_t gen3EncodeChar(char c) {
+    if (c >= 'A' && c <= 'Z') return static_cast<uint8_t>(0xBB + (c - 'A'));
+    if (c >= 'a' && c <= 'z') return static_cast<uint8_t>(0xD5 + (c - 'a'));
+    if (c >= '0' && c <= '9') return static_cast<uint8_t>(0xA1 + (c - '0'));
+    return 0x00;
+}
+static void gen3EncodeName(const std::string& s, uint8_t* dst, size_t len) {
+    size_t i = 0;
+    for (; i < s.size() && i < len; i++) dst[i] = gen3EncodeChar(s[i]);
+    if (i < len) dst[i++] = 0xFF;
+    for (; i < len; i++) dst[i] = 0x00;
+}
+
+// I 4 sottoblocchi PK3 in memoria (decifrati) sono SEMPRE in ordine canonico
+// G,A,E,M — lo shuffle per PID%24 esiste solo nel record cifrato su disco
+// (PokeCrypto::encryptArray3 lo applica in uscita). Qui NON si shuffla.
+
+bool SaveFile::placeCaterpiePlaceholder() {
+    if (!isFRLG(gameType_) && !isImportedFile(gameType_)) return false;
+    // Identita OT: copia raw (nome Gen3 + lingua + TID/SID) dal primo mon dei
+    // box — il segnaposto risulta nativo del save. Fallback: TID sezione 0.
+    uint32_t otId = 0;
+    uint8_t ot[7] = {};
+    uint8_t lang = 2;
+    bool haveId = false;
+    for (int b = 0; b < GBA_BOX_COUNT && !haveId; b++) {
+        const auto& box = getCachedBox(b);
+        for (auto& m : box) {
+            if (!m.isEmpty() && m.data.size() >= 0x1C) {
+                std::memcpy(&otId, m.data.data() + 4, 4);
+                std::memcpy(ot, m.data.data() + 0x14, 7);
+                lang = m.data.data()[0x12];
+                haveId = true;
+                break;
+            }
+        }
+    }
+    if (!haveId) {
+        if (uint8_t* sec0 = findGbaSectorData(0)) {
+            otId = static_cast<uint32_t>(readU16LE(sec0 + 0x0A)) |
+                   (static_cast<uint32_t>(readU16LE(sec0 + 0x0C)) << 16);
+            gen3EncodeName(dsOtName_, ot, 7);
+        }
+    }
+    // Caterpie fisso L5: PID nonzero arbitrario, mosse Tackle/String Shot,
+    // stat da formula Gen3 con base 45/30/35/45/20/20 (IV/EV 0):
+    // HP 19, Atk 8, Def 8, Spe 9, SpA 7, SpD 7. Exp Medium-Fast L5 = 125.
+    Pokemon p; p.gameType_ = gameType_;
+    p.data.fill(0); // std::array: azzera tutto, uso i primi 100B (PK3 party)
+    uint8_t* d = p.data.data();
+    const uint32_t pid = 0xC0FFEE10;
+    auto w16 = [&](size_t o, uint16_t v) { d[o] = v & 0xFF; d[o+1] = (v >> 8) & 0xFF; };
+    auto w32 = [&](size_t o, uint32_t v) { w16(o, v & 0xFFFF); w16(o+2, (v >> 16) & 0xFFFF); };
+    w32(0x00, pid);
+    w32(0x04, otId);
+    std::string nick = SpeciesName::get(10);
+    if (nick.empty()) nick = "Caterpie";
+    for (char& c : nick) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+    gen3EncodeName(nick, d + 8, 10);
+    d[0x12] = lang;
+    d[0x13] = 0;
+    std::memcpy(d + 0x14, ot, 7);
+    d[0x1B] = 0;
+    d[0x1C] = 0; d[0x1D] = 0; // checksum: la calcola refreshChecksum()
+    d[0x1E] = 0; d[0x1F] = 0;
+    uint8_t G[12] = {}, A[12] = {}, E[12] = {}, M[12] = {};
+    uint16_t internal = SpeciesConverter::getInternal3(10);
+    G[0] = internal & 0xFF; G[1] = (internal >> 8) & 0xFF;
+    G[4] = 125; // exp L5 (Medium Fast: 125), byte alti 0
+    G[9] = 70;  // friendship base Caterpie
+    A[0] = 33; A[2] = 81;             // Tackle, String Shot
+    A[8] = 35; A[9] = 40;             // PP
+    M[2] = 5;                         // met level 5, OT gender 0
+    uint8_t game = 3;                 // PKHeX GameVersion: E=3,R=2,S=1,FR=4,LG=5
+    if (gameType_ == GameType::RUBY) game = 2;
+    else if (gameType_ == GameType::SAPPHIRE) game = 1;
+    else if (isFRLG(gameType_))
+        game = (gameType_ == GameType::LG || gameType_ == GameType::LG_ES ||
+                gameType_ == GameType::LG_DE || gameType_ == GameType::LG_IT ||
+                gameType_ == GameType::LG_FR || gameType_ == GameType::LG_JA) ? 5 : 4;
+    M[3] = static_cast<uint8_t>(game | (4 << 4)); // game + Ball 4 (Poke Ball)
+    std::memcpy(d + 0x20, G, 12); // canonico: G,A,E,M (vedi nota sopra)
+    std::memcpy(d + 0x2C, A, 12);
+    std::memcpy(d + 0x38, E, 12);
+    std::memcpy(d + 0x44, M, 12);
+    w32(0x50, 0);                     // status
+    d[0x54] = 5; d[0x55] = 0;         // level, pokerus
+    w16(0x56, 19); w16(0x58, 19);     // curHP, maxHP
+    w16(0x5A, 8); w16(0x5C, 8);       // atk, def
+    w16(0x5E, 9);                     // spe
+    w16(0x60, 7); w16(0x62, 7);       // spa, spd
+    p.refreshChecksum();
+    if (!p.pk3ChecksumValid()) {
+        DebugLog::line("placeCaterpiePlaceholder: self-check FAILED, abort");
+        return false;
+    }
+    setPartySlot(0, p);
+    DebugLog::line("placeCaterpiePlaceholder: Caterpie L5 in slot 0 (pid %08x)", pid);
+    return true;
 }
 
 int SaveFile::lgpeFlatOfParty(int i) const {

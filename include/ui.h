@@ -521,6 +521,10 @@ private:
     // Write the game save (+ account commit + "Saving…" mask + LED) only when a
     // mutator actually changed it since load. No-op in dual-bank mode.
     void persistGameSaveIfDirty();
+    // Exit-guard party vuota (debug): nessun gioco accetta party 0. GBA offre
+    // il Caterpie segnaposto (A = piazza ed esci, B = torno a sistemare a
+    // mano); altrove blocca con messaggio. true = si puo uscire.
+    bool ensurePartyOnExit();
 
     // Bank selector
     void drawBankSelectorFrame();

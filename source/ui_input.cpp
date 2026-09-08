@@ -543,18 +543,10 @@ void UI::handleNormalInput(const SDL_Event& event) {
                             refreshHighlightSet();
                         } else {
                             // Pick from party: hand stays on strip, mon disappears from strip.
-                            // Last-mon guard: nessun gioco accetta party vuoto (lo Smeraldo
-                            // con count 0 spawnava glitch) — come il divieto di deposito
-                            // dell'ultimo mon nei giochi reali.
+                            // Debug: anche l'ultimo mon si puo prendere (party svuotabile);
+                            // l'exit-hook (ensurePartyOnExit) offre il Caterpie prima del save.
                             Pokemon pm = save_.getPartySlot(partyCursor_);
                             if (!pm.isEmpty()) {
-                                int alive = 0;
-                                for (const auto& q : save_.dsParty())
-                                    if (!q.isEmpty()) alive++;
-                                if (alive <= 1) {
-                                    showMessageAndWait(i18n::get(StrKey::PartyPokemon),
-                                        i18n::get(StrKey::CantEmptyParty));
-                                } else {
                                 DebugLog::line("party pick: slot=%d spc=%u gt=%d ec=%08x iv32=%08x egg=%d",
                                     partyCursor_, pm.species(), (int)pm.gameType_,
                                     pm.encryptionConstant(), pm.iv32(), pm.isEgg() ? 1 : 0);
@@ -576,7 +568,6 @@ void UI::handleNormalInput(const SDL_Event& event) {
                                 if (partyFlat >= 0)
                                     save_.lgpeZeroFlatSlot(partyFlat);
                                 refreshHighlightSet();
-                                }
                             }
                         }
                     } else {
@@ -1676,21 +1667,7 @@ void UI::actionSelect() {
         lgpeHeldPartyIdx_ = (cursor_.panel == Panel::Game)
             ? save_.lgpePartyIndexOf(box, slot) : -1;
         heldFromLGPEParty_ = (lgpeHeldPartyIdx_ >= 0);
-        // Last-mon guard anche qui: la cella box può essere l'ultimo membro
-        // del party (LGPE punta le celle) — prenderlo svuoterebbe la squadra.
-        if (heldFromLGPEParty_) {
-            int alive = 0;
-            for (const auto& q : save_.dsParty())
-                if (!q.isEmpty()) alive++;
-            if (alive <= 1) {
-                showMessageAndWait(i18n::get(StrKey::PartyPokemon),
-                    i18n::get(StrKey::CantEmptyParty));
-                holding_ = false; heldPkm_ = Pokemon{};
-                heldFromLGPEParty_ = false; lgpeHeldPartyIdx_ = -1;
-                swapHistory_.clear();
-                return;
-            }
-        }
+        // Debug: presa libera anche dell'ultimo membro (exit-hook copre).
         lgpePartyBackup_ = save_.lgpePartyIndices();
         swapHistory_.clear();
         swapHistory_.push_back({pkm, cursor_.panel, box, slot});
@@ -1798,8 +1775,35 @@ void UI::actionSelect() {
     }
 }
 
+bool UI::ensurePartyOnExit() {
+    if (!save_.isLoaded() || isDualBankMode()) return true;
+    if (save_.hasParty()) return true;
+    DebugLog::line("exit: party vuota, chiedo Caterpie/manuale");
+    if (isFRLG(selectedGame_) || isImportedFile(selectedGame_)) {
+        if (showConfirmDialog(i18n::get(StrKey::EmptyPartyTitle),
+                              i18n::get(StrKey::EmptyPartyCaterpie))) {
+            if (!save_.placeCaterpiePlaceholder()) {
+                showMessageAndWait(i18n::get(StrKey::EmptyPartyTitle),
+                                   i18n::get(StrKey::CantEmptyParty));
+                return false;
+            }
+            if (holding_)
+                DebugLog::line("exit: Caterpie piazzato, mon in mano segue il flusso standard");
+            return true;
+        }
+        return false; // B: torno a mettere qualcosa a mano
+    }
+    showMessageAndWait(i18n::get(StrKey::PartyPokemon),
+                       i18n::get(StrKey::CantEmptyParty));
+    return false;
+}
+
 void UI::returnToGameSelector() {
     if (!saveBankFiles())
+        return;
+    // Debug empty-party: prima di persistere, offri il Caterpie (GBA) o
+    // rimanda a sistemare a mano. B = resta nel gioco, niente save.
+    if (!ensurePartyOnExit())
         return;
     persistGameSaveIfDirty();
     // Unmount regardless — leaving the game, so release the save mount even
