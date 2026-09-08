@@ -1334,9 +1334,8 @@ void UI::enterAllBanksMode() {
 // canonical .nro is not in use and can be overwritten with a plain copy
 // (a rename of the in-use file is what failed before). MUST run at every
 // boot, not only when the user opens "Check for update" — otherwise .nro
-// stays stale (hbmenu keeps launching the old build). Consolidation never
-// bounces: boot continues from .new (already the new build), so an update
-// costs exactly one restart and never shows the "Updating…" card.
+// stays stale (hbmenu keeps launching the old build) and the residual
+// nextLoad keeps relaunching .new, which looks like a double restart.
 bool UI::finalizePendingUpdate() {
     const std::string runningNro = basePath_ + "OpenHomeNX.nro";
     const std::string pending = runningNro + ".new";
@@ -1345,10 +1344,11 @@ bool UI::finalizePendingUpdate() {
         return false;                   // nothing pending
 
     // NOTE: never call envSetNextLoad("", "") to "clear" a pending nextLoad.
-    // hbloader consumes the nextLoad the moment it chainloads .new, so by the
-    // time we run there is nothing left to clear — and setting it to an empty
-    // path makes hbloader try to chainload "" on the next exit, which is the
-    // fatal-error ("ugly crash") screen the user saw. Just don't set one.
+    // Setting it to an empty path makes hbloader try to chainload "" on the
+    // next exit, which is the fatal-error ("ugly crash") screen the user saw.
+    // And a pending nextLoad->.new is NOT consumed by chainloading (verified
+    // 2026-09-08: without the bounce every exit relaunched .new) — it must be
+    // overwritten with the canonical .nro, which is exactly what the bounce does.
 
     std::string pendVer;
     if (!readNroDisplayVersion(pending, pendVer)) {
@@ -1369,7 +1369,8 @@ bool UI::finalizePendingUpdate() {
             DebugLog::line("update: finalized (blind) %s -> %s", pending.c_str(), runningNro.c_str());
             if (std::remove(pending.c_str()) != 0)
                 DebugLog::line("update: .new is the running image, cleaned next boot");
-            return false; // no bounce: keep running from .new (see below)
+            if (envHasNextLoad()) { envSetNextLoad(runningNro.c_str(), runningNro.c_str()); return true; }
+            return false;
         }
         if (envHasNextLoad()) envSetNextLoad(pending.c_str(), pending.c_str());
         return false;
@@ -1404,11 +1405,17 @@ bool UI::finalizePendingUpdate() {
         // via the same-version branch above (remove succeeds from there).
         if (std::remove(pending.c_str()) != 0)
             DebugLog::line("update: .new is the running image, cleaned next boot");
-        // No bounce (retired 2026-09-08): .new already runs the new build, so
-        // boot continues from it — no "Updating…" card, no second restart.
-        // The sidecar that can't be unlinked (running image) is removed on the
-        // next canonical boot by the same-version branch above. nextLoad was
-        // already consumed by hbloader when chainloading .new: don't set one.
+        // Bounce into the canonical .nro (now the new build) behind the
+        // "Updating…" mask. This *is* a second restart, but the throw-away
+        // .new boot that runs it is stripped to the bone (see main.cpp:
+        // no net/USB/text-data/splash), so it's a quick flash, not a full
+        // second app launch. The bounce also overwrites the stale
+        // nextLoad->.new: without it every exit chainloads .new again
+        // (verified 2026-09-08: exit rebooted instead of quitting).
+        if (envHasNextLoad()) {
+            envSetNextLoad(runningNro.c_str(), runningNro.c_str());
+            return true;
+        }
         return false;
     }
 
@@ -1423,10 +1430,11 @@ bool UI::finalizePendingUpdate() {
 }
 
 // Called from main() BEFORE net/USB/text-data/splash when OpenHomeNX.nro.new is
-// present. Consolidates the update into OpenHomeNX.nro and always returns false
-// (no bounce since 2026-09-08) so main() continues a normal boot from .new.
-// tryUpdateBounce/showWorking("Updating…") stay as dead fallback: finalize
-// no longer arms a bounce. Needs init() (renderer) already done.
+// present. Consolidates the update into OpenHomeNX.nro; if a bounce into the
+// fresh .nro is armed, flashes the "Updating…" card and returns true so main()
+// exits straight away (libnx then chainloads the nextLoad). Returns false when
+// there is nothing to bounce (a stale .new was just cleared) — main() then
+// continues a normal boot. Needs init() (renderer) already done.
 bool UI::tryUpdateBounce(const std::string& basePath) {
     basePath_ = basePath;
     if (!finalizePendingUpdate())

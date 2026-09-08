@@ -108,11 +108,11 @@ bool copyFileTo(const std::string& src, const std::string& dst) {
 }
 
 int compareVersionStrings(const std::string& a, const std::string& b) {
-    auto parse = [](const std::string& s, int out[3]) {
-        out[0] = out[1] = out[2] = 0;
+    auto parse = [](const std::string& s, int out[4]) {
+        out[0] = out[1] = out[2] = out[3] = 0;
         int idx = 0;
         size_t i = 0;
-        while (idx < 3 && i < s.size()) {
+        while (idx < 4 && i < s.size()) {
             int v = 0;
             bool any = false;
             while (i < s.size() && s[i] >= '0' && s[i] <= '9') {
@@ -126,10 +126,10 @@ int compareVersionStrings(const std::string& a, const std::string& b) {
                 ++i; // skip '.', '-', spaces, etc.
         }
     };
-    int va[3], vb[3];
+    int va[4], vb[4];
     parse(a, va);
     parse(b, vb);
-    for (int i = 0; i < 3; ++i) {
+    for (int i = 0; i < 4; ++i) {
         if (va[i] != vb[i])
             return va[i] < vb[i] ? -1 : 1;
     }
