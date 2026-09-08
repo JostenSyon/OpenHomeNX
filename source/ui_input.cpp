@@ -542,9 +542,19 @@ void UI::handleNormalInput(const SDL_Event& event) {
                             }
                             refreshHighlightSet();
                         } else {
-                            // Pick from party: hand stays on strip, mon disappears from strip
+                            // Pick from party: hand stays on strip, mon disappears from strip.
+                            // Last-mon guard: nessun gioco accetta party vuoto (lo Smeraldo
+                            // con count 0 spawnava glitch) — come il divieto di deposito
+                            // dell'ultimo mon nei giochi reali.
                             Pokemon pm = save_.getPartySlot(partyCursor_);
                             if (!pm.isEmpty()) {
+                                int alive = 0;
+                                for (const auto& q : save_.dsParty())
+                                    if (!q.isEmpty()) alive++;
+                                if (alive <= 1) {
+                                    showMessageAndWait(i18n::get(StrKey::PartyPokemon),
+                                        i18n::get(StrKey::CantEmptyParty));
+                                } else {
                                 DebugLog::line("party pick: slot=%d spc=%u gt=%d ec=%08x iv32=%08x egg=%d",
                                     partyCursor_, pm.species(), (int)pm.gameType_,
                                     pm.encryptionConstant(), pm.iv32(), pm.isEgg() ? 1 : 0);
@@ -566,6 +576,7 @@ void UI::handleNormalInput(const SDL_Event& event) {
                                 if (partyFlat >= 0)
                                     save_.lgpeZeroFlatSlot(partyFlat);
                                 refreshHighlightSet();
+                                }
                             }
                         }
                     } else {
@@ -1665,6 +1676,21 @@ void UI::actionSelect() {
         lgpeHeldPartyIdx_ = (cursor_.panel == Panel::Game)
             ? save_.lgpePartyIndexOf(box, slot) : -1;
         heldFromLGPEParty_ = (lgpeHeldPartyIdx_ >= 0);
+        // Last-mon guard anche qui: la cella box può essere l'ultimo membro
+        // del party (LGPE punta le celle) — prenderlo svuoterebbe la squadra.
+        if (heldFromLGPEParty_) {
+            int alive = 0;
+            for (const auto& q : save_.dsParty())
+                if (!q.isEmpty()) alive++;
+            if (alive <= 1) {
+                showMessageAndWait(i18n::get(StrKey::PartyPokemon),
+                    i18n::get(StrKey::CantEmptyParty));
+                holding_ = false; heldPkm_ = Pokemon{};
+                heldFromLGPEParty_ = false; lgpeHeldPartyIdx_ = -1;
+                swapHistory_.clear();
+                return;
+            }
+        }
         lgpePartyBackup_ = save_.lgpePartyIndices();
         swapHistory_.clear();
         swapHistory_.push_back({pkm, cursor_.panel, box, slot});

@@ -66,6 +66,7 @@
 	"create_new_bank": "Nieuwe bank aanmaken?",
 	"party_pokemon": "Team-Pokemon",
 	"cant_release_party": "Kan een team-Pokemon niet vrijlaten.",
+	"cant_empty_party": "Kan de laatste Pokemon niet pakken: het team mag niet leeg zijn.",
 	"release_pokemon": "Pokemon vrijlaten",
 	"release_confirm": "{0} vrijlaten?",
 	"exported": "Geexporteerd!",

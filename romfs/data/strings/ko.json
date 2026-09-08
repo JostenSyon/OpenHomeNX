@@ -66,6 +66,7 @@
 	"create_new_bank": "새 뱅크를 만드시겠습니까?",
 	"party_pokemon": "파티 포켓몬",
 	"cant_release_party": "파티 포켓몬은 놓아줄 수 없습니다.",
+	"cant_empty_party": "마지막 포켓몬은 가져갈 수 없습니다: 파티를 비울 수 없습니다.",
 	"release_pokemon": "포켓몬 놓아주기",
 	"release_confirm": "{0}을(를) 놓아주시겠습니까?",
 	"exported": "내보내기 완료!",

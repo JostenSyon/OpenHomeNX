@@ -66,6 +66,7 @@
 	"create_new_bank": "新しいバンクを作成しますか？",
 	"party_pokemon": "手持ちポケモン",
 	"cant_release_party": "手持ちポケモンは逃がせません。",
+	"cant_empty_party": "最後のポケモンは取り出せません：手持ちを空にできません。",
 	"release_pokemon": "ポケモンを逃がす",
 	"release_confirm": "{0}を逃がしますか？",
 	"exported": "エクスポート完了！",

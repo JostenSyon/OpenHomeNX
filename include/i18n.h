@@ -136,6 +136,7 @@ namespace StrKey {
     constexpr const char* CreateNewBank        = "create_new_bank";
     constexpr const char* PartyPokemon         = "party_pokemon";
     constexpr const char* CantReleaseParty     = "cant_release_party";
+    constexpr const char* CantEmptyParty       = "cant_empty_party";
     constexpr const char* ReleasePokemon       = "release_pokemon";
     constexpr const char* ReleaseConfirm       = "release_confirm";
     constexpr const char* Exported             = "exported";

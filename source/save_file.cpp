@@ -561,6 +561,13 @@ void SaveFile::setPartySlot(int idx, const Pokemon& pkm) {
             std::vector<Pokemon> compact;
             for (auto& pp : cur)
                 if (!pp.isEmpty() && pp.species() != 0) compact.push_back(pp);
+            // Mai persistere count 0: nessuno stato valido di gioco lo produce
+            // (lo Smeraldo con party vuoto spawnava glitch all'uscita). La UI
+            // blocca la presa dell'ultimo mon; questo è il secondo catenaccio.
+            if (compact.empty()) {
+                DebugLog::line("setPartySlot GBA: refuse empty party, disk untouched");
+                return;
+            }
             for (int slot = 0; slot < 2; slot++) {
                 long co = gbaLargeToRaw(static_cast<size_t>(gbaPartyLargeOff_), slot);
                 if (co >= 0)

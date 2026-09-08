@@ -66,6 +66,7 @@
 	"create_new_bank": "Creer une nouvelle banque ?",
 	"party_pokemon": "Pokemon d'equipe",
 	"cant_release_party": "Impossible de relacher un Pokemon d'equipe.",
+	"cant_empty_party": "Impossible de prendre le dernier Pokemon : l'equipe ne peut pas etre vide.",
 	"release_pokemon": "Relacher le Pokemon",
 	"release_confirm": "Relacher {0} ?",
 	"exported": "Exporte !",

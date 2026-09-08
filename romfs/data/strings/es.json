@@ -66,6 +66,7 @@
 	"create_new_bank": "¿Crear un nuevo banco?",
 	"party_pokemon": "Pokemon del equipo",
 	"cant_release_party": "No se puede liberar un Pokemon del equipo.",
+	"cant_empty_party": "No se puede tomar el ultimo Pokemon: el equipo no puede quedar vacio.",
 	"release_pokemon": "Liberar Pokemon",
 	"release_confirm": "¿Liberar a {0}?",
 	"exported": "¡Exportado!",

@@ -66,6 +66,7 @@
 	"create_new_bank": "建立新銀行？",
 	"party_pokemon": "隊伍寶可夢",
 	"cant_release_party": "無法放生隊伍中的寶可夢。",
+	"cant_empty_party": "無法取出最後一隻寶可夢：隊伍不能為空。",
 	"release_pokemon": "放生寶可夢",
 	"release_confirm": "放生{0}？",
 	"exported": "已匯出！",

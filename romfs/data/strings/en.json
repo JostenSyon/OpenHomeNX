@@ -69,6 +69,7 @@
 	"create_new_bank": "Create a new bank?",
 	"party_pokemon": "Party Pokemon",
 	"cant_release_party": "Can't release a party Pokemon.",
+	"cant_empty_party": "Can't take the last Pokemon: the party can't be empty.",
 	"release_pokemon": "Release Pokemon",
 	"release_confirm": "Release {0}?",
 	"exported": "Exported!",

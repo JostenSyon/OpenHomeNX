@@ -69,6 +69,7 @@
     "create_new_bank": "Creare una nuova banca?",
     "party_pokemon": "Pokemon della squadra",
     "cant_release_party": "Impossibile rilasciare un Pokemon della squadra.",
+    "cant_empty_party": "Impossibile prendere l'ultimo Pokemon: la squadra non puo restare vuota.",
     "release_pokemon": "Rilascia Pokemon",
     "release_confirm": "Rilasciare {0}?",
     "exported": "Esportato!",
