@@ -2793,7 +2793,7 @@ mod tests {
     // through the FFI preserves species, level and moves.
     #[test]
     fn load_real_hooh_pk2_round_trip() {
-        let raw = include_bytes!("../../../tools/test save/Ho-Oh.pk2");
+        let raw = include_bytes!("../../../tools/test save/upstream/Ho-Oh.pk2");
         assert_eq!(raw.len(), 73);
         let pk2 = Pk2::from_bytes(&raw[..]).expect("real Ho-Oh bytes must parse");
         assert_eq!(pk2.national_dex, 250);
