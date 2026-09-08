@@ -496,6 +496,9 @@ void SaveFile::setPartySlot(int idx, const Pokemon& pkm) {
                 for(int i=0;i<total;i++){ uint32_t ec; std::memcpy(&ec, boxData_+i*pSize,4); if(ec==0){found=i;break;} }
                 if(found>=0) ptr=(uint16_t)found; else ptr=0;
                 setLGPEPartyPointer(idx, ptr);
+                DebugLog::line("setPartySlot LGPE idx %d -> new cell %d", idx, ptr);
+            } else {
+                DebugLog::line("setPartySlot LGPE idx %d -> cell %d (kept)", idx, ptr);
             }
             size_t off=(size_t)ptr*PokeCrypto::SIZE_6PARTY;
             if(off+PokeCrypto::SIZE_6PARTY <= boxDataLen_){ toWrite.getEncrypted(boxData_+off); }
@@ -526,6 +529,7 @@ void SaveFile::lgpeZeroFlatSlot(int flat) {
         std::memset(boxData_ + off, 0, PokeCrypto::SIZE_6PARTY);
         invalidateAllBoxCache();
         dirty_ = true;
+        DebugLog::line("lgpeZeroFlatSlot %d (box %d slot %d)", flat, flat / LGPE_SLOTS_PER_BOX, flat % LGPE_SLOTS_PER_BOX);
     }
 }
 
@@ -1177,6 +1181,9 @@ bool SaveFile::loadLGPE(const std::string& path) {
         lgpePartyIndices_[i] = idx;
         if (idx < 1000) lgpePartyCount_++;
     }
+    DebugLog::line("loadLGPE: %s -> ptrs [%u,%u,%u,%u,%u,%u]", path.c_str(),
+        lgpePartyIndices_[0], lgpePartyIndices_[1], lgpePartyIndices_[2],
+        lgpePartyIndices_[3], lgpePartyIndices_[4], lgpePartyIndices_[5]);
 
     // Party: slots referenced by PokeListHeader indices (party format 0x104, same as boxes)
     dsParty_.assign(6, Pokemon{});
