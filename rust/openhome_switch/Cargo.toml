@@ -10,6 +10,7 @@ crate-type = ["staticlib"]
 [dependencies]
 pkm_rs = { path = "../pkm_rs", default-features = false, features = ["alloc", "newgen"], optional = true }
 pkm_rs_types = { path = "../pkm_rs_types", default-features = false, optional = true }
+pkm_rs_resources = { path = "../pkm_rs_resources", default-features = false, features = ["alloc"], optional = true }
 
 [dev-dependencies]
 pkm_rs_types = { path = "../pkm_rs_types", features = ["std"] }
@@ -17,8 +18,8 @@ pkm_rs_resources = { path = "../pkm_rs_resources", features = ["std"] }
 
 [features]
 default = ["alloc"]
-std = ["pkm_rs/std", "pkm_rs_types/std"]
-alloc = ["pkm_rs/alloc", "pkm_rs_types/alloc"]
+std = ["pkm_rs/std", "pkm_rs_types/std", "pkm_rs_resources/std"]
+alloc = ["pkm_rs/alloc", "pkm_rs_types/alloc", "pkm_rs_resources/alloc"]
 
 [profile.release]
 opt-level = "s"

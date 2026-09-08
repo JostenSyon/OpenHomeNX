@@ -678,11 +678,12 @@ void UI::handleNormalInput(const SDL_Event& event) {
 bool UI::canEditParty() const {
     if (!save_.isLoaded())
         return false;
-    // GB/GBC: party preservato byte-wise nel file, mai scritto indietro —
-    // editarlo perderebbe dati al save anche in debug. Sola lettura sempre.
-    if (isGbFile(save_.gameType()))
+    // Gen5: save intero read-only (footer CRC a blocchi) — editarne il party
+    // in memoria per poi fallire il save sarebbe perdita mascherata da edit.
+    if (isGen5File(save_.gameType()))
         return false;
-    // Tutte le altre famiglie: solo con debug attivo (toggle dedicato in futuro).
+    // Tutte le altre famiglie (incl. GB/GBC con write-back): solo con debug
+    // attivo (toggle dedicato in futuro).
     return DebugLog::enabled();
 }
 

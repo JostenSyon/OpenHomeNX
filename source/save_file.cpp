@@ -1,6 +1,7 @@
 #include "save_file.h"
 #include "save_file_ffi.h"
 #include "poke_crypto.h"
+#include "pokemon_ffi.h"
 #include "gen1_tables.h"
 #include "handler_update.h"
 #include "openhome_ffi.h"
@@ -64,11 +65,17 @@ bool SaveFile::load(const std::string& path) {
     gbStorage_.clear();
     gbStoredOrig_.clear();
     for (bool& t : gbBoxTrusted_) t = false;
+    gbPartySnap_.clear();
     gbcStorage_.clear();
     gbcStoredOrig_.clear();
     for (bool& t : gbcBoxTrusted_) t = false;
     gbcIsCrystal_ = false;
     gbcBoxNamesBase_ = -1;
+    gbcPartyBase_ = -1;
+    gbcPartySnap_.clear();
+    gbaPartyLargeOff_ = -1;
+    gbaPartyPad_ = 4;
+    dsPart_ = 0;
 
     DebugLog::line("load: path=%s gameType=%d engine=%s",
                    path.c_str(), (int)gameType_, useOpenHome() ? "OH" : "PK");
@@ -110,10 +117,18 @@ bool SaveFile::save(const std::string& path) {
         ok = saveGB(path);
     else if (isGen2File(gameType_))
         ok = saveGBC(path);
-    else if (isGen45File(gameType_) || isGen6XY(gameType_) || isGen7SM(gameType_)) {
-        // Read-only v1: never write what the layout code cannot re-checksum.
+    else if (isGen4File(gameType_))
+        ok = saveDS4(path);
+    else if (isGen6XY(gameType_))
+        ok = saveDXY(path);
+    else if (isGen7SM(gameType_))
+        ok = saveDSM(path);
+    else if (isGen5File(gameType_)) {
+        // Gen5 stays read-only: BW/B2W2 saves carry per-block CRC footers via
+        // a block map this loader doesn't parse — writing slots without fixing
+        // them risks a save the game rejects, with no backup copy on cart.
         // Explicit failure, never silent.
-        DebugLog::line("save: Gen4/5/6/7 read-only v1, rifiuto scrittura %s", path.c_str());
+        DebugLog::line("save: Gen5 read-only v1, rifiuto scrittura %s", path.c_str());
         ok = false;
     }
     else if (isFRLG(gameType_) || isImportedFile(gameType_))
@@ -520,9 +535,14 @@ void SaveFile::setPartySlot(int idx, const Pokemon& pkm) {
         }
     } else if (isFRLG(gameType_) || isImportedFile(gameType_)) {
         // GBA: rewrite the packed party (count + 6x100B) at the scanned offset,
-        // in BOTH save slots like the box storage (saveGBA mirrors it the same
-        // way). Without this, party edits lived only in dsParty_ and were lost
-        // on save even with dirty_ set (lost-Espeon bug, Smeraldo).
+        // in BOTH save slots like the box storage. Without this, party edits
+        // lived only in dsParty_ and were lost on save even with dirty_ set
+        // (lost-Espeon bug, Smeraldo).
+        // Battle tail [80..100] is PLAINTEXT in Gen3 saves (crypt/shuffle cover
+        // only [32..80)): party-origin mons already carry it in data[80..100]
+        // (preserved verbatim, incl. hurt HP); box-origin mons have zeros there
+        // (boxes store no battle state) and get a fresh FFI-computed tail
+        // (= in-game withdraw behavior). Never write zero tails.
         if (gbaPartyLargeOff_ >= 0) {
             // Compact WITH the just-written slot applied (dsParty_[idx] is
             // only updated in the tail below).
@@ -531,7 +551,7 @@ void SaveFile::setPartySlot(int idx, const Pokemon& pkm) {
             cur[idx] = toWrite;
             std::vector<Pokemon> compact;
             for (auto& pp : cur)
-                if (!pp.isEmpty()) compact.push_back(pp);
+                if (!pp.isEmpty() && pp.species() != 0) compact.push_back(pp);
             for (int slot = 0; slot < 2; slot++) {
                 long co = gbaLargeToRaw(static_cast<size_t>(gbaPartyLargeOff_), slot);
                 if (co >= 0)
@@ -542,11 +562,22 @@ void SaveFile::setPartySlot(int idx, const Pokemon& pkm) {
                                             static_cast<size_t>(i) * 100, slot);
                     if (so < 0) continue;
                     uint8_t* dst = rawData_.data() + so;
-                    std::memset(dst, 0, 100); // zero battle bytes too, game recomputes
-                    if (i < static_cast<int>(compact.size())) {
-                        Pokemon w = compact[i];
-                        w.gameType_ = gameType_;
-                        w.getEncrypted(dst); // 80B PK3 record into the 100B slot
+                    std::memset(dst, 0, 100);
+                    if (i >= static_cast<int>(compact.size())) continue;
+                    Pokemon w = compact[i];
+                    w.gameType_ = gameType_;
+                    w.getEncrypted(dst); // 80B PK3 record, checksum refreshed
+                    static const uint8_t ZERO20[20] = {};
+                    if (std::memcmp(w.data.data() + 80, ZERO20, 20) == 0) {
+                        uint8_t tail[20] = {};
+                        if (!OpenHomeNX::pk3PartyTail(w.data.data(), tail)) {
+                            DebugLog::line("setPartySlot GBA: tail compute failed spc=%u",
+                                           w.species());
+                            continue; // slot resta azzerato: visibile, mai mezza scrittura
+                        }
+                        std::memcpy(dst + 80, tail, 20);
+                    } else {
+                        std::memcpy(dst + 80, w.data.data() + 80, 20); // coda originale
                     }
                 }
             }
@@ -1513,6 +1544,10 @@ bool SaveFile::loadGB(const std::string& path) {
         }
         DebugLog::line("loadGB: %s -> OT '%s' TID %u party %zu",
                        path.c_str(), dsOtName_.c_str(), dsTid_, dsParty_.size());
+        // Snapshot the raw party region (404B: count+species+FF+6x44B+OT+nick)
+        // for tail-preserving write-back in saveGB().
+        gbPartySnap_.assign(rawData_.data() + GB_PARTY,
+                            rawData_.data() + GB_PARTY + 404);
     }
 
     loaded_ = true;
@@ -1553,6 +1588,61 @@ bool SaveFile::saveGB(const std::string& path) {
     }
     if (anyContent)
         rawData_[GB_CURBOXIDX] |= 0x80; // boxes-initialized flag
+
+    // Party write-back (was read-only: edits died in dsParty_). Packed
+    // PokeList1: [count][species x6][0xFF][6x44B rec][OT 6x11][nick 6x11].
+    // Tails: snapshot-match on the 33B head (exact, incl. hurt HP), else
+    // FFI-computed fresh (withdraw behavior). Abort (false) if a tail can't
+    // be built — never write a corrupt party.
+    if (!gbPartySnap_.empty()) {
+        std::vector<Pokemon> team;
+        for (auto& pp : dsParty_)
+            if (!pp.isEmpty() && pp.species() != 0) team.push_back(pp);
+        if (team.size() > 6) team.resize(6);
+        uint8_t region[404] = {};
+        region[0] = static_cast<uint8_t>(team.size());
+        bool used[6] = {};
+        bool partyOk = true;
+        for (size_t i = 0; i < team.size() && partyOk; i++) {
+            const Pokemon& m = team[i];
+            uint8_t internal = m.data[0]; // GB internal species index
+            int ndex = Gen1::internalToNdex(internal);
+            if (ndex < 1 || ndex > 151) { partyOk = false; break; }
+            region[1 + i] = internal;
+            uint8_t* rec = region + 8 + i * 44;
+            std::memcpy(rec, m.data.data(), 33);
+            int hit = -1;
+            for (int j = 0; j < 6; j++) {
+                if (used[j]) continue;
+                if (std::memcmp(gbPartySnap_.data() + 8 + j * 44, m.data.data(), 33) == 0) {
+                    hit = j; used[j] = true; break;
+                }
+            }
+            if (hit >= 0) {
+                std::memcpy(rec + 33, gbPartySnap_.data() + 8 + hit * 44 + 33, 11);
+            } else {
+                uint8_t tail[11] = {};
+                if (!OpenHomeNX::gen1PartyTail(static_cast<uint16_t>(ndex), m.data.data(), tail)) {
+                    DebugLog::line("saveGB: party tail compute failed spc=%d", ndex);
+                    partyOk = false; break;
+                }
+                std::memcpy(rec + 33, tail, 11);
+            }
+            std::memcpy(region + 8 + 264 + i * 11, m.data.data() + 33, 11); // OT GB
+            std::memcpy(region + 8 + 264 + 66 + i * 11, m.data.data() + 44, 11); // nick GB
+        }
+        if (!partyOk)
+            return false;
+        if (team.size() < 6)
+            region[1 + team.size()] = 0xFF; // species terminator
+        else
+            region[7] = 0xFF;
+        std::memcpy(rawData_.data() + GB_PARTY, region, sizeof(region));
+        dsParty_.assign(6, Pokemon{});
+        for (size_t i = 0; i < team.size() && i < 6; i++)
+            dsParty_[i] = team[i];
+        DebugLog::line("saveGB: party %zu written", team.size());
+    }
 
     // Pokedex seen+caught for every boxed species (PKHeX SetDex-on-deposit
     // equivalent, applied at save time): bit (species-1).
@@ -1725,6 +1815,9 @@ bool SaveFile::loadGBC(const std::string& path) {
         }
         DebugLog::line("loadGBC: %s -> OT '%s' TID %u party %zu",
                        path.c_str(), dsOtName_.c_str(), dsTid_, dsParty_.size());
+        // Snapshot the raw party region (428B) for tail-preserving write-back.
+        gbcPartyBase_ = static_cast<int>(pbase);
+        gbcPartySnap_.assign(rawData_.data() + pbase, rawData_.data() + pbase + 428);
     }
 
     loaded_ = true;
@@ -1766,6 +1859,58 @@ bool SaveFile::saveGBC(const std::string& path) {
             rawData_[L.dexSeen + (bit >> 3)] |= (1 << (bit & 7));
             rawData_[L.dexCaught + (bit >> 3)] |= (1 << (bit & 7));
         }
+    }
+
+    // Party write-back (was read-only). Packed PokeList2: [count][species
+    // x6][0xFF][6x48B rec][OT 6x11][nick 6x11]. Tails: snapshot-match on the
+    // 32B head, else FFI-computed fresh. Abort on failure, never corrupt.
+    if (gbcPartyBase_ >= 0 && !gbcPartySnap_.empty()) {
+        std::vector<Pokemon> team;
+        for (auto& pp : dsParty_)
+            if (!pp.isEmpty() && pp.species() != 0) team.push_back(pp);
+        if (team.size() > 6) team.resize(6);
+        uint8_t region[428] = {};
+        region[0] = static_cast<uint8_t>(team.size());
+        bool used[6] = {};
+        bool partyOk = true;
+        for (size_t i = 0; i < team.size() && partyOk; i++) {
+            const Pokemon& m = team[i];
+            uint16_t sp = m.species();
+            if (sp < 1 || sp > 251) { partyOk = false; break; }
+            region[1 + i] = static_cast<uint8_t>(sp); // ndex diretto, no tabella
+            uint8_t* rec = region + 8 + i * 48;
+            std::memcpy(rec, m.data.data(), 32);
+            int hit = -1;
+            for (int j = 0; j < 6; j++) {
+                if (used[j]) continue;
+                if (std::memcmp(gbcPartySnap_.data() + 8 + j * 48, m.data.data(), 32) == 0) {
+                    hit = j; used[j] = true; break;
+                }
+            }
+            if (hit >= 0) {
+                std::memcpy(rec + 32, gbcPartySnap_.data() + 8 + hit * 48 + 32, 16);
+            } else {
+                uint8_t tail[16] = {};
+                if (!OpenHomeNX::gen2PartyTail(sp, m.data.data(), tail)) {
+                    DebugLog::line("saveGBC: party tail compute failed spc=%u", sp);
+                    partyOk = false; break;
+                }
+                std::memcpy(rec + 32, tail, 16);
+            }
+            std::memcpy(region + 8 + 288 + i * 11, m.data.data() + 32, 11); // OT GB
+            std::memcpy(region + 8 + 288 + 66 + i * 11, m.data.data() + 43, 11); // nick GB
+        }
+        if (!partyOk)
+            return false;
+        if (team.size() < 6)
+            region[1 + team.size()] = 0xFF;
+        else
+            region[7] = 0xFF;
+        std::memcpy(rawData_.data() + gbcPartyBase_, region, sizeof(region));
+        dsParty_.assign(6, Pokemon{});
+        for (size_t i = 0; i < team.size() && i < 6; i++)
+            dsParty_[i] = team[i];
+        DebugLog::line("saveGBC: party %zu written", team.size());
     }
 
     // File checksums (u16 LE sum) at both positions (PKHeX SetChecksums).
@@ -2126,19 +2271,30 @@ static uint16_t crc16CcittFalse(const uint8_t* data, size_t len) {
     return crc;
 }
 
+// Gen4 layouts (DP/Pt/HGSS): General + Storage block sizes differ per game
+// (PKHeX SAV4*.cs). Shared by loadDS4 (detect) and saveDS4 (write-back).
+struct Ds4SaveLayout {
+    SaveFile::Ds4Layout id;
+    int gSize, sSize, sStart, footer, boxBase, boxStride;
+};
+static constexpr Ds4SaveLayout DS4_LAYOUTS[3] = {
+    { SaveFile::Ds4Layout::DP,   0xC100, 0x121E0, 0xC100, 0x14, 4, 0xFF0 },
+    { SaveFile::Ds4Layout::PT,   0xCF2C, 0x121E4, 0xCF2C, 0x14, 4, 0xFF0 },
+    { SaveFile::Ds4Layout::HGSS, 0xF628, 0x12310, 0xF700, 0x10, 0, 0x1000 },
+};
+static const Ds4SaveLayout* ds4LayoutFor(SaveFile::Ds4Layout id) {
+    for (const auto& L : DS4_LAYOUTS)
+        if (L.id == id) return &L;
+    return nullptr;
+}
+
 bool SaveFile::loadDS4(const std::string& path) {
     // Gen4 NDS flash (PKHeX SAV4*.cs): 512KB = 2 partitions x 256KB.
     dsRomCode_ = 0;
     dsGameByte_ = 0;
-    // block + Storage block; layouts differ per game (DP/Pt/HGSS sizes
-    // below), so bytes alone pick the layout: footer magic (INT/KOR) on both
-    // blocks of some partition, plus slots that decrypt to valid checksums.
-    struct Layout { Ds4Layout id; int gSize; int sSize; int sStart; int footer; int boxBase; int boxStride; };
-    static constexpr Layout LAYOUTS[3] = {
-        { Ds4Layout::DP,   0xC100, 0x121E0, 0xC100, 0x14, 4, 0xFF0 },
-        { Ds4Layout::PT,   0xCF2C, 0x121E4, 0xCF2C, 0x14, 4, 0xFF0 },
-        { Ds4Layout::HGSS, 0xF628, 0x12310, 0xF700, 0x10, 0, 0x1000 },
-    };
+    // block + Storage block; layouts differ per game (see DS4_LAYOUTS), so
+    // bytes alone pick the layout: footer magic (INT/KOR) on both blocks of
+    // some partition, plus slots that decrypt to valid checksums.
     std::ifstream file(path, std::ios::binary | std::ios::ate);
     if (!file.is_open())
         return false;
@@ -2178,11 +2334,11 @@ bool SaveFile::loadDS4(const std::string& path) {
         return (sum & 0xFFFF) == stored;
     };
 
-    const Layout* best = nullptr;
+    const Ds4SaveLayout* best = nullptr;
     int bestPart = 0;
     int bestScore = -1;
     int bestSlots = 0;
-    for (const Layout& L : LAYOUTS) {
+    for (const Ds4SaveLayout& L : DS4_LAYOUTS) {
         for (int p = 0; p < 2; p++) {
             size_t gBase = static_cast<size_t>(p) * DS_PARTITION;
             size_t sBase = gBase + static_cast<size_t>(L.sStart);
@@ -2235,6 +2391,7 @@ bool SaveFile::loadDS4(const std::string& path) {
                        path.c_str(), (int)best->id, bestPart, i0, i1, bestSlots);
     }
     ds4Layout_ = best->id;
+    dsPart_ = bestPart; // active partition for saveDS4 write-back
     // HGSS exact game from the ROMCode byte (General+Trainer1+0x1C).
     dsRomCode_ = 0;
     if (best->id == Ds4Layout::HGSS) {
@@ -2300,6 +2457,83 @@ bool SaveFile::loadDS4(const std::string& path) {
     }
     loaded_ = true;
     return true;
+}
+
+bool SaveFile::saveDS4(const std::string& path) {
+    // Gen4 write-back (PKHeX SAV4qd logic): boxes + party into the ACTIVE
+    // partition only, then recompute both block CRCs (same ranges loadDS4
+    // validates). Save index untouched (partition stays active). Corrupt slots
+    // hidden at load come back as zeros — the game reads them as empty too.
+    if (!loaded_ || rawData_.size() != DS_SAVE_SIZE || dsStorage_.empty())
+        return false;
+    const Ds4SaveLayout* L = ds4LayoutFor(ds4Layout_);
+    if (!L || dsPart_ < 0 || dsPart_ > 1)
+        return false;
+    size_t gBase = static_cast<size_t>(dsPart_) * DS_PARTITION;
+    size_t sBase = gBase + static_cast<size_t>(L->sStart);
+    if (sBase + static_cast<size_t>(L->sSize) > DS_SAVE_SIZE)
+        return false;
+
+    // Boxes: dsStorage_ (which setBoxSlot mutates) back to the Storage block.
+    const int BOXES = 18;
+    for (int b = 0; b < BOXES; b++)
+        for (int s = 0; s < DS_BOX_SLOTS; s++) {
+            size_t o = (sBase + static_cast<size_t>(L->boxBase)) +
+                       static_cast<size_t>(b) * static_cast<size_t>(L->boxStride) +
+                       static_cast<size_t>(s) * DS_SLOT_SIZE;
+            const uint8_t* src = dsStorage_.data() +
+                (static_cast<size_t>(b) * DS_BOX_SLOTS + s) * DS_SLOT_SIZE;
+            std::memcpy(rawData_.data() + o, src, DS_SLOT_SIZE);
+        }
+
+    // Party: compact, count byte + full 236B records (no tail math — same
+    // bytes the loader decrypted). Positional, counts untouched otherwise.
+    {
+        int trainer1 = (L->id == Ds4Layout::PT) ? 0x68 : 0x64;
+        int party = (L->id == Ds4Layout::PT) ? 0xA0 : 0x98;
+        (void)trainer1;
+        if ((int)dsParty_.size() != 6) dsParty_.assign(6, Pokemon{});
+        std::vector<Pokemon> team;
+        for (auto& pp : dsParty_)
+            if (!pp.isEmpty() && pp.species() != 0) team.push_back(pp);
+        if (team.size() > 6) team.resize(6);
+        uint8_t* gBlk = rawData_.data() + gBase;
+        gBlk[party - 4] = static_cast<uint8_t>(team.size());
+        for (int i = 0; i < 6; i++) {
+            uint8_t* dst = gBlk + party + i * 236;
+            if (i >= static_cast<int>(team.size())) {
+                std::memset(dst, 0, 236);
+            } else {
+                Pokemon w = team[i];
+                w.gameType_ = gameType_;
+                w.refreshChecksum();
+                PokemonFFI::encryptArray45(w.data.data(), 236, dst);
+            }
+        }
+        dsParty_.assign(6, Pokemon{});
+        for (size_t i = 0; i < team.size() && i < 6; i++)
+            dsParty_[i] = team[i];
+    }
+
+    // Block CRCs over [0, size-footer), stored u16 LE at [size-2].
+    {
+        uint8_t* gBlk = rawData_.data() + gBase;
+        uint8_t* sBlk = rawData_.data() + sBase;
+        uint16_t gCks = crc16CcittFalse(gBlk, static_cast<size_t>(L->gSize) - static_cast<size_t>(L->footer));
+        uint16_t sCks = crc16CcittFalse(sBlk, static_cast<size_t>(L->sSize) - static_cast<size_t>(L->footer));
+        writeU16LE(gBlk + L->gSize - 2, gCks);
+        writeU16LE(sBlk + L->sSize - 2, sCks);
+    }
+
+    FILE* f = std::fopen(path.c_str(), "r+b");
+    if (!f)
+        f = std::fopen(path.c_str(), "wb");
+    if (!f)
+        return false;
+    size_t written = std::fwrite(rawData_.data(), 1, rawData_.size(), f);
+    std::fclose(f);
+    DebugLog::line("saveDS4: %s -> OK (layout %d part %d)", path.c_str(), (int)L->id, dsPart_);
+    return written == rawData_.size();
 }
 
 bool SaveFile::loadDS5(const std::string& path) {
@@ -2429,12 +2663,13 @@ bool SaveFile::loadDXY(const std::string& path) {
         return false;
     if (static_cast<size_t>(file.tellg()) < MIN_SIZE)
         return false;
-    file.seekg(0);
+    // Full file, not MIN_SIZE: Citra/Checkpoint dumps vary in tail length and
+    // truncating here would destroy it on the first save (saveDXY rewrites
+    // rawData_ verbatim). All offsets below are absolute, unaffected.
     size_t fileSize = static_cast<size_t>(file.tellg());
-    (void)fileSize;
     file.seekg(0);
-    rawData_.resize(MIN_SIZE);
-    file.read(reinterpret_cast<char*>(rawData_.data()), MIN_SIZE);
+    rawData_.resize(fileSize);
+    file.read(reinterpret_cast<char*>(rawData_.data()), fileSize);
     if (!file)
         return false;
 
@@ -2525,9 +2760,11 @@ bool SaveFile::loadDSM(const std::string& path) {
         return false;
     if (static_cast<size_t>(file.tellg()) < MIN_SIZE)
         return false;
+    // Full file, see loadDXY: truncating would destroy the dump tail on save.
+    size_t fileSize = static_cast<size_t>(file.tellg());
     file.seekg(0);
-    rawData_.resize(MIN_SIZE);
-    file.read(reinterpret_cast<char*>(rawData_.data()), MIN_SIZE);
+    rawData_.resize(fileSize);
+    file.read(reinterpret_cast<char*>(rawData_.data()), fileSize);
     if (!file)
         return false;
 
@@ -2600,5 +2837,87 @@ bool SaveFile::loadDSM(const std::string& path) {
     boxLayoutData_ = rawData_.data() + 0x04800;
     boxLayoutLen_ = BOXES * 0x22;
     loaded_ = true;
+    return true;
+}
+
+// --- Gen 6/7 decrypted-dump save (PKHeX SAV6XY/SAV7SM) ---
+//
+// Decrypted Citra/Checkpoint dumps are flat memory images with NO checksums,
+// so writing back is safe: boxes from dsStorage_ (slot-verified copies),
+// party positionally (full 260B records, no tail math — same bytes the loader
+// decrypted). Box names live in rawData_ via boxLayoutData_ and persist
+// through it. Counts/other blocks untouched (minimal intervention).
+
+bool SaveFile::saveDXY(const std::string& path) {
+    if (!loaded_ || rawData_.empty() || dsStorage_.empty())
+        return false;
+    static constexpr size_t BOX_BASE = 0x22600;
+    static constexpr int BOXES = 31;
+    static constexpr int SLOT = 232;
+    static constexpr size_t PARTY_OFF = 0x14200;
+    static constexpr int PARTY_SIZE = 260;
+    size_t need = BOX_BASE + static_cast<size_t>(BOXES) * 30 * SLOT;
+    if (rawData_.size() < need || dsStorage_.size() < need - BOX_BASE)
+        return false;
+    std::memcpy(rawData_.data() + BOX_BASE, dsStorage_.data(), need - BOX_BASE);
+    if (PARTY_OFF + 6 * PARTY_SIZE <= rawData_.size()) {
+        if ((int)dsParty_.size() != 6) dsParty_.assign(6, Pokemon{});
+        for (int i = 0; i < 6; i++) {
+            uint8_t* dst = rawData_.data() + PARTY_OFF + i * PARTY_SIZE;
+            const Pokemon& m = dsParty_[i];
+            if (m.isEmpty() || m.species() == 0) {
+                std::memset(dst, 0, PARTY_SIZE);
+            } else {
+                Pokemon w = m;
+                w.gameType_ = gameType_;
+                // Full 260B party record (getEncrypted copre solo i 232B box).
+                w.refreshChecksum();
+                PokemonFFI::encryptArray6(w.data.data(), PARTY_SIZE, dst);
+            }
+        }
+    }
+    std::ofstream file(path, std::ios::binary | std::ios::trunc);
+    if (!file.is_open())
+        return false;
+    file.write(reinterpret_cast<const char*>(rawData_.data()), rawData_.size());
+    file.close();
+    DebugLog::line("saveDXY: %s -> OK", path.c_str());
+    return true;
+}
+
+bool SaveFile::saveDSM(const std::string& path) {
+    if (!loaded_ || rawData_.empty() || dsStorage_.empty())
+        return false;
+    static constexpr size_t BOX_BASE = 0x04E00;
+    static constexpr int BOXES = 32;
+    static constexpr int SLOT = 232;
+    static constexpr size_t PARTY_OFF = 0x01400;
+    static constexpr int PARTY_SIZE = 260;
+    size_t need = BOX_BASE + static_cast<size_t>(BOXES) * 30 * SLOT;
+    if (rawData_.size() < need || dsStorage_.size() < need - BOX_BASE)
+        return false;
+    std::memcpy(rawData_.data() + BOX_BASE, dsStorage_.data(), need - BOX_BASE);
+    if (PARTY_OFF + 6 * PARTY_SIZE <= rawData_.size()) {
+        if ((int)dsParty_.size() != 6) dsParty_.assign(6, Pokemon{});
+        for (int i = 0; i < 6; i++) {
+            uint8_t* dst = rawData_.data() + PARTY_OFF + i * PARTY_SIZE;
+            const Pokemon& m = dsParty_[i];
+            if (m.isEmpty() || m.species() == 0) {
+                std::memset(dst, 0, PARTY_SIZE);
+            } else {
+                Pokemon w = m;
+                w.gameType_ = gameType_;
+                // Full 260B party record (getEncrypted copre solo i 232B box).
+                w.refreshChecksum();
+                PokemonFFI::encryptArray6(w.data.data(), PARTY_SIZE, dst);
+            }
+        }
+    }
+    std::ofstream file(path, std::ios::binary | std::ios::trunc);
+    if (!file.is_open())
+        return false;
+    file.write(reinterpret_cast<const char*>(rawData_.data()), rawData_.size());
+    file.close();
+    DebugLog::line("saveDSM: %s -> OK", path.c_str());
     return true;
 }

@@ -239,6 +239,9 @@ private:
     // byte-wise on save (never zeroed): we don't write what we didn't read.
     bool gbBoxTrusted_[12] = {false};
     std::vector<uint8_t> gbStoredOrig_;
+    // Gen1 party snapshot (404B @0x2F2C: count+species+FF+6x44B+OT+nick) for
+    // tail-preserving write-back. Empty when party wasn't found at load.
+    std::vector<uint8_t> gbPartySnap_;
     // Gen 2 (G/S/C SRAM, G2c): same model, 14 boxes x 20 x 54B stride
     // (32B record + 11B OT + 11B nick). No current-box mirror in Gen2
     // (Stadium desyncs it): only stored regions are truth.
@@ -247,6 +250,10 @@ private:
     std::vector<uint8_t> gbcStorage_;
     bool gbcBoxTrusted_[14] = {false};
     std::vector<uint8_t> gbcStoredOrig_;
+    // Gen2 party base offset (pbase from layout) + 428B snapshot for
+    // tail-preserving write-back. pbase < 0 when not found at load.
+    int gbcPartyBase_ = -1;
+    std::vector<uint8_t> gbcPartySnap_;
     bool gbcIsCrystal_ = false;
     int gbcBoxNamesBase_ = -1; // 9B box-name stride base in rawData_ (-1 none)
 
@@ -259,13 +266,17 @@ private:
     static constexpr int DS_BOX_SLOTS   = 30;
     static constexpr int DS_SLOT_SIZE   = 136;       // PK4/PK5 box record
     bool loadDS4(const std::string& path);
+    bool saveDS4(const std::string& path);
     bool loadDS5(const std::string& path);
     // Gen 6/7 (decrypted 3DS dumps, Citra/Checkpoint style; cartridge-encrypted
-    // dumps are rejected explicitly). Same read-only v1 model as DS.
+    // dumps are rejected explicitly). Flat images without checksums: writable.
     bool loadDXY(const std::string& path);
+    bool saveDXY(const std::string& path);
     bool loadDSM(const std::string& path);
+    bool saveDSM(const std::string& path);
     std::vector<uint8_t> dsStorage_;
     Ds4Layout ds4Layout_ = Ds4Layout::DP;
+    int dsPart_ = 0; // active Gen4 partition picked by loadDS4
     uint8_t dsRomCode_ = 0;
     uint8_t dsGameByte_ = 0;
     std::vector<Pokemon> dsParty_;

@@ -40,8 +40,18 @@ uint32_t openhome_count_moves_not_in_gen(const PkmHandle *pkm_handle, uint32_t g
 // null buffer returns the move count for sizing; with a buffer writes all or
 // nothing (0 on undersize/unknown). Never truncates silently.
 uint32_t openhome_get_learnset(uint32_t table, uint32_t species, uint8_t *out_buf, size_t out_len);
-// Real level from EXP for Gen 4/5/6/7 (verified growth data in Rust).
+// Real level from EXP for Gen 1/2/4/5/6/7 (verified growth data in Rust).
 uint8_t openhome_level_for_exp(uint32_t gen, uint32_t ndex, uint32_t exp);
+// Party battle-tail builders for GB/GBA write-back (C++ owns the file layout,
+// Rust owns data + PKHeX-verified formulas). Untouched members keep stored
+// tails (snapshot-match in C++); moved mons get fresh full-HP tails here
+// (= in-game withdraw behavior). False on null/bad input, never partial.
+//   gen1: record 33B box -> out 11B [level][HP BE][Atk][Def][Spd][Spc]
+//   gen2: record 32B box -> out 16B [status=0][0][HP BE][max BE][Atk][Def][Spd][SAtk][SDef]
+//   pk3:  record 80B DECRYPTED box -> out 20B battle section (upstream Pk3)
+bool openhome_gen1_party_tail(uint16_t ndex, const uint8_t* record, uint8_t* out);
+bool openhome_gen2_party_tail(uint16_t ndex, const uint8_t* record, uint8_t* out);
+bool openhome_pk3_party_tail(const uint8_t* record, uint8_t* out);
 // Gen4 charset decode to UTF-8+NUL; returns bytes written (no NUL), 0 on error.
 uint32_t openhome_gen4_decode(const uint16_t* codes, uint32_t count, char* out_utf8, size_t out_len);
 bool openhome_save_pkm_to_file(PkmHandle *pkm_handle, uint32_t slot);
@@ -105,6 +115,15 @@ inline uint32_t countMovesNotInGen(const PkmHandle* pkm_handle, uint32_t gen) {
 }
 inline uint8_t levelForExp(uint32_t gen, uint32_t ndex, uint32_t exp) {
     return openhome_level_for_exp(gen, ndex, exp);
+}
+inline bool gen1PartyTail(uint16_t ndex, const uint8_t* record33, uint8_t out11[11]) {
+    return openhome_gen1_party_tail(ndex, record33, out11);
+}
+inline bool gen2PartyTail(uint16_t ndex, const uint8_t* record32, uint8_t out16[16]) {
+    return openhome_gen2_party_tail(ndex, record32, out16);
+}
+inline bool pk3PartyTail(const uint8_t* record80dec, uint8_t out20[20]) {
+    return openhome_pk3_party_tail(record80dec, out20);
 }
 // Gen4 charset codes -> UTF-8 std::string (empty on error, never truncated).
 inline std::string gen4DecodeString(const uint16_t* codes, uint32_t count) {

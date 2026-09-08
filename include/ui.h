@@ -656,8 +656,8 @@ private:
     void setPokemonAt(int box, int slot, Panel panel, const Pokemon& pkm);
     void clearPokemonAt(int box, int slot, Panel panel);
     // True se lo strip party accetta pick/posa: solo con debug attivo, mai su
-    // GB/GBC (party preservato byte-wise, senza write-back: editarlo lì
-    // perderebbe dati al save). Toggle dedicato in futuro.
+    // Gen5 (save read-only: l'edit andrebbe perso al save). Toggle dedicato
+    // in futuro.
     bool canEditParty() const;
 
     // M6 transfer-on-drop.

@@ -1272,12 +1272,219 @@ pub extern "C" fn openhome_level_for_exp(_gen: u32, _ndex: u32, _exp: u32) -> u8
 pub extern "C" fn openhome_level_for_exp(gen: u32, ndex: u32, exp: u32) -> u8 {
     let ndex = ndex as u16;
     match gen {
+        1 => pkm_rs::gen1::level_for_exp(ndex, exp),
+        2 => pkm_rs::gen2::level_for_exp(ndex, exp),
         4 => pkm_rs::gen4::level_for_exp(ndex, exp),
         5 => pkm_rs::gen5::level_for_exp(ndex, exp),
         6 => pkm_rs::gen6::level_for_exp(ndex, exp),
         7 => pkm_rs::gen7_alola::level_for_exp(ndex, exp),
         _ => 0,
     }
+}
+
+// --- Party battle-tail builders (GB/GBA write-back) ---
+//
+// C++ owns the save-file layout; Rust owns data + formulas (same split as
+// openhome_level_for_exp). Untouched party members keep their stored tails
+// byte-exact (snapshot-match in C++); moved mons get fresh tails here, which
+// is exactly the in-game withdraw behavior (full HP, level/stats from data).
+// False on null/out-of-range (never partial writes). Integer math only
+// (no libm in no_std).
+fn gen12_ceil_sqrt4(exp: u32) -> u32 {
+    // floor(ceil(sqrt(exp)) / 4)
+    if exp == 0 {
+        return 0;
+    }
+    let mut r = exp;
+    let mut y = (r + 1) / 2;
+    while y < r {
+        r = y;
+        y = (r + exp / r) / 2;
+    }
+    if r * r < exp {
+        r += 1;
+    }
+    r / 4
+}
+
+fn gen12_stat(base: u16, dv: u16, exp: u32, level: u32) -> u16 {
+    // PKHeX pre-split formula, verified vs real Rosso/Oro save bytes.
+    gen12_stat_part(base, dv, exp, level) + 5
+}
+
+fn gen12_stat_part(base: u16, dv: u16, exp: u32, level: u32) -> u16 {
+    // Same without the +5 (HP uses +Level+10 instead).
+    (((base as u32 + dv as u32) * 2 + gen12_ceil_sqrt4(exp)) * level / 100) as u16
+}
+
+#[cfg(not(any(feature = "alloc", feature = "std")))]
+#[no_mangle]
+pub extern "C" fn openhome_gen1_party_tail(
+    _ndex: u16,
+    _record: *const u8,
+    _out: *mut u8,
+) -> bool {
+    false
+}
+#[cfg(any(feature = "alloc", feature = "std"))]
+#[no_mangle]
+pub extern "C" fn openhome_gen1_party_tail(ndex: u16, record: *const u8, out: *mut u8) -> bool {
+    // record: 33B box. out: 11B [level][maxHP BE][atk BE][def BE][spd BE][spc BE].
+    if record.is_null() || out.is_null() {
+        return false;
+    }
+    let rec = unsafe { core::slice::from_raw_parts(record, 33) };
+    let ob = unsafe { core::slice::from_raw_parts_mut(out, 11) };
+    let nd = match pkm_rs_types::NationalDex::new(ndex) {
+        Ok(v) => v,
+        Err(_) => return false,
+    };
+    let (b_hp, b_atk, b_def, b_spd, b_spc) =
+        match pkm_rs_resources::species::form_metadata::base_stats_lookup(
+            nd,
+            0,
+            pkm_rs_resources::metadata_source::MetadataSource::RedBlue,
+        ) {
+            Some(pkm_rs_resources::species::form_metadata::BaseStats::PreSplit(s)) => {
+                (s.hp, s.atk, s.def, s.spe, s.spc)
+            }
+            _ => return false,
+        };
+    let exp = u32::from_be_bytes([0, rec[0x0E], rec[0x0F], rec[0x10]]);
+    let level = pkm_rs::gen1::level_for_exp(ndex, exp) as u32;
+    if level == 0 || level > 100 {
+        return false;
+    }
+    let dv_atk = ((rec[0x1B] >> 4) & 0xF) as u16;
+    let dv_def = (rec[0x1B] & 0xF) as u16;
+    let dv_spd = ((rec[0x1C] >> 4) & 0xF) as u16;
+    let dv_spc = (rec[0x1C] & 0xF) as u16;
+    let dv_hp = ((dv_atk & 1) << 3) | ((dv_def & 1) << 2) | ((dv_spd & 1) << 1) | (dv_spc & 1);
+    let be = u16::from_be_bytes;
+    let e_hp = be([rec[0x11], rec[0x12]]) as u32;
+    let e_atk = be([rec[0x13], rec[0x14]]) as u32;
+    let e_def = be([rec[0x15], rec[0x16]]) as u32;
+    let e_spd = be([rec[0x17], rec[0x18]]) as u32;
+    let e_spc = be([rec[0x19], rec[0x1A]]) as u32;
+    let hp = gen12_stat_part(b_hp, dv_hp, e_hp, level) + level as u16 + 10;
+    let atk = gen12_stat(b_atk, dv_atk, e_atk, level);
+    let def = gen12_stat(b_def, dv_def, e_def, level);
+    let spd = gen12_stat(b_spd, dv_spd, e_spd, level);
+    let spc = gen12_stat(b_spc, dv_spc, e_spc, level);
+    ob[0] = level as u8;
+    ob[1..3].copy_from_slice(&hp.to_be_bytes());
+    ob[3..5].copy_from_slice(&atk.to_be_bytes());
+    ob[5..7].copy_from_slice(&def.to_be_bytes());
+    ob[7..9].copy_from_slice(&spd.to_be_bytes());
+    ob[9..11].copy_from_slice(&spc.to_be_bytes());
+    true
+}
+
+#[cfg(not(any(feature = "alloc", feature = "std")))]
+#[no_mangle]
+pub extern "C" fn openhome_gen2_party_tail(
+    _ndex: u16,
+    _record: *const u8,
+    _out: *mut u8,
+) -> bool {
+    false
+}
+#[cfg(any(feature = "alloc", feature = "std"))]
+#[no_mangle]
+pub extern "C" fn openhome_gen2_party_tail(ndex: u16, record: *const u8, out: *mut u8) -> bool {
+    // record: 32B box. out: 16B
+    // [status=0][unused=0][hp BE][maxhp BE][atk][def][spd][satk][sdef], hp=max.
+    if record.is_null() || out.is_null() {
+        return false;
+    }
+    let rec = unsafe { core::slice::from_raw_parts(record, 32) };
+    let ob = unsafe { core::slice::from_raw_parts_mut(out, 16) };
+    let nd = match pkm_rs_types::NationalDex::new(ndex) {
+        Ok(v) => v,
+        Err(_) => return false,
+    };
+    let (b_hp, b_atk, b_def, b_spd, b_satk, b_sdef) =
+        match pkm_rs_resources::species::form_metadata::base_stats_lookup(
+            nd,
+            0,
+            pkm_rs_resources::metadata_source::MetadataSource::GoldSilver,
+        ) {
+            Some(pkm_rs_resources::species::form_metadata::BaseStats::PreSplit(s)) => {
+                (s.hp, s.atk, s.def, s.spe, s.spc, s.spc)
+            }
+            // GS table stores Modern split, and Gen2 battles already use it:
+            // Oro.sav Chikorita has SAtk=10 (base 49) but SDef=12 (base 65)
+            // with a single Spc DV/exp. Same DV/exp feed both halves.
+            Some(pkm_rs_resources::species::form_metadata::BaseStats::Modern(s)) => {
+                (
+                    s.hp as u16,
+                    s.atk as u16,
+                    s.def as u16,
+                    s.spe as u16,
+                    s.spa as u16,
+                    s.spd as u16,
+                )
+            }
+            _ => return false,
+        };
+    let exp =
+        (rec[0x08] as u32) * 65536 + (rec[0x09] as u32) * 256 + rec[0x0A] as u32;
+    let level = pkm_rs::gen2::level_for_exp(ndex, exp) as u32;
+    if level == 0 || level > 100 {
+        return false;
+    }
+    let be = u16::from_be_bytes;
+    let dv = be([rec[0x15], rec[0x16]]);
+    let dv_atk = (dv >> 12) & 0xF;
+    let dv_def = (dv >> 8) & 0xF;
+    let dv_spd = (dv >> 4) & 0xF;
+    let dv_spc = dv & 0xF;
+    let dv_hp = ((dv_atk & 1) << 3) | ((dv_def & 1) << 2) | ((dv_spd & 1) << 1) | (dv_spc & 1);
+    let e_hp = be([rec[0x0B], rec[0x0C]]) as u32;
+    let e_atk = be([rec[0x0D], rec[0x0E]]) as u32;
+    let e_def = be([rec[0x0F], rec[0x10]]) as u32;
+    let e_spd = be([rec[0x11], rec[0x12]]) as u32;
+    let e_spc = be([rec[0x13], rec[0x14]]) as u32;
+    let hp = gen12_stat_part(b_hp, dv_hp, e_hp, level) + level as u16 + 10;
+    let atk = gen12_stat(b_atk, dv_atk, e_atk, level);
+    let def = gen12_stat(b_def, dv_def, e_def, level);
+    let spd = gen12_stat(b_spd, dv_spd, e_spd, level);
+    let satk = gen12_stat(b_satk, dv_spc, e_spc, level);
+    let sdef = gen12_stat(b_sdef, dv_spc, e_spc, level);
+    ob[0] = 0;
+    ob[1] = 0;
+    ob[2..4].copy_from_slice(&hp.to_be_bytes());
+    ob[4..6].copy_from_slice(&hp.to_be_bytes());
+    ob[6..8].copy_from_slice(&atk.to_be_bytes());
+    ob[8..10].copy_from_slice(&def.to_be_bytes());
+    ob[10..12].copy_from_slice(&spd.to_be_bytes());
+    ob[12..14].copy_from_slice(&satk.to_be_bytes());
+    ob[14..16].copy_from_slice(&sdef.to_be_bytes());
+    true
+}
+
+#[cfg(not(any(feature = "alloc", feature = "std")))]
+#[no_mangle]
+pub extern "C" fn openhome_pk3_party_tail(_record: *const u8, _out: *mut u8) -> bool {
+    false
+}
+#[cfg(any(feature = "alloc", feature = "std"))]
+#[no_mangle]
+pub extern "C" fn openhome_pk3_party_tail(record: *const u8, out: *mut u8) -> bool {
+    // record: 80B DECRYPTED box. out: 20B battle section (level/stats/HP),
+    // computed by upstream Pk3 (level from EXP, full HP).
+    if record.is_null() || out.is_null() {
+        return false;
+    }
+    let bytes = unsafe { core::slice::from_raw_parts(record, 80) };
+    let ob = unsafe { core::slice::from_raw_parts_mut(out, 20) };
+    let pk = match pkm_rs::gen3::Pk3::try_from_bytes(bytes) {
+        Ok(p) => p,
+        Err(_) => return false,
+    };
+    let full = pk.to_party_bytes();
+    ob.copy_from_slice(&full[80..100]);
+    true
 }
 
 /// Gen4 charset decode for the C++ detail view (reuses the verified
@@ -2918,6 +3125,75 @@ mod tests {
         let converted = unsafe { &*out };
         assert_eq!(move_indices(&converted.ohpkm), [85, 0, 98, 0]);
         openhome_free_pkm(out);
+    }
+
+    // Gen1 party tail from real Rosso.sav bytes (Charmander 33B record):
+    // box-trick behavior — level from EXP, fresh full-HP stats. The stored
+    // tail (L7) is preserved verbatim by the C++ snapshot-match; this covers
+    // moved mons. Null safety included.
+    #[test]
+    fn gen1_party_tail_rosso_charmander() {
+        let rec: [u8; 33] = [
+            0xb0, 0x00, 0x16, 0x00, 0x00, 0x14, 0x14, 0x2d, 0x0a, 0x2d, 0x00,
+            0x00, 0x37, 0x20, 0x00, 0x01, 0x03, 0x00, 0x9a, 0x00, 0xc2, 0x00,
+            0xb4, 0x00, 0xe3, 0x00, 0x91, 0x08, 0xd2, 0x23, 0x28, 0x00, 0x00,
+        ];
+        assert_eq!(pkm_rs::gen1::level_for_exp(4, 0x103), 7);
+        let mut out = [0u8; 11];
+        assert!(openhome_gen1_party_tail(4, rec.as_ptr(), out.as_mut_ptr()));
+        // L7 Charmander (RB bases 39/52/43/65/50): HP 22, 12/12/16/12.
+        assert_eq!(
+            out,
+            [0x07, 0x00, 0x16, 0x00, 0x0c, 0x00, 0x0c, 0x00, 0x10, 0x00, 0x0c]
+        );
+        assert!(!openhome_gen1_party_tail(4, core::ptr::null(), out.as_mut_ptr()));
+        assert!(!openhome_gen1_party_tail(4, rec.as_ptr(), core::ptr::null_mut()));
+        assert!(!openhome_gen1_party_tail(999, rec.as_ptr(), out.as_mut_ptr()));
+    }
+
+    // Gen2 party tail from real Oro.sav bytes (Chikorita 32B record).
+    #[test]
+    fn gen2_party_tail_oro_chikorita() {
+        let rec: [u8; 32] = [
+            0x98, 0xad, 0x21, 0x2d, 0x00, 0x00, 0x6c, 0xca, 0x00, 0x00, 0xa6,
+            0x00, 0x4b, 0x00, 0x5b, 0x00, 0x4a, 0x00, 0x4c, 0x00, 0x46, 0x4f,
+            0x77, 0x23, 0x28, 0x00, 0x00, 0x46, 0x00, 0x00, 0x00, 0x05,
+        ];
+        assert_eq!(pkm_rs::gen2::level_for_exp(152, 0xa6), 5);
+        let mut out = [0u8; 16];
+        assert!(openhome_gen2_party_tail(152, rec.as_ptr(), out.as_mut_ptr()));
+        // L5 Chikorita (GS bases 45/49/65/45/49/65): HP 20, 10/13/10/10/12.
+        assert_eq!(
+            out,
+            [
+                0x00, 0x00, 0x00, 0x14, 0x00, 0x14, 0x00, 0x0a, 0x00, 0x0d,
+                0x00, 0x0a, 0x00, 0x0a, 0x00, 0x0c
+            ]
+        );
+        assert!(!openhome_gen2_party_tail(152, core::ptr::null(), out.as_mut_ptr()));
+    }
+
+    // Pk3 party tail: upstream serializer on a synthesised mon (no GBA save
+    // fixture with boxed mons exists). Structural: level from EXP, HP full,
+    // deterministic, null-safe.
+    #[test]
+    fn pk3_party_tail_synthesised() {
+        use pkm_rs::gen3::Pk3;
+        let mon = Pk3 {
+            exp: 10000,
+            ..Default::default()
+        };
+        let boxy = mon.to_box_bytes();
+        assert_eq!(boxy.len(), 80);
+        let mut tail = [0u8; 20];
+        assert!(openhome_pk3_party_tail(boxy.as_ptr(), tail.as_mut_ptr()));
+        let mut tail2 = [0u8; 20];
+        assert!(openhome_pk3_party_tail(boxy.as_ptr(), tail2.as_mut_ptr()));
+        assert_eq!(tail, tail2, "tail must be deterministic");
+        assert_eq!(tail[0x54 - 80], mon.calculate_level());
+        let hp = u16::from_le_bytes([tail[0x56 - 80], tail[0x57 - 80]]);
+        assert_eq!(hp, mon.calculate_stats().hp, "current HP must equal max");
+        assert!(!openhome_pk3_party_tail(core::ptr::null(), tail.as_mut_ptr()));
     }
 
     // Real-cart regression (Yellow "Versione Gialla" starter Pikachu, party
