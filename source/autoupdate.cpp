@@ -16,6 +16,8 @@ alignas(16) static uint8_t s_stack[64 * 1024];
 static Thread s_thread;
 static std::atomic<bool> s_started{false};
 static std::atomic<int> s_state{0}; // 0 idle, 1 working, 2 done
+static std::atomic<int> s_stage{0}; // 0 creato, 1 in fetch, 2 fetch ok, 3 confrontato
+static std::atomic<bool> s_logged{false};
 static char s_version[32] = {0};
 static char s_err[160] = {0};
 static std::string s_url, s_token, s_cur;
@@ -24,14 +26,18 @@ void workerMain(void*) {
     RemoteUpdateInfo info;
     std::string err;
     // Niente DebugLog qui (non thread-safe): esito+errore in statici, li
-    // logga takeResult() che gira sul main thread. Il main rifà comunque la
-    // fetch veloce quando mostra il prompt.
-    if (updateNetFetchInfo(s_url, s_token, info, err)) {
+    // logga autoUpdateLogOnceDone() che gira sul main thread. Il main rifà
+    // comunque la fetch veloce quando mostra il prompt.
+    s_stage.store(1, std::memory_order_release);
+    bool ok = updateNetFetchInfo(s_url, s_token, info, err);
+    s_stage.store(2, std::memory_order_release);
+    if (ok) {
         if (compareVersionStrings(info.version, s_cur) > 0)
             std::snprintf(s_version, sizeof(s_version), "%s", info.version.c_str());
     } else if (!err.empty()) {
         std::snprintf(s_err, sizeof(s_err), "%s", err.substr(0, sizeof(s_err) - 1).c_str());
     }
+    s_stage.store(3, std::memory_order_release);
     s_state.store(2, std::memory_order_release);
 }
 
@@ -46,9 +52,12 @@ void autoUpdateStart(const std::string& url, const std::string& token,
     s_token = token;
     s_cur = curVer;
     s_state.store(1, std::memory_order_release);
-    threadCreate(&s_thread, workerMain, nullptr, s_stack, sizeof(s_stack),
-                 0x2C, -2);
-    threadStart(&s_thread);
+    Result rcCreate = threadCreate(&s_thread, workerMain, nullptr, s_stack,
+                                   sizeof(s_stack), 0x2C, -2);
+    Result rcStart = R_SUCCEEDED(rcCreate)
+        ? threadStart(&s_thread) : rcCreate;
+    DebugLog::line("autoupdate: thread create=0x%08X start=0x%08X stack=%p",
+                   (unsigned)rcCreate, (unsigned)rcStart, (void*)s_stack);
     // Mai joinato: curl ha i suoi timeout, all'exit il processo lo raccoglie.
 }
 
@@ -56,15 +65,24 @@ bool autoUpdateTakeResult(std::string& outVersion) {
     if (s_state.load(std::memory_order_acquire) != 2)
         return false;
     s_state.store(0, std::memory_order_release); // consuma una sola volta
-    if (s_version[0] == '\0') {
-        // Una sola riga per boot: distingue "pari, tutto ok" da "fetch fallita",
-        // altrimenti il silenzio sembra "non attivo".
-        DebugLog::line("autoupdate: niente prompt (%s)",
-            s_err[0] ? s_err : "già aggiornato");
-        return false;
-    }
+    if (s_version[0] == '\0')
+        return false; // fetch fallita o niente di nuovo (loggato da LogOnceDone)
     outVersion = s_version;
     return true;
+}
+
+void autoUpdateLogOnceDone() {
+    if (s_state.load(std::memory_order_acquire) != 2)
+        return;
+    bool expected = false;
+    if (!s_logged.compare_exchange_strong(expected, true))
+        return; // una sola riga per boot, su qualsiasi screen
+    if (s_version[0] != '\0')
+        DebugLog::line("autoupdate: pronta v%s (prompt in home giochi)", s_version);
+    else
+        DebugLog::line("autoupdate: niente prompt (%s), stage=%d",
+            s_err[0] ? s_err : "già aggiornato",
+            s_stage.load(std::memory_order_acquire));
 }
 
 bool readUpdateAutoCfg(const std::string& basePath, std::string& urlOut,

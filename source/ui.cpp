@@ -525,6 +525,8 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
     bool running = true;
 
     while (running) {
+        // Diagnosi worker auto-update su qualsiasi screen (una riga per boot).
+        autoUpdateLogOnceDone();
         // Auto-update al boot: se il thread in parallelo ha trovato una build
         // più recente, lancia il flusso update normale una sola volta quando
         // siamo nella home giochi (mai durante il boot, mai due volte).

@@ -13,6 +13,10 @@ void autoUpdateStart(const std::string& url, const std::string& token,
 // di nuovo, o già ritirato).
 bool autoUpdateTakeResult(std::string& outVersion);
 
+// Logga una sola volta l'esito del worker appena è done (qualsiasi screen):
+// serve a distinguere "fetch in corso" da "morto prima della fetch".
+void autoUpdateLogOnceDone();
+
 // Legge update.cfg (stessi due path di ui_selectors.cpp): ritorna true solo
 // con `auto=1`; url/token restano vuoti se assenti (url vuoto = default GitHub).
 bool readUpdateAutoCfg(const std::string& basePath, std::string& urlOut,
