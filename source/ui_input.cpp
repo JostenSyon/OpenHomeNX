@@ -488,6 +488,9 @@ void UI::handleNormalInput(const SDL_Event& event) {
                             // Pick from party: hand stays on strip, mon disappears from strip
                             Pokemon pm = save_.getPartySlot(partyCursor_);
                             if (!pm.isEmpty()) {
+                                DebugLog::line("party pick: slot=%d spc=%u gt=%d ec=%08x iv32=%08x egg=%d",
+                                    partyCursor_, pm.species(), (int)pm.gameType_,
+                                    pm.encryptionConstant(), pm.iv32(), pm.isEgg() ? 1 : 0);
                                 heldPkm_ = pm;
                                 holding_ = true;
                                 heldFromParty_ = true;

@@ -3173,6 +3173,25 @@ mod tests {
         assert!(!openhome_gen2_party_tail(152, core::ptr::null(), out.as_mut_ptr()));
     }
 
+    // Egg flag must survive PK4 -> OHPKM -> PK3 untouched (a real non-egg
+    // Typhlosion must never gain the egg bit in a cross-gen trip, and a real
+    // egg flag must not be dropped — either way the hand/box would lie).
+    #[test]
+    fn is_egg_survives_pk4_to_pk3_trip() {
+        use pkm_rs::gen3::Pk3;
+        use pkm_rs::gen4::Pk4;
+        use pkm_rs::ohpkm::OhpkmConvert;
+        let raw = include_bytes!("../../../tools/test save/upstream/typhlosion.pkm");
+        let pk4 = Pk4::from_bytes(raw).expect("real Typhlosion must parse");
+        let ohpkm = OhpkmV2::convert_without_backup(&pk4);
+        assert!(!ohpkm.is_egg(), "real non-egg Typhlosion must stay non-egg");
+        let strategy = pkm_rs::convert_strategy::ConvertStrategy::default();
+        let pk3 = Pk3::from_ohpkm(&ohpkm, strategy).expect("Typhlosion converts to PK3");
+        assert!(!pk3.is_egg, "PK3 converted from non-egg must stay non-egg");
+        let back = OhpkmV2::convert_without_backup(&pk3);
+        assert!(!back.is_egg(), "round trip must not invent an egg flag");
+    }
+
     // Pk3 party tail: upstream serializer on a synthesised mon (no GBA save
     // fixture with boxed mons exists). Structural: level from EXP, HP full,
     // deterministic, null-safe.
