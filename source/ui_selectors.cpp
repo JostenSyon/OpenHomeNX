@@ -1119,9 +1119,9 @@ void UI::handleGameSelectorInput(bool& running) {
                             }
                             case GameSelMenuAction::SendSave: {
                                 // Debug-only: upload the save file of the game
-                                // under the grid cursor. v1 resolves imported
-                                // (file-backed) games only — account saves need
-                                // mount/read/unmount (v2, same resolver shape).
+                                // under the grid cursor. File-backed games read
+                                // from SD/USB; installed titles via temporary
+                                // account mount (unmounted on every path).
                                 UpdateCfg cfg;
                                 std::string err;
                                 if (!readUpdateCfg(basePath_, cfg) || cfg.url.empty()) {
@@ -1134,14 +1134,35 @@ void UI::handleGameSelectorInput(bool& running) {
                                 } else {
                                     GameType g = availableGames_[gameSelCursor_];
                                     std::string path = importedSavePath(g, importedOccurrence(gameSelCursor_));
-                                    if (path.empty()) {
-                                        showMessageAndWait(i18n::get(StrKey::SendSaveTitle), i18n::get(StrKey::SendSaveOnlyImported));
-                                    } else {
+                                    if (!path.empty()) {
                                         showWorking(i18n::fmt(StrKey::SendSaveUploading, gameInfo(g).gameTag));
                                         if (updateNetUploadSave(cfg.url, cfg.token, path, gameInfo(g).gameTag, err))
                                             showMessageAndWait(i18n::get(StrKey::SendSaveTitle), i18n::get(StrKey::SendSaveSent));
                                         else
                                             showMessageAndWait(i18n::get(StrKey::SendSaveTitle), i18n::fmt(StrKey::SendSaveFailed, err));
+                                    } else if (selectedProfile_ >= 0 && selectedProfile_ < account_.profileCount()) {
+                                        // v2: save account (titoli installati) — mount
+                                        // temporaneo, upload, unmount sempre.
+                                        std::string fpath;
+                                        {
+                                            std::string mnt = account_.mountSave(selectedProfile_, g);
+                                            if (!mnt.empty())
+                                                fpath = mnt + saveFileNameOf(g);
+                                        }
+                                        if (fpath.empty()) {
+                                            account_.unmountSave();
+                                            showMessageAndWait(i18n::get(StrKey::SendSaveTitle), i18n::get(StrKey::SendSaveOnlyImported));
+                                        } else {
+                                            showWorking(i18n::fmt(StrKey::SendSaveUploading, gameInfo(g).gameTag));
+                                            bool ok = updateNetUploadSave(cfg.url, cfg.token, fpath, gameInfo(g).gameTag, err);
+                                            account_.unmountSave();
+                                            if (ok)
+                                                showMessageAndWait(i18n::get(StrKey::SendSaveTitle), i18n::get(StrKey::SendSaveSent));
+                                            else
+                                                showMessageAndWait(i18n::get(StrKey::SendSaveTitle), i18n::fmt(StrKey::SendSaveFailed, err));
+                                        }
+                                    } else {
+                                        showMessageAndWait(i18n::get(StrKey::SendSaveTitle), i18n::get(StrKey::SendSaveOnlyImported));
                                     }
                                 }
                                 break;

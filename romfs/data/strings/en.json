@@ -269,7 +269,7 @@
 	"save_failed_title": "Save failed",
 	"save_failed_body": "The save was not written (read-only for this generation?). Your in-memory changes are intact.",
 	"sendsave_no_game": "Highlight a game first, then open this menu.",
-	"sendsave_only_imported": "Only imported (file) saves can be sent for now.\nAccount saves come later.",
+	"sendsave_only_imported": "Save not found on SD/USB and no account profile selected.",
 	"transfer_title": "Transfer",
 	"transfer_no_bank_left": "No bank is loaded in the left panel.",
 	"transfer_need_oh": "Cross-gen transfer needs the OpenHome core (menu -> Crypto: OpenHome).",

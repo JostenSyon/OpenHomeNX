@@ -412,7 +412,12 @@ void UI::drawPanel(int panelX, const std::string& boxName, int boxIdx,
                 bool isEmpty = (pi >= (int)party.size() || party[pi].isEmpty());
                 SDL_Texture* tex = nullptr;
                 if (!isEmpty) {
-                    tex = getSprite(party[pi].species(), party[pi].form());
+                    // Le uova mostrano il guscio, non la specie interna: senza
+                    // questo check un uovo sembrava il mon che contiene (bug
+                    // "Ditto diventa uovo" — era un uovo vero fin dall'inizio).
+                    if (party[pi].isEgg())
+                        tex = getSprite(0);
+                    if (!tex) tex = getSprite(party[pi].species(), party[pi].form());
                     if (!tex) tex = getSprite(party[pi].species(), 0);
                     if (!tex) tex = getBallSprite(party[pi].ball());
                     if (!tex) tex = getBallSprite(4);
