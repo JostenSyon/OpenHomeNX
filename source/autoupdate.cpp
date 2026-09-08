@@ -1,6 +1,7 @@
 #include "autoupdate.h"
 #include "update_net.h"
 #include "nro_version.h"
+#include "debug_log.h"
 #include <switch.h>
 #include <atomic>
 #include <cstdio>
@@ -16,16 +17,20 @@ static Thread s_thread;
 static std::atomic<bool> s_started{false};
 static std::atomic<int> s_state{0}; // 0 idle, 1 working, 2 done
 static char s_version[32] = {0};
+static char s_err[160] = {0};
 static std::string s_url, s_token, s_cur;
 
 void workerMain(void*) {
     RemoteUpdateInfo info;
     std::string err;
-    // Niente DebugLog qui (non thread-safe): l'errore si scarta, il main
-    // rifà comunque la fetch veloce quando mostra il prompt.
-    if (updateNetFetchInfo(s_url, s_token, info, err) &&
-        compareVersionStrings(info.version, s_cur) > 0) {
-        std::snprintf(s_version, sizeof(s_version), "%s", info.version.c_str());
+    // Niente DebugLog qui (non thread-safe): esito+errore in statici, li
+    // logga takeResult() che gira sul main thread. Il main rifà comunque la
+    // fetch veloce quando mostra il prompt.
+    if (updateNetFetchInfo(s_url, s_token, info, err)) {
+        if (compareVersionStrings(info.version, s_cur) > 0)
+            std::snprintf(s_version, sizeof(s_version), "%s", info.version.c_str());
+    } else if (!err.empty()) {
+        std::snprintf(s_err, sizeof(s_err), "%s", err.substr(0, sizeof(s_err) - 1).c_str());
     }
     s_state.store(2, std::memory_order_release);
 }
@@ -51,8 +56,13 @@ bool autoUpdateTakeResult(std::string& outVersion) {
     if (s_state.load(std::memory_order_acquire) != 2)
         return false;
     s_state.store(0, std::memory_order_release); // consuma una sola volta
-    if (s_version[0] == '\0')
-        return false; // fetch fallita o niente di nuovo
+    if (s_version[0] == '\0') {
+        // Una sola riga per boot: distingue "pari, tutto ok" da "fetch fallita",
+        // altrimenti il silenzio sembra "non attivo".
+        DebugLog::line("autoupdate: niente prompt (%s)",
+            s_err[0] ? s_err : "già aggiornato");
+        return false;
+    }
     outVersion = s_version;
     return true;
 }
