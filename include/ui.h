@@ -291,9 +291,20 @@ private:
     void drawSaveMenuPopup();
     void sendSaveFor(GameType g, int occ);
     std::string manualBackupDir(GameType g) const;
+    std::string autoBackupDir(GameType g) const;
     bool backupGameSave(GameType g, std::string& out);
-    std::string latestBackupEntry(GameType g);
+    std::vector<std::string> collectBackupEntries(GameType g);
     bool restoreBackupEntry(GameType g, const std::string& entry);
+    // Lista backup sfogliabile (manual + auto + auto-apertura), newest first.
+    bool showBackupList_ = false;
+    int  backupListCursor_ = 0;
+    int  backupListScroll_ = 0;
+    std::vector<std::string> backupListEntries_;
+    GameType backupListGame_ = GameType::EMERALD;
+    void openBackupList(GameType g);
+    void drawBackupListPopup();
+    // Auto-backup best-effort all'apertura dei save file-backed (cap 10).
+    void autoBackupFileSave(GameType g, const std::string& path);
 
     // Wondercard list state
     bool showWondercardList_ = false;

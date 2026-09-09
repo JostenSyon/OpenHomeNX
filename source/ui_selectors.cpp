@@ -1069,6 +1069,77 @@ void UI::handleGameSelectorInput(bool& running) {
             return;
         }
 
+        // Debug backup list intercepts input (sopra il popup save)
+        if (showBackupList_) {
+            int count = (int)backupListEntries_.size();
+            auto scrollIntoView = [&]() {
+                constexpr int VISIBLE = 12;
+                if (backupListCursor_ < backupListScroll_)
+                    backupListScroll_ = backupListCursor_;
+                else if (backupListCursor_ >= backupListScroll_ + VISIBLE)
+                    backupListScroll_ = backupListCursor_ - VISIBLE + 1;
+            };
+            if (event.type == SDL_CONTROLLERBUTTONDOWN) {
+                markDirty();
+                switch (event.cbutton.button) {
+                    case SDL_CONTROLLER_BUTTON_DPAD_UP:
+                        if (count > 0) {
+                            if (backupListCursor_ > 0) backupListCursor_--;
+                            else backupListCursor_ = count - 1;
+                            scrollIntoView();
+                        }
+                        break;
+                    case SDL_CONTROLLER_BUTTON_DPAD_DOWN:
+                        if (count > 0) {
+                            if (backupListCursor_ < count - 1) backupListCursor_++;
+                            else backupListCursor_ = 0;
+                            scrollIntoView();
+                        }
+                        break;
+                    case SDL_CONTROLLER_BUTTON_LEFTSHOULDER:
+                        if (count > 0) {
+                            backupListCursor_ = std::max(0, backupListCursor_ - 10);
+                            scrollIntoView();
+                        }
+                        break;
+                    case SDL_CONTROLLER_BUTTON_RIGHTSHOULDER:
+                        if (count > 0) {
+                            backupListCursor_ = std::min(count - 1, backupListCursor_ + 10);
+                            scrollIntoView();
+                        }
+                        break;
+                    case SDL_CONTROLLER_BUTTON_B: { // Switch A = restore selezionato
+                        if (count == 0) break;
+                        std::string e = backupListEntries_[backupListCursor_];
+                        auto slash = e.find_last_of('/');
+                        std::string base = (slash == std::string::npos) ? e : e.substr(slash + 1);
+                        if (showConfirmDialog("Restore backup",
+                                              base + "\nSovrascrivo il save attuale. Procedo?")) {
+                            if (restoreBackupEntry(backupListGame_, e))
+                                showMessageAndWait("Restore backup", "OK, save ripristinato.");
+                            else
+                                showMessageAndWait("Restore backup", "FAILED (vedi debug.log)");
+                        }
+                        break;
+                    }
+                    case SDL_CONTROLLER_BUTTON_A: // Switch B = indietro
+                    case SDL_CONTROLLER_BUTTON_X:
+                    case SDL_CONTROLLER_BUTTON_BACK:
+                    case SDL_CONTROLLER_BUTTON_START:
+                        showBackupList_ = false;
+                        break;
+                }
+            } else if (event.type == SDL_CONTROLLERAXISMOTION) {
+                if (event.caxis.axis == SDL_CONTROLLER_AXIS_LEFTX ||
+                    event.caxis.axis == SDL_CONTROLLER_AXIS_LEFTY) {
+                    int16_t lx = SDL_GameControllerGetAxis(pad_, SDL_CONTROLLER_AXIS_LEFTX);
+                    int16_t ly = SDL_GameControllerGetAxis(pad_, SDL_CONTROLLER_AXIS_LEFTY);
+                    updateStick(lx, ly);
+                }
+            }
+            continue;
+        }
+
         // Debug save popup intercepts input (sotto il menu +)
         if (showSaveMenu_) {
             if (event.type == SDL_CONTROLLERBUTTONDOWN) {
@@ -1091,17 +1162,7 @@ void UI::handleGameSelectorInput(bool& running) {
                             else
                                 showMessageAndWait("Save backup", "FAILED (vedi debug.log)");
                         } else if (saveMenuCursor_ == 1) {
-                            std::string e = latestBackupEntry(saveMenuGame_);
-                            showSaveMenu_ = false;
-                            if (e.empty()) {
-                                showMessageAndWait("Restore backup", "No backups for this game.");
-                            } else if (showConfirmDialog("Restore backup",
-                                                       e + "\nSovrascrivo il save attuale. Procedo?")) {
-                                if (restoreBackupEntry(saveMenuGame_, e))
-                                    showMessageAndWait("Restore backup", "OK, save ripristinato.");
-                                else
-                                    showMessageAndWait("Restore backup", "FAILED (vedi debug.log)");
-                            }
+                            openBackupList(saveMenuGame_);
                         } else if (saveMenuCursor_ == 2) {
                             showSaveMenu_ = false;
                             sendSaveFor(saveMenuGame_, saveMenuOcc_);
@@ -1337,7 +1398,37 @@ void UI::handleGameSelectorInput(bool& running) {
     }
 
     // Joystick repeat navigation
-    if (showGameSelMenu_ && stickDirY_ != 0) {
+    if (showBackupList_ && stickDirY_ != 0 && !backupListEntries_.empty()) {
+        uint32_t now = SDL_GetTicks();
+        uint32_t delay = stickMoved_ ? STICK_REPEAT_DELAY : STICK_INITIAL_DELAY;
+        if (now - stickMoveTime_ >= delay) {
+            int count = (int)backupListEntries_.size();
+            if (stickDirY_ > 0) {
+                if (backupListCursor_ < count - 1) backupListCursor_++;
+                else backupListCursor_ = 0;
+            } else {
+                if (backupListCursor_ > 0) backupListCursor_--;
+                else backupListCursor_ = count - 1;
+            }
+            constexpr int VISIBLE = 12;
+            if (backupListCursor_ < backupListScroll_)
+                backupListScroll_ = backupListCursor_;
+            else if (backupListCursor_ >= backupListScroll_ + VISIBLE)
+                backupListScroll_ = backupListCursor_ - VISIBLE + 1;
+            stickMoveTime_ = now;
+            stickMoved_ = true;
+            markDirty();
+        }
+    } else if (showSaveMenu_ && stickDirY_ != 0) {
+        uint32_t now = SDL_GetTicks();
+        uint32_t delay = stickMoved_ ? STICK_REPEAT_DELAY : STICK_INITIAL_DELAY;
+        if (now - stickMoveTime_ >= delay) {
+            saveMenuCursor_ = (saveMenuCursor_ + (stickDirY_ > 0 ? 1 : 3)) % 4;
+            stickMoveTime_ = now;
+            stickMoved_ = true;
+            markDirty();
+        }
+    } else if (showGameSelMenu_ && stickDirY_ != 0) {
         uint32_t now = SDL_GetTicks();
         uint32_t delay = stickMoved_ ? STICK_REPEAT_DELAY : STICK_INITIAL_DELAY;
         if (now - stickMoveTime_ >= delay) {
@@ -1347,7 +1438,7 @@ void UI::handleGameSelectorInput(bool& running) {
             stickMoved_ = true;
             markDirty();
         }
-    } else if (!showGameSelMenu_ && (stickDirX_ != 0 || stickDirY_ != 0)) {
+    } else if (!showGameSelMenu_ && !showSaveMenu_ && !showBackupList_ && (stickDirX_ != 0 || stickDirY_ != 0)) {
         uint32_t now = SDL_GetTicks();
         uint32_t delay = stickMoved_ ? STICK_REPEAT_DELAY : STICK_INITIAL_DELAY;
         if (now - stickMoveTime_ >= delay) {
@@ -1798,6 +1889,126 @@ std::string UI::manualBackupDir(GameType g) const {
     return basePath_ + "backups/manual/" + gamePathNameOf(g) + "/";
 }
 
+std::string UI::autoBackupDir(GameType g) const {
+    return basePath_ + "backups/auto/" + gamePathNameOf(g) + "/";
+}
+
+static std::vector<std::string> listDirNames(const std::string& dir) {
+    std::vector<std::string> out;
+    DIR* d = opendir(dir.c_str());
+    if (!d) return out;
+    while (dirent* e = readdir(d)) {
+        std::string n = e->d_name;
+        if (n == "." || n == "..") continue;
+        out.push_back(n);
+    }
+    closedir(d);
+    return out;
+}
+
+std::vector<std::string> UI::collectBackupEntries(GameType g) {
+    // manuali + auto-apertura + auto legacy (backups/<profilo>/<gioco>/).
+    std::vector<std::string> dirs = { manualBackupDir(g), autoBackupDir(g) };
+    if (selectedProfile_ >= 0 && selectedProfile_ < account_.profileCount())
+        dirs.push_back(basePath_ + "backups/" +
+                       account_.profiles()[selectedProfile_].pathSafeName +
+                       "/" + gamePathNameOf(g) + "/");
+    std::vector<std::string> entries;
+    for (auto& dir : dirs)
+        for (auto& n : listDirNames(dir))
+            entries.push_back(dir + n);
+    // Sotto-dir legacy con timestamp dentro (aperture titoli installati):
+    // includi ricorsione di un livello per quelle.
+    size_t base = entries.size();
+    for (size_t i = 0; i < base; i++) {
+        struct stat st;
+        if (stat(entries[i].c_str(), &st) == 0 && S_ISDIR(st.st_mode)) {
+            std::string sub = entries[i] + "/";
+            // Solo se non e gia un backup-dir diretto (file dentro = backup).
+            bool hasFile = false;
+            for (auto& n : listDirNames(sub)) {
+                struct stat st2;
+                std::string full = sub + n;
+                if (stat(full.c_str(), &st2) == 0 && !S_ISDIR(st2.st_mode)) {
+                    entries.push_back(full);
+                    hasFile = true;
+                }
+            }
+            (void)hasFile;
+        }
+    }
+    std::sort(entries.begin(), entries.end(), std::greater<std::string>());
+    // Deduplica mantenendo l'ordine (stesso file da due dir mai, ma gratis).
+    entries.erase(std::unique(entries.begin(), entries.end()), entries.end());
+    return entries;
+}
+
+void UI::openBackupList(GameType g) {
+    backupListGame_ = g;
+    backupListEntries_ = collectBackupEntries(g);
+    backupListCursor_ = 0;
+    backupListScroll_ = 0;
+    showBackupList_ = true;
+    showSaveMenu_ = false;
+}
+
+void UI::drawBackupListPopup() {
+    drawRect(0, 0, SCREEN_W, SCREEN_H, T().overlay);
+    std::string title = std::string("Backups: ") + gameInfo(backupListGame_).gameTag;
+    constexpr int POP_W = 560;
+    constexpr int ROW_H = 36;
+    constexpr int VISIBLE = 12;
+    int count = (int)backupListEntries_.size();
+    int rows = count > 0 ? std::min(count, VISIBLE) : 1;
+    int POP_H = 50 + rows * ROW_H + 30;
+    int popX = (SCREEN_W - POP_W) / 2;
+    int popY = (SCREEN_H - POP_H) / 2;
+    drawRect(popX, popY, POP_W, POP_H, T().panelBg);
+    drawRectOutline(popX, popY, POP_W, POP_H, T().cursor, 2);
+    drawTextCentered(title, popX + POP_W / 2, popY + 22, T().text, font_);
+    int startY = popY + 50;
+    if (count == 0) {
+        drawTextCentered("No backups for this game.", popX + POP_W / 2,
+                         startY + (ROW_H - 4) / 2, T().textDim, font_);
+    } else {
+        for (int r = 0; r < rows; r++) {
+            int i = backupListScroll_ + r;
+            if (i >= count) break;
+            int rowY = startY + r * ROW_H;
+            if (i == backupListCursor_) {
+                drawRect(popX + 20, rowY, POP_W - 40, ROW_H - 4, T().menuHighlight);
+                drawRectOutline(popX + 20, rowY, POP_W - 40, ROW_H - 4, T().cursor, 2);
+            }
+            std::string n = backupListEntries_[i];
+            auto slash = n.find_last_of('/');
+            std::string base = (slash == std::string::npos) ? n : n.substr(slash + 1);
+            if (base.size() > 52) base = base.substr(0, 51) + "~";
+            drawText(base, popX + 30, rowY + 6, T().text, fontSmall_);
+        }
+    }
+    drawTextCentered("A: restore  B: back", popX + POP_W / 2, popY + POP_H - 18, T().textDim, fontSmall_);
+}
+
+void UI::autoBackupFileSave(GameType g, const std::string& path) {
+    std::string dir = autoBackupDir(g);
+    ensureDirRecursive(dir);
+    std::string base = path.substr(path.find_last_of("/\\") + 1);
+    std::string dst = dir + backupTimestamp() + "_" + base;
+    if (!copyFileTo(path, dst)) {
+        DebugLog::line("auto backup FAILED: %s", path.c_str());
+        return;
+    }
+    DebugLog::line("auto backup: %s -> %s", path.c_str(), dst.c_str());
+    // Prune: tieni i 10 piu recenti.
+    auto names = listDirNames(dir);
+    std::sort(names.begin(), names.end(), std::greater<std::string>());
+    for (size_t i = 10; i < names.size(); i++) {
+        std::string full = dir + names[i];
+        if (std::remove(full.c_str()) == 0)
+            DebugLog::line("auto backup prune: %s", full.c_str());
+    }
+}
+
 void UI::sendSaveFor(GameType g, int occ) {
     // Ex blocco SendSave del menu + (cursor checks fuori, dal chiamante).
     // File-backed: upload diretto; titoli installati: mount temporaneo.
@@ -1872,22 +2083,6 @@ bool UI::backupGameSave(GameType g, std::string& out) {
     return false;
 }
 
-std::string UI::latestBackupEntry(GameType g) {
-    std::string dir = manualBackupDir(g);
-    DIR* d = opendir(dir.c_str());
-    if (!d) return "";
-    std::vector<std::string> names;
-    while (dirent* e = readdir(d)) {
-        std::string n = e->d_name;
-        if (n == "." || n == "..") continue;
-        names.push_back(n);
-    }
-    closedir(d);
-    if (names.empty()) return "";
-    std::sort(names.begin(), names.end(), std::greater<std::string>());
-    return dir + names[0];
-}
-
 bool UI::restoreBackupEntry(GameType g, const std::string& entry) {
     struct stat st;
     if (stat(entry.c_str(), &st) != 0) return false;
@@ -1912,7 +2107,7 @@ bool UI::restoreBackupEntry(GameType g, const std::string& entry) {
 
 void UI::drawSaveMenuPopup() {
     drawRect(0, 0, SCREEN_W, SCREEN_H, T().overlay);
-    static const char* rows[] = { "Backup save", "Restore latest backup", "Send save", "Close" };
+    static const char* rows[] = { "Backup save", "Browse backups", "Send save", "Close" };
     constexpr int NROWS = 4;
     constexpr int POP_W = 360;
     int rowH = 36;

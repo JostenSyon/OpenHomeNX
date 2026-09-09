@@ -563,6 +563,7 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
                     drawGameSelectorFrame();
                     if (showGameSelMenu_) drawGameSelMenuPopup();
                 if (showSaveMenu_) drawSaveMenuPopup();
+                if (showBackupList_) drawBackupListPopup();
                 }
                 else if (screen_ == AppScreen::BankSelector) drawBankSelectorFrame();
                 else drawFrame();
@@ -635,6 +636,7 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
                     drawGameSelectorFrame();
                     if (showGameSelMenu_) drawGameSelMenuPopup();
                 if (showSaveMenu_) drawSaveMenuPopup();
+                if (showBackupList_) drawBackupListPopup();
                 }
                 else if (screen_ == AppScreen::BankSelector) drawBankSelectorFrame();
                 else drawFrame();
@@ -697,6 +699,7 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
                 drawGameSelectorFrame();
                 if (showGameSelMenu_) drawGameSelMenuPopup();
                 if (showSaveMenu_) drawSaveMenuPopup();
+                if (showBackupList_) drawBackupListPopup();
             }
             else if (screen_ == AppScreen::BankSelector) drawBankSelectorFrame();
             else drawFrame();
@@ -790,6 +793,7 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
                     drawGameSelectorFrame();
                     if (showGameSelMenu_) drawGameSelMenuPopup();
                 if (showSaveMenu_) drawSaveMenuPopup();
+                if (showBackupList_) drawBackupListPopup();
                 }
                 else if (screen_ == AppScreen::BankSelector) drawBankSelectorFrame();
                 else drawFrame();
@@ -863,6 +867,7 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
                     drawGameSelectorFrame();
                     if (showGameSelMenu_) drawGameSelMenuPopup();
                 if (showSaveMenu_) drawSaveMenuPopup();
+                if (showBackupList_) drawBackupListPopup();
                 }
                 else if (screen_ == AppScreen::BankSelector) drawBankSelectorFrame();
                 else drawFrame();
@@ -940,6 +945,7 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
                     drawGameSelectorFrame();
                     if (showGameSelMenu_) drawGameSelMenuPopup();
                 if (showSaveMenu_) drawSaveMenuPopup();
+                if (showBackupList_) drawBackupListPopup();
                 }
                 else if (screen_ == AppScreen::BankSelector) drawBankSelectorFrame();
                 else drawFrame();
@@ -1046,6 +1052,7 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
                 drawGameSelectorFrame();
                 if (showGameSelMenu_) drawGameSelMenuPopup();
                 if (showSaveMenu_) drawSaveMenuPopup();
+                if (showBackupList_) drawBackupListPopup();
             }
             else if (screen_ == AppScreen::BankSelector) drawBankSelectorFrame();
             else drawFrame();
@@ -1099,6 +1106,11 @@ void UI::selectGame(GameType game, int occurrence) {
                 showMessageAndWait(i18n::get(StrKey::MountError), i18n::get(StrKey::FailedMountSave));
                 return;
             }
+            // Come i titoli installati (backupSaveDir sopra), anche i save
+            // file-backed meritano un auto-backup all'apertura: finora non ne
+            // esisteva nessuno (da qui "non trova save"). Best-effort, mai
+            // dialoghi: cap 10, solo log.
+            autoBackupFileSave(game, savePath_);
         } else if (selectedProfile_ >= 0) {
             std::string mountPath = account_.mountSave(selectedProfile_, game);
             if (mountPath.empty()) {
