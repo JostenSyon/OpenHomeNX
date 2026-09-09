@@ -15,7 +15,7 @@ cross-gen reale. I fallimenti sono sempre espliciti, mai silenziosi.
 - Party strip con OT, grab/swap/posa dal party, compattamento al salvataggio
 - Save nativi GB/GBC/GBA/DS/3DS-decifrati + import da SD/USB
 - Wondercard injection, backup automatici dei save, LED, indicatore rete
-- Self-update da SD/rete (vedi `Updater.md`)
+- Self-update da SD/rete
 
 ## Installazione (Switch)
 

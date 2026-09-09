@@ -1207,7 +1207,7 @@ bool UI::destIsCrossGenBank(Panel panel) const {
 // round-trip is needed and volatile fields (met date, PP, friendship) can never
 // trigger a false positive. Tags with no local GameType (Pk7/Alola) return false
 // (unverifiable -> no fallback, explicit fail). EXP-without-level and ribbon-only
-// edits are NOT detected (known limit, documented in GenPorting.md).
+// edits are NOT detected (known limit, see PKHeX SAV7 reference).
 static bool monEditedSinceBackup(const Pokemon& cur, const std::vector<uint8_t>& backup) {
     if (backup.size() <= 2)
         return false;
@@ -1454,7 +1454,7 @@ bool UI::prepareForPlacement(Pokemon& pkm, Panel panel, std::string& whyNot) con
     DebugLog::line("xfer: %s -> %s (gen? -> gen%d)",
                    gameDisplayNameOf(pkm.gameType_), gameDisplayNameOf(dest), dstGen);
 
-    // Primary path = upstream method (GenPorting.md): always rebuild the
+    // Primary path = upstream method: always rebuild the
     // destination record via the Rust engine below. The carried OriginalBackup
     // is only a fallback (restoreVerbatimFallback) if that fails — never
     // preferred, so moves/levels gained meanwhile survive by construction.
@@ -1477,7 +1477,7 @@ bool UI::prepareForPlacement(Pokemon& pkm, Panel panel, std::string& whyNot) con
         return false;
     }
 
-    // Lossless return (GenPorting.md rev.3): when coming BACK to the format of
+    // Lossless return: when coming BACK to the format of
     // a carried OriginalBackup, test whether the user changed anything since
     // conversion by re-running that same conversion now (deterministic, see
     // transfer_is_deterministic_per_target): backup -> current format.

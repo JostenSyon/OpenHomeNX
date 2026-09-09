@@ -5355,7 +5355,7 @@ mod tests {
         //  - 0x8a..0x8c: currentHP — a party field the box serializer drops.
         //  - 0xd6..0xf7: LZA "plus move" mastery block C. Not modeled by the Pk9
         //    wrapper; an LZA->LZA move keeps it only via the OriginalBackup
-        //    (see GenPorting.md, PA9 v1 caveat).
+        //    (PA9 v1 caveat: upstream reads 0x60, writes 0x94).
         //  - 0x148..0x156: level + party stats, recomputed by the game on load.
         let excluded = |i: usize| {
             (0x04..0x08).contains(&i)

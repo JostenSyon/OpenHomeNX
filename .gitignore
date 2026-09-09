@@ -13,6 +13,11 @@ OpenHomeNX.nacp
 # Documentazione di lavoro interna (mai pubblica: riferimenti ad agenti/AI)
 AGENTS.md
 /docs/
+# Solo README pubblico: gli altri .md di lavoro restano locali
+/FEATURES.md
+/GenPorting.md
+/REGRESSIONS.md
+/Updater.md
 
 # Runtime / logs / scratch
 debug.log
@@ -37,3 +42,5 @@ update.cfg
 # personal save dumps (OTveri) — local only; upstream fixtures stay tracked
 /tools/test save/*
 !/tools/test save/upstream/
+# niente save completi nel repo: solo singoli record per i test
+/tools/test save/upstream/moon-sm.sav
