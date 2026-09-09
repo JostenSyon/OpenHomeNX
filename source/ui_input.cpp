@@ -600,10 +600,14 @@ void UI::handleNormalInput(const SDL_Event& event) {
                         if (holding_ && heldFromParty_) {
                             // Undo without loss: box-origin swap restores the box source
                             // too, pure-party swap restores both party slots.
+                            // VERBATIM: si rimette src.pkm (l'originale, con blob
+                            // OHPKM se da banca), MAI inD (la versione convertita
+                            // per la strip non rientra nelle celle blob e il
+                            // guard xbank la rifiuterebbe perdendo il mon —
+                            // Smeraldo: Pikachu banca sparito al cancel).
                             if (!swapHistory_.empty()) {
                                 auto src = swapHistory_.back();
-                                Pokemon inD = save_.getPartySlot(heldPartyIdx_);
-                                setPokemonAt(src.box, src.slot, src.panel, inD);
+                                setPokemonAt(src.box, src.slot, src.panel, src.pkm);
                                 save_.setPartySlot(heldPartyIdx_, heldPkm_);
                             } else if (heldPartyOrig_ >= 0 && heldPartyOrig_ != heldPartyIdx_) {
                                 Pokemon curD = save_.getPartySlot(heldPartyIdx_);
@@ -1970,11 +1974,11 @@ void UI::actionCancel() {
     }
 
     // Party hold cancel: undo without loss (same branches as the A-on-strip cancel).
+    // VERBATIM come sopra: src.pkm, mai inD convertito (celle blob).
     if (heldFromParty_) {
         if (!swapHistory_.empty()) {
             auto src = swapHistory_.back();
-            Pokemon inD = save_.getPartySlot(heldPartyIdx_);
-            setPokemonAt(src.box, src.slot, src.panel, inD);
+            setPokemonAt(src.box, src.slot, src.panel, src.pkm);
             save_.setPartySlot(heldPartyIdx_, heldPkm_);
         } else if (heldPartyOrig_ >= 0 && heldPartyOrig_ != heldPartyIdx_) {
             Pokemon curD = save_.getPartySlot(heldPartyIdx_);
