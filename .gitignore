@@ -10,6 +10,10 @@ OpenHomeNX.nacp
 # OS / editor
 .DS_Store
 
+# Documentazione di lavoro interna (mai pubblica: riferimenti ad agenti/AI)
+AGENTS.md
+/docs/
+
 # Runtime / logs / scratch
 debug.log
 __pycache__/

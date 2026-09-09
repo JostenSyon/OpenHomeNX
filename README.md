@@ -17,8 +17,6 @@ cross-gen reale. I fallimenti sono sempre espliciti, mai silenziosi.
 - Wondercard injection, backup automatici dei save, LED, indicatore rete
 - Self-update da SD/rete (vedi `Updater.md`)
 
-Stato dettagliato in `AGENTS.md` (milestone M1–M6).
-
 ## Installazione (Switch)
 
 1. Scarica `OpenHomeNX.nro` dall'ultima [release](../../releases) e copialo in
