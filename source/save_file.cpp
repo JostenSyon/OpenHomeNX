@@ -2194,11 +2194,14 @@ bool SaveFile::normalizeDeltaSave(const std::string& path, std::string& info) {
 bool SaveFile::loadGBA(const std::string& path) {
     // Delta/iPhone: normalizza permanente (loggato) prima di leggere, cosi
     // il file diventa compatibile mGBA & co. L'auto-backup all'apertura ha
-    // gia salvato l'originale.
+    // gia salvato l'originale. Se fallisce, logga il perche (size anomala
+    // ma finestre invalide = file spurio, es. metadati AppleDouble).
     {
         std::string info;
         if (normalizeDeltaSave(path, info))
             DebugLog::line("loadGBA: Delta normalize %s: %s", path.c_str(), info.c_str());
+        else if (info != "already clean 128K" && info != "cannot open")
+            DebugLog::line("loadGBA: normalize no (%s): %s", path.c_str(), info.c_str());
     }
     std::ifstream file(path, std::ios::binary | std::ios::ate);
     if (!file.is_open())
