@@ -1373,6 +1373,12 @@ bool UI::prepareForPlacement(Pokemon& pkm, Panel panel, std::string& whyNot) con
         }
         PkmHandle* h = OpenHomeNX::loadOhpkm(pkm.ohpkmBlob_);
         if (!h) { whyNot = i18n::get(StrKey::TransferBadOhpkm); return false; }
+        {
+            uint16_t mm[4] = { 0, 0, 0, 0 };
+            if (OpenHomeNX::ohpkmMoves(h, mm))
+                DebugLog::line("xfer: in moves=%u,%u,%u,%u -> g%d",
+                               mm[0], mm[1], mm[2], mm[3], dg);
+        }
         PkmHandle* out = PokemonFFI::transfer(h, static_cast<uint32_t>(dg));
         PokemonFFI::free(h);
         DebugLog::line("xfer: blob -> g%d %s", dg, out ? "ok" : "NULL");

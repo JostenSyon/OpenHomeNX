@@ -37,6 +37,7 @@ PkmHandle *openhome_transfer_pkm(PkmHandle *pkm_handle, uint32_t target_gen);
 // supportata ("sconosciuto" esplicito, mai uno 0 silenzioso).
 uint32_t openhome_count_moves_not_in_gen(const PkmHandle *pkm_handle, uint32_t gen);
 uint32_t openhome_species_legal_in_gen(const PkmHandle *pkm_handle, uint32_t gen);
+bool openhome_ohpkm_moves(const PkmHandle *pkm_handle, uint16_t *out4);
 // Level-up learnset (table ids mirror learnsetTableFor() in game_type.h):
 // writes [id_lo, id_hi, level] triples (level 0 = evolution move). Two-phase:
 // null buffer returns the move count for sizing; with a buffer writes all or
@@ -117,6 +118,9 @@ inline uint32_t countMovesNotInGen(const PkmHandle* pkm_handle, uint32_t gen) {
 }
 inline uint32_t speciesLegalInGen(const PkmHandle* pkm_handle, uint32_t gen) {
     return openhome_species_legal_in_gen(pkm_handle, gen);
+}
+inline bool ohpkmMoves(const PkmHandle* pkm_handle, uint16_t out4[4]) {
+    return openhome_ohpkm_moves(pkm_handle, out4);
 }
 inline PkmHandle* generateTestPkm(uint16_t species, uint8_t level, uint16_t m1, uint16_t m2, uint16_t m3, uint16_t m4) {
     return openhome_generate_test_pkm(species, level, m1, m2, m3, m4);

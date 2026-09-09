@@ -2072,6 +2072,30 @@ pub extern "C" fn openhome_load_ohpkm(data: *const u8, len: usize) -> *mut PkmHa
 pub extern "C" fn openhome_ohpkm_species(_handle: *mut PkmHandle) -> u16 {
     0
 }
+// Legge i 4 id mossa dell'OHPKM (diagnostica drop Gen1: quali mosse entrano
+// davvero nel transfer). Riempie out[4], false se handle nullo.
+#[cfg(not(any(feature = "alloc", feature = "std")))]
+#[no_mangle]
+pub extern "C" fn openhome_ohpkm_moves(
+    _handle: *const PkmHandle,
+    _out: *mut u16,
+) -> bool {
+    false
+}
+#[cfg(any(feature = "alloc", feature = "std"))]
+#[no_mangle]
+pub extern "C" fn openhome_ohpkm_moves(handle: *const PkmHandle, out: *mut u16) -> bool {
+    if handle.is_null() || out.is_null() {
+        return false;
+    }
+    let pkm = unsafe { &*handle };
+    let idx = pkm.ohpkm.moves().indices();
+    let dst = unsafe { core::slice::from_raw_parts_mut(out, 4) };
+    for (i, d) in dst.iter_mut().enumerate() {
+        *d = idx.get(i).copied().unwrap_or(0);
+    }
+    true
+}
 #[cfg(any(feature = "alloc", feature = "std"))]
 #[no_mangle]
 pub extern "C" fn openhome_ohpkm_species(handle: *mut PkmHandle) -> u16 {
@@ -3567,6 +3591,37 @@ mod tests {
         openhome_free_pkm(out2);
         openhome_free_pkm(back);
         openhome_free_pkm(gen);
+    }
+
+    // Diagnostica R3: stampa le mosse risultanti per i tre input Pikachu.
+    #[test]
+    fn debug_gen1_pikachu_moves() {
+        for (name, mv) in [
+            ("mixed", [85u16, 800, 129, 801]),
+            ("drops", [800u16, 801, 802, 803]),
+            ("clean", [85u16, 98, 86, 87]),
+        ] {
+            let m = make_test_ohpkm(
+                OriginGame::Sword,
+                MoveSlots::from_arrays(
+                    [
+                        MoveIndex::from_u16(mv[0]),
+                        MoveIndex::from_u16(mv[1]),
+                        MoveIndex::from_u16(mv[2]),
+                        MoveIndex::from_u16(mv[3]),
+                    ],
+                    [10, 10, 10, 10],
+                    [0, 0, 0, 0],
+                ),
+            );
+            let mut handle = PkmHandle { ohpkm: m };
+            let ptr = &mut handle as *mut PkmHandle;
+            let out = openhome_transfer_pkm(ptr, 1);
+            assert!(!out.is_null(), "{name} must convert");
+            let om = unsafe { &*out }.ohpkm.moves().indices();
+            std::println!("{name}: in={mv:?} out_moves={om:?}");
+            openhome_free_pkm(out);
+        }
     }
 
     // BLANKET fixture matrix: ogni record reale in tools/test save/upstream
