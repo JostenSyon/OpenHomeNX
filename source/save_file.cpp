@@ -783,9 +783,19 @@ bool SaveFile::placePlaceholder() {
     }
     std::memcpy(p.data.data(), bytes.data(), bytes.size());
     if (gen == 1) fillGen1Names(p, gen1Ot, gen1Nick);
-    setPartySlot(0, p);
+    // Prima cella libera della strip (NON slot 0 fisso): nelle famiglie
+    // posizionali lo slot 0 potrebbe tenere un altro mon (sovrascritto =
+    // perso) mentre il fantasma sta altrove. Qui c'e sempre posto (hasParty
+    // falso prima della chiamata).
+    int slot = 0;
+    while (slot < 6 && slot < (int)dsParty_.size() && !dsParty_[slot].isEmpty()) slot++;
+    if (slot >= 6) {
+        DebugLog::line("placePlaceholder: strip senza buchi (impossibile)");
+        return false;
+    }
+    setPartySlot(slot, p);
     bool ok = hasParty();
-    DebugLog::line("placePlaceholder: Magikarp L5 gen %d -> slot 0 (%s)", gen, ok ? "ok" : "FAILED");
+    DebugLog::line("placePlaceholder: Magikarp L5 gen %d -> slot %d (%s)", gen, slot, ok ? "ok" : "FAILED");
     return ok;
 }
 

@@ -1803,6 +1803,22 @@ void UI::actionSelect() {
                 save_.setLGPEPartyPointer(lgpeHeldPartyIdx_, newFlat);
                 save_.refreshPartyEntryFromPointer(lgpeHeldPartyIdx_);
             }
+            // Strip-origin sync (anti-dupe LGPE): il mon ha lasciato la strip
+            // per una NUOVA cella — rilascia subito l'origine (pointer EMPTY +
+            // cella zeroata), altrimenti disco ha 2 copie (pointer intatto +
+            // nuova cella) e al reload resuscita all'infinito. Se torna sulla
+            // propria cella gialla, ricongiungi la strip (refresh).
+            if (isLGPE(selectedGame_) && heldPartyOrig_ >= 0 && cursor_.panel == Panel::Game) {
+                int of = save_.lgpeFlatOfParty(heldPartyOrig_);
+                int nf = box * save_.slotsPerBox() + slot;
+                if (of >= 0 && of != nf) {
+                    save_.setLGPEPartyPointer(heldPartyOrig_, SaveFile::LGPE_SLOT_EMPTY);
+                    save_.lgpeZeroFlatSlot(of);
+                    DebugLog::line("lgpe: origine strip %d rilasciata (cella %d)", heldPartyOrig_, of);
+                } else if (of == nf && of >= 0) {
+                    save_.refreshPartyEntryFromPointer(heldPartyOrig_);
+                }
+            }
             holding_ = false;
             heldPkm_ = Pokemon{};
             swapHistory_.clear();
@@ -1824,6 +1840,20 @@ void UI::actionSelect() {
                     box * save_.slotsPerBox() + slot);
                 save_.setLGPEPartyPointer(lgpeHeldPartyIdx_, newFlat);
                 save_.refreshPartyEntryFromPointer(lgpeHeldPartyIdx_);
+            }
+            // Stesso sync anti-dupe del place (vedi sopra): anche allo swap
+            // l'origine strip va rilasciata, A vive ormai nella cella target
+            // (il cancel la rilegge da history[0]).
+            if (isLGPE(selectedGame_) && heldPartyOrig_ >= 0 && cursor_.panel == Panel::Game) {
+                int of = save_.lgpeFlatOfParty(heldPartyOrig_);
+                int nf = box * save_.slotsPerBox() + slot;
+                if (of >= 0 && of != nf) {
+                    save_.setLGPEPartyPointer(heldPartyOrig_, SaveFile::LGPE_SLOT_EMPTY);
+                    save_.lgpeZeroFlatSlot(of);
+                    DebugLog::line("lgpe: origine strip %d rilasciata (cella %d)", heldPartyOrig_, of);
+                } else if (of == nf && of >= 0) {
+                    save_.refreshPartyEntryFromPointer(heldPartyOrig_);
+                }
             }
             // Target was a party member but held Pokemon was not (cross-panel swap):
             // the party Pokemon is now held, so invalidate its pointer until placed.
