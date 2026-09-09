@@ -513,6 +513,12 @@ void UI::handleNormalInput(const SDL_Event& event) {
             case SDL_CONTROLLER_BUTTON_B: // Switch A (right) = SDL B -> pick / take
                 if (!yHeld_) {
                     if (partyCursor_ >= 0) {
+                        // La cella box puntata (solo LGPE, -1 altrove): pick e
+                        // place la cambiano su disco ma la vista box la cacha
+                        // (slotDisplayCache_) — senza invalidate resta
+                        // appiccicata fino al prossimo place (celle gialle
+                        // fantasma). Si invalida qui sotto, pre e post.
+                        int preFlat = save_.lgpeFlatOfParty(partyCursor_);
                         if (!canEditParty()) {
                             // Sola lettura (no debug, o GB/GBC): dettaglio come Y,
                             // mano intatta.
@@ -579,9 +585,21 @@ void UI::handleNormalInput(const SDL_Event& event) {
                                     heldFromLGPEParty_ = true;
                                 }
                                 // LGPE: clearPartySlot svuota pointer E cella insieme
-                                // (atomico col guard: ultimo mon = solo memoria).
+                                // (LGPE esente dal guard: sempre subito).
                                 save_.clearPartySlot(partyCursor_);
                                 refreshHighlightSet();
+                            }
+                        }
+                        // Invalida la vista delle celle toccate (pre e post):
+                        // la box view cacha i display e resterebbe appiccicata.
+                        {
+                            int spb = save_.slotsPerBox();
+                            if (spb > 0) {
+                                if (preFlat >= 0)
+                                    invalidateSlotDisplay(Panel::Game, preFlat / spb);
+                                int postFlat = save_.lgpeFlatOfParty(partyCursor_);
+                                if (postFlat >= 0 && postFlat != preFlat)
+                                    invalidateSlotDisplay(Panel::Game, postFlat / spb);
                             }
                         }
                     } else {
@@ -611,6 +629,20 @@ void UI::handleNormalInput(const SDL_Event& event) {
                                 save_.setPartySlot(heldPartyOrig_, curD);
                             } else {
                                 save_.setPartySlot(heldPartyIdx_, heldPkm_);
+                            }
+                            // Come sopra: le celle LGPE toccate dal restore
+                            // vanno invalidate nella vista box.
+                            {
+                                int spb = save_.slotsPerBox();
+                                if (spb > 0) {
+                                    int f1 = save_.lgpeFlatOfParty(heldPartyIdx_);
+                                    if (f1 >= 0) invalidateSlotDisplay(Panel::Game, f1 / spb);
+                                    if (heldPartyOrig_ >= 0 && heldPartyOrig_ != heldPartyIdx_) {
+                                        int f2 = save_.lgpeFlatOfParty(heldPartyOrig_);
+                                        if (f2 >= 0 && f2 != f1)
+                                            invalidateSlotDisplay(Panel::Game, f2 / spb);
+                                    }
+                                }
                             }
                             holding_=false; heldPkm_=Pokemon{}; heldFromParty_=false; heldPartyIdx_=-1; heldPartyOrig_=-1;
                             heldFromLGPEParty_=false; lgpeHeldPartyIdx_=-1;
@@ -2071,6 +2103,11 @@ void UI::actionCancel() {
         DebugLog::line("cancel: %s torna in strip %d",
                        stripMon.displayName().c_str(), stripOrig);
         save_.setPartySlot(stripOrig, stripMon);
+        int spb = save_.slotsPerBox();
+        if (spb > 0) {
+            int f = save_.lgpeFlatOfParty(stripOrig);
+            if (f >= 0) invalidateSlotDisplay(Panel::Game, f / spb);
+        }
     }
 }
 
