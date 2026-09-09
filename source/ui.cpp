@@ -10,6 +10,7 @@
 #include <cstdio>
 #include <cstring>
 #include <ctime>
+#include <sstream>
 #include <sys/stat.h>
 #include <sys/statvfs.h>
 
@@ -263,17 +264,68 @@ void UI::showSplash(int holdMs, bool fadeOut) {
 
 int UI::drawBodyText(const std::string& body, int startY, const std::string& footer) {
     int lineY = startY;
+    const int maxW = SCREEN_W - 80;
     std::string remaining = body;
     while (!remaining.empty()) {
         size_t nl = remaining.find('\n');
         std::string line = (nl != std::string::npos) ? remaining.substr(0, nl) : remaining;
-        drawTextCentered(line, SCREEN_W / 2, lineY, T().textDim, font_);
-        lineY += 24;
+        // Word-wrap: righe troppo lunghe (URL update, ...) mai fuori schermo.
+        for (auto& wl : wrapText(line, font_, maxW)) {
+            drawTextCentered(wl, SCREEN_W / 2, lineY, T().textDim, font_);
+            lineY += 24;
+        }
         if (nl == std::string::npos) break;
         remaining = remaining.substr(nl + 1);
     }
     drawTextCentered(footer, SCREEN_W / 2, lineY + 20, T().textDim, fontSmall_);
     return lineY;
+}
+
+// Spezza una riga in piu righe entro maxW: prima per parole, poi per
+// caratteri UTF-8 per le parole singole oltre il limite (URL lunghi).
+std::vector<std::string> UI::wrapText(const std::string& line, TTF_Font* f, int maxW) {
+    std::vector<std::string> out;
+    std::string cur;
+    std::istringstream iss(line);
+    std::string w;
+    auto width = [&](const std::string& t) { return getTextEntry(t, f, T().textDim).w; };
+    auto flush = [&]() {
+        if (!cur.empty()) { out.push_back(cur); cur.clear(); }
+    };
+    while (iss >> w) {
+        std::string cand = cur.empty() ? w : cur + " " + w;
+        if (width(cand) <= maxW) {
+            cur = cand;
+        } else {
+            flush();
+            if (width(w) <= maxW) {
+                cur = w;
+            } else {
+                // Parola oltre maxW: spezza a caratteri (UTF-8 safe).
+                std::string part;
+                for (size_t i = 0; i < w.size();) {
+                    size_t len = 1;
+                    unsigned char c = static_cast<unsigned char>(w[i]);
+                    if ((c & 0x80) == 0) len = 1;
+                    else if ((c & 0xE0) == 0xC0) len = 2;
+                    else if ((c & 0xF0) == 0xE0) len = 3;
+                    else if ((c & 0xF8) == 0xF0) len = 4;
+                    std::string cand2 = part + w.substr(i, len);
+                    if (!part.empty() && width(cand2) > maxW) {
+                        out.push_back(part);
+                        part = w.substr(i, len);
+                    } else {
+                        part = cand2;
+                    }
+                    i += len;
+                }
+                cur = part;
+            }
+        }
+    }
+    flush();
+    if (out.empty()) out.push_back("");
+    return out;
 }
 
 void UI::showMessageAndWait(const std::string& title, const std::string& body) {
@@ -427,8 +479,11 @@ void UI::showWorking(const std::string& msg) {
     // Center hole
     fillCircle(gearCX, gearCY, HOLE_R, T().panelBg);
 
-    // Message text below gear (modo semplice, senza "%": una sola riga)
-    drawTextCentered(msg, SCREEN_W / 2, popY + POP_H - 32, T().text, font_);
+    // Message text below gear: wrap entro la card (max 2 righe), mai fuori.
+    auto lines = wrapText(msg, font_, POP_W - 40);
+    int ty = popY + POP_H - 32 - (int)(lines.size() > 1 ? (lines.size() - 1) * 22 : 0);
+    for (size_t i = 0; i < lines.size() && i < 2; i++)
+        drawTextCentered(lines[i], SCREEN_W / 2, ty + (int)i * 22, T().text, font_);
 
     SDL_RenderPresent(renderer_);
 }

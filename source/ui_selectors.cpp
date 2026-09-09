@@ -20,6 +20,31 @@ namespace {
 // Senza `url=` il check update usa le GitHub releases pubbliche
 // (githubReleasesUrl sotto); Send log/save richiedono comunque `url=`
 // (GitHub non riceve upload).
+// Etichetta corta per la sorgente update nei popup: l'URL intero sborda
+// dalle card (github.../download = 60+ caratteri). Il fetch usa sempre
+// l'URL completo, qui solo display.
+static std::string updateSourceLabel(const std::string& url) {
+    auto gh = url.find("github.com/");
+    if (gh != std::string::npos) {
+        std::string rest = url.substr(gh + 11);
+        auto slash = rest.find('/');
+        if (slash != std::string::npos) {
+            std::string repo = rest.substr(slash + 1);
+            auto end = repo.find('/');
+            if (end != std::string::npos) repo = repo.substr(0, end);
+            return "GitHub (" + rest.substr(0, slash) + "/" + repo + ")";
+        }
+        return "GitHub";
+    }
+    std::string h = url;
+    auto proto = h.find("://");
+    if (proto != std::string::npos) h = h.substr(proto + 3);
+    auto slash = h.find('/');
+    if (slash != std::string::npos) h = h.substr(0, slash);
+    if (!h.empty() && h.size() <= 48) return "Rete locale (" + h + ")";
+    const std::string& t = h.empty() ? url : h;
+    return t.size() <= 48 ? t : "..." + t.substr(t.size() - 45);
+}
 struct UpdateCfg {
     std::string url, token;
     long backupMb = 256;   // tetto auto-backup per gioco, titoli installati
@@ -1748,21 +1773,21 @@ bool UI::checkForUpdate(bool usbOnly) {
             if (!updateNetAvailable()) {
                 DebugLog::line("update: rete non disponibile, salto Layer 1");
                 showMessageAndWait(i18n::get(StrKey::UpdateTitle),
-                    i18n::fmt(StrKey::UpdateNetOff, netUrl));
+                    i18n::fmt(StrKey::UpdateNetOff, updateSourceLabel(netUrl)));
             } else {
-                showWorking(i18n::fmt(StrKey::UpdateContacting, netUrl));
+                showWorking(i18n::fmt(StrKey::UpdateContacting, updateSourceLabel(netUrl)));
                 RemoteUpdateInfo info;
                 std::string err;
                 if (!updateNetFetchInfo(netUrl, cfg.token, info, err)) {
                     DebugLog::line("update: fetch info fallito: %s", err.c_str());
                     showMessageAndWait(i18n::get(StrKey::UpdateTitle),
-                        i18n::fmt(StrKey::UpdateUnreachable, err, netUrl));
+                        i18n::fmt(StrKey::UpdateUnreachable, err, updateSourceLabel(netUrl)));
                 } else {
                     int cmp = compareVersionStrings(info.version, curVer);
                     DebugLog::line("update: remoto v%s cmp=%d", info.version.c_str(), cmp);
                     if (cmp > 0) {
                         if (!showConfirmDialog(i18n::get(StrKey::UpdateAvailNetTitle),
-                                i18n::fmt(StrKey::UpdateAvailNetBody, info.version, curVer, netUrl)))
+                                i18n::fmt(StrKey::UpdateAvailNetBody, info.version, curVer, updateSourceLabel(netUrl))))
                             return false;
                         removeStaleLocalUpdates(basePath_, runningNro);
                         showWorking(i18n::fmt(StrKey::UpdateDownloading, info.version));

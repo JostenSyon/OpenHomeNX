@@ -91,6 +91,7 @@ public:
     // doesn't play over a black gap; call showSplash(0, true) when ready.
     void showSplash(int holdMs = 2500, bool fadeOut = true);
     int  drawBodyText(const std::string& body, int startY, const std::string& footer);
+    static std::vector<std::string> wrapText(const std::string& line, TTF_Font* f, int maxW);
     void showMessageAndWait(const std::string& title, const std::string& body);
     bool showConfirmDialog(const std::string& title, const std::string& body);
     void showWorking(const std::string& msg);
