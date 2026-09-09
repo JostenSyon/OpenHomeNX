@@ -504,14 +504,18 @@ void SaveFile::setPartySlot(int idx, const Pokemon& pkm) {
             if (!dsParty_[i].isEmpty()) fixed[j++] = dsParty_[i];
         dsParty_ = std::move(fixed);
     }
-    // UNIVERSAL (tutte le famiglie): mai persistere una squadra vuota —
-    // nessuno stato valido di gioco la produce (Smeraldo count-0 -> glitch;
-    // vale per posizionali SCBlock/BDSP/XY/SM, count byte GB/GBC/DS/GBA,
-    // pointer LGPE). La memoria segue la mano (strip si svuota, B annulla),
-    // il disco tiene l'ultimo party valido; l'exit-hook offre il segnaposto
-    // (Caterpie GBA, Magikarp altrove) o blocca l'uscita. Copre TUTTI i
-    // persist, anche bank-switch senza uscita dal gioco.
-    {
+    // UNIVERSAL (tutte le famiglie tranne LGPE): mai persistere una squadra
+    // vuota — nessuno stato valido di gioco la produce (Smeraldo count-0 ->
+    // glitch; vale per posizionali SCBlock/BDSP/XY/SM, count byte GB/GBC/DS/
+    // GBA, pointer LGPE). La memoria segue la mano (strip si svuota, B
+    // annulla), il disco tiene l'ultimo party valido; l'exit-hook offre il
+    // segnaposto (Caterpie GBA, Magikarp altrove) o blocca l'uscita. Copre
+    // TUTTI i persist, anche bank-switch senza uscita dal gioco.
+    // LGPE ESENTE: non ha count, ha pointer — e pointer EMPTY e legale. Il
+    // guard qui creava divergenza memoria/disco (pointer tenuto + cella
+    // tenuta + copia in mano = duplicatrice infinita): pick libera sempre
+    // pointer+cella subito, exit dialog resta come rete.
+    if (!isLGPE(gameType_)) {
         bool anyLeft = !toWrite.isEmpty();
         for (size_t i = 0; i < dsParty_.size() && !anyLeft; i++)
             if ((int)i != idx && !dsParty_[i].isEmpty()) anyLeft = true;
@@ -619,11 +623,9 @@ void SaveFile::setPartySlot(int idx, const Pokemon& pkm) {
         }
     } else if (isLGPE(gameType_)) {
         if (toWrite.isEmpty()) {
-            // ATOMICO col guard universale (che ritorna prima di qui quando
-            // si svuoterebbe la squadra): pointer e cella si liberano
-            // insieme, mai pointer penzolante su cella azzerata (LGPE 2026:
-            // zeroFlat correva anche col guard attivo -> strip fantasma +
-            // dati disco distrutti mentre la mano li teneva).
+            // Pointer e cella sempre insieme (LGPE e esente dal guard:
+            // pointer EMPTY e legale, quindi si libera subito — mai
+            // divergenza memoria/disco, mai duplicatrice).
             int oldFlat = lgpeFlatOfParty(idx);
             setLGPEPartyPointer(idx, LGPE_SLOT_EMPTY);
             if (oldFlat >= 0)

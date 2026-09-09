@@ -1725,21 +1725,11 @@ void UI::actionSelect() {
         swapHistory_.push_back({pkm, cursor_.panel, box, slot});
 
         clearPokemonAt(box, slot, cursor_.panel);
-        // LGPE: clearPartySlot invalida pointer E azzera la cella insieme
-        // (atomico col guard anti-svuotamento). MA clearPokemonAt qui sopra
-        // ha gia azzerato la cella PRIMA del guard: se era l'ultimo mon,
-        // ripristina la cella col mon in mano (disco intatto come il pointer).
-        if (lgpeHeldPartyIdx_ >= 0) {
-            int alive = 0;
-            for (const auto& q : save_.dsParty())
-                if (!q.isEmpty()) alive++;
-            if (alive <= 1) {
-                // Ultimo mon: pointer tenuto dal guard, ricopia i dati.
-                setPokemonAt(box, slot, cursor_.panel, heldPkm_);
-                DebugLog::line("box pick: ultimo mon party, cella ripristinata (disco intatto)");
-            }
+        // LGPE: clearPartySlot invalida pointer E azzera la cella insieme.
+        // Niente restore: LGPE e esente dal guard anti-svuotamento, quindi
+        // qui si libera sempre tutto (una sola copia in mano).
+        if (lgpeHeldPartyIdx_ >= 0)
             save_.clearPartySlot(lgpeHeldPartyIdx_);
-        }
     } else {
         // Block LGPE party Pokemon from moving to bank
         if (heldFromLGPEParty_ && cursor_.panel == Panel::Bank) {
