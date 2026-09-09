@@ -916,6 +916,13 @@ Pokemon SaveFile::getBoxSlot(int box, int slot) const {
 void SaveFile::setBoxSlot(int box, int slot, Pokemon pkm) {
     if (!loaded_ || !boxData_)
         return;
+    // Mai scrivere fuori box: l'offset e lineare e uno slot oltre
+    // slotsPerBox_ cadrebbe nel box successivo (mon "teletrasportato").
+    if (box < 0 || box >= boxCount_ || slot < 0 || slot >= slotsPerBox_) {
+        DebugLog::line("setBoxSlot: REFUSED box=%d slot=%d (boxCount=%d spb=%d)",
+                       box, slot, boxCount_, slotsPerBox_);
+        return;
+    }
 
     int offset = getBoxSlotOffset(box, slot);
     if (offset + sizeBoxSlot_ > static_cast<int>(boxDataLen_))
@@ -954,6 +961,11 @@ void SaveFile::setBoxSlot(int box, int slot, Pokemon pkm) {
 void SaveFile::clearBoxSlot(int box, int slot) {
     if (!loaded_ || !boxData_)
         return;
+    if (box < 0 || box >= boxCount_ || slot < 0 || slot >= slotsPerBox_) {
+        DebugLog::line("clearBoxSlot: REFUSED box=%d slot=%d (boxCount=%d spb=%d)",
+                       box, slot, boxCount_, slotsPerBox_);
+        return;
+    }
 
     int offset = getBoxSlotOffset(box, slot);
     if (offset + sizeBoxSlot_ > static_cast<int>(boxDataLen_))

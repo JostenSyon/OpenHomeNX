@@ -705,7 +705,12 @@ private:
         int spb;
         if (p == Panel::Bank)        spb = bank_.slotsPerBox();
         else if (isDualBankMode())   spb = bankLeft_.slotsPerBox();
-        else                         spb = isLGPE(selectedGame_) ? 25 : 30;
+        else                         spb = save_.slotsPerBox() > 0 ? save_.slotsPerBox() : 30;
+        // Colonne esatte: box 20 (GB/GBC) -> 4, 25 -> 5, 30 -> 6. Una griglia
+        // piu larga crea celle fantasma oltre slotsPerBox_: depositarci
+        // scriveva nel box successivo (offset lineare, nessuna guard) e il mon
+        // "spariva" (Rosso 2026-09-09: ultima riga box0 -> box1).
+        if (spb > 0 && spb % 5 == 0) return spb / 5;
         return spb <= 25 ? 5 : 6;
     }
     int maxSlotsFor(Panel p) const { return gridColsFor(p) * 5; }

@@ -1583,6 +1583,12 @@ void UI::actionSelect() {
 
     int box = cursor_.box;
     int slot = cursor_.slot(gridCols());
+    // Mai depositare fuori box: con griglie piu strette del pannello (GB/GBC
+    // 20 slot) uno slot oltre il limite cadrebbe nel box dopo. Tieni in mano.
+    if (slot < 0 || slot >= maxSlotsFor(cursor_.panel)) {
+        DebugLog::line("actionSelect: REFUSED box=%d slot=%d oltre griglia, mano intatta", box, slot);
+        return;
+    }
 
     // Multi-select pick up
     if (!holding_ && !selectedSlots_.empty()) {
