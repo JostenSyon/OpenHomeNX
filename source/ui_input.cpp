@@ -3022,6 +3022,15 @@ std::vector<UI::GenMonDef> UI::genMonTable() {
 }
 
 void UI::handleGenMonListInput(const SDL_Event& event) {
+    if (event.type == SDL_CONTROLLERAXISMOTION) {
+        if (event.caxis.axis == SDL_CONTROLLER_AXIS_LEFTX ||
+            event.caxis.axis == SDL_CONTROLLER_AXIS_LEFTY) {
+            int16_t lx = SDL_GameControllerGetAxis(pad_, SDL_CONTROLLER_AXIS_LEFTX);
+            int16_t ly = SDL_GameControllerGetAxis(pad_, SDL_CONTROLLER_AXIS_LEFTY);
+            updateStick(lx, ly);
+        }
+    }
+
     int count = (int)genMonList_.size();
     if (count == 0) {
         if (event.type == SDL_CONTROLLERBUTTONDOWN && event.cbutton.button == SDL_CONTROLLER_BUTTON_A)
@@ -3067,7 +3076,7 @@ void UI::handleGenMonListInput(const SDL_Event& event) {
 }
 
 bool UI::importGeneratedMon(const GenMonDef& def) {
-    if (!bank_.isCrossGen()) {
+    if (activeBankPath_.empty()) {
         showMessageAndWait(i18n::get(StrKey::ImportPkTitle), i18n::get(StrKey::ImportPkNeedBank));
         return false;
     }
@@ -3086,16 +3095,44 @@ bool UI::importGeneratedMon(const GenMonDef& def) {
         showMessageAndWait(i18n::get(StrKey::ImportPkTitle), i18n::get(StrKey::CouldNotWrite));
         return false;
     }
-    for (int b = 0; b < bank_.boxCount(); b++) {
-        for (int s = 0; s < bank_.slotsPerBox(); s++) {
-            if (bank_.ohpkmAt(b, s).empty()) {
-                bank_.setOhpkmAt(b, s, blob);
-                markDirty();
-                invalidateSlotDisplay(Panel::Bank, b);
-                DebugLog::line("generate mon: %s -> specie %u in banca %d:%d", def.label, sp, b, s);
-                showMessageAndWait(i18n::get(StrKey::ImportPkTitle), def.label);
-                return true;
+    if (bank_.isCrossGen()) {
+        for (int b = 0; b < bank_.boxCount(); b++) {
+            for (int s = 0; s < bank_.slotsPerBox(); s++) {
+                if (bank_.ohpkmAt(b, s).empty()) {
+                    bank_.setOhpkmAt(b, s, blob);
+                    markDirty();
+                    invalidateSlotDisplay(Panel::Bank, b);
+                    DebugLog::line("generate mon: %s -> specie %u in banca %d:%d", def.label, sp, b, s);
+                    showMessageAndWait(i18n::get(StrKey::ImportPkTitle), def.label);
+                    return true;
+                }
             }
+        }
+    } else {
+        // Banca nativa: converti nel formato della banca e scrivi record
+        // nativo (stesso percorso di un drop: prepareForPlacement).
+        Pokemon p;
+        p.gameType_ = GameType::S;
+        p.ohpkmBlob_ = std::move(blob);
+        std::string whyNot;
+        if (prepareForPlacement(p, Panel::Bank, whyNot)) {
+            for (int b = 0; b < bank_.boxCount(); b++) {
+                for (int s = 0; s < bank_.slotsPerBox(); s++) {
+                    if (bank_.getSlot(b, s).isEmpty()) {
+                        bank_.setSlot(b, s, p);
+                        markDirty();
+                        invalidateSlotDisplay(Panel::Bank, b);
+                        DebugLog::line("generate mon: %s -> specie %u in banca nativa %d:%d",
+                                       def.label, sp, b, s);
+                        showMessageAndWait(i18n::get(StrKey::ImportPkTitle), def.label);
+                        return true;
+                    }
+                }
+            }
+        } else {
+            DebugLog::line("generate mon: %s -> banca nativa rifiutata: %s", def.label, whyNot.c_str());
+            showMessageAndWait(i18n::get(StrKey::TransferTitle), whyNot);
+            return false;
         }
     }
     DebugLog::line("generate mon: banca piena (%s)", def.label);
