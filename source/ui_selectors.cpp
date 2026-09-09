@@ -1153,11 +1153,11 @@ void UI::handleGameSelectorInput(bool& running) {
                 switch (event.cbutton.button) {
                     case SDL_CONTROLLER_BUTTON_DPAD_UP:
                     case SDL_CONTROLLER_BUTTON_DPAD_LEFT:
-                        saveMenuCursor_ = (saveMenuCursor_ + 4) % 5;
+                        saveMenuCursor_ = (saveMenuCursor_ + 5) % 6;
                         break;
                     case SDL_CONTROLLER_BUTTON_DPAD_DOWN:
                     case SDL_CONTROLLER_BUTTON_DPAD_RIGHT:
-                        saveMenuCursor_ = (saveMenuCursor_ + 1) % 5;
+                        saveMenuCursor_ = (saveMenuCursor_ + 1) % 6;
                         break;
                     case SDL_CONTROLLER_BUTTON_B: { // Switch A = conferma
                         if (saveMenuCursor_ == 0) {
@@ -1179,6 +1179,17 @@ void UI::handleGameSelectorInput(bool& running) {
                                           freed / 1048576.0);
                             showMessageAndWait("Clean old backups", msg);
                         } else if (saveMenuCursor_ == 3) {
+                            // Normalizza Delta: via i 16B extra, file raw 128K.
+                            std::string p = importedSavePath(saveMenuGame_, saveMenuOcc_);
+                            showSaveMenu_ = false;
+                            if (p.empty()) {
+                                showMessageAndWait("Normalize save", "Solo save SD (niente titoli installati).");
+                            } else {
+                                std::string info;
+                                SaveFile::normalizeDeltaSave(p, info);
+                                showMessageAndWait("Normalize save", info);
+                            }
+                        } else if (saveMenuCursor_ == 4) {
                             showSaveMenu_ = false;
                             sendSaveFor(saveMenuGame_, saveMenuOcc_);
                         } else {
@@ -1438,7 +1449,7 @@ void UI::handleGameSelectorInput(bool& running) {
         uint32_t now = SDL_GetTicks();
         uint32_t delay = stickMoved_ ? STICK_REPEAT_DELAY : STICK_INITIAL_DELAY;
         if (now - stickMoveTime_ >= delay) {
-            saveMenuCursor_ = (saveMenuCursor_ + (stickDirY_ > 0 ? 1 : 4)) % 5;
+            saveMenuCursor_ = (saveMenuCursor_ + (stickDirY_ > 0 ? 1 : 5)) % 6;
             stickMoveTime_ = now;
             stickMoved_ = true;
             markDirty();
@@ -2223,8 +2234,8 @@ bool UI::restoreBackupEntry(GameType g, const std::string& entry) {
 
 void UI::drawSaveMenuPopup() {
     drawRect(0, 0, SCREEN_W, SCREEN_H, T().overlay);
-    static const char* rows[] = { "Backup save", "Browse backups", "Clean old backups", "Send save", "Close" };
-    constexpr int NROWS = 5;
+    static const char* rows[] = { "Backup save", "Browse backups", "Clean old backups", "Normalize save", "Send save", "Close" };
+    constexpr int NROWS = 6;
     constexpr int POP_W = 360;
     int rowH = 36;
     int POP_H = 50 + NROWS * rowH + 30;

@@ -52,6 +52,11 @@ public:
     void lgpeZeroFlatSlot(int flat);        // azzera i dati della cella (pointer invariato)
     void refreshPartyEntryFromPointer(int idx); // rileggi dsParty_[idx] dalla sua cella
     bool hasParty() const { for (auto &p: dsParty_) if (!p.isEmpty()) return true; return false; }
+    // Normalizza un save Delta/iPhone (+16B metadata) a raw 128K permanente
+    // (mGBA & co. vogliono 131072B esatti). Rileva la finestra valida (testa
+    // o coda) e riscrive solo quella, byte-identica. Mai silenzioso: info
+    // descrive l'esito. True = file riscritto.
+    static bool normalizeDeltaSave(const std::string& path, std::string& info);
 
     Pokemon getBoxSlot(int box, int slot) const;
     void setBoxSlot(int box, int slot, Pokemon pkm);

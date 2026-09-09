@@ -2090,7 +2090,59 @@ uint16_t SaveFile::checkSum32GBA(const uint8_t* data, size_t len) {
     return static_cast<uint16_t>(chk + (chk >> 16));
 }
 
+bool SaveFile::normalizeDeltaSave(const std::string& path, std::string& info) {
+    std::ifstream f(path, std::ios::binary | std::ios::ate);
+    if (!f.is_open()) { info = "cannot open"; return false; }
+    size_t n = static_cast<size_t>(f.tellg());
+    if (n == GBA_SAVE_SIZE) { info = "already clean 128K"; return false; }
+    if (n != GBA_SAVE_SIZE + GBA_XTRA) { info = "size not Delta-like"; return false; }
+    std::vector<uint8_t> d(n);
+    f.seekg(0);
+    f.read(reinterpret_cast<char*>(d.data()), n);
+    if (!f) { info = "read failed"; return false; }
+    f.close();
+    auto windowOk = [&](size_t base) -> bool {
+        if (base + 2 * GBA_SECTOR_COUNT * GBA_SECTOR_SIZE > d.size())
+            return false;
+        for (int slot = 0; slot < 2; slot++) {
+            int bitTrack = 0;
+            for (int i = 0; i < GBA_SECTOR_COUNT; i++) {
+                size_t o = base + static_cast<size_t>(slot * GBA_SECTOR_COUNT + i) *
+                           GBA_SECTOR_SIZE + GBA_OFS_SECTOR_ID;
+                uint16_t id = readU16LE(d.data() + o);
+                if (id < GBA_SECTOR_COUNT)
+                    bitTrack |= (1 << id);
+            }
+            if (bitTrack == 0x3FFF)
+                return true;
+        }
+        return false;
+    };
+    size_t base = 0;
+    const char* where = nullptr;
+    if (windowOk(0)) { base = 0; where = "head"; }
+    else if (windowOk(GBA_XTRA)) { base = GBA_XTRA; where = "tail"; }
+    else { info = "16B extra but no valid sector window (not touched)"; return false; }
+    FILE* w = std::fopen(path.c_str(), "wb");
+    if (!w) { info = "cannot rewrite"; return false; }
+    size_t written = std::fwrite(d.data() + base, 1, GBA_SAVE_SIZE, w);
+    std::fclose(w);
+    if (written != GBA_SAVE_SIZE) { info = "short write"; return false; }
+    char b[128];
+    std::snprintf(b, sizeof(b), "stripped 16B (%s), now clean 128K", where);
+    info = b;
+    return true;
+}
+
 bool SaveFile::loadGBA(const std::string& path) {
+    // Delta/iPhone: normalizza permanente (loggato) prima di leggere, cosi
+    // il file diventa compatibile mGBA & co. L'auto-backup all'apertura ha
+    // gia salvato l'originale.
+    {
+        std::string info;
+        if (normalizeDeltaSave(path, info))
+            DebugLog::line("loadGBA: Delta normalize %s: %s", path.c_str(), info.c_str());
+    }
     std::ifstream file(path, std::ios::binary | std::ios::ate);
     if (!file.is_open())
         return false;
