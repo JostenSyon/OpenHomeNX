@@ -1945,7 +1945,14 @@ bool UI::ensurePartyOnExit() {
 // la azzera), quindi il warn scatta solo qui, mai in uscita dal gioco.
 bool UI::confirmQuitWithHold() {
     if (!holding_ && heldMulti_.empty()) return true;
-    DebugLog::line("quit: mano occupata, chiedo conferma");
+    DebugLog::line("quit: mano occupata");
+    if (!DebugLog::enabled()) {
+        // Non-debug: NO-OP esplicita — niente quit con perdite, solo B
+        // (indietro). Il popup messaggio ha solo chiusura, nessuna A.
+        showMessageAndWait(i18n::get(StrKey::QuitHoldTitle),
+                           i18n::get(StrKey::QuitHoldBody));
+        return false;
+    }
     return showConfirmDialog(i18n::get(StrKey::QuitHoldTitle),
                              i18n::get(StrKey::QuitHoldBody));
 }
