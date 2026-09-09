@@ -7,6 +7,7 @@
 #include "update_net.h"
 
 #include <cerrno>
+#include <cmath>
 #include <ctime>
 #include <dirent.h>
 #include <fstream>
