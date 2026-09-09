@@ -2229,6 +2229,9 @@ bool UI::restoreBackupEntry(GameType g, const std::string& entry) {
         std::string mnt = account_.mountSave(selectedProfile_, g);
         if (mnt.empty()) return false;
         bool ok = AccountManager::backupSaveDir(entry + "/", mnt);
+        // Senza commit l'unmount scarta le scritture (Horizon): restore
+        // fantasma che dice ok ma non cambia niente (Violetto 2026-09-09).
+        if (ok) account_.commitSave();
         account_.unmountSave();
         DebugLog::line("save restore (account): %s (%s)", entry.c_str(), ok ? "ok" : "FAIL");
         return ok;
