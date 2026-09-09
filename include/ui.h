@@ -112,6 +112,7 @@ private:
     TTF_Font*            font_      = nullptr;
     TTF_Font*            fontSmall_ = nullptr;
     TTF_Font*            fontLarge_ = nullptr;
+    TTF_Font*            fontAbout_ = nullptr; // 20pt, descrizioni popup About
 
     // Sprite cache: (national dex ID | form << 16) -> texture
     std::unordered_map<uint32_t, SDL_Texture*> spriteCache_;

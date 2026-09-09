@@ -298,6 +298,7 @@ namespace StrKey {
     constexpr const char* SupportedBDSPLA      = "supported_bdsp_la";
     constexpr const char* SupportedSVZA        = "supported_sv_za";
     constexpr const char* SupportedFRLG        = "supported_frlg";
+    constexpr const char* SupportedGB         = "supported_gb";
     constexpr const char* AboutBasedOn         = "about_based_on";
     constexpr const char* AboutBasedPKHouse    = "about_based_pkhouse";
     constexpr const char* AboutBasedOpenHome   = "about_based_openhome";

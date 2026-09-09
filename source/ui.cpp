@@ -68,6 +68,7 @@ bool UI::init() {
     font_ = TTF_OpenFontRW(rw, 0, 18);
     fontSmall_ = TTF_OpenFontRW(SDL_RWFromMem(fontData.address, fontData.size), 0, 14);
     fontLarge_ = TTF_OpenFontRW(SDL_RWFromMem(fontData.address, fontData.size), 0, 28);
+    fontAbout_ = TTF_OpenFontRW(SDL_RWFromMem(fontData.address, fontData.size), 0, 20);
 
     if (!font_ || !fontSmall_) {
         if (!font_)
@@ -77,6 +78,9 @@ bool UI::init() {
     }
     if (!fontLarge_)
         fontLarge_ = TTF_OpenFont("romfs:/fonts/default.ttf", 28);
+    if (!fontAbout_)
+        fontAbout_ = TTF_OpenFont("romfs:/fonts/default.ttf", 20);
+    if (!fontAbout_) fontAbout_ = font_; // mai nullo al draw
 
     // Load status icons
     {
@@ -173,6 +177,7 @@ void UI::shutdown() {
     account_.freeTextures();
     freeSprites();
     if (fontLarge_) TTF_CloseFont(fontLarge_);
+    if (fontAbout_) TTF_CloseFont(fontAbout_);
     if (fontSmall_) TTF_CloseFont(fontSmall_);
     if (font_) TTF_CloseFont(font_);
     if (pad_) SDL_GameControllerClose(pad_);

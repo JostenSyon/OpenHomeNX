@@ -2175,11 +2175,11 @@ void UI::drawAboutPopup() {
         }
     };
 
-    drawWrappedCentered(i18n::get(StrKey::AboutDesc1), font_, T().text, MAX_W, 20, y);
-    y += 4;
+    drawWrappedCentered(i18n::get(StrKey::AboutDesc1), fontAbout_, T().text, MAX_W, 26, y);
+    y += 6;
     // AboutDesc2 uses smaller font and wrapping to avoid going off-screen (it.json is very long)
-    drawWrappedCentered(i18n::get(StrKey::AboutDesc2), fontSmall_, T().text, MAX_W, 18, y);
-    y += 8;
+    drawWrappedCentered(i18n::get(StrKey::AboutDesc2), fontAbout_, T().text, MAX_W, 26, y);
+    y += 16;
 
     drawTextCentered(i18n::get(StrKey::SupportedGames), cx, y, T().selected, font_);
     y += 22;
@@ -2190,6 +2190,8 @@ void UI::drawAboutPopup() {
     drawTextCentered(i18n::get(StrKey::SupportedSVZA), cx, y, T().textDim, fontSmall_);
     y += 18;
     drawTextCentered(i18n::get(StrKey::SupportedFRLG), cx, y, T().textDim, fontSmall_);
+    y += 18;
+    drawTextCentered(i18n::get(StrKey::SupportedGB), cx, y, T().textDim, fontSmall_);
     y += 14;
 
     // Divider

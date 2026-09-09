@@ -208,6 +208,7 @@
 	"supported_swsh": "Brilliant Diamond/Shining Pearl (1.3.0)  -  Legends: Arceus (1.1.1)",
 	"supported_sv_za": "Scarlet/Violet (4.0.0)  -  Legends: Z-A (2.0.2)",
 	"supported_frlg": "FireRed/LeafGreen (1.0.0)",
+	"supported_gb": "Red/Blue/Yellow  -  Gold/Silver/Crystal  -  Ruby/Sapphire/Emerald",
 	"about_based_on": "Based on",
 	"about_based_pkhouse": "pkHouse — UI/graphics — github.com/Insektaure/pkHouse",
 	"about_based_openhome": "OpenHome — cross-gen engine — github.com/andrewbenington/OpenHome",
