@@ -3522,6 +3522,53 @@ mod tests {
         openhome_free_pkm(out);
     }
 
+    // Regressione R3 Rosso: Pikachu con TUTTE le mosse fuori Gen1 non deve
+    // sparire — entra con refill learnset RB + count 4.
+    #[test]
+    fn transfer_gen1_all_moves_dropped_refills() {
+        let mut m = make_test_ohpkm(
+            OriginGame::Sword,
+            MoveSlots::from_arrays(
+                [
+                    MoveIndex::from_u16(800),
+                    MoveIndex::from_u16(801),
+                    MoveIndex::from_u16(802),
+                    MoveIndex::from_u16(803),
+                ],
+                [10, 10, 10, 10],
+                [0, 0, 0, 0],
+            ),
+        );
+        let mut handle = PkmHandle { ohpkm: m };
+        let ptr = &mut handle as *mut PkmHandle;
+        assert_eq!(openhome_count_moves_not_in_gen(ptr, 1), 4);
+        let out = openhome_transfer_pkm(ptr, 1);
+        assert!(
+            !out.is_null(),
+            "Pikachu all-modern-moves must still convert for Gen1 (refill)"
+        );
+        assert_eq!(openhome_ohpkm_species(out), 25);
+        openhome_free_pkm(out);
+        // Stesso caso ma dal percorso generate (blob serializzato come in banca).
+        let gen = openhome_generate_test_pkm(25, 50, 800, 801, 802, 803);
+        assert!(!gen.is_null(), "generate drops Pikachu");
+        let mut buf = alloc::vec![0u8; 2048];
+        let nbytes = openhome_get_ohpkm_bytes(gen, buf.as_mut_ptr(), buf.len());
+        assert!(nbytes > 0 && (nbytes as usize) < buf.len());
+        buf.truncate(nbytes as usize);
+        let back = openhome_load_ohpkm(buf.as_ptr(), buf.len());
+        assert!(!back.is_null(), "generated blob must reload");
+        let out2 = openhome_transfer_pkm(back, 1);
+        assert!(
+            !out2.is_null(),
+            "generated drops Pikachu must convert for Gen1 (refill)"
+        );
+        assert_eq!(openhome_ohpkm_species(out2), 25);
+        openhome_free_pkm(out2);
+        openhome_free_pkm(back);
+        openhome_free_pkm(gen);
+    }
+
     // BLANKET fixture matrix: ogni record reale in tools/test save/upstream
     // parte dalla sua gen e viene trasferito verso tutti i 13 target.
     // Politica verificata per ogni cella:

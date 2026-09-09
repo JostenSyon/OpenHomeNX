@@ -1375,6 +1375,7 @@ bool UI::prepareForPlacement(Pokemon& pkm, Panel panel, std::string& whyNot) con
         if (!h) { whyNot = i18n::get(StrKey::TransferBadOhpkm); return false; }
         PkmHandle* out = PokemonFFI::transfer(h, static_cast<uint32_t>(dg));
         PokemonFFI::free(h);
+        DebugLog::line("xfer: blob -> g%d %s", dg, out ? "ok" : "NULL");
         if (!out) {
             whyNot = i18n::fmt(StrKey::TransferNotInDex, pkm.displayName(), gameDisplayNameOf(d));
             return false;
@@ -1391,6 +1392,7 @@ bool UI::prepareForPlacement(Pokemon& pkm, Panel panel, std::string& whyNot) con
             gen1Nick = OpenHomeNX::ohpkmNickname(out);
         }
         PokemonFFI::free(out);
+        DebugLog::line("xfer: g%d bytes=%zu data=%zu", dg, bytes.size(), pkm.data.size());
         if (bytes.empty() || bytes.size() > pkm.data.size()) {
             whyNot = i18n::get(StrKey::TransferNoBytes);
             return false;
