@@ -852,19 +852,17 @@ fn convert_to_pk3(
     }
     let mut pk3 = Pk3::from_ohpkm(ohpkm, strategy)?;
 
-    // Move drop + refill through the MoveSlots setters. Mirrors convert_to_pk6:
-    // Gen 3 only has moves introduced in Gen 3 or earlier.
-    let src_moves = ohpkm.moves().indices();
+    // Move drop + refill through the MoveSlots setters. Operates on the
+    // CONVERTED slots (not source positions): upstream from_ohpkm compacts
+    // left via PP-adjust-collect, so source indices would misalign and wipe
+    // legal moves (proven: [85,500,129,503] -> [85,0,0,0] instead of
+    // [85,129,0,0]). Gen 3 only has moves introduced in Gen 3 or earlier.
+    let had_move = ohpkm.moves().indices().iter().any(|&m| m != 0);
     let mut indices = pk3.moves.indices();
     let mut pp = pk3.moves.pp();
     let mut pp_ups = pk3.moves.pp_ups();
-    let mut had_move = false;
     for slot in 0..4 {
-        let src = src_moves.get(slot).copied().unwrap_or(0);
-        if src != 0 {
-            had_move = true;
-        }
-        if !pkm_rs::gen3::move_legal_in_gen3(src) {
+        if !pkm_rs::gen3::move_legal_in_gen3(indices[slot]) {
             indices[slot] = 0;
             pp[slot] = 0;
             pp_ups[slot] = 0;
@@ -1214,18 +1212,14 @@ fn convert_to_pk6(
     }
     let mut pk6 = Pk6::from_ohpkm(ohpkm, strategy)?;
 
-    // Move drop + refill through the MoveSlots setters. Mirrors convert_to_pk4.
-    let src_moves = ohpkm.moves().indices();
+    // Move drop + refill through the MoveSlots setters. Converted slots, not
+    // source positions (same upstream-compact reason as convert_to_pk3).
+    let had_move = ohpkm.moves().indices().iter().any(|&m| m != 0);
     let mut indices = pk6.moves.indices();
     let mut pp = pk6.moves.pp();
     let mut pp_ups = pk6.moves.pp_ups();
-    let mut had_move = false;
     for slot in 0..4 {
-        let src = src_moves.get(slot).copied().unwrap_or(0);
-        if src != 0 {
-            had_move = true;
-        }
-        if !pkm_rs::gen6::move_legal_in_gen6(src) {
+        if !pkm_rs::gen6::move_legal_in_gen6(indices[slot]) {
             indices[slot] = 0;
             pp[slot] = 0;
             pp_ups[slot] = 0;
@@ -3281,6 +3275,64 @@ mod tests {
         assert!(!out.is_null());
         let converted = unsafe { &*out };
         assert_eq!(move_indices(&converted.ohpkm), [85, 98, 86, 87]);
+        openhome_free_pkm(out);
+    }
+
+    // L2-code (scenario test HW L2): mosse miste moderne/storiche verso Gen3
+    // (Thunderbolt 85 e Swift 129 restano, 500/503 cadono, niente refill).
+    // Il dialogo UI scatta su count>0; qui si verifica il drop effettivo.
+    #[test]
+    fn transfer_gen3_keeps_mixed_moves_without_refill() {
+        let mixed = MoveSlots::from_arrays(
+            [
+                MoveIndex::from_u16(85),
+                MoveIndex::from_u16(500),
+                MoveIndex::from_u16(129),
+                MoveIndex::from_u16(503),
+            ],
+            // PP tutti legali (Swift max 20): oltre il max l'upstream azzera
+            // lo slot in PP-adjust, ed e corretto (input illegale).
+            [15, 10, 20, 10],
+            [0, 0, 0, 0],
+        );
+        let mut handle = PkmHandle {
+            ohpkm: make_test_ohpkm(OriginGame::Sword, mixed),
+        };
+        let ptr = &mut handle as *mut PkmHandle;
+        assert_eq!(openhome_count_moves_not_in_gen(ptr, 3), 2);
+        let out = openhome_transfer_pkm(ptr, 3);
+        assert!(!out.is_null());
+        let converted = unsafe { &*out };
+        // Upstream compatta a sinistra (come PKHeX DeleteMove): le due
+        // legali avanzano, niente refill (non e tutto zero).
+        assert_eq!(move_indices(&converted.ohpkm), [85, 129, 0, 0]);
+        openhome_free_pkm(out);
+    }
+
+    // L2-code gemello Gen6 (stesso bug di disallineamento, ora fixato):
+    // [85,800,129,801] -> upstream compatta [85,129,0,0], il nostro drop
+    // non deve toccare le legali.
+    #[test]
+    fn transfer_gen6_keeps_mixed_moves_without_refill() {
+        let mixed = MoveSlots::from_arrays(
+            [
+                MoveIndex::from_u16(85),
+                MoveIndex::from_u16(800),
+                MoveIndex::from_u16(129),
+                MoveIndex::from_u16(801),
+            ],
+            [15, 10, 20, 10],
+            [0, 0, 0, 0],
+        );
+        let mut handle = PkmHandle {
+            ohpkm: make_test_ohpkm(OriginGame::Sword, mixed),
+        };
+        let ptr = &mut handle as *mut PkmHandle;
+        assert_eq!(openhome_count_moves_not_in_gen(ptr, 6), 2);
+        let out = openhome_transfer_pkm(ptr, 6);
+        assert!(!out.is_null());
+        let converted = unsafe { &*out };
+        assert_eq!(move_indices(&converted.ohpkm), [85, 129, 0, 0]);
         openhome_free_pkm(out);
     }
 
