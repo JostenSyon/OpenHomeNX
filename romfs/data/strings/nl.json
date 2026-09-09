@@ -69,6 +69,7 @@
 	"cant_empty_party": "Het team mag niet leeg blijven: zet een Pokemon terug.",
 	"empty_party_title": "Leeg team",
 	"empty_party_caterpie": "Het team is leeg: geen spel accepteert dat. Een tijdelijke Caterpie (L5)?",
+	"empty_party_magikarp": "Het team is leeg: geen spel accepteert dat. Een tijdelijke Magikarp (L5, Splash)?",
 	"quit_hold_title": "Hand niet leeg",
 	"quit_hold_body": "Bij afsluiten gaat de Pokemon in de hand verloren. Toch afsluiten?",
 	"release_pokemon": "Pokemon vrijlaten",

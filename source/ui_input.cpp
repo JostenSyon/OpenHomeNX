@@ -1862,8 +1862,16 @@ bool UI::ensurePartyOnExit() {
         }
         return false; // B: torno a mettere qualcosa a mano
     }
-    showMessageAndWait(i18n::get(StrKey::PartyPokemon),
-                       i18n::get(StrKey::CantEmptyParty));
+    // Altre famiglie (debug): stesso patto con Magikarp L5 Splash.
+    if (showConfirmDialog(i18n::get(StrKey::EmptyPartyTitle),
+                          i18n::get(StrKey::EmptyPartyMagikarp))) {
+        if (!save_.placePlaceholder()) {
+            showMessageAndWait(i18n::get(StrKey::EmptyPartyTitle),
+                               i18n::get(StrKey::CantEmptyParty));
+            return false;
+        }
+        return true;
+    }
     return false;
 }
 

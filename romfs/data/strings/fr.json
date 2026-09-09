@@ -69,6 +69,7 @@
 	"cant_empty_party": "L'equipe ne peut pas rester vide : remettez un Pokemon.",
 	"empty_party_title": "Equipe vide",
 	"empty_party_caterpie": "L'equipe est vide : aucun jeu ne l'accepte. Placer un Chenipan (N5) ?",
+	"empty_party_magikarp": "L'equipe est vide : aucun jeu ne l'accepte. Placer un Magicarpe (N5, Trempette) ?",
 	"quit_hold_title": "Main occupee",
 	"quit_hold_body": "Si vous quittez, le Pokemon en main sera perdu. Quitter ?",
 	"release_pokemon": "Relacher le Pokemon",

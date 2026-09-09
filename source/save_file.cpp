@@ -508,9 +508,9 @@ void SaveFile::setPartySlot(int idx, const Pokemon& pkm) {
     // nessuno stato valido di gioco la produce (Smeraldo count-0 -> glitch;
     // vale per posizionali SCBlock/BDSP/XY/SM, count byte GB/GBC/DS/GBA,
     // pointer LGPE). La memoria segue la mano (strip si svuota, B annulla),
-    // il disco tiene l'ultimo party valido; l'exit-hook offre il Caterpie
-    // (GBA) o blocca l'uscita. Copre TUTTI i persist, anche bank-switch
-    // senza uscita dal gioco (persistGameSaveIfDirty li attraversa).
+    // il disco tiene l'ultimo party valido; l'exit-hook offre il segnaposto
+    // (Caterpie GBA, Magikarp altrove) o blocca l'uscita. Copre TUTTI i
+    // persist, anche bank-switch senza uscita dal gioco.
     {
         bool anyLeft = !toWrite.isEmpty();
         for (size_t i = 0; i < dsParty_.size() && !anyLeft; i++)
@@ -745,6 +745,40 @@ bool SaveFile::placeCaterpiePlaceholder() {
     setPartySlot(0, p);
     DebugLog::line("placeCaterpiePlaceholder: Caterpie L5 in slot 0 (pid %08x)", pid);
     return true;
+}
+
+// Magikarp L5 Splash esiste in tutte le gen (1-9 + LGPE/BDSP/LA/ZA) con mosse
+// legali ovunque: il segnaposto ideale fuori GBA.
+bool SaveFile::placePlaceholder() {
+    if (isFRLG(gameType_) || isImportedFile(gameType_))
+        return placeCaterpiePlaceholder();
+    int gen = ohTargetGenFor(gameType_);
+    if (gen <= 0) return false;
+    PkmHandle* h = OpenHomeNX::generateTestPkm(129, 5, 150, 0, 0, 0);
+    if (!h) return false;
+    PkmHandle* out = PokemonFFI::transfer(h, static_cast<uint32_t>(gen));
+    std::string gen1Ot, gen1Nick;
+    if (out && gen == 1) {
+        gen1Ot = OpenHomeNX::ohpkmTrainerName(out);
+        gen1Nick = OpenHomeNX::ohpkmNickname(out);
+    }
+    std::vector<uint8_t> bytes;
+    if (out) bytes = OpenHomeNX::getPkmBoxBytesForGen(out, static_cast<uint32_t>(gen));
+    OpenHomeNX::freePkm(h);
+    if (out) OpenHomeNX::freePkm(out);
+    Pokemon p;
+    p.gameType_ = gameType_;
+    p.data.fill(0);
+    if (bytes.empty() || bytes.size() > p.data.size()) {
+        DebugLog::line("placePlaceholder: no bytes gen %d", gen);
+        return false;
+    }
+    std::memcpy(p.data.data(), bytes.data(), bytes.size());
+    if (gen == 1) fillGen1Names(p, gen1Ot, gen1Nick);
+    setPartySlot(0, p);
+    bool ok = hasParty();
+    DebugLog::line("placePlaceholder: Magikarp L5 gen %d -> slot 0 (%s)", gen, ok ? "ok" : "FAILED");
+    return ok;
 }
 
 int SaveFile::lgpeFlatOfParty(int i) const {

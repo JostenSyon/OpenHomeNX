@@ -45,6 +45,10 @@ public:
     // glitch). Solo GBA (FRLG + R/S/E importati); altrove torna false e la UI
     // rimanda a sistemare a mano. Identita OT copiata dal primo mon dei box.
     bool placeCaterpiePlaceholder();
+    // Segnaposto universale (debug) per le altre famiglie: Magikarp L5
+    // Splash via generatore FFI + transfer, costruito come un drop normale
+    // (stessi byte che produrrebbe prepareForPlacement). GBA usa Caterpie.
+    bool placePlaceholder();
     // LGPE: il party sono 6 pointer nella lista piatta dei box — il mon vive in
     // UNA sola cella box. Servono per tenere pointer/cella in sync (senza: la
     // cella resta sporca -> cloni nei box; o il pointer penzola -> mon perso).

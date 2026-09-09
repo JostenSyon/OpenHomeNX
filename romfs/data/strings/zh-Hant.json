@@ -69,6 +69,7 @@
 	"cant_empty_party": "隊伍不能為空：請放回一隻寶可夢。",
 	"empty_party_title": "空隊伍",
 	"empty_party_caterpie": "隊伍為空：任何遊戲都不接受空隊伍。放入一隻臨時的綠毛蟲（5級）嗎？",
+	"empty_party_magikarp": "隊伍為空：任何遊戲都不接受空隊伍。放入一隻臨時的鯉魚王（5級，水濺躍）嗎？",
 	"quit_hold_title": "手中有寶可夢",
 	"quit_hold_body": "現在退出，手中的寶可夢將丟失。仍要退出嗎？",
 	"release_pokemon": "放生寶可夢",

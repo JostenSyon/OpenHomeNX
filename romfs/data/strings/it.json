@@ -72,6 +72,7 @@
     "cant_empty_party": "La squadra non puo restare vuota: rimetti un Pokemon.",
     "empty_party_title": "Squadra vuota",
     "empty_party_caterpie": "La squadra e vuota: nessun gioco la accetta. Piazzo un Caterpie segnaposto (L5)?",
+    "empty_party_magikarp": "La squadra e vuota: nessun gioco la accetta. Piazzo un Magikarp segnaposto (L5, Splash)?",
     "quit_hold_title": "Mano occupata",
     "quit_hold_body": "Se esci adesso, il Pokemon in mano andra perso. Uscire comunque?",
     "release_pokemon": "Rilascia Pokemon",

@@ -69,6 +69,7 @@
 	"cant_empty_party": "El equipo no puede quedar vacio: devuelve un Pokemon.",
 	"empty_party_title": "Equipo vacio",
 	"empty_party_caterpie": "El equipo esta vacio: ningun juego lo acepta. Poner un Caterpie provisional (N5)?",
+	"empty_party_magikarp": "El equipo esta vacio: ningun juego lo acepta. Poner un Magikarp provisional (N5, Salpicadura)?",
 	"quit_hold_title": "Mano ocupada",
 	"quit_hold_body": "Si sales ahora, el Pokemon en mano se perdera. Salir?",
 	"release_pokemon": "Liberar Pokemon",
