@@ -3497,6 +3497,31 @@ mod tests {
         }
     }
 
+    // Dex-cut Pb8 (BDSP = dex Sinnoh via DiamondPearl, non Galar):
+    // Greninja (658) rifiutato, Pidgey (16) accettato. Regressione fix Pb8.
+    #[test]
+    fn transfer_gen12_sinnoh_dex_gate() {
+        let mut gren = PkmHandle {
+            ohpkm: make_test_ohpkm_gen(658),
+        };
+        let gp = &mut gren as *mut PkmHandle;
+        assert!(
+            openhome_transfer_pkm(gp, 12).is_null(),
+            "Greninja must be dex-cut for BDSP"
+        );
+        let mut pidg = PkmHandle {
+            ohpkm: make_test_ohpkm_gen(16),
+        };
+        let pp = &mut pidg as *mut PkmHandle;
+        let out = openhome_transfer_pkm(pp, 12);
+        assert!(
+            !out.is_null(),
+            "Pidgey must convert for BDSP (Sinnoh dex)"
+        );
+        assert_eq!(openhome_ohpkm_species(out), 16);
+        openhome_free_pkm(out);
+    }
+
     // BLANKET fixture matrix: ogni record reale in tools/test save/upstream
     // parte dalla sua gen e viene trasferito verso tutti i 13 target.
     // Politica verificata per ogni cella:

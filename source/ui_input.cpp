@@ -3160,6 +3160,10 @@ std::vector<UI::GenMonDef> UI::genMonTable() {
         { "Greninja new moves", 658, 50, {800, 801, 802, 803} },
         { "Koraidon dex-cut", 1007, 50, {800, 801, 802, 803} },
         { "Pikachu Gen1-clean", 25, 50, {85, 98, 86, 87} },
+        // Regressione fix Pb8 (dex Sinnoh, non Galar): in Sinnoh si, a Galar no.
+        { "Pidgey Sinnoh", 16, 5, {33, 16, 0, 0} },
+        { "Chimchar Sinnoh", 390, 5, {10, 52, 0, 0} },
+        { "Staravia Sinnoh", 396, 5, {33, 16, 0, 0} },
     };
     return std::vector<GenMonDef>(TABLE, TABLE + sizeof(TABLE) / sizeof(TABLE[0]));
 }
