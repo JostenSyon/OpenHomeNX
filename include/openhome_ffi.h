@@ -25,6 +25,7 @@ PkmHandle *openhome_load_pkm(const uint8_t *data, size_t len);
 // openhome_load_pkm only accepts real OHPKM files (magic + version 2), so it
 // cannot ingest a Pk7/Pk8/Pk9 record read out of a save. NULL on failure.
 PkmHandle *openhome_load_pkm_from_gen(const uint8_t *data, size_t len, uint32_t gen);
+PkmHandle *openhome_generate_test_pkm(uint16_t species, uint8_t level, uint16_t m1, uint16_t m2, uint16_t m3, uint16_t m4);
 void openhome_free_pkm(PkmHandle *handle);
 uint32_t openhome_get_pokemon_count(SaveHandle *handle);
 uint32_t openhome_get_box_count(SaveHandle *handle);
@@ -112,6 +113,9 @@ inline PkmHandle* loadPkmFromGen(const std::vector<uint8_t>& data, uint32_t gen)
 }
 inline uint32_t countMovesNotInGen(const PkmHandle* pkm_handle, uint32_t gen) {
     return openhome_count_moves_not_in_gen(pkm_handle, gen);
+}
+inline PkmHandle* generateTestPkm(uint16_t species, uint8_t level, uint16_t m1, uint16_t m2, uint16_t m3, uint16_t m4) {
+    return openhome_generate_test_pkm(species, level, m1, m2, m3, m4);
 }
 inline uint8_t levelForExp(uint32_t gen, uint32_t ndex, uint32_t exp) {
     return openhome_level_for_exp(gen, ndex, exp);

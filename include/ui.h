@@ -333,6 +333,23 @@ private:
     int  pkImportScroll_  = 0;
     std::vector<PkFileInfo> pkImportList_;
 
+    // Debug test-mon generator (menu Generate, solo debug): segnalini
+    // on-demand per i test HW. Tabella estendibile in genMonTable().
+    struct GenMonDef {
+        const char* label;
+        uint16_t species;
+        uint8_t level;
+        uint16_t moves[4];
+    };
+    bool showGenMonList_ = false;
+    int  genMonCursor_  = 0;
+    int  genMonScroll_  = 0;
+    std::vector<GenMonDef> genMonList_;
+    static std::vector<GenMonDef> genMonTable();
+    void drawGenMonListPopup();
+    void handleGenMonListInput(const SDL_Event& event);
+    bool importGeneratedMon(const GenMonDef& def);
+
     // Party-strip focus (DS saves, DEBUG ONLY): DPad-UP from the top grid
     // row moves focus to the OT strip minis; A opens a READ-ONLY detail
     // popup (release/export blocked there). -1 = grid focused.

@@ -648,6 +648,11 @@ void UI::drawFrame() {
         drawPkImportListPopup();
     }
 
+    // Debug test-mon generator list popup
+    if (showGenMonList_) {
+        drawGenMonListPopup();
+    }
+
     // Learnset viewer popup
     if (showLearnset_) {
         drawLearnsetPopup();
@@ -1048,16 +1053,19 @@ int UI::menuVisibleCount() const {
     // Indice 5 = Wondercard (solo se il gioco le supporta),
     // indice 6 = Export Selected (solo se ci sono slot selezionati),
     // indice 7 = Import PK files (sempre visibile),
-    // indice 8 (solo normal, mai dual) = Send current save (solo a save caricato).
+    // indice 8 (solo normal + debug) = Generate test mons,
+    // indice 9 (solo normal, mai dual) = Send current save (solo a save caricato).
     bool hasWC = gameInfo(selectedGame_).hasWondercards;
     bool hasExport = !selectedSlots_.empty();
     bool hasSend = !isDualBankMode() && save_.isLoaded();
-    int allCount = 13; // normal e applet hanno ora entrambe 13 voci totali
+    bool hasGen = DebugLog::enabled() && !isDualBankMode();
+    int allCount = isDualBankMode() ? 13 : 14;
     int count = 0;
     for (int i = 0; i < allCount; i++) {
         if (!hasWC && i == 5) continue;
         if (!hasExport && i == 6) continue;
-        if (!hasSend && !isDualBankMode() && i == 8) continue;
+        if (!hasGen && !isDualBankMode() && i == 8) continue;
+        if (!hasSend && !isDualBankMode() && i == 9) continue;
         count++;
     }
     return count;
@@ -1073,6 +1081,8 @@ void UI::drawMenuPopup() {
     bool hasExport = !selectedSlots_.empty();
     // "Send current save": solo a save caricato e mai in dual-bank.
     bool hasSend = !isDualBankMode() && save_.isLoaded();
+    // "Generate test mons": solo debug, mai dual-bank.
+    bool hasGen = DebugLog::enabled() && !isDualBankMode();
 
     static char exportBuf[64];
     if (hasExport)
@@ -1091,6 +1101,7 @@ void UI::drawMenuPopup() {
         i18n::get(StrKey::MenuWondercard),
         exportBuf,
         i18n::get(StrKey::MenuImportPk),
+        "Generate test mons (DBG)",
         i18n::get(StrKey::SendSaveTitle),
         i18n::get(StrKey::MenuSwitchBank),
         i18n::get(StrKey::MenuChangeGame),
@@ -1113,14 +1124,15 @@ void UI::drawMenuPopup() {
         i18n::get(StrKey::MenuQuit)
     };
     // Build label list, skipping conditional items — menuCount = vi
-    std::string visibleLabels[14];
+    std::string visibleLabels[15];
     const std::string* allLabels = isDualBankMode() ? labelsApplet : labelsNormal;
-    int allCount = 13;
+    int allCount = isDualBankMode() ? 13 : 14;
     int vi = 0;
     for (int i = 0; i < allCount; i++) {
         if (!hasWC && i == 5) continue;
         if (!hasExport && i == 6) continue;
-        if (!hasSend && !isDualBankMode() && i == 8) continue;
+        if (!hasGen && !isDualBankMode() && i == 8) continue;
+        if (!hasSend && !isDualBankMode() && i == 9) continue;
         visibleLabels[vi++] = allLabels[i];
     }
     int menuCount = vi;
@@ -1877,6 +1889,40 @@ void UI::drawWondercardListPopup() {
         ? i18n::get(StrKey::BClose)
         : i18n::get(StrKey::WCFooter);
     drawTextCentered(footer, popX + POP_W / 2, popY + POP_H - 18, T().textDim, fontSmall_);
+}
+
+void UI::drawGenMonListPopup() {
+    drawRect(0, 0, SCREEN_W, SCREEN_H, T().overlay);
+    int count = (int)genMonList_.size();
+    constexpr int POP_W = 520;
+    constexpr int ROW_H = 36;
+    constexpr int VISIBLE = 12;
+    int rows = count > 0 ? std::min(count, VISIBLE) : 1;
+    int POP_H = 50 + rows * ROW_H + 30;
+    int popX = (SCREEN_W - POP_W) / 2;
+    int popY = (SCREEN_H - POP_H) / 2;
+    drawRect(popX, popY, POP_W, POP_H, T().panelBg);
+    drawRectOutline(popX, popY, POP_W, POP_H, T().cursor, 2);
+    drawTextCentered("Generate test mon (DBG)", popX + POP_W / 2, popY + 22, T().text, font_);
+    int startY = popY + 50;
+    if (count == 0) {
+        drawTextCentered("Empty table.", popX + POP_W / 2, startY + (ROW_H - 4) / 2, T().textDim, font_);
+    } else {
+        for (int r = 0; r < rows; r++) {
+            int i = genMonScroll_ + r;
+            if (i >= count) break;
+            int rowY = startY + r * ROW_H;
+            if (i == genMonCursor_) {
+                drawRect(popX + 20, rowY, POP_W - 40, ROW_H - 4, T().menuHighlight);
+                drawRectOutline(popX + 20, rowY, POP_W - 40, ROW_H - 4, T().cursor, 2);
+            }
+            const auto& e = genMonList_[i];
+            char buf[128];
+            std::snprintf(buf, sizeof(buf), "%s  (Lv %u)", e.label, e.level);
+            drawText(buf, popX + 30, rowY + 6, T().text, fontSmall_);
+        }
+    }
+    drawTextCentered(i18n::get(StrKey::ASelectBCancel), popX + POP_W / 2, popY + POP_H - 18, T().textDim, fontSmall_);
 }
 
 void UI::drawPkImportListPopup() {

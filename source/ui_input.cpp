@@ -135,6 +135,7 @@ void UI::handleInput(bool& running) {
         if (showSearchResults_)      { handleSearchResultsInput(event); continue; }
         if (showWondercardList_)     { handleWondercardListInput(event); continue; }
         if (showPkImportList_)       { handlePkImportListInput(event); continue; }
+        if (showGenMonList_)         { handleGenMonListInput(event); continue; }
         if (showLearnset_)           { handleLearnsetInput(event); continue; }
         if (showBoxView_)            { handleBoxViewInput(event); continue; }
         if (showDetail_)             { handleDetailInput(event); continue; }
@@ -152,6 +153,8 @@ void UI::handleMenuInput(const SDL_Event& event, bool& running) {
     // "Send current save": solo a save caricato e mai in dual-bank (lì il
     // pannello sinistro è una banca, non il save del gioco aperto).
     bool hasSend = !isDualBankMode() && save_.isLoaded();
+    // "Generate test mons": solo debug, mai dual-bank.
+    bool hasGen = DebugLog::enabled() && !isDualBankMode();
     int menuCount = menuVisibleCount();
     if (menuSelection_ >= menuCount) menuSelection_ = menuCount - 1;
     if (menuSelection_ < 0) menuSelection_ = 0;
@@ -232,9 +235,19 @@ void UI::handleMenuInput(const SDL_Event& event, bool& running) {
             showPkImportList_ = true;
             return;
         }
-        // Send current save (indice importIdx+1): usa savePath_ già montato
-        // dal gioco aperto — NIENTE mount/unmount, NIENTE commit del save.
-        int sendIdx = importIdx + 1;
+        // Send current save (indice importIdx+1, +1 se riga Generate debug)
+        int genIdx = importIdx + 1;
+        if (hasGen && menuSelection_ == genIdx) {
+            showMenu_ = false;
+            genMonList_ = genMonTable();
+            genMonCursor_ = 0;
+            genMonScroll_ = 0;
+            showGenMonList_ = true;
+            return;
+        }
+        int sendIdx = genIdx + (hasGen ? 1 : 0);
+        // Send current save: usa savePath_ già montato dal gioco aperto —
+        // NIENTE mount/unmount, NIENTE commit del save.
         if (hasSend && menuSelection_ == sendIdx) {
             showMenu_ = false;
             std::string url, token;
@@ -252,7 +265,7 @@ void UI::handleMenuInput(const SDL_Event& event, bool& running) {
             }
             return;
         }
-        int sel = menuSelection_ - (hasWC ? 6 : 5) - (hasExport ? 1 : 0) - 1 - (hasSend ? 1 : 0);
+        int sel = menuSelection_ - (hasWC ? 6 : 5) - (hasExport ? 1 : 0) - 1 - (hasGen ? 1 : 0) - (hasSend ? 1 : 0);
         if (isDualBankMode()) {
             // sel: 0=Switch Left Bank, 1=Switch Right Bank, 2=Change Game,
             // 3=Save Banks, 4=Quit
@@ -846,6 +859,18 @@ void UI::handleStickRepeat() {
                 pkImportScroll_ = pkImportCursor_;
             else if (pkImportCursor_ >= pkImportScroll_ + visibleRows)
                 pkImportScroll_ = pkImportCursor_ - visibleRows + 1;
+        }
+    } else if (showGenMonList_) {
+        if (stickDirY_ != 0 && !genMonList_.empty()) {
+            int count = static_cast<int>(genMonList_.size());
+            genMonCursor_ += stickDirY_ > 0 ? 1 : -1;
+            if (genMonCursor_ < 0) genMonCursor_ = count - 1;
+            if (genMonCursor_ >= count) genMonCursor_ = 0;
+            constexpr int VISIBLE = 12;
+            if (genMonCursor_ < genMonScroll_)
+                genMonScroll_ = genMonCursor_;
+            else if (genMonCursor_ >= genMonScroll_ + VISIBLE)
+                genMonScroll_ = genMonCursor_ - VISIBLE + 1;
         }
     } else if (showLearnset_) {
         if (stickDirY_ != 0 && !learnset_.empty()) {
@@ -2951,6 +2976,102 @@ void UI::handlePkImportListInput(const SDL_Event& event) {
                 break;
         }
     }
+}
+
+std::vector<UI::GenMonDef> UI::genMonTable() {
+    // Segnalini debug on-demand (tutti Sword-origin L50, importati in banca
+    // come OHPKM e poi trasferiti via drop normale). Aggiungere qui quando
+    // servono altri: label, specie, livello, 4 mosse.
+    static const GenMonDef TABLE[] = {
+        { "Pikachu drops (L2)", 25, 50, {800, 801, 802, 803} },
+        { "Pikachu mixed", 25, 50, {85, 800, 129, 801} },
+        { "Greninja new moves", 658, 50, {800, 801, 802, 803} },
+        { "Koraidon dex-cut", 1007, 50, {800, 801, 802, 803} },
+        { "Pikachu Gen1-clean", 25, 50, {85, 98, 86, 87} },
+    };
+    return std::vector<GenMonDef>(TABLE, TABLE + sizeof(TABLE) / sizeof(TABLE[0]));
+}
+
+void UI::handleGenMonListInput(const SDL_Event& event) {
+    int count = (int)genMonList_.size();
+    if (count == 0) {
+        if (event.type == SDL_CONTROLLERBUTTONDOWN && event.cbutton.button == SDL_CONTROLLER_BUTTON_A)
+            showGenMonList_ = false;
+        return;
+    }
+    auto scrollIntoView = [&]() {
+        constexpr int VISIBLE = 12;
+        if (genMonCursor_ < genMonScroll_)
+            genMonScroll_ = genMonCursor_;
+        else if (genMonCursor_ >= genMonScroll_ + VISIBLE)
+            genMonScroll_ = genMonCursor_ - VISIBLE + 1;
+    };
+    if (event.type == SDL_CONTROLLERBUTTONDOWN) {
+        switch (event.cbutton.button) {
+            case SDL_CONTROLLER_BUTTON_DPAD_UP:
+                if (genMonCursor_ > 0) genMonCursor_--;
+                else genMonCursor_ = count - 1;
+                scrollIntoView();
+                break;
+            case SDL_CONTROLLER_BUTTON_DPAD_DOWN:
+                if (genMonCursor_ < count - 1) genMonCursor_++;
+                else genMonCursor_ = 0;
+                scrollIntoView();
+                break;
+            case SDL_CONTROLLER_BUTTON_LEFTSHOULDER:
+                genMonCursor_ = std::max(0, genMonCursor_ - 10);
+                scrollIntoView();
+                break;
+            case SDL_CONTROLLER_BUTTON_RIGHTSHOULDER:
+                genMonCursor_ = std::min(count - 1, genMonCursor_ + 10);
+                scrollIntoView();
+                break;
+            case SDL_CONTROLLER_BUTTON_B: // Switch A = genera e importa, resta
+                importGeneratedMon(genMonList_[genMonCursor_]);
+                break;
+            case SDL_CONTROLLER_BUTTON_A: // Switch B = chiudi
+            case SDL_CONTROLLER_BUTTON_START:
+                showGenMonList_ = false;
+                break;
+        }
+    }
+}
+
+bool UI::importGeneratedMon(const GenMonDef& def) {
+    if (!bank_.isCrossGen()) {
+        showMessageAndWait(i18n::get(StrKey::ImportPkTitle), i18n::get(StrKey::ImportPkNeedBank));
+        return false;
+    }
+    PkmHandle* h = OpenHomeNX::generateTestPkm(def.species, def.level,
+        def.moves[0], def.moves[1], def.moves[2], def.moves[3]);
+    if (!h) {
+        DebugLog::line("generate mon: FFI NULL (%s)", def.label);
+        showMessageAndWait(i18n::get(StrKey::ImportPkTitle), i18n::get(StrKey::CouldNotWrite));
+        return false;
+    }
+    std::vector<uint8_t> blob = OpenHomeNX::getOhpkmBytes(h);
+    uint16_t sp = OpenHomeNX::ohpkmSpecies(h);
+    OpenHomeNX::freePkm(h);
+    if (blob.empty()) {
+        DebugLog::line("generate mon: blob vuoto (%s)", def.label);
+        showMessageAndWait(i18n::get(StrKey::ImportPkTitle), i18n::get(StrKey::CouldNotWrite));
+        return false;
+    }
+    for (int b = 0; b < bank_.boxCount(); b++) {
+        for (int s = 0; s < bank_.slotsPerBox(); s++) {
+            if (bank_.ohpkmAt(b, s).empty()) {
+                bank_.setOhpkmAt(b, s, blob);
+                markDirty();
+                invalidateSlotDisplay(Panel::Bank, b);
+                DebugLog::line("generate mon: %s -> specie %u in banca %d:%d", def.label, sp, b, s);
+                showMessageAndWait(i18n::get(StrKey::ImportPkTitle), def.label);
+                return true;
+            }
+        }
+    }
+    DebugLog::line("generate mon: banca piena (%s)", def.label);
+    showMessageAndWait(i18n::get(StrKey::ImportPkTitle), i18n::get(StrKey::CouldNotWrite));
+    return false;
 }
 
 std::vector<UI::PkFileInfo> UI::scanPkImportFiles() {

@@ -472,6 +472,79 @@ pub extern "C" fn openhome_load_pkm_from_gen(
     Box::into_raw(Box::new(PkmHandle { ohpkm }))
 }
 
+/// Debug test-mon generator (voce banca "Generate", solo HW-debug):
+/// costruisce un OHPKM Sword-origin con specie/livello/mosse arbitrari.
+/// Riusa setter + exp minima per livello dei fixture (mai exp incoerente),
+/// PID fisso (deterministico). NULL su specie invalida. Il chiamante
+/// trasferisce via openhome_transfer_pkm come per ogni altro mon.
+#[cfg(not(any(feature = "alloc", feature = "std")))]
+#[no_mangle]
+pub extern "C" fn openhome_generate_test_pkm(
+    _species: u16,
+    _level: u8,
+    _m1: u16,
+    _m2: u16,
+    _m3: u16,
+    _m4: u16,
+) -> *mut PkmHandle {
+    core::ptr::null_mut()
+}
+#[cfg(any(feature = "alloc", feature = "std"))]
+#[no_mangle]
+pub extern "C" fn openhome_generate_test_pkm(
+    species: u16,
+    level: u8,
+    m1: u16,
+    m2: u16,
+    m3: u16,
+    m4: u16,
+) -> *mut PkmHandle {
+    if species == 0 {
+        return core::ptr::null_mut();
+    }
+    let nd = match pkm_rs_types::NationalDex::new(species) {
+        Ok(v) => v,
+        Err(_) => return core::ptr::null_mut(),
+    };
+    let mut o = match pkm_rs::ohpkm::OhpkmV2::new(species, 0) {
+        Ok(v) => v,
+        Err(_) => return core::ptr::null_mut(),
+    };
+    let level = level.clamp(1, 100);
+    o.set_personality_value(0x87654321);
+    o.set_trainer_id(0x1234);
+    o.set_secret_id(0x5678);
+    let exp = pkm_rs_resources::species::SpeciesForm::base_form(nd)
+        .get_species_metadata()
+        .level_up_type
+        .get_min_exp_for_level(level);
+    o.set_exp(exp);
+    o.set_met_level(level);
+    let pp_of = |id: u16| {
+        if id == 0 {
+            0
+        } else {
+            pkm_rs_resources::moves::MoveIndex::from_u16(id)
+                .get_metadata()
+                .map(|md| md.pp)
+                .unwrap_or(10)
+        }
+    };
+    o.set_moves(pkm_rs_resources::moves::MoveSlots::from_arrays(
+        [
+            pkm_rs_resources::moves::MoveIndex::from_u16(m1),
+            pkm_rs_resources::moves::MoveIndex::from_u16(m2),
+            pkm_rs_resources::moves::MoveIndex::from_u16(m3),
+            pkm_rs_resources::moves::MoveIndex::from_u16(m4),
+        ],
+        [pp_of(m1), pp_of(m2), pp_of(m3), pp_of(m4)],
+        [0, 0, 0, 0],
+    ));
+    o.set_game_of_origin(pkm_rs_types::OriginGame::Sword);
+    o.set_language(pkm_rs_types::Language::English);
+    Box::into_raw(Box::new(PkmHandle { ohpkm: o }))
+}
+
 #[no_mangle]
 pub extern "C" fn openhome_free_pkm(handle: *mut PkmHandle) {
     if handle.is_null() {
@@ -3334,6 +3407,26 @@ mod tests {
         let converted = unsafe { &*out };
         assert_eq!(move_indices(&converted.ohpkm), [85, 129, 0, 0]);
         openhome_free_pkm(out);
+    }
+
+    // Debug generator: Pikachu L50 modern moves -> valido, exp coerente,
+    // specie conservata; Koraidon passa il gate specie; specie 0 -> NULL.
+    #[test]
+    fn generate_test_pkm_builds_valid_handle() {
+        let h = openhome_generate_test_pkm(25, 50, 800, 801, 802, 803);
+        assert!(!h.is_null(), "generator must return a handle");
+        assert_eq!(openhome_ohpkm_species(h), 25);
+        assert_eq!(move_indices(&unsafe { &*h }.ohpkm), [800, 801, 802, 803]);
+        // E trasferisce davvero (drop Gen3 + refill base, come L2):
+        let out = openhome_transfer_pkm(h, 3);
+        assert!(!out.is_null());
+        let got = move_indices(&unsafe { &*out }.ohpkm);
+        assert_ne!(got, [0, 0, 0, 0]);
+        assert!(got.iter().all(|&m| pkm_rs::gen3::move_legal_in_gen3(m)));
+        openhome_free_pkm(out);
+        openhome_free_pkm(h);
+        assert!(openhome_generate_test_pkm(0, 50, 1, 2, 3, 4).is_null());
+        assert!(openhome_generate_test_pkm(9999, 50, 1, 2, 3, 4).is_null());
     }
 
     // BLANKET fixture matrix: ogni record reale in tools/test save/upstream
