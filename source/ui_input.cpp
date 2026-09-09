@@ -3168,30 +3168,53 @@ bool UI::importGeneratedMon(const GenMonDef& def) {
             }
         }
     } else {
-        // Banca nativa: converti nel formato della banca e scrivi record
-        // nativo (stesso percorso di un drop: prepareForPlacement).
+        // Banca nativa: converti esplicitamente nel formato della banca.
+        // NON via prepareForPlacement: p ha data azzerati (isEmpty) e
+        // prepare uscirebbe subito senza scrivere niente (Smeraldo: import
+        // "ok" ma slot vuoto). Transfer diretto + record nativo.
+        GameType bkGame = bank_.gameType();
+        const int dg = ohTargetGenFor(bkGame);
+        if (dg == 0) {
+            showMessageAndWait(i18n::get(StrKey::TransferTitle),
+                i18n::fmt(StrKey::TransferCantBuild, gameDisplayNameOf(bkGame)));
+            return false;
+        }
+        PkmHandle* h = OpenHomeNX::loadOhpkm(blob);
+        if (!h) {
+            showMessageAndWait(i18n::get(StrKey::TransferTitle),
+                               i18n::get(StrKey::TransferBadOhpkm));
+            return false;
+        }
+        PkmHandle* out = PokemonFFI::transfer(h, static_cast<uint32_t>(dg));
+        OpenHomeNX::freePkm(h);
+        if (!out) {
+            showMessageAndWait(i18n::get(StrKey::TransferTitle),
+                i18n::fmt(StrKey::TransferNotInDex, def.label, gameDisplayNameOf(bkGame)));
+            return false;
+        }
+        std::vector<uint8_t> bytes = OpenHomeNX::getPkmBoxBytesForGen(out, static_cast<uint32_t>(dg));
+        OpenHomeNX::freePkm(out);
         Pokemon p;
-        p.gameType_ = GameType::S;
-        p.ohpkmBlob_ = std::move(blob);
-        std::string whyNot;
-        if (prepareForPlacement(p, Panel::Bank, whyNot)) {
-            for (int b = 0; b < bank_.boxCount(); b++) {
-                for (int s = 0; s < bank_.slotsPerBox(); s++) {
-                    if (bank_.getSlot(b, s).isEmpty()) {
-                        bank_.setSlot(b, s, p);
-                        markDirty();
-                        invalidateSlotDisplay(Panel::Bank, b);
-                        DebugLog::line("generate mon: %s -> specie %u in banca nativa %d:%d",
-                                       def.label, sp, b, s);
-                        showMessageAndWait(i18n::get(StrKey::ImportPkTitle), def.label);
-                        return true;
-                    }
+        p.gameType_ = bkGame;
+        p.data.fill(0);
+        if (bytes.empty() || bytes.size() > p.data.size()) {
+            showMessageAndWait(i18n::get(StrKey::TransferTitle),
+                               i18n::get(StrKey::TransferNoBytes));
+            return false;
+        }
+        std::memcpy(p.data.data(), bytes.data(), bytes.size());
+        for (int b = 0; b < bank_.boxCount(); b++) {
+            for (int s = 0; s < bank_.slotsPerBox(); s++) {
+                if (bank_.getSlot(b, s).isEmpty()) {
+                    bank_.setSlot(b, s, p);
+                    markDirty();
+                    invalidateSlotDisplay(Panel::Bank, b);
+                    DebugLog::line("generate mon: %s -> specie %u in banca nativa %d:%d",
+                                   def.label, sp, b, s);
+                    showMessageAndWait(i18n::get(StrKey::ImportPkTitle), def.label);
+                    return true;
                 }
             }
-        } else {
-            DebugLog::line("generate mon: %s -> banca nativa rifiutata: %s", def.label, whyNot.c_str());
-            showMessageAndWait(i18n::get(StrKey::TransferTitle), whyNot);
-            return false;
         }
     }
     DebugLog::line("generate mon: banca piena (%s)", def.label);
