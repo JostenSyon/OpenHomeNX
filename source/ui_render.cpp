@@ -898,18 +898,18 @@ void UI::drawDetailPopup(const Pokemon& pkm) {
     else if (g == 1)
         drawText("\xe2\x99\x80", afterLvl, infoY, T().genderFemale, font_);
 
-    infoY += 30;
+    infoY += 34;
 
     // National dex ID
     std::string idStr = i18n::get(StrKey::NationalDexPrefix) + std::to_string(pkm.species());
     drawText(idStr, infoX, infoY, T().textDim, font_);
-    infoY += 28;
+    infoY += 34;
 
     // OT + TID/SID
     std::string otStr = i18n::get(StrKey::OTPrefix) + pkm.otName() + " | " + i18n::get(StrKey::TIDPrefix) + std::to_string(pkm.displayTid())
                         + " | " + i18n::get(StrKey::SIDPrefix) + std::to_string(pkm.displaySid());
     drawText(otStr, infoX, infoY, T().textDim, font_);
-    infoY += 28;
+    infoY += 34;
 
     // HT (handling trainer) — only for formats that store one
     if (pkm.hasHandlingTrainer()) {
@@ -917,24 +917,24 @@ void UI::drawDetailPopup(const Pokemon& pkm) {
         std::string htStr = i18n::get(StrKey::HTPrefix) +
                             (ht.empty() ? i18n::get(StrKey::NoneItem) : ht);
         drawText(htStr, infoX, infoY, T().textDim, font_);
-        infoY += 28;
+        infoY += 34;
     }
 
     // Nature
     std::string natureStr = i18n::get(StrKey::NaturePrefix) + NatureName::get(pkm.nature());
     drawText(natureStr, infoX, infoY, T().textDim, font_);
-    infoY += 28;
+    infoY += 34;
 
     // Ability
     std::string abilityStr = i18n::get(StrKey::AbilityPrefix) + AbilityName::get(pkm.ability());
     drawText(abilityStr, infoX, infoY, T().textDim, font_);
-    infoY += 28;
+    infoY += 34;
 
     // Held item
     uint16_t item = pkm.heldItem();
     std::string itemStr = i18n::get(StrKey::HeldItemPrefix) + (item != 0 ? ItemName::get(item) : i18n::get(StrKey::NoneItem));
     drawText(itemStr, infoX, infoY, T().textDim, font_);
-    int infoBottom = infoY + 28; // baseline below the last info line
+    int infoBottom = infoY + 34; // baseline below the last info line
 
     // --- Below sprite: Moves ---
     // Start below whichever extends lower: the sprite or the info column.
@@ -947,7 +947,7 @@ void UI::drawDetailPopup(const Pokemon& pkm) {
 
     constexpr int TYPE_ICON_W = 25;
     constexpr int TYPE_ICON_H = 25;
-    constexpr int MOVE_ROW_H = 28;
+    constexpr int MOVE_ROW_H = 32;
     constexpr int MOVE_COL_W = 230;
     int textH = TTF_FontHeight(font_);
     uint16_t moves[4] = {pkm.move1(), pkm.move2(), pkm.move3(), pkm.move4()};
@@ -984,7 +984,7 @@ void UI::drawDetailPopup(const Pokemon& pkm) {
         int col1X = movesX + 4;
         int col2X = movesX + 230;
         int ribbonY = movesY;
-        constexpr int RIB_ROW_H = 26;
+        constexpr int RIB_ROW_H = 30;
         constexpr int ICON_SZ = 18;
         constexpr int ICON_PAD = 4;
         int maxY = popY + POP_H - 74;
