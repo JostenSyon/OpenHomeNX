@@ -700,23 +700,28 @@ private:
 
     // Dynamic grid. Each panel sizes its box grid from its OWN source, so a
     // 30-slot bank (including the universal cross-gen bank) can sit next to a
-    // 25-slot Let's Go save. Always 5 rows; columns = slots-per-box / 5.
+    // 25-slot Let's Go save or a 20-slot GB/GBC box (5x4, see gridRowsFor).
+    int slotsPerBoxFor(Panel p) const {
+        if (p == Panel::Bank)        return bank_.slotsPerBox();
+        if (isDualBankMode())        return bankLeft_.slotsPerBox();
+        return save_.slotsPerBox() > 0 ? save_.slotsPerBox() : 30;
+    }
     int gridColsFor(Panel p) const {
-        int spb;
-        if (p == Panel::Bank)        spb = bank_.slotsPerBox();
-        else if (isDualBankMode())   spb = bankLeft_.slotsPerBox();
-        else                         spb = save_.slotsPerBox() > 0 ? save_.slotsPerBox() : 30;
-        // Colonne esatte: box 20 (GB/GBC) -> 4, 25 -> 5, 30 -> 6. Una griglia
-        // piu larga crea celle fantasma oltre slotsPerBox_: depositarci
-        // scriveva nel box successivo (offset lineare, nessuna guard) e il mon
-        // "spariva" (Rosso 2026-09-09: ultima riga box0 -> box1).
-        if (spb > 0 && spb % 5 == 0) return spb / 5;
+        int spb = slotsPerBoxFor(p);
         return spb <= 25 ? 5 : 6;
     }
-    int maxSlotsFor(Panel p) const { return gridColsFor(p) * 5; }
+    // Righe per pannello: box GB/GBC da 20 slot in 5x4 (non 4x5, piu
+    // leggibile), gli altri restano 5 righe. Mai celle fantasma oltre spb.
+    int gridRowsFor(Panel p) const {
+        int spb = slotsPerBoxFor(p);
+        int cols = gridColsFor(p);
+        if (spb > 0 && cols > 0 && spb % cols == 0) return spb / cols;
+        return 5;
+    }
+    int maxSlotsFor(Panel p) const { return gridColsFor(p) * gridRowsFor(p); }
     // Legacy call sites: they always operated on the cursor's panel.
     int gridCols() const { return gridColsFor(cursor_.panel); }
-    int maxSlots() const { return gridColsFor(cursor_.panel) * 5; }
+    int maxSlots() const { return maxSlotsFor(cursor_.panel); }
 
     // Get pokemon at cursor from the appropriate source
     Pokemon getPokemonAt(int box, int slot, Panel panel) const;

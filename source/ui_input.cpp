@@ -1008,10 +1008,11 @@ void UI::moveCursor(int dx, int dy) {
 
     if (yHeld_) {
         // During drag: clamp to same panel, no wrapping
+        int maxRow = gridRowsFor(cursor_.panel) - 1;
         if (cursor_.col < 0) cursor_.col = 0;
         if (cursor_.col > maxCol) cursor_.col = maxCol;
         if (cursor_.row < 0) cursor_.row = 0;
-        if (cursor_.row > 4) cursor_.row = 4;
+        if (cursor_.row > maxRow) cursor_.row = maxRow;
 
         if (cursor_.col != dragAnchorCol_ || cursor_.row != dragAnchorRow_)
             yDragActive_ = true;
@@ -1020,8 +1021,9 @@ void UI::moveCursor(int dx, int dy) {
     }
 
     // Wrap row
-    if (cursor_.row < 0) cursor_.row = 4;
-    if (cursor_.row > 4) cursor_.row = 0;
+    int wrapMaxRow = gridRowsFor(cursor_.panel) - 1;
+    if (cursor_.row < 0) cursor_.row = wrapMaxRow;
+    if (cursor_.row > wrapMaxRow) cursor_.row = 0;
 
     // Horizontal: crossing panel boundary or wrapping within single panel
     if (cursor_.col < 0) {
@@ -1058,6 +1060,9 @@ void UI::moveCursor(int dx, int dy) {
     int destMaxCol = gridColsFor(cursor_.panel) - 1;
     if (cursor_.col > destMaxCol) cursor_.col = destMaxCol;
     if (cursor_.col < 0)          cursor_.col = 0;
+    int destMaxRow = gridRowsFor(cursor_.panel) - 1;
+    if (cursor_.row > destMaxRow) cursor_.row = destMaxRow;
+    if (cursor_.row < 0)          cursor_.row = 0;
 
     if (cursor_.panel != prevPanel)
         clearSelection();

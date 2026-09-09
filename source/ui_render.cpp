@@ -467,14 +467,16 @@ void UI::drawPanel(int panelX, const std::string& boxName, int boxIdx,
     drawTextCentered(">", panelX + PANEL_W - 20, BOX_HDR_Y + BOX_HDR_H / 2, T().arrow, font_);
     } // else (classic header)
 
-    // Grid: dynamic columns x 5 rows, sized from THIS panel's own source.
+    // Grid: dynamic columns x dynamic rows (5x4 for 20-slot GB/GBC boxes),
+    // sized from THIS panel's own source.
     int cols = gridColsFor(panelId);
+    int rows = gridRowsFor(panelId);
     int gridStartX = panelX + (PANEL_W - (cols * (CELL_W + CELL_PAD) - CELL_PAD)) / 2;
     int gridStartY = GRID_Y;
 
     const auto& displays = getSlotDisplays(panelId, box);
 
-    for (int row = 0; row < 5; row++) {
+    for (int row = 0; row < rows; row++) {
         for (int col = 0; col < cols; col++) {
             int slot = row * cols + col;
             int cellX = gridStartX + col * (CELL_W + CELL_PAD);
