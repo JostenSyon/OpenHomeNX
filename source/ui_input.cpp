@@ -1829,8 +1829,13 @@ void UI::actionSelect() {
             heldPkm_ = target;
             lgpeHeldPartyIdx_ = targetPartyIdx;
             heldFromLGPEParty_ = (targetPartyIdx >= 0);
-            // Generic party: target was from box, not party, so clear party hold
-            heldFromParty_=false; heldPartyIdx_=-1; heldPartyOrig_=-1;
+            // Generic party: target was from box, not party, so the hand is
+            // now box-side. MA la strip-origin (heldPartyOrig_ >= 0) va
+            // preservata per il cancel: A sta in history[0] e l'origine serve
+            // a rimettercela (Smeraldo: swap strip->box + B perdeva A per
+            // sempre, il replay sovrascriveva A con B). Per box-origin orig
+            // e gia -1: niente cambia.
+            heldFromParty_=false; heldPartyIdx_=-1;
         }
     }
 }
@@ -1983,7 +1988,36 @@ void UI::actionCancel() {
         swapHistory_.clear();
         return;
     }
-    // Single hold cancel: replay swap history in reverse to restore all slots
+    // Single hold cancel: replay swap history in reverse to restore all slots.
+    // Strip-origin (presa strip + swap in box/banca, mai dual-bank: li non
+    // c'e strip e setPartySlot scriverebbe nel save sbagliato): A sta nella
+    // PRIMA cella toccata (history[0]; lo strip pick non pusha). La si legge
+    // e converte ORA (prima che il replay la sovrascriva con B), ma la si
+    // rimette in strip S DOPO il reset (che ripristina anche i pointer LGPE
+    // dal backup — farlo prima verrebbe annullato). Smeraldo: A persa.
+    // Se non convertibile (dex-cut), la cella si salta nel replay: A resta
+    // li, B in mano, niente perso.
+    int stripOrig = (!isDualBankMode()) ? heldPartyOrig_ : -1;
+    Pokemon stripMon;
+    bool haveStripMon = false;
+    if (stripOrig >= 0 && !swapHistory_.empty()) {
+        const auto& first = swapHistory_.front();
+        Pokemon inCell = getPokemonAt(first.box, first.slot, first.panel);
+        if (!inCell.isEmpty()) {
+            std::string whyNot;
+            if (prepareForPlacement(inCell, Panel::Game, whyNot)) {
+                stripMon = inCell;
+                haveStripMon = true;
+            } else {
+                DebugLog::line("cancel: strip-origin non convertibile (%s), A resta in cella",
+                               whyNot.c_str());
+                swapHistory_.erase(swapHistory_.begin());
+                stripOrig = -1;
+            }
+        } else {
+            stripOrig = -1;
+        }
+    }
     for (int i = (int)swapHistory_.size() - 1; i >= 0; i--) {
         auto& rec = swapHistory_[i];
         setPokemonAt(rec.box, rec.slot, rec.panel, rec.pkm);
@@ -1995,6 +2029,11 @@ void UI::actionCancel() {
     lgpeHeldPartyIdx_ = -1;
     heldFromParty_=false; heldPartyIdx_=-1; heldPartyOrig_=-1;
     save_.setLGPEPartyIndices(lgpePartyBackup_);
+    if (haveStripMon) {
+        DebugLog::line("cancel: %s torna in strip %d",
+                       stripMon.displayName().c_str(), stripOrig);
+        save_.setPartySlot(stripOrig, stripMon);
+    }
 }
 
 void UI::toggleSelect() {
