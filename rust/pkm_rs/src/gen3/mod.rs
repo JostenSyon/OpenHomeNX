@@ -13,6 +13,16 @@ use pkm_rs_resources::{abilities::AbilityIndexBounded, moves::MoveDataOffsets};
 use pkm_rs_resources::moves::MoveIndex;
 use pkm_rs_types::Generation;
 
+/// True if this species exists in Gen 3 (Emerald metadata): the dex-cut
+/// gate for downgrades. Same data PKHeX/HOME enforce (not a hand range).
+pub fn species_legal_in_gen3(ndex: u16) -> bool {
+    pkm_rs_resources::species::form_metadata::source_has_form_metadata(
+        pkm_rs_resources::metadata_source::MetadataSource::Emerald,
+        ndex,
+        0,
+    )
+}
+
 pub(crate) const BOX_SIZE: usize = 80;
 pub(crate) const PARTY_SIZE: usize = 100;
 

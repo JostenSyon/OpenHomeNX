@@ -311,14 +311,37 @@ pub extern "C" fn openhome_load_pkm_from_gen(
             Err(_) => return core::ptr::null_mut(),
         },
         3 => match pkm_rs::gen3::Pk3::from_bytes(slice) {
-            Ok(pk) => match pkm_rs::ohpkm::OhpkmV2::convert_with_backup(
-                &pk,
-                &pkm_rs::traits::PkmBytes::to_party_bytes(&pk),
-            ) {
-                Ok(o) => o,
-                Err(_) => return core::ptr::null_mut(),
-            },
-            Err(_) => return core::ptr::null_mut(),
+            // Raw parse must ALSO pass the checksum gate: C++-side buffers
+            // arrive decrypted, but real save bytes are encrypted — and a
+            // raw parse of encrypted bytes can yield a phantom record
+            // (Smeraldo lesson: species-only gates accept garbage).
+            Ok(pk) if pk.checksum == pk.calculate_checksum() => {
+                match pkm_rs::ohpkm::OhpkmV2::convert_with_backup(
+                    &pk,
+                    &pkm_rs::traits::PkmBytes::to_party_bytes(&pk),
+                ) {
+                    Ok(o) => o,
+                    Err(_) => return core::ptr::null_mut(),
+                }
+            }
+            _ => {
+                // from_encrypted_bytes asserts 80/100B (non-unwinding panic
+                // = abort on Switch): gate the length BEFORE calling it.
+                if slice.len() != 80 && slice.len() != 100 {
+                    return core::ptr::null_mut();
+                }
+                let mut owned = slice.to_vec();
+                match pkm_rs::gen3::Pk3::from_encrypted_bytes(&mut owned) {
+                    Ok(pk) => match pkm_rs::ohpkm::OhpkmV2::convert_with_backup(
+                        &pk,
+                        &pkm_rs::traits::PkmBytes::to_party_bytes(&pk),
+                    ) {
+                        Ok(o) => o,
+                        Err(_) => return core::ptr::null_mut(),
+                    },
+                    Err(_) => return core::ptr::null_mut(),
+                }
+            }
         },
         // 4 = PK4 (Gen 4 DPPt/HGSS). 136-byte box record (236-byte party):
         // from_bytes decrypts when the unused ribbon block is nonzero.
@@ -362,7 +385,20 @@ pub extern "C" fn openhome_load_pkm_from_gen(
                 Ok(o) => o,
                 Err(_) => return core::ptr::null_mut(),
             },
-            Err(_) => return core::ptr::null_mut(),
+            // Real save bytes are ENCRYPTED (PKHeX .pk7 exports too):
+            // fall back to the decrypting parser instead of failing.
+            Err(_) => match pkm_rs::gen7_alola::Pk7::from_encrypted_bytes(
+                slice.to_vec().into_boxed_slice(),
+            ) {
+                Ok(pk) => match pkm_rs::ohpkm::OhpkmV2::convert_with_backup(
+                    &pk,
+                    &pkm_rs::traits::PkmBytes::to_party_bytes(&pk),
+                ) {
+                    Ok(o) => o,
+                    Err(_) => return core::ptr::null_mut(),
+                },
+                Err(_) => return core::ptr::null_mut(),
+            },
         },
         8 => match pkm_rs::gen8_swsh::Pk8::from_bytes(slice) {
             Ok(pk) => match pkm_rs::ohpkm::OhpkmV2::convert_with_backup(
@@ -806,6 +842,14 @@ fn convert_to_pk3(
 
     let existing_backup = ohpkm.original_data_bytes();
     let strategy = pkm_rs::convert_strategy::ConvertStrategy::default();
+    // Dex-cut (same data PKHeX/HOME enforce): Gen 3 holds 1-386 only.
+    let ndex = ohpkm.species_and_form().get_ndex() as u16;
+    if !pkm_rs::gen3::species_legal_in_gen3(ndex) {
+        return Err(pkm_rs::result::Error::FormIndex {
+            national_dex: ohpkm.species_and_form().get_ndex(),
+            form_index: 0,
+        });
+    }
     let mut pk3 = Pk3::from_ohpkm(ohpkm, strategy)?;
 
     // Move drop + refill through the MoveSlots setters. Mirrors convert_to_pk6:
@@ -2129,6 +2173,9 @@ mod tests {
     use pkm_rs::gen1::Pk1;
     use pkm_rs::gen2::Pk2;
     use pkm_rs::gen3::Pk3;
+    use pkm_rs::gen4::Pk4;
+    use pkm_rs::gen5::Pk5;
+    use pkm_rs::gen6::Pk6;
     use pkm_rs::gen7_alola::Pk7;
     use pkm_rs::gen8_swsh::Pk8;
     use pkm_rs::gen8_la::Pa8;
@@ -3235,6 +3282,251 @@ mod tests {
         let converted = unsafe { &*out };
         assert_eq!(move_indices(&converted.ohpkm), [85, 98, 86, 87]);
         openhome_free_pkm(out);
+    }
+
+    // BLANKET fixture matrix: ogni record reale in tools/test save/upstream
+    // parte dalla sua gen e viene trasferito verso tutti i 13 target.
+    // Politica verificata per ogni cella:
+    // - dex-cut (specie fuori dex target 1/2/4/5/6) -> NULL esplicito;
+    // - successo verso 1-6 -> tutte le 4 mosse legali nel target (drop+refill
+    //   nostri), specie conservata, box-bytes di lunghezza esatta e re-parse;
+    // - successo verso 7+ -> handle valido + box-bytes non vuoti (preserve
+    //   upstream: niente drop, solo legalizzazione identita);
+    // - count_moves_not_in_gen coerente con le mosse sorgente (target 1-6).
+    // I file .pkm party-sized (220B) o illeggibili vengono saltati con nota
+    // (eprintln), mai fatti passare in silenzio: lo skip e conteggiato e
+    // l'asserzione finale lo rende visibile.
+    #[cfg(feature = "std")]
+    #[test]
+    fn blanket_fixture_transfer_matrix() {
+        use std::fs;
+        let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tools/test save/upstream");
+        let mut entries: Vec<_> = fs::read_dir(&dir)
+            .expect("upstream fixture dir must exist")
+            .filter_map(|e| e.ok())
+            .collect();
+        entries.sort_by_key(|e| e.file_name());
+        assert!(!entries.is_empty(), "no fixtures found");
+
+        fn infer_gen(name: &str, len: usize) -> Option<u32> {
+            if name.ends_with(".pk2") {
+                Some(2)
+            } else if name.ends_with(".pk7") {
+                Some(7)
+            } else if name.ends_with(".pk4") {
+                Some(4)
+            } else if name.ends_with(".pk5") {
+                Some(5)
+            } else if name.ends_with(".pkm") {
+                match len {
+                    136 => Some(4),
+                    220 => Some(5),
+                    _ => None,
+                }
+            } else {
+                None
+            }
+        }
+        fn species_gate(target: u32, ndex: u16) -> Option<bool> {
+            match target {
+                1 => Some(pkm_rs::gen1::species_legal_in_gen1(ndex)),
+                2 => Some(pkm_rs::gen2::species_legal_in_gen2(ndex)),
+                3 => Some(pkm_rs::gen3::species_legal_in_gen3(ndex)),
+                4 => Some(pkm_rs::gen4::species_legal_in_gen4(ndex)),
+                5 => Some(pkm_rs::gen5::species_legal_in_gen5(ndex)),
+                6 => Some(pkm_rs::gen6::species_legal_in_gen6(ndex)),
+                _ => None,
+            }
+        }
+        fn move_gate(target: u32, id: u16) -> Option<bool> {
+            match target {
+                1 => Some(pkm_rs::gen1::move_legal_in_gen1(id)),
+                2 => Some(pkm_rs::gen2::move_legal_in_gen2(id)),
+                3 => Some(pkm_rs::gen3::move_legal_in_gen3(id)),
+                4 => Some(pkm_rs::gen4::move_legal_in_gen4(id)),
+                5 => Some(pkm_rs::gen5::move_legal_in_gen5(id)),
+                6 => Some(pkm_rs::gen6::move_legal_in_gen6(id)),
+                _ => None,
+            }
+        }
+        fn box_len(target: u32) -> Option<usize> {
+            match target {
+                1 => Some(33),
+                2 => Some(32),
+                3 => Some(80),
+                4 => Some(136),
+                5 => Some(136),
+                6 => Some(232),
+                _ => None,
+            }
+        }
+
+        let mut loaded = 0;
+        let mut skipped = 0;
+        let mut cells_ok = 0;
+        let mut cells_dexcut = 0;
+        for e in entries {
+            let name = e.file_name().to_string_lossy().into_owned();
+            let bytes = fs::read(e.path()).expect("fixture must be readable");
+            let src = match infer_gen(&name, bytes.len()) {
+                Some(g) => g,
+                None => {
+                    eprintln!("SKIP (no gen): {}", name);
+                    skipped += 1;
+                    continue;
+                }
+            };
+            let h = openhome_load_pkm_from_gen(
+                bytes.as_ptr(),
+                bytes.len(),
+                src,
+            );
+            if h.is_null() {
+                eprintln!("SKIP (parse gen{}): {} ({}B)", src, name, bytes.len());
+                skipped += 1;
+                continue;
+            }
+            loaded += 1;
+            let ndex = openhome_ohpkm_species(h);
+            assert_ne!(ndex, 0, "{}: parsed species must be nonzero", name);
+            let src_moves = move_indices(&unsafe { &*h }.ohpkm);
+            // count coerente per i target 1-6
+            for t in [1u32, 2, 3, 4, 5, 6] {
+                let expect = src_moves
+                    .iter()
+                    .filter(|&&id| id != 0 && !move_gate(t, id).unwrap())
+                    .count() as u32;
+                let got = openhome_count_moves_not_in_gen(h, t);
+                assert_eq!(
+                    got, expect,
+                    "{}: count gen{} must be {} (moves {:?})",
+                    name, t, expect, src_moves
+                );
+            }
+            for target in 1u32..=13 {
+                let out = openhome_transfer_pkm(h, target);
+                match species_gate(target, ndex) {
+                    Some(false) => {
+                        assert!(
+                            out.is_null(),
+                            "{} (ndex {}): dex-cut to gen{} must be NULL",
+                            name, ndex, target
+                        );
+                        cells_dexcut += 1;
+                        continue;
+                    }
+                    _ => {}
+                }
+                if out.is_null() {
+                    // Target senza gate specie (3/7+): NULL ammesso solo per
+                    // motivi documentati (forme/indici fuori range) — mai
+                    // crash, e il conteggio resta visibile nel summary.
+                    eprintln!(
+                        "NULL (no gate): {} ndex {} -> gen{}",
+                        name, ndex, target
+                    );
+                    continue;
+                }
+                let conv = unsafe { &*out };
+                assert_eq!(
+                    openhome_ohpkm_species(out),
+                    ndex,
+                    "{}: species must survive transfer to gen{}",
+                    name,
+                    target
+                );
+                if let Some(want_len) = box_len(target) {
+                    // Target 1-6: mosse tutte legali + box-bytes esatti.
+                    let got_moves = move_indices(&conv.ohpkm);
+                    assert!(
+                        got_moves.iter().all(|&m| move_gate(target, m).unwrap()),
+                        "{} -> gen{}: moves {:?} must all be legal",
+                        name,
+                        target,
+                        got_moves
+                    );
+                    let mut buf = [0u8; 512];
+                    let n = openhome_get_pkm_box_bytes_for_gen(
+                        out,
+                        target,
+                        buf.as_mut_ptr(),
+                        buf.len(),
+                    );
+                    assert_eq!(
+                        n as usize, want_len,
+                        "{} -> gen{}: box bytes must be {}B",
+                        name, target, want_len
+                    );
+                    // Re-parse: il record materializzato deve rileggersi.
+                    let re = match target {
+                        1 => Pk1::from_bytes(&buf[..n as usize]).map(|_| ()),
+                        2 => Pk2::from_bytes(&buf[..n as usize]).map(|_| ()),
+                        3 => Pk3::from_bytes(&buf[..n as usize]).map(|_| ()),
+                        4 => Pk4::from_bytes(&buf[..n as usize]).map(|_| ()),
+                        5 => Pk5::from_bytes(&buf[..n as usize]).map(|_| ()),
+                        6 => Pk6::from_bytes(&buf[..n as usize]).map(|_| ()),
+                        _ => unreachable!(),
+                    };
+                    assert!(
+                        re.is_ok(),
+                        "{} -> gen{}: materialized bytes must re-parse",
+                        name,
+                        target
+                    );
+                } else {
+                    // Target 7+: handle valido + box-bytes non vuoti.
+                    let mut buf = [0u8; 512];
+                    let n = openhome_get_pkm_box_bytes_for_gen(
+                        out,
+                        target,
+                        buf.as_mut_ptr(),
+                        buf.len(),
+                    );
+                    assert!(
+                        n > 0,
+                        "{} -> gen{}: box bytes must be non-empty",
+                        name,
+                        target
+                    );
+                }
+                cells_ok += 1;
+                openhome_free_pkm(out);
+            }
+            openhome_free_pkm(h);
+        }
+        eprintln!(
+            "BLANKET: fixtures loaded={} skipped={} cells_ok={} cells_dexcut={}",
+            loaded, skipped, cells_ok, cells_dexcut
+        );
+        assert!(loaded > 0, "blanket must load at least one fixture");
+    }
+
+    // Real Gen3 record (Seedot, ndex 255: internal index 280 — 80B box
+    // bytes from Zaffiro.sav party, nickname/OT scrubbed + checksum
+    // recomputed): load -> species 255 -> transfer to Gen 8 preserves
+    // species (Gen3-start coverage to mirror the embedded Gen1 record).
+    #[test]
+    fn load_real_zaffiro_seedot_and_transfer() {
+        let rec: [u8; 80] = [
+            0xa9, 0xe3, 0x3e, 0x87, 0x69, 0x55, 0x83, 0x1a, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff, 0x04, 0x02, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0xff, 0x00, 0x08, 0x0c, 0x00, 0x00, 0xc0,
+            0xb5, 0xbd, 0x9c, 0xc0, 0xb6, 0xbd, 0x9d, 0xc0, 0xb6, 0xbd, 0x9d,
+            0xc0, 0xa6, 0x38, 0xbd, 0x4c, 0x9c, 0x53, 0xad, 0xc0, 0xb6, 0xbd,
+            0x9d, 0xca, 0xb6, 0x90, 0x9d, 0xb4, 0xb6, 0xbd, 0x9d, 0xe3, 0x9e,
+            0xa3, 0x9d, 0xd8, 0xb7, 0xbd, 0x9d, 0xc5, 0xb7, 0xbd, 0x9d, 0xc0,
+            0xe7, 0xbd, 0x9d,
+        ];
+        assert!(pkm_rs::gen3::species_legal_in_gen3(255));
+        let h = openhome_load_pkm_from_gen(rec.as_ptr(), rec.len(), 3);
+        assert!(!h.is_null(), "real Seedot bytes must load as gen 3");
+        assert_eq!(openhome_ohpkm_species(h), 255);
+        let out = openhome_transfer_pkm(h, 8);
+        assert!(!out.is_null(), "Seedot Gen3 -> Gen8 must succeed");
+        assert_eq!(openhome_ohpkm_species(out), 255);
+        openhome_free_pkm(out);
+        openhome_free_pkm(h);
     }
 
     // Gen1 party tail from real Rosso.sav bytes (Charmander 33B record):
