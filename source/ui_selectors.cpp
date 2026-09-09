@@ -254,6 +254,7 @@ void UI::selectProfile(int index) {
     gameSelCursor_ = 0;
     gameSelPage_ = 0;
     gameSelOnAllBanks_ = false;
+    gameSelOnSettings_ = false;
     gameSelOnChevron_ = 0;
     showWorking(i18n::get(StrKey::LoadingGameIcons));
     loadGameIcons();
@@ -910,9 +911,10 @@ void UI::drawGameSelectorFrame() {
     {
         int lastRow = (pageCount - 1) / COLS;
         int gridBottomY = gridStartY + (lastRow + 1) * (CARD_H + CARD_GAP);
-        constexpr int R = 40; // raggio icona
+        constexpr int R = 34; // raggio disco (icona piu piccola dentro)
+        constexpr int ICON_R = 24; // semilato icona: staccata dal bordo
         int ccx = SCREEN_W / 2;
-        int ccy = gridBottomY + 10 + R;
+        int ccy = gridBottomY + 16 + R;
         auto fillDisc = [&](int cx, int cy, int r, SDL_Color c) {
             SDL_SetRenderDrawColor(renderer_, c.r, c.g, c.b, c.a);
             for (int dy = -r; dy <= r; dy++) {
@@ -921,19 +923,53 @@ void UI::drawGameSelectorFrame() {
             }
         };
         if (gameSelOnAllBanks_) {
-            fillDisc(ccx, ccy, R + 8, T().menuHighlight);
-            fillDisc(ccx, ccy, R + 2, T().panelBg);
+            fillDisc(ccx, ccy, R + 6, T().menuHighlight);
+            fillDisc(ccx, ccy, R + 1, T().panelBg);
         } else {
-            fillDisc(ccx, ccy, R + 2, T().panelBg);
+            fillDisc(ccx, ccy, R + 1, T().panelBg);
         }
         if (iconVault_) {
-            SDL_Rect dst = {ccx - R, ccy - R, R * 2, R * 2};
+            SDL_Rect dst = {ccx - ICON_R, ccy - ICON_R, ICON_R * 2, ICON_R * 2};
             SDL_RenderCopy(renderer_, iconVault_, nullptr, &dst);
         }
         if (gameSelOnAllBanks_) {
             drawTextCentered(i18n::get(StrKey::ViewAllBanks), SCREEN_W / 2,
                              ccy + R + 10, T().text, font_);
         }
+    }
+
+    // Ingranaggio impostazioni in basso a destra (stile Switch): apre lo
+    // stesso menu del tasto + (showGameSelMenu_). Menu dedicato in futuro.
+    {
+        constexpr int GR = 26;
+        int gcx = SCREEN_W - 64;
+        int gcy = SCREEN_H - 64;
+        auto fillDisc = [&](int cx, int cy, int r, SDL_Color c) {
+            SDL_SetRenderDrawColor(renderer_, c.r, c.g, c.b, c.a);
+            for (int dy = -r; dy <= r; dy++) {
+                int dx = static_cast<int>(std::sqrt((double)(r * r - dy * dy)));
+                SDL_RenderDrawLine(renderer_, cx - dx, cy + dy, cx + dx, cy + dy);
+            }
+        };
+        if (gameSelOnSettings_) {
+            fillDisc(gcx, gcy, GR + 8, T().menuHighlight);
+            fillDisc(gcx, gcy, GR + 1, T().panelBg);
+        } else {
+            fillDisc(gcx, gcy, GR + 1, T().panelBg);
+        }
+        // Ingranaggio chiaro su disco scuro (8 denti + foro, come Switch).
+        SDL_Color gc = gameSelOnSettings_ ? T().cursor : T().textDim;
+        SDL_SetRenderDrawColor(renderer_, gc.r, gc.g, gc.b, gc.a);
+        constexpr int TEETH = 8;
+        for (int i = 0; i < TEETH; i++) {
+            double a = i * (3.14159265 * 2.0 / TEETH);
+            int tx = gcx + static_cast<int>(16 * std::cos(a));
+            int ty = gcy + static_cast<int>(16 * std::sin(a));
+            SDL_Rect tooth = {tx - 5, ty - 5, 10, 10};
+            SDL_RenderFillRect(renderer_, &tooth);
+        }
+        fillDisc(gcx, gcy, 13, gc);
+        fillDisc(gcx, gcy, 6, T().panelBg);
     }
 
     // Chevron buttons for page navigation
@@ -1037,6 +1073,7 @@ void UI::handleGameSelectorInput(bool& running) {
             }
             if (dy > 0) {
                 gameSelOnChevron_ = 0;
+                gameSelOnSettings_ = false;
                 gameSelOnAllBanks_ = true;
             }
             if (dy < 0) {
@@ -1046,10 +1083,32 @@ void UI::handleGameSelectorInput(bool& running) {
         }
 
         if (gameSelOnAllBanks_) {
-            // On "All Banks" row: up goes back to grid, left/right ignored
+            // On "All Banks" row: up goes back to grid, right goes to gear
+            if (dx > 0) {
+                gameSelOnAllBanks_ = false;
+                gameSelOnSettings_ = true;
+                return;
+            }
             if (dy < 0) {
                 gameSelOnAllBanks_ = false;
                 // Place cursor on bottom row of current page
+                int totalRows = (pageCount + COLS - 1) / COLS;
+                int lastRowStart = (totalRows - 1) * COLS;
+                int lastRowItems = pageCount - lastRowStart;
+                int col = (gameSelCursor_ - pageStart) % COLS;
+                if (col >= lastRowItems) col = lastRowItems - 1;
+                gameSelCursor_ = pageStart + lastRowStart + col;
+            }
+            return;
+        }
+
+        if (gameSelOnSettings_) {
+            // Sull'ingranaggio: sinistra torna alle banche, su torna in griglia
+            if (dx < 0) {
+                gameSelOnSettings_ = false;
+                gameSelOnAllBanks_ = true;
+            } else if (dy < 0) {
+                gameSelOnSettings_ = false;
                 int totalRows = (pageCount + COLS - 1) / COLS;
                 int lastRowStart = (totalRows - 1) * COLS;
                 int lastRowItems = pageCount - lastRowStart;
@@ -1070,6 +1129,7 @@ void UI::handleGameSelectorInput(bool& running) {
 
         // Moving down past the last row goes to "All Banks"
         if (row >= totalRows) {
+            gameSelOnSettings_ = false;
             gameSelOnAllBanks_ = true;
             return;
         }
@@ -1095,6 +1155,7 @@ void UI::handleGameSelectorInput(bool& running) {
 
         // Wrap rows (up from top goes to "All Banks")
         if (row < 0) {
+            gameSelOnSettings_ = false;
             gameSelOnAllBanks_ = true;
             return;
         }
@@ -1390,6 +1451,10 @@ void UI::handleGameSelectorInput(bool& running) {
                         gameSelOnChevron_ = 0;
                     } else if (gameSelOnAllBanks_)
                         enterAllBanksMode();
+                    else if (gameSelOnSettings_) {
+                        showGameSelMenu_ = true;
+                        gameSelMenuCursor_ = 0;
+                    }
                     else
                         selectGame(availableGames_[gameSelCursor_], importedOccurrence(gameSelCursor_));
                     break;
@@ -1412,7 +1477,7 @@ void UI::handleGameSelectorInput(bool& running) {
                     themeSelOriginal_ = themeIndex_;
                     break;
                 case SDL_CONTROLLER_BUTTON_Y: // Switch X = save menu (debug) / eject USB
-                    if (DebugLog::enabled() && !gameSelOnAllBanks_ && gameSelOnChevron_ == 0 &&
+                    if (DebugLog::enabled() && !gameSelOnAllBanks_ && !gameSelOnSettings_ && gameSelOnChevron_ == 0 &&
                         gameSelCursor_ >= 0 && gameSelCursor_ < (int)availableGames_.size()) {
                         openSaveMenu(availableGames_[gameSelCursor_],
                                      importedOccurrence(gameSelCursor_));

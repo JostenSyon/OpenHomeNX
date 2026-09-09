@@ -91,7 +91,7 @@ public:
     // doesn't play over a black gap; call showSplash(0, true) when ready.
     void showSplash(int holdMs = 2500, bool fadeOut = true);
     int  drawBodyText(const std::string& body, int startY, const std::string& footer);
-    static std::vector<std::string> wrapText(const std::string& line, TTF_Font* f, int maxW);
+    std::vector<std::string> wrapText(const std::string& line, TTF_Font* f, int maxW);
     void showMessageAndWait(const std::string& title, const std::string& body);
     bool showConfirmDialog(const std::string& title, const std::string& body);
     void showWorking(const std::string& msg);
@@ -431,8 +431,8 @@ private:
     GameType selectedGame_ = GameType::ZA;
     int gameSelCursor_ = 0;
     int gameSelPage_ = 0;
-    bool gameSelOnAllBanks_ = false;  // cursor is on "View All Banks" option
-    int gameSelOnChevron_ = 0;        // 0=none, -1=left chevron, 1=right chevron
+    bool gameSelOnAllBanks_ = false;  // cursor is on "View All Banks" option    int gameSelOnChevron_ = 0;        // 0=none, -1=left chevron, 1=right chevron
+    bool gameSelOnSettings_ = false;  // cursore sull'ingranaggio in basso a dx
     bool allBanksMode_ = false;       // entered bank selector via "View All Banks"
     bool bankRightCrossGen_ = false;  // right-panel bank selector showing ALL games (cross-gen), normal mode
     std::vector<GameType> availableGames_;
