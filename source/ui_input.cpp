@@ -3163,7 +3163,7 @@ std::vector<UI::GenMonDef> UI::genMonTable() {
         // Regressione fix Pb8 (dex Sinnoh, non Galar): in Sinnoh si, a Galar no.
         { "Pidgey Sinnoh", 16, 5, {33, 16, 0, 0} },
         { "Chimchar Sinnoh", 390, 5, {10, 52, 0, 0} },
-        { "Staravia Sinnoh", 396, 5, {33, 16, 0, 0} },
+        { "Starly Sinnoh", 396, 5, {33, 16, 0, 0} },
     };
     return std::vector<GenMonDef>(TABLE, TABLE + sizeof(TABLE) / sizeof(TABLE[0]));
 }
