@@ -552,7 +552,9 @@ private:
     bool saveBankFiles();
     // Write the game save (+ account commit + "Saving…" mask + LED) only when a
     // mutator actually changed it since load. No-op in dual-bank mode.
-    void persistGameSaveIfDirty();
+    // False SOLO su abort utente (party vuota + B): il chiamante deve
+    // interrompere il suo flusso (restare nel gioco), niente scritto.
+    bool persistGameSaveIfDirty();
     // Exit-guard party vuota (debug): nessun gioco accetta party 0. GBA offre
     // il Caterpie segnaposto (A = piazza ed esci, B = torno a sistemare a
     // mano); altrove blocca con messaggio. true = si puo uscire.

@@ -311,7 +311,7 @@ void UI::handleMenuInput(const SDL_Event& event, bool& running) {
             // sel: 0=Switch Bank, 1=Change Game, 2=Save & Quit, 3=Quit Without Saving
             if (sel == 0) {
                 if (!saveBankFiles()) { showMenu_ = false; return; }
-                persistGameSaveIfDirty();
+                if (!persistGameSaveIfDirty()) { showMenu_ = false; return; }
                 bankManager_.refresh();
                 // Cross-gen: the right-panel bank selector lists ALL banks of
                 // every game, sectioned by game (same as "All Banks"). A SwSh
@@ -1802,11 +1802,11 @@ bool UI::ensurePartyOnExit() {
 void UI::returnToGameSelector() {
     if (!saveBankFiles())
         return;
-    // Debug empty-party: prima di persistere, offri il Caterpie (GBA) o
-    // rimanda a sistemare a mano. B = resta nel gioco, niente save.
-    if (!ensurePartyOnExit())
+    // Niente guard qui: vive dentro persistGameSaveIfDirty (choke point
+    // unico, evita doppi dialoghi). False (B) = resta nel gioco, niente
+    // save, niente unmount: memoria intatta e si continua da dove si era.
+    if (!persistGameSaveIfDirty())
         return;
-    persistGameSaveIfDirty();
     // Unmount regardless — leaving the game, so release the save mount even
     // when nothing was written.
     if (!isDualBankMode() && save_.isLoaded())
@@ -1877,7 +1877,7 @@ void UI::actionCancel() {
         // by game): the single-game rescope hid other-game banks (BD folder empty
         // -> "Nessuna banca"; Sw showed only its own folder). Persist first.
         if (!saveBankFiles()) return;
-        persistGameSaveIfDirty();
+        if (!persistGameSaveIfDirty()) return;
         activeBankName_.clear();
         activeBankPath_.clear();
         leftBankName_.clear();

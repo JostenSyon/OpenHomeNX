@@ -1017,13 +1017,12 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
                 if (!saveBankFiles()) {
                     saveNow_ = false;
                     running = true;
-                } else if (!running && !ensurePartyOnExit()) {
-                    // Save & Quit con party vuota + B al dialogo: annulla
-                    // l'uscita, resta nel gioco senza salvare.
+                } else if (!persistGameSaveIfDirty()) {
+                    // Save & Quit abortito (party vuota + B al dialogo):
+                    // resta nel gioco, niente save, memoria intatta.
                     saveNow_ = false;
                     running = true;
                 } else {
-                    persistGameSaveIfDirty();
                     saveNow_ = false;
                 }
             }
@@ -1256,9 +1255,19 @@ bool UI::saveBankFiles() {
     return true;
 }
 
-void UI::persistGameSaveIfDirty() {
+bool UI::persistGameSaveIfDirty() {
     if (isDualBankMode() || !save_.isLoaded() || !save_.isDirty())
-        return;
+        return true;
+    // Choke point unico: MAI persistere con strip vuota. Il guard write-layer
+    // tiene il disco valido ma dissocia memoria/disco (box salvati, party
+    // vecchio) -> al reload la squadra "resuscita" e si duplica all'infinito
+    // (Smeraldo 2026-09-09: pick Treecko, box, reload, Treecko di nuovo).
+    // A = Caterpie (GBA) e si salva tutto; B = false, NIENTE save, resto a
+    // mano in memoria intatta (niente disco invalido, niente duplicati).
+    if (!ensurePartyOnExit()) {
+        DebugLog::line("persist: party vuota, save annullato (B), memoria intatta");
+        return false;
+    }
     showWorking(i18n::get(StrKey::Saving));
     ledBlink();
     bool ok = save_.save(savePath_);
@@ -1266,7 +1275,9 @@ void UI::persistGameSaveIfDirty() {
     ledOff();
     // Mai fallimento silenzioso: i save read-only v1 (DS/3DS) e gli errori IO
     // tornano false — l'utente deve saperlo, i dati in memoria restano intatti.
+    // (Il fallimento IO non annulla il flusso chiamante: come prima.)
     if (!ok)
         showMessageAndWait(i18n::get(StrKey::SaveFailedTitle),
                            i18n::get(StrKey::SaveFailedBody));
+    return true;
 }
