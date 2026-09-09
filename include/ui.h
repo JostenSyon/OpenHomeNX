@@ -165,6 +165,7 @@ private:
     SDL_Texture* iconBoxFull_     = nullptr;
     SDL_Texture* iconBoxEmpty_    = nullptr;
     SDL_Texture* iconBoxNonEmpty_ = nullptr;
+    SDL_Texture* iconVault_        = nullptr; // cassaforte rotonda "tutte le banche"
 
     // Game-selector logos for imported (titleId-less) games — see init()'s
     // loadLogo(). Keyed by GameType since there are only a handful of these.

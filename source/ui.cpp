@@ -100,6 +100,7 @@ bool UI::init() {
         iconBoxFull_     = loadIcon("box_full.png");
         iconBoxEmpty_    = loadIcon("box_empty.png");
         iconBoxNonEmpty_ = loadIcon("box_nonempty.png");
+        iconVault_       = loadIcon("safe.png");
     }
 
     // Game-selector logos for imported (titleId-less) games: no NS control

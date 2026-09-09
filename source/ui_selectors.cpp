@@ -904,26 +904,35 @@ void UI::drawGameSelectorFrame() {
                          T().textDim, fontSmall_);
     }
 
-    // "View All Banks" option below the grid
+    // "View All Banks" come pulsante rotondo (cassaforte): niente riquadro
+    // quadrato come i giochi. Etichetta sotto solo quando evidenziato.
     {
         int lastRow = (pageCount - 1) / COLS;
         int gridBottomY = gridStartY + (lastRow + 1) * (CARD_H + CARD_GAP);
-        int allBanksY = gridBottomY + 10;
-
-        std::string label = i18n::get(StrKey::ViewAllBanks);
-        const auto& te = getTextEntry(label, font_, T().text);
-        int labelW = te.w + 40;  // padding
-        int labelH = 36;
-        int labelX = (SCREEN_W - labelW) / 2;
-
+        constexpr int R = 40; // raggio icona
+        int ccx = SCREEN_W / 2;
+        int ccy = gridBottomY + 10 + R;
+        auto fillDisc = [&](int cx, int cy, int r, SDL_Color c) {
+            SDL_SetRenderDrawColor(renderer_, c.r, c.g, c.b, c.a);
+            for (int dy = -r; dy <= r; dy++) {
+                int dx = static_cast<int>(std::sqrt((double)(r * r - dy * dy)));
+                SDL_RenderDrawLine(renderer_, cx - dx, cy + dy, cx + dx, cy + dy);
+            }
+        };
         if (gameSelOnAllBanks_) {
-            drawRect(labelX, allBanksY, labelW, labelH, T().menuHighlight);
-            drawRectOutline(labelX, allBanksY, labelW, labelH, T().cursor, 2);
+            fillDisc(ccx, ccy, R + 8, T().menuHighlight);
+            fillDisc(ccx, ccy, R + 2, T().panelBg);
         } else {
-            drawRect(labelX, allBanksY, labelW, labelH, T().panelBg);
+            fillDisc(ccx, ccy, R + 2, T().panelBg);
         }
-        drawTextCentered(label, SCREEN_W / 2, allBanksY + labelH / 2,
-                         T().text, font_);
+        if (iconVault_) {
+            SDL_Rect dst = {ccx - R, ccy - R, R * 2, R * 2};
+            SDL_RenderCopy(renderer_, iconVault_, nullptr, &dst);
+        }
+        if (gameSelOnAllBanks_) {
+            drawTextCentered(i18n::get(StrKey::ViewAllBanks), SCREEN_W / 2,
+                             ccy + R + 10, T().text, font_);
+        }
     }
 
     // Chevron buttons for page navigation
