@@ -20,7 +20,11 @@ namespace {
 // Senza `url=` il check update usa le GitHub releases pubbliche
 // (githubReleasesUrl sotto); Send log/save richiedono comunque `url=`
 // (GitHub non riceve upload).
-struct UpdateCfg { std::string url, token; };
+struct UpdateCfg {
+    std::string url, token;
+    long backupMb = 256;   // tetto auto-backup per gioco, titoli installati
+    long backupMbSd = 32;  // idem, save file-backed (SD, piccoli)
+};
 
 bool readUpdateCfg(const std::string& basePath, UpdateCfg& out) {
     const std::string paths[] = { basePath + "update.cfg",
@@ -42,6 +46,8 @@ bool readUpdateCfg(const std::string& basePath, UpdateCfg& out) {
             trim(k); trim(v);
             if (k == "url") out.url = v;
             else if (k == "token") out.token = v;
+            else if (k == "backup_mb") out.backupMb = std::atol(v.c_str());
+            else if (k == "backup_mb_sd") out.backupMbSd = std::atol(v.c_str());
         }
         if (!out.url.empty()) return true;
     }
@@ -1147,11 +1153,11 @@ void UI::handleGameSelectorInput(bool& running) {
                 switch (event.cbutton.button) {
                     case SDL_CONTROLLER_BUTTON_DPAD_UP:
                     case SDL_CONTROLLER_BUTTON_DPAD_LEFT:
-                        saveMenuCursor_ = (saveMenuCursor_ + 3) % 4;
+                        saveMenuCursor_ = (saveMenuCursor_ + 4) % 5;
                         break;
                     case SDL_CONTROLLER_BUTTON_DPAD_DOWN:
                     case SDL_CONTROLLER_BUTTON_DPAD_RIGHT:
-                        saveMenuCursor_ = (saveMenuCursor_ + 1) % 4;
+                        saveMenuCursor_ = (saveMenuCursor_ + 1) % 5;
                         break;
                     case SDL_CONTROLLER_BUTTON_B: { // Switch A = conferma
                         if (saveMenuCursor_ == 0) {
@@ -1164,6 +1170,15 @@ void UI::handleGameSelectorInput(bool& running) {
                         } else if (saveMenuCursor_ == 1) {
                             openBackupList(saveMenuGame_);
                         } else if (saveMenuCursor_ == 2) {
+                            // Pulisci: applica il tetto retroattivamente (mai i manuali).
+                            bool fb = !importedSavePath(saveMenuGame_, saveMenuOcc_).empty();
+                            showSaveMenu_ = false;
+                            uint64_t freed = pruneBackupsToCap(saveMenuGame_, fb);
+                            char msg[128];
+                            std::snprintf(msg, sizeof(msg), "Liberati %.1f MB di auto-backup.",
+                                          freed / 1048576.0);
+                            showMessageAndWait("Clean old backups", msg);
+                        } else if (saveMenuCursor_ == 3) {
                             showSaveMenu_ = false;
                             sendSaveFor(saveMenuGame_, saveMenuOcc_);
                         } else {
@@ -1419,11 +1434,11 @@ void UI::handleGameSelectorInput(bool& running) {
             stickMoved_ = true;
             markDirty();
         }
-    } else if (showSaveMenu_ && stickDirY_ != 0) {
+    } else     if (showSaveMenu_ && stickDirY_ != 0) {
         uint32_t now = SDL_GetTicks();
         uint32_t delay = stickMoved_ ? STICK_REPEAT_DELAY : STICK_INITIAL_DELAY;
         if (now - stickMoveTime_ >= delay) {
-            saveMenuCursor_ = (saveMenuCursor_ + (stickDirY_ > 0 ? 1 : 3)) % 4;
+            saveMenuCursor_ = (saveMenuCursor_ + (stickDirY_ > 0 ? 1 : 4)) % 5;
             stickMoveTime_ = now;
             stickMoved_ = true;
             markDirty();
@@ -1990,6 +2005,10 @@ void UI::drawBackupListPopup() {
 }
 
 void UI::autoBackupFileSave(GameType g, const std::string& path) {
+    struct stat sst;
+    uint64_t sz = 0;
+    if (stat(path.c_str(), &sst) == 0) sz = (uint64_t)sst.st_size;
+    if (!autoBackupNeeded(g, true, path, sz)) return;
     std::string dir = autoBackupDir(g);
     ensureDirRecursive(dir);
     std::string base = path.substr(path.find_last_of("/\\") + 1);
@@ -1999,14 +2018,111 @@ void UI::autoBackupFileSave(GameType g, const std::string& path) {
         return;
     }
     DebugLog::line("auto backup: %s -> %s", path.c_str(), dst.c_str());
-    // Prune: tieni i 10 piu recenti.
-    auto names = listDirNames(dir);
-    std::sort(names.begin(), names.end(), std::greater<std::string>());
-    for (size_t i = 10; i < names.size(); i++) {
-        std::string full = dir + names[i];
-        if (std::remove(full.c_str()) == 0)
-            DebugLog::line("auto backup prune: %s", full.c_str());
+    pruneBackupsToCap(g, true);
+}
+
+long UI::backupCapMb(bool fileBacked) const {
+    UpdateCfg cfg;
+    readUpdateCfg(basePath_, cfg); // url non richiesto per il tetto
+    long mb = fileBacked ? cfg.backupMbSd : cfg.backupMb;
+    return mb < 0 ? 0 : mb;
+}
+
+static uint64_t entryDiskSize(const std::string& p) {
+    struct stat st;
+    if (stat(p.c_str(), &st) != 0) return 0;
+    if (S_ISDIR(st.st_mode))
+        return (uint64_t)AccountManager::calculateDirSize(p);
+    return (uint64_t)st.st_size;
+}
+
+// Solo AUTO (auto/ + legacy profilo): i manuali non si toccano mai.
+// Newest first (nomi con timestamp decrescente).
+std::vector<std::string> UI::autoBackupEntries(GameType g) const {
+    std::vector<std::string> entries;
+    for (auto& n : listDirNames(autoBackupDir(g)))
+        entries.push_back(autoBackupDir(g) + n);
+    if (selectedProfile_ >= 0 && selectedProfile_ < account_.profileCount()) {
+        std::string leg = basePath_ + "backups/" +
+                          account_.profiles()[selectedProfile_].pathSafeName +
+                          "/" + gamePathNameOf(g) + "/";
+        for (auto& n : listDirNames(leg))
+            entries.push_back(leg + n);
     }
+    std::sort(entries.begin(), entries.end(), std::greater<std::string>());
+    entries.erase(std::unique(entries.begin(), entries.end()), entries.end());
+    return entries;
+}
+
+// Throttle 30 min + skip se invariato. Solo auto (i manuali sempre).
+bool UI::autoBackupNeeded(GameType g, bool fileBacked, const std::string& src, uint64_t srcSize) {
+    auto entries = autoBackupEntries(g);
+    if (entries.empty()) return true;
+    struct stat bst;
+    if (stat(entries[0].c_str(), &bst) != 0) return true;
+    time_t now = time(nullptr);
+    constexpr long THROTTLE_SEC = 30 * 60;
+    if (now - bst.st_mtime < THROTTLE_SEC) {
+        DebugLog::line("auto backup throttled: %s (ultimo %lds fa)",
+                       gameInfo(g).gameTag, (long)(now - bst.st_mtime));
+        return false;
+    }
+    if (fileBacked) {
+        struct stat sst;
+        if (stat(src.c_str(), &sst) == 0 &&
+            (uint64_t)sst.st_size == entryDiskSize(entries[0]) &&
+            sst.st_mtime <= bst.st_mtime) {
+            DebugLog::line("auto backup skipped (invariato): %s", src.c_str());
+            return false;
+        }
+    } else if (srcSize == entryDiskSize(entries[0])) {
+        DebugLog::line("auto backup skipped (invariato): %s", gameInfo(g).gameTag);
+        return false;
+    }
+    return true;
+}
+
+static bool removeRecursive(const std::string& p) {
+    struct stat st;
+    if (stat(p.c_str(), &st) != 0) return false;
+    if (!S_ISDIR(st.st_mode)) return std::remove(p.c_str()) == 0;
+    DIR* d = opendir(p.c_str());
+    if (!d) return false;
+    bool ok = true;
+    while (dirent* e = readdir(d)) {
+        std::string n = e->d_name;
+        if (n == "." || n == "..") continue;
+        if (!removeRecursive(p + "/" + n)) ok = false;
+    }
+    closedir(d);
+    if (rmdir(p.c_str()) != 0) ok = false;
+    return ok;
+}
+
+// Pota gli AUTO dal piu vecchio finche si rientra nel tetto (0 = no tetto).
+// Tiene sempre almeno il piu recente. Ritorna i byte liberati.
+uint64_t UI::pruneBackupsToCap(GameType g, bool fileBacked) {
+    long mb = backupCapMb(fileBacked);
+    if (mb <= 0) return 0;
+    uint64_t cap = (uint64_t)mb * 1024 * 1024;
+    auto entries = autoBackupEntries(g);
+    uint64_t total = 0;
+    for (auto& e : entries) total += entryDiskSize(e);
+    uint64_t freed = 0;
+    while (total > cap && entries.size() > 1) {
+        std::string oldest = entries.back();
+        entries.pop_back();
+        uint64_t sz = entryDiskSize(oldest);
+        if (removeRecursive(oldest)) {
+            total -= (sz < total) ? sz : total;
+            freed += sz;
+            DebugLog::line("backup prune: %s (-%llu B)", oldest.c_str(), (unsigned long long)sz);
+        } else {
+            DebugLog::line("backup prune FAILED: %s", oldest.c_str());
+            break;
+        }
+    }
+    return freed;
 }
 
 void UI::sendSaveFor(GameType g, int occ) {
@@ -2107,8 +2223,8 @@ bool UI::restoreBackupEntry(GameType g, const std::string& entry) {
 
 void UI::drawSaveMenuPopup() {
     drawRect(0, 0, SCREEN_W, SCREEN_H, T().overlay);
-    static const char* rows[] = { "Backup save", "Browse backups", "Send save", "Close" };
-    constexpr int NROWS = 4;
+    static const char* rows[] = { "Backup save", "Browse backups", "Clean old backups", "Send save", "Close" };
+    constexpr int NROWS = 5;
     constexpr int POP_W = 360;
     int rowH = 36;
     int POP_H = 50 + NROWS * rowH + 30;

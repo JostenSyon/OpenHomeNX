@@ -305,6 +305,12 @@ private:
     void drawBackupListPopup();
     // Auto-backup best-effort all'apertura dei save file-backed (cap 10).
     void autoBackupFileSave(GameType g, const std::string& path);
+    // Tetto spazio auto-backup per gioco da update.cfg (backup_mb[_sd],
+    // default 256/32; 0 = illimitato). Mai i manuali.
+    long backupCapMb(bool fileBacked) const;
+    std::vector<std::string> autoBackupEntries(GameType g) const;
+    bool autoBackupNeeded(GameType g, bool fileBacked, const std::string& src, uint64_t srcSize);
+    uint64_t pruneBackupsToCap(GameType g, bool fileBacked);
 
     // Wondercard list state
     bool showWondercardList_ = false;

@@ -1137,15 +1137,23 @@ void UI::selectGame(GameType game, int occurrence) {
             }
 
             if (doBackup) {
-                std::string backupDir = buildBackupDir(game);
-                ledBlink();
-                bool ok = AccountManager::backupSaveDir(mountPath, backupDir);
-                ledOff();
-                if (!ok) {
-                    if (!showConfirmDialog(i18n::get(StrKey::BackupFailed),
-                            i18n::get(StrKey::BackupFailedBody))) {
-                        account_.unmountSave();
-                        return;
+                // Throttle 30 min + skip invariato + tetto a spazio: senza,
+                // ogni apertura copiava tutto all'infinito.
+                if (!autoBackupNeeded(game, false, mountPath, saveSize)) {
+                    DebugLog::line("save: auto backup saltato (throttle/invariato)");
+                } else {
+                    std::string backupDir = buildBackupDir(game);
+                    ledBlink();
+                    bool ok = AccountManager::backupSaveDir(mountPath, backupDir);
+                    ledOff();
+                    if (!ok) {
+                        if (!showConfirmDialog(i18n::get(StrKey::BackupFailed),
+                                i18n::get(StrKey::BackupFailedBody))) {
+                            account_.unmountSave();
+                            return;
+                        }
+                    } else {
+                        pruneBackupsToCap(game, false);
                     }
                 }
             }
