@@ -619,7 +619,15 @@ void SaveFile::setPartySlot(int idx, const Pokemon& pkm) {
         }
     } else if (isLGPE(gameType_)) {
         if (toWrite.isEmpty()) {
+            // ATOMICO col guard universale (che ritorna prima di qui quando
+            // si svuoterebbe la squadra): pointer e cella si liberano
+            // insieme, mai pointer penzolante su cella azzerata (LGPE 2026:
+            // zeroFlat correva anche col guard attivo -> strip fantasma +
+            // dati disco distrutti mentre la mano li teneva).
+            int oldFlat = lgpeFlatOfParty(idx);
             setLGPEPartyPointer(idx, LGPE_SLOT_EMPTY);
+            if (oldFlat >= 0)
+                lgpeZeroFlatSlot(oldFlat);
         } else {
             uint16_t ptr = (idx < (int)lgpePartyIndices_.size()) ? lgpePartyIndices_[idx] : LGPE_SLOT_EMPTY;
             int total = LGPE_BOX_COUNT * LGPE_SLOTS_PER_BOX;

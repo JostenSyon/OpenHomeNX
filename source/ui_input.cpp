@@ -578,13 +578,9 @@ void UI::handleNormalInput(const SDL_Event& event) {
                                     lgpeHeldPartyIdx_ = partyCursor_;
                                     heldFromLGPEParty_ = true;
                                 }
-                                // LGPE: il mon vive nella cella box puntata — va svuotata
-                                // ANCHE lei, altrimenti resta un fantasma nel box che al
-                                // posaggio successivo diventa un clone (party ripetuto).
-                                int partyFlat = save_.lgpeFlatOfParty(partyCursor_);
+                                // LGPE: clearPartySlot svuota pointer E cella insieme
+                                // (atomico col guard: ultimo mon = solo memoria).
                                 save_.clearPartySlot(partyCursor_);
-                                if (partyFlat >= 0)
-                                    save_.lgpeZeroFlatSlot(partyFlat);
                                 refreshHighlightSet();
                             }
                         }
@@ -1729,11 +1725,21 @@ void UI::actionSelect() {
         swapHistory_.push_back({pkm, cursor_.panel, box, slot});
 
         clearPokemonAt(box, slot, cursor_.panel);
-        // LGPE: se la cella era un membro del party, il pointer ora penzola su
-        // dati azzerati (strip stale + membro perso al reload). Invalidalo subito;
-        // il posaggio nel box lo ripunterà alla nuova cella.
-        if (lgpeHeldPartyIdx_ >= 0)
+        // LGPE: clearPartySlot invalida pointer E azzera la cella insieme
+        // (atomico col guard anti-svuotamento). MA clearPokemonAt qui sopra
+        // ha gia azzerato la cella PRIMA del guard: se era l'ultimo mon,
+        // ripristina la cella col mon in mano (disco intatto come il pointer).
+        if (lgpeHeldPartyIdx_ >= 0) {
+            int alive = 0;
+            for (const auto& q : save_.dsParty())
+                if (!q.isEmpty()) alive++;
+            if (alive <= 1) {
+                // Ultimo mon: pointer tenuto dal guard, ricopia i dati.
+                setPokemonAt(box, slot, cursor_.panel, heldPkm_);
+                DebugLog::line("box pick: ultimo mon party, cella ripristinata (disco intatto)");
+            }
             save_.clearPartySlot(lgpeHeldPartyIdx_);
+        }
     } else {
         // Block LGPE party Pokemon from moving to bank
         if (heldFromLGPEParty_ && cursor_.panel == Panel::Bank) {
