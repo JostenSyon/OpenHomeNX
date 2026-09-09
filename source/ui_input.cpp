@@ -1606,6 +1606,27 @@ void UI::actionSelect() {
             // native PRIMA di convertire (preview load, no mutation). A procede,
             // B tiene tutto in mano, intatto. Un dialogo per drop. Il body e
             // parametrizzato sulla gen ("Gen {2}") e drop+refill vale per 1-6.
+            // Dex-cut PRIMA del warning mosse (tutto il batch resta in mano).
+            // Primo loop: se un mon non e nel dex target, messaggio subito e
+            // niente dialoghi mosse. Secondo loop: warning drop come prima.
+            for (int i = 0; i < (int)heldMulti_.size(); i++) {
+                const int dg0 = ohTargetGenFor(destGameFor(cursor_.panel));
+                if (!useOpenHome() || dg0 < 1 || dg0 > 6) break;
+                const int sg0 = ohSourceGenFor(heldMulti_[i].gameType_);
+                const int sz0 = ohRecordBytesFor(sg0);
+                if (sg0 == 0 || sz0 <= 0 || sz0 > (int)heldMulti_[i].data.size()) continue;
+                std::vector<uint8_t> src0(heldMulti_[i].data.begin(), heldMulti_[i].data.begin() + sz0);
+                PkmHandle* ih = OpenHomeNX::loadPkmFromGen(src0, static_cast<uint32_t>(sg0));
+                if (!ih) continue;
+                uint32_t legal = OpenHomeNX::speciesLegalInGen(ih, static_cast<uint32_t>(dg0));
+                OpenHomeNX::freePkm(ih);
+                if (legal == 0) {
+                    showMessageAndWait(i18n::get(StrKey::TransferTitle),
+                        i18n::fmt(StrKey::TransferNotInDex, heldMulti_[i].displayName(),
+                                  gameDisplayNameOf(destGameFor(cursor_.panel))));
+                    return; // tutto resta in mano, intatto
+                }
+            }
             for (int i = 0; i < (int)heldMulti_.size(); i++) {
                 const int dg0 = ohTargetGenFor(destGameFor(cursor_.panel));
                 if (!useOpenHome() || dg0 < 1 || dg0 > 6) break;
@@ -1718,8 +1739,9 @@ void UI::actionSelect() {
         // format before it is written. Covers both the place-on-empty and the
         // swap branch below, since both place heldPkm_ into this same panel.
         {
-            // Same move-drop check as the multi drop above, on the
-            // single held mon. B cancels with the mon untouched in hand.
+            // Dex-cut PRIMA del warning mosse (Koraidon 2026-09-09: prima
+            // diceva "mosse non entrano", solo dopo "non c'e nel pokedex").
+            // Stesso messaggio che darebbe prepareForPlacement, ma subito.
             const int dg0 = ohTargetGenFor(destGameFor(cursor_.panel));
             if (useOpenHome() && dg0 >= 1 && dg0 <= 6) {
                 const int sg0 = ohSourceGenFor(heldPkm_.gameType_);
@@ -1728,8 +1750,15 @@ void UI::actionSelect() {
                     std::vector<uint8_t> src0(heldPkm_.data.begin(), heldPkm_.data.begin() + sz0);
                     PkmHandle* ih = OpenHomeNX::loadPkmFromGen(src0, static_cast<uint32_t>(sg0));
                     if (ih) {
+                        uint32_t legal = OpenHomeNX::speciesLegalInGen(ih, static_cast<uint32_t>(dg0));
                         uint32_t dropped = OpenHomeNX::countMovesNotInGen(ih, static_cast<uint32_t>(dg0));
                         OpenHomeNX::freePkm(ih);
+                        if (legal == 0) {
+                            showMessageAndWait(i18n::get(StrKey::TransferTitle),
+                                i18n::fmt(StrKey::TransferNotInDex, heldPkm_.displayName(),
+                                          gameDisplayNameOf(destGameFor(cursor_.panel))));
+                            return; // mon untouched in hand
+                        }
                         if (dropped != UINT32_MAX && dropped > 0 &&
                             !showConfirmDialog(i18n::get(StrKey::Gen1DropsTitle),
                                 i18n::fmt(StrKey::Gen1DropsBody, heldPkm_.displayName(), std::to_string(dropped), std::to_string(dg0)))) {
@@ -3346,10 +3375,17 @@ std::string UI::exportCrossGenBlob(const Pokemon& pkm) {
         return "";
     }
 
-    // Drop warning BEFORE converting (same policy as native drops).
+    // Dex-cut PRIMA del warning mosse + drop warning BEFORE converting
+    // (same policy as native drops).
     uint16_t sp = OpenHomeNX::ohpkmSpecies(h);
     std::string dispName = OpenHomeNX::ohpkmNickname(h);
     if (dispName.empty()) dispName = SpeciesName::get(sp);
+    if (OpenHomeNX::speciesLegalInGen(h, gen) == 0) {
+        showMessageAndWait(i18n::get(StrKey::TransferTitle),
+            i18n::fmt(StrKey::TransferNotInDex, dispName, std::string("Gen ") + genStr));
+        OpenHomeNX::freePkm(h);
+        return "";
+    }
     uint32_t dropped = OpenHomeNX::countMovesNotInGen(h, gen);
     if (dropped != UINT32_MAX && dropped > 0 &&
         !showConfirmDialog(i18n::get(StrKey::Gen1DropsTitle),

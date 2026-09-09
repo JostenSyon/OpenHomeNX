@@ -1371,7 +1371,40 @@ pub extern "C" fn openhome_count_moves_not_in_gen(
 }
 
 
-/// Level-up learnset tables live in pkm_rs::learnset (table ids mirror the
+/// Dex-cut gate per la UI (ordinamento dialoghi): 1 = specie ammessa nel
+/// target, 0 = dex-cut esplicito, u32::MAX = handle nullo. Solo gen 1-6
+/// hanno tabelle specie; per 7+ torna 1 (decide il transfer, che rifiuta
+/// via try_new) — mai un rifiuto inventato qui.
+#[cfg(not(any(feature = "alloc", feature = "std")))]
+#[no_mangle]
+pub extern "C" fn openhome_species_legal_in_gen(
+    _pkm_handle: *const PkmHandle,
+    _gen: u32,
+) -> u32 {
+    u32::MAX
+}
+#[cfg(any(feature = "alloc", feature = "std"))]
+#[no_mangle]
+pub extern "C" fn openhome_species_legal_in_gen(
+    pkm_handle: *const PkmHandle,
+    gen: u32,
+) -> u32 {
+    if pkm_handle.is_null() {
+        return u32::MAX;
+    }
+    let pkm = unsafe { &*pkm_handle };
+    let ndex = pkm.ohpkm.species_and_form().get_ndex() as u16;
+    let legal: fn(u16) -> bool = match gen {
+        1 => pkm_rs::gen1::species_legal_in_gen1,
+        2 => pkm_rs::gen2::species_legal_in_gen2,
+        3 => pkm_rs::gen3::species_legal_in_gen3,
+        4 => pkm_rs::gen4::species_legal_in_gen4,
+        5 => pkm_rs::gen5::species_legal_in_gen5,
+        6 => pkm_rs::gen6::species_legal_in_gen6,
+        _ => return 1,
+    };
+    if legal(ndex) { 1 } else { 0 }
+}
 /// C++ learnsetTableFor()); this FFI only encodes them for the UI.
 #[cfg(not(any(feature = "alloc", feature = "std")))]
 #[no_mangle]
@@ -3427,6 +3460,41 @@ mod tests {
         openhome_free_pkm(h);
         assert!(openhome_generate_test_pkm(0, 50, 1, 2, 3, 4).is_null());
         assert!(openhome_generate_test_pkm(9999, 50, 1, 2, 3, 4).is_null());
+    }
+
+    // Dex-cut gate per la UI: Koraidon (1007) fuori dex 1-6, Pikachu dentro;
+    // gen senza tabelle (8) presume legale; null -> MAX.
+    #[test]
+    fn species_legal_in_gen_for_ui_ordering() {
+        let mut kora = PkmHandle {
+            ohpkm: make_test_ohpkm_gen(1007),
+        };
+        let kp = &mut kora as *mut PkmHandle;
+        for gen in [1u32, 2, 3, 4, 5, 6] {
+            assert_eq!(
+                openhome_species_legal_in_gen(kp, gen),
+                0,
+                "Koraidon must be dex-cut for gen{}",
+                gen
+            );
+        }
+        assert_eq!(openhome_species_legal_in_gen(kp, 8), 1);
+        assert_eq!(
+            openhome_species_legal_in_gen(core::ptr::null(), 1),
+            u32::MAX
+        );
+        let mut pika = PkmHandle {
+            ohpkm: make_test_ohpkm(OriginGame::Sword, test_moves()),
+        };
+        let pp = &mut pika as *mut PkmHandle;
+        for gen in [1u32, 2, 3, 4, 5, 6] {
+            assert_eq!(
+                openhome_species_legal_in_gen(pp, gen),
+                1,
+                "Pikachu must be legal for gen{}",
+                gen
+            );
+        }
     }
 
     // BLANKET fixture matrix: ogni record reale in tools/test save/upstream
