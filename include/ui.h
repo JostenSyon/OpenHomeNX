@@ -293,13 +293,17 @@ private:
     std::string manualBackupDir(GameType g) const;
     std::string autoBackupDir(GameType g) const;
     bool backupGameSave(GameType g, std::string& out);
-    std::vector<std::string> collectBackupEntries(GameType g);
+    struct BackupListEntry { std::string path; std::string label; };
+    std::vector<BackupListEntry> collectBackupEntries(GameType g);
     bool restoreBackupEntry(GameType g, const std::string& entry);
+    // Voce lista backup: solo unita ripristinabili (file per i save
+    // file-backed, dir con file dentro per i titoli installati) + etichetta
+    // "[AUTO]/[MAN] data-ora" cosi i file sciolti tipo "main" non compaiono.
     // Lista backup sfogliabile (manual + auto + auto-apertura), newest first.
     bool showBackupList_ = false;
     int  backupListCursor_ = 0;
     int  backupListScroll_ = 0;
-    std::vector<std::string> backupListEntries_;
+    std::vector<BackupListEntry> backupListEntries_;
     GameType backupListGame_ = GameType::EMERALD;
     void openBackupList(GameType g);
     void drawBackupListPopup();

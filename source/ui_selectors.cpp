@@ -1118,7 +1118,7 @@ void UI::handleGameSelectorInput(bool& running) {
                         break;
                     case SDL_CONTROLLER_BUTTON_B: { // Switch A = restore selezionato
                         if (count == 0) break;
-                        std::string e = backupListEntries_[backupListCursor_];
+                        std::string e = backupListEntries_[backupListCursor_].path;
                         auto slash = e.find_last_of('/');
                         std::string base = (slash == std::string::npos) ? e : e.substr(slash + 1);
                         if (showConfirmDialog("Restore backup",
@@ -1936,41 +1936,78 @@ static std::vector<std::string> listDirNames(const std::string& dir) {
     return out;
 }
 
-std::vector<std::string> UI::collectBackupEntries(GameType g) {
-    // manuali + auto-apertura + auto legacy (backups/<profilo>/<gioco>/).
-    std::vector<std::string> dirs = { manualBackupDir(g), autoBackupDir(g) };
-    if (selectedProfile_ >= 0 && selectedProfile_ < account_.profileCount())
-        dirs.push_back(basePath_ + "backups/" +
-                       account_.profiles()[selectedProfile_].pathSafeName +
-                       "/" + gamePathNameOf(g) + "/");
-    std::vector<std::string> entries;
-    for (auto& dir : dirs)
-        for (auto& n : listDirNames(dir))
-            entries.push_back(dir + n);
-    // Sotto-dir legacy con timestamp dentro (aperture titoli installati):
-    // includi ricorsione di un livello per quelle.
-    size_t base = entries.size();
-    for (size_t i = 0; i < base; i++) {
-        struct stat st;
-        if (stat(entries[i].c_str(), &st) == 0 && S_ISDIR(st.st_mode)) {
-            std::string sub = entries[i] + "/";
-            // Solo se non e gia un backup-dir diretto (file dentro = backup).
-            bool hasFile = false;
-            for (auto& n : listDirNames(sub)) {
-                struct stat st2;
-                std::string full = sub + n;
-                if (stat(full.c_str(), &st2) == 0 && !S_ISDIR(st2.st_mode)) {
-                    entries.push_back(full);
-                    hasFile = true;
-                }
-            }
-            (void)hasFile;
+static bool dirHasFile(const std::string& dir) {
+    for (auto& n : listDirNames(dir)) {
+        struct stat st2;
+        std::string full = dir + n;
+        if (stat(full.c_str(), &st2) == 0 && !S_ISDIR(st2.st_mode)) return true;
+    }
+    return false;
+}
+
+// "20260909_162349..." -> "2026-09-09 16:23", altrimenti nome invariato.
+static std::string prettyBackupName(const std::string& n) {
+    if (n.size() >= 15 && n[8] == '_' && n[15] == '_') {
+        bool digits = true;
+        for (int i = 0; i < 15 && digits; i++)
+            if (i != 8 && (n[i] < '0' || n[i] > '9')) digits = false;
+        if (digits) {
+            std::string rest = n.substr(16);
+            char b[64];
+            std::snprintf(b, sizeof(b), "%.4s-%.2s-%.2s %.2s:%.2s%s%s",
+                          n.c_str(), n.c_str() + 4, n.c_str() + 6,
+                          n.c_str() + 9, n.c_str() + 11,
+                          rest.empty() ? "" : " ", rest.c_str());
+            return b;
         }
     }
-    std::sort(entries.begin(), entries.end(), std::greater<std::string>());
+    return n;
+}
+
+std::vector<UI::BackupListEntry> UI::collectBackupEntries(GameType g) {
+    // Solo unita ripristinabili: file per i save file-backed, dir con file
+    // dentro per i titoli installati. Le dir intermedie (legacy) e i file
+    // sciolti dentro i backup-dir (es. "main") non sono cliccabili -> fuori.
+    bool isTitle = selectedProfile_ >= 0 && selectedProfile_ < account_.profileCount()
+        && titleIdOf(g) >= 0x0100000000010000ULL && saveFileNameOf(g)[0] != '\0';
+    struct Root { std::string dir; const char* tag; };
+    std::vector<Root> roots = { { manualBackupDir(g), "MAN" }, { autoBackupDir(g), "AUTO" } };
+    if (selectedProfile_ >= 0 && selectedProfile_ < account_.profileCount())
+        roots.push_back({ basePath_ + "backups/" +
+                          account_.profiles()[selectedProfile_].pathSafeName +
+                          "/" + gamePathNameOf(g) + "/", "AUTO" });
+    std::vector<BackupListEntry> entries;
+    auto consider = [&](const std::string& full, const std::string& name, const char* tag) {
+        struct stat st;
+        if (stat(full.c_str(), &st) != 0) return;
+        bool restorable = S_ISDIR(st.st_mode) ? (isTitle && dirHasFile(full + "/"))
+                                              : !isTitle;
+        if (!restorable) return;
+        char label[128];
+        std::snprintf(label, sizeof(label), "[%s] %s", tag, prettyBackupName(name).c_str());
+        entries.push_back({ full, label });
+    };
+    for (auto& r : roots) {
+        for (auto& n : listDirNames(r.dir)) {
+            std::string full = r.dir + n;
+            struct stat st;
+            if (stat(full.c_str(), &st) != 0) continue;
+            if (S_ISDIR(st.st_mode) && !dirHasFile(full + "/")) {
+                // Dir intermedia legacy: scendi di un livello.
+                for (auto& m : listDirNames(full + "/"))
+                    consider(full + "/" + m, n + "/" + m, r.tag);
+            } else {
+                consider(full, n, r.tag);
+            }
+        }
+    }
+    std::sort(entries.begin(), entries.end(),
+              [](const BackupListEntry& a, const BackupListEntry& b) { return a.path > b.path; });
     // Deduplica mantenendo l'ordine (stesso file da due dir mai, ma gratis).
-    entries.erase(std::unique(entries.begin(), entries.end()), entries.end());
-    return entries;
+    std::vector<BackupListEntry> uniq;
+    for (auto& e : entries)
+        if (uniq.empty() || uniq.back().path != e.path) uniq.push_back(e);
+    return uniq;
 }
 
 void UI::openBackupList(GameType g) {
@@ -2009,9 +2046,7 @@ void UI::drawBackupListPopup() {
                 drawRect(popX + 20, rowY, POP_W - 40, ROW_H - 4, T().menuHighlight);
                 drawRectOutline(popX + 20, rowY, POP_W - 40, ROW_H - 4, T().cursor, 2);
             }
-            std::string n = backupListEntries_[i];
-            auto slash = n.find_last_of('/');
-            std::string base = (slash == std::string::npos) ? n : n.substr(slash + 1);
+            std::string base = backupListEntries_[i].label;
             if (base.size() > 52) base = base.substr(0, 51) + "~";
             drawText(base, popX + 30, rowY + 6, T().text, fontSmall_);
         }
