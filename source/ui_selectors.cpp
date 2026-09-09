@@ -678,7 +678,7 @@ void UI::drawGameSelectorFrame() {
 
     int rows = (pageCount + COLS - 1) / COLS;
     int totalH = rows * CARD_H + (rows - 1) * CARD_GAP;
-    int gridStartY = (SCREEN_H - totalH) / 2;
+    int gridStartY = (SCREEN_H - totalH) / 2 - 20; // griglia 20px piu in alto
 
     for (int i = pageStart; i < pageEnd; i++) {
         int idx = i - pageStart;
@@ -906,15 +906,14 @@ void UI::drawGameSelectorFrame() {
                          T().textDim, fontSmall_);
     }
 
-    // "View All Banks" come pulsante rotondo (cassaforte): niente riquadro
-    // quadrato come i giochi. Etichetta sotto solo quando evidenziato.
+    // "View All Banks" come pulsante rotondo (cassaforte): riga fissa in
+    // basso, non segue il numero di giochi. Etichetta solo se evidenziato.
     {
-        int lastRow = (pageCount - 1) / COLS;
-        int gridBottomY = gridStartY + (lastRow + 1) * (CARD_H + CARD_GAP);
         constexpr int R = 34; // raggio disco (icona piu piccola dentro)
         constexpr int ICON_R = 24; // semilato icona: staccata dal bordo
+        constexpr int BTN_Y = SCREEN_H - 110; // stessa riga dell'ingranaggio
         int ccx = SCREEN_W / 2;
-        int ccy = gridBottomY + 16 + R;
+        int ccy = BTN_Y;
         auto fillDisc = [&](int cx, int cy, int r, SDL_Color c) {
             SDL_SetRenderDrawColor(renderer_, c.r, c.g, c.b, c.a);
             for (int dy = -r; dy <= r; dy++) {
@@ -938,12 +937,12 @@ void UI::drawGameSelectorFrame() {
         }
     }
 
-    // Ingranaggio impostazioni in basso a destra (stile Switch): apre lo
-    // stesso menu del tasto + (showGameSelMenu_). Menu dedicato in futuro.
+    // Ingranaggio impostazioni in basso a destra, stessa riga delle banche.
+    // Apre lo stesso menu del tasto + (menu dedicato in futuro).
     {
         constexpr int GR = 26;
         int gcx = SCREEN_W - 64;
-        int gcy = SCREEN_H - 64;
+        int gcy = SCREEN_H - 110;
         auto fillDisc = [&](int cx, int cy, int r, SDL_Color c) {
             SDL_SetRenderDrawColor(renderer_, c.r, c.g, c.b, c.a);
             for (int dy = -r; dy <= r; dy++) {

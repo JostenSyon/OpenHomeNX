@@ -431,7 +431,8 @@ private:
     GameType selectedGame_ = GameType::ZA;
     int gameSelCursor_ = 0;
     int gameSelPage_ = 0;
-    bool gameSelOnAllBanks_ = false;  // cursor is on "View All Banks" option    int gameSelOnChevron_ = 0;        // 0=none, -1=left chevron, 1=right chevron
+    bool gameSelOnAllBanks_ = false;  // cursor is on "View All Banks" option
+    int gameSelOnChevron_ = 0;        // 0=none, -1=left chevron, 1=right chevron
     bool gameSelOnSettings_ = false;  // cursore sull'ingranaggio in basso a dx
     bool allBanksMode_ = false;       // entered bank selector via "View All Banks"
     bool bankRightCrossGen_ = false;  // right-panel bank selector showing ALL games (cross-gen), normal mode
