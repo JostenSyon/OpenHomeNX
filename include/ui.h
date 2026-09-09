@@ -166,6 +166,8 @@ private:
     SDL_Texture* iconBoxEmpty_    = nullptr;
     SDL_Texture* iconBoxNonEmpty_ = nullptr;
     SDL_Texture* iconVault_        = nullptr; // cassaforte rotonda "tutte le banche"
+    SDL_Texture* iconEject_        = nullptr; // espulsione sicura USB
+    SDL_Texture* iconSettings_     = nullptr; // ingranaggio impostazioni
 
     // Game-selector logos for imported (titleId-less) games — see init()'s
     // loadLogo(). Keyed by GameType since there are only a handful of these.
@@ -434,6 +436,16 @@ private:
     bool gameSelOnAllBanks_ = false;  // cursor is on "View All Banks" option
     int gameSelOnChevron_ = 0;        // 0=none, -1=left chevron, 1=right chevron
     bool gameSelOnSettings_ = false;  // cursore sull'ingranaggio in basso a dx
+    bool gameSelOnEject_ = false;     // cursore sull'icona espelli USB
+    // Animazione pulsanti bassi: posizioni/alpha correnti -> target per frame.
+    float vaultBtnX_ = -1.0f;
+    float ejectBtnX_ = -1.0f;
+    float ejectBtnA_ = 0.0f;
+    int ejectAnimStage_ = 0; // 0 idle, 1 fade eject dopo espulsione, 2 rientro vault
+    int selPageShown_ = 0;   // pagina disegnata (segue gameSelPage_ con slide)
+    float selSlide_ = 0.0f;  // offset slide in unita pagina (-1..1)
+    void ejectUsbDevices();
+    bool bottomButtonsAnim(); // true mentre lerp banche/eject non a target
     bool allBanksMode_ = false;       // entered bank selector via "View All Banks"
     bool bankRightCrossGen_ = false;  // right-panel bank selector showing ALL games (cross-gen), normal mode
     std::vector<GameType> availableGames_;

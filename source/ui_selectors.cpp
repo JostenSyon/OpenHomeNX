@@ -253,8 +253,11 @@ void UI::selectProfile(int index) {
 
     gameSelCursor_ = 0;
     gameSelPage_ = 0;
+    selPageShown_ = 0;
+    selSlide_ = 0.0f;
     gameSelOnAllBanks_ = false;
     gameSelOnSettings_ = false;
+    gameSelOnEject_ = false;
     gameSelOnChevron_ = 0;
     showWorking(i18n::get(StrKey::LoadingGameIcons));
     loadGameIcons();
@@ -331,6 +334,8 @@ void UI::rescanImportedGames() {
         int totalPages = ((int)availableGames_.size() + 12 - 1) / 12;
         if (gameSelPage_ >= totalPages)
             gameSelPage_ = totalPages - 1;
+        selPageShown_ = gameSelPage_;
+        selSlide_ = 0.0f;
         if (gameSelCursor_ < gameSelPage_ * 12)
             gameSelCursor_ = gameSelPage_ * 12;
     }
@@ -672,7 +677,27 @@ void UI::drawGameSelectorFrame() {
     constexpr int ICON_SIZE = 128;
 
     int totalPages = (numGames + GAMES_PER_PAGE - 1) / GAMES_PER_PAGE;
-    int pageStart = gameSelPage_ * GAMES_PER_PAGE;
+    // Slide orizzontale tipo Switch: la pagina disegnata insegue il target.
+    // Fase 1 (selPageShown_ != target): vecchia esce verso -dir.
+    // Allo swap l'offset salta sul lato opposto e la nuova rientra verso 0.
+    if (selPageShown_ != gameSelPage_) {
+        float dir = (gameSelPage_ > selPageShown_) ? -1.0f : 1.0f;
+        float mag = std::fabs(selSlide_) + (1.0f - std::fabs(selSlide_)) * 0.3f + 0.02f;
+        if (mag >= 1.0f) {
+            selPageShown_ = gameSelPage_;
+            selSlide_ = -dir; // lato opposto: rientro
+        } else {
+            selSlide_ = mag * dir;
+        }
+        markDirty();
+    } else if (selSlide_ != 0.0f) {
+        // Fase 2: rientro verso 0
+        float s = selSlide_ * 0.7f;
+        selSlide_ = (std::fabs(s) < 0.02f) ? 0.0f : s;
+        markDirty();
+    }
+    int showPage = selPageShown_;
+    int pageStart = showPage * GAMES_PER_PAGE;
     int pageEnd = std::min(pageStart + GAMES_PER_PAGE, numGames);
     int pageCount = pageEnd - pageStart;
 
@@ -690,11 +715,12 @@ void UI::drawGameSelectorFrame() {
         int rowW = rowItems * CARD_W + (rowItems - 1) * CARD_GAP;
         int rowStartX = (SCREEN_W - rowW) / 2;
 
-        int cardX = rowStartX + c * (CARD_W + CARD_GAP);
+        int cardX = rowStartX + c * (CARD_W + CARD_GAP)
+                  + (int)(selSlide_ * COLS * (CARD_W + CARD_GAP));
         int cardY = gridStartY + r * (CARD_H + CARD_GAP);
 
         // Card background
-        if (i == gameSelCursor_ && !gameSelOnAllBanks_ && gameSelOnChevron_ == 0) {
+        if (i == gameSelCursor_ && !gameSelOnAllBanks_ && !gameSelOnSettings_ && !gameSelOnEject_ && gameSelOnChevron_ == 0) {
             drawRect(cardX, cardY, CARD_W, CARD_H, T().menuHighlight);
             drawRectOutline(cardX, cardY, CARD_W, CARD_H, T().cursor, 3);
         } else {
@@ -906,14 +932,48 @@ void UI::drawGameSelectorFrame() {
                          T().textDim, fontSmall_);
     }
 
-    // "View All Banks" come pulsante rotondo (cassaforte): riga fissa in
-    // basso, non segue il numero di giochi. Etichetta solo se evidenziato.
+    // "View All Banks" (cassaforte) + espelli USB: coppia centrata che
+    // scorre fluida quando la chiavetta appare/scompare (lerp per frame).
+    // Etichetta banche solo quando evidenziata.
     {
-        constexpr int R = 34; // raggio disco (icona piu piccola dentro)
-        constexpr int ICON_R = 24; // semilato icona: staccata dal bordo
-        constexpr int BTN_Y = SCREEN_H - 110; // stessa riga dell'ingranaggio
-        int ccx = SCREEN_W / 2;
-        int ccy = BTN_Y;
+        constexpr int R = 34;
+        constexpr int ICON_R = 24;
+        constexpr int BTN_Y = SCREEN_H - 110;
+        constexpr float PAIR_DX = 52.0f; // semi-distanza icone in coppia
+#ifdef OH_USB_UPDATE
+        bool ejectVisible = usbHsFsGetMountedDeviceCount() > 0;
+#else
+        bool ejectVisible = false;
+#endif
+        float vaultTarget = (float)SCREEN_W / 2 - (ejectVisible ? PAIR_DX : 0.0f);
+        float ejectTarget = (float)SCREEN_W / 2 + PAIR_DX;
+        float ejectAlphaT = ejectVisible ? 255.0f : 0.0f;
+        if (vaultBtnX_ < 0) { vaultBtnX_ = vaultTarget; ejectBtnX_ = ejectTarget; }
+        if (ejectVisible) ejectAnimStage_ = 0; // chiavetta tornata: annulla sequenza
+        if (ejectAnimStage_ == 1) {
+            // Appena espulso: prima sparisce l'eject, il vault resta fermo.
+            vaultTarget = vaultBtnX_;
+            ejectAlphaT = 0.0f;
+            if (ejectBtnA_ == 0.0f) ejectAnimStage_ = 2;
+        } else if (ejectAnimStage_ == 2) {
+            // Eject sparita: ora rientra il vault al centro.
+            vaultTarget = (float)SCREEN_W / 2;
+            ejectAlphaT = 0.0f;
+            if (vaultBtnX_ == vaultTarget) ejectAnimStage_ = 0;
+        } else if (ejectVisible) {
+            ejectAnimStage_ = 0;
+        }
+        if (ejectBtnA_ == 0 && ejectVisible) ejectBtnX_ = ejectTarget + 60.0f; // entra da destra
+        auto approach = [](float cur, float tgt) {
+            float d = tgt - cur;
+            if (d > -1.0f && d < 1.0f) return tgt;
+            return cur + d * 0.25f;
+        };
+        float nv = approach(vaultBtnX_, vaultTarget);
+        float ne = approach(ejectBtnX_, ejectTarget);
+        float na = approach(ejectBtnA_, ejectAlphaT);
+        if (nv != vaultBtnX_ || ne != ejectBtnX_ || na != ejectBtnA_) markDirty();
+        vaultBtnX_ = nv; ejectBtnX_ = ne; ejectBtnA_ = na;
         auto fillDisc = [&](int cx, int cy, int r, SDL_Color c) {
             SDL_SetRenderDrawColor(renderer_, c.r, c.g, c.b, c.a);
             for (int dy = -r; dy <= r; dy++) {
@@ -921,19 +981,35 @@ void UI::drawGameSelectorFrame() {
                 SDL_RenderDrawLine(renderer_, cx - dx, cy + dy, cx + dx, cy + dy);
             }
         };
+        int ccx = (int)(vaultBtnX_ + 0.5f);
         if (gameSelOnAllBanks_) {
-            fillDisc(ccx, ccy, R + 6, T().menuHighlight);
-            fillDisc(ccx, ccy, R + 1, T().panelBg);
+            fillDisc(ccx, BTN_Y, R + 6, T().menuHighlight);
+            fillDisc(ccx, BTN_Y, R + 1, T().panelBg);
         } else {
-            fillDisc(ccx, ccy, R + 1, T().panelBg);
+            fillDisc(ccx, BTN_Y, R + 1, T().panelBg);
         }
         if (iconVault_) {
-            SDL_Rect dst = {ccx - ICON_R, ccy - ICON_R, ICON_R * 2, ICON_R * 2};
+            SDL_Rect dst = {ccx - ICON_R, BTN_Y - ICON_R, ICON_R * 2, ICON_R * 2};
             SDL_RenderCopy(renderer_, iconVault_, nullptr, &dst);
         }
         if (gameSelOnAllBanks_) {
             drawTextCentered(i18n::get(StrKey::ViewAllBanks), SCREEN_W / 2,
-                             ccy + R + 10, T().text, font_);
+                             BTN_Y + R + 17, T().text, font_);
+        }
+        if (ejectBtnA_ > 1.0f && iconEject_) {
+            int ecx = (int)(ejectBtnX_ + 0.5f);
+            if (gameSelOnEject_) {
+                fillDisc(ecx, BTN_Y, R + 6, T().menuHighlight);
+                fillDisc(ecx, BTN_Y, R + 1, T().panelBg);
+            } else {
+                fillDisc(ecx, BTN_Y, R + 1, T().panelBg);
+            }
+            SDL_SetTextureAlphaMod(iconEject_, (Uint8)ejectBtnA_);
+            SDL_Rect dst = {ecx - ICON_R, BTN_Y - ICON_R, ICON_R * 2, ICON_R * 2};
+            SDL_RenderCopy(renderer_, iconEject_, nullptr, &dst);
+            SDL_SetTextureAlphaMod(iconEject_, 255);
+        } else if (!ejectVisible) {
+            gameSelOnEject_ = false;
         }
     }
 
@@ -956,19 +1032,11 @@ void UI::drawGameSelectorFrame() {
         } else {
             fillDisc(gcx, gcy, GR + 1, T().panelBg);
         }
-        // Ingranaggio chiaro su disco scuro (8 denti + foro, come Switch).
-        SDL_Color gc = gameSelOnSettings_ ? T().cursor : T().textDim;
-        SDL_SetRenderDrawColor(renderer_, gc.r, gc.g, gc.b, gc.a);
-        constexpr int TEETH = 8;
-        for (int i = 0; i < TEETH; i++) {
-            double a = i * (3.14159265 * 2.0 / TEETH);
-            int tx = gcx + static_cast<int>(16 * std::cos(a));
-            int ty = gcy + static_cast<int>(16 * std::sin(a));
-            SDL_Rect tooth = {tx - 5, ty - 5, 10, 10};
-            SDL_RenderFillRect(renderer_, &tooth);
+        if (iconSettings_) {
+            constexpr int SET_R = 20;
+            SDL_Rect dst = {gcx - SET_R, gcy - SET_R, SET_R * 2, SET_R * 2};
+            SDL_RenderCopy(renderer_, iconSettings_, nullptr, &dst);
         }
-        fillDisc(gcx, gcy, 13, gc);
-        fillDisc(gcx, gcy, 6, T().panelBg);
     }
 
     // Chevron buttons for page navigation
@@ -1040,8 +1108,41 @@ void UI::drawGameSelectorFrame() {
     }
 }
 
-void UI::handleGameSelectorInput(bool& running) {
-    int numGames = (int)availableGames_.size();
+void UI::ejectUsbDevices() {
+#ifdef OH_USB_UPDATE
+    u32 n = usbHsFsGetMountedDeviceCount();
+    if (n > 8) n = 8;
+    std::vector<UsbHsFsDevice> devs(n > 0 ? n : 1);
+    u32 got = n > 0 ? usbHsFsListMountedDevices(devs.data(), n) : 0;
+    int ok = 0;
+    for (u32 i = 0; i < got; i++)
+        if (usbHsFsUnmountDevice(&devs[i], true)) ok++;
+    DebugLog::line("usb eject: unmounted %d/%u device(s)", ok, got);
+    rescanImportedGames();
+    gameSelOnEject_ = false;
+    if (ok > 0) ejectAnimStage_ = 1; // sequenza: fade eject, poi rientro vault
+    markDirty();
+#else
+    (void)0;
+#endif
+}
+
+bool UI::bottomButtonsAnim() {
+#ifdef OH_USB_UPDATE
+    bool vis = usbHsFsGetMountedDeviceCount() > 0;
+#else
+    bool vis = false;
+#endif
+    float vt = (float)SCREEN_W / 2 - (vis ? 52.0f : 0.0f);
+    float et = (float)SCREEN_W / 2 + 52.0f;
+    float at = vis ? 255.0f : 0.0f;
+    if (vaultBtnX_ < 0) return true;
+    if (ejectAnimStage_ != 0) return true;
+    if (selSlide_ != 0.0f || selPageShown_ != gameSelPage_) return true;
+    return vaultBtnX_ != vt || ejectBtnX_ != et || ejectBtnA_ != at;
+}
+
+void UI::handleGameSelectorInput(bool& running) {    int numGames = (int)availableGames_.size();
     if (numGames == 0) return;
 
     constexpr int COLS = 6;
@@ -1073,6 +1174,7 @@ void UI::handleGameSelectorInput(bool& running) {
             if (dy > 0) {
                 gameSelOnChevron_ = 0;
                 gameSelOnSettings_ = false;
+                gameSelOnEject_ = false;
                 gameSelOnAllBanks_ = true;
             }
             if (dy < 0) {
@@ -1082,10 +1184,17 @@ void UI::handleGameSelectorInput(bool& running) {
         }
 
         if (gameSelOnAllBanks_) {
-            // On "All Banks" row: up goes back to grid, right goes to gear
+            // On "All Banks" row: up goes back to grid, right goes to eject/gear
             if (dx > 0) {
                 gameSelOnAllBanks_ = false;
+#ifdef OH_USB_UPDATE
+                if (usbHsFsGetMountedDeviceCount() > 0)
+                    gameSelOnEject_ = true;
+                else
+                    gameSelOnSettings_ = true;
+#else
                 gameSelOnSettings_ = true;
+#endif
                 return;
             }
             if (dy < 0) {
@@ -1101,11 +1210,38 @@ void UI::handleGameSelectorInput(bool& running) {
             return;
         }
 
+        if (gameSelOnEject_) {
+            // Sull'espelli: sinistra torna alle banche, destra al gear, su in griglia
+            if (dx < 0) {
+                gameSelOnEject_ = false;
+                gameSelOnAllBanks_ = true;
+            } else if (dx > 0) {
+                gameSelOnEject_ = false;
+                gameSelOnSettings_ = true;
+            } else if (dy < 0) {
+                gameSelOnEject_ = false;
+                int totalRows = (pageCount + COLS - 1) / COLS;
+                int lastRowStart = (totalRows - 1) * COLS;
+                int lastRowItems = pageCount - lastRowStart;
+                int col = (gameSelCursor_ - pageStart) % COLS;
+                if (col >= lastRowItems) col = lastRowItems - 1;
+                gameSelCursor_ = pageStart + lastRowStart + col;
+            }
+            return;
+        }
+
         if (gameSelOnSettings_) {
-            // Sull'ingranaggio: sinistra torna alle banche, su torna in griglia
+            // Sull'ingranaggio: sinistra torna a eject (se c'e) o banche
             if (dx < 0) {
                 gameSelOnSettings_ = false;
+#ifdef OH_USB_UPDATE
+                if (usbHsFsGetMountedDeviceCount() > 0)
+                    gameSelOnEject_ = true;
+                else
+                    gameSelOnAllBanks_ = true;
+#else
                 gameSelOnAllBanks_ = true;
+#endif
             } else if (dy < 0) {
                 gameSelOnSettings_ = false;
                 int totalRows = (pageCount + COLS - 1) / COLS;
@@ -1129,6 +1265,7 @@ void UI::handleGameSelectorInput(bool& running) {
         // Moving down past the last row goes to "All Banks"
         if (row >= totalRows) {
             gameSelOnSettings_ = false;
+            gameSelOnEject_ = false;
             gameSelOnAllBanks_ = true;
             return;
         }
@@ -1155,6 +1292,7 @@ void UI::handleGameSelectorInput(bool& running) {
         // Wrap rows (up from top goes to "All Banks")
         if (row < 0) {
             gameSelOnSettings_ = false;
+            gameSelOnEject_ = false;
             gameSelOnAllBanks_ = true;
             return;
         }
@@ -1450,6 +1588,8 @@ void UI::handleGameSelectorInput(bool& running) {
                         gameSelOnChevron_ = 0;
                     } else if (gameSelOnAllBanks_)
                         enterAllBanksMode();
+                    else if (gameSelOnEject_)
+                        ejectUsbDevices();
                     else if (gameSelOnSettings_) {
                         showGameSelMenu_ = true;
                         gameSelMenuCursor_ = 0;
@@ -1476,26 +1616,13 @@ void UI::handleGameSelectorInput(bool& running) {
                     themeSelOriginal_ = themeIndex_;
                     break;
                 case SDL_CONTROLLER_BUTTON_Y: // Switch X = save menu (debug) / eject USB
-                    if (DebugLog::enabled() && !gameSelOnAllBanks_ && !gameSelOnSettings_ && gameSelOnChevron_ == 0 &&
+                    if (DebugLog::enabled() && !gameSelOnAllBanks_ && !gameSelOnSettings_ && !gameSelOnEject_ && gameSelOnChevron_ == 0 &&
                         gameSelCursor_ >= 0 && gameSelCursor_ < (int)availableGames_.size()) {
                         openSaveMenu(availableGames_[gameSelCursor_],
                                      importedOccurrence(gameSelCursor_));
                         break;
                     }
-#ifdef OH_USB_UPDATE
-                {
-                    u32 n = usbHsFsGetMountedDeviceCount();
-                    if (n > 8) n = 8;
-                    std::vector<UsbHsFsDevice> devs(n > 0 ? n : 1);
-                    u32 got = n > 0 ? usbHsFsListMountedDevices(devs.data(), n) : 0;
-                    int ok = 0;
-                    for (u32 i = 0; i < got; i++)
-                        if (usbHsFsUnmountDevice(&devs[i], true)) ok++;
-                    DebugLog::line("usb eject: unmounted %d/%u device(s)", ok, got);
-                    rescanImportedGames();
-                    markDirty();
-                }
-#endif
+                    ejectUsbDevices();
                     break;
                 case SDL_CONTROLLER_BUTTON_LEFTSHOULDER: { // L = previous page
                     if (totalPages > 1 && gameSelPage_ > 0) {

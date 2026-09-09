@@ -53,6 +53,9 @@ bool UI::init() {
         SDL_Quit();
         return false;
     }
+    // Filtro lineare per le texture scalate (icone 512 -> 48px): senza,
+    // SDL campiona nearest e le icone sgranano.
+    SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "1");
 
     SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_BLEND);
 
@@ -101,6 +104,8 @@ bool UI::init() {
         iconBoxEmpty_    = loadIcon("box_empty.png");
         iconBoxNonEmpty_ = loadIcon("box_nonempty.png");
         iconVault_       = loadIcon("safe.png");
+        iconEject_       = loadIcon("eject.png");
+        iconSettings_    = loadIcon("settings.png");
     }
 
     // Game-selector logos for imported (titleId-less) games: no NS control
@@ -1070,6 +1075,9 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
             handleProfileSelectorInput(running);
         } else if (screen_ == AppScreen::GameSelector) {
             handleGameSelectorInput(running);
+            // Ticker animazione pulsanti bassi: va avanti anche senza input
+            // (es. chiavetta inserita a schermo fermo), 60fps dal loop.
+            if (bottomButtonsAnim()) markDirty();
         } else if (screen_ == AppScreen::BankSelector) {
             handleBankSelectorInput(running);
         } else {
