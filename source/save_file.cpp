@@ -89,25 +89,33 @@ bool SaveFile::load(const std::string& path) {
     if (saveHandleRust_)
         saveHandleRust_.reset();
 
+    bool ok = false;
     if (isFRLG(gameType_) || isImportedFile(gameType_))
-        return loadGBA(path);
-    if (isGen1File(gameType_))
-        return loadGB(path);
-    if (isGen2File(gameType_))
-        return loadGBC(path);
-    if (isGen4File(gameType_))
-        return loadDS4(path);
-    if (isGen5File(gameType_))
-        return loadDS5(path);
-    if (isGen6XY(gameType_))
-        return loadDXY(path);
-    if (isGen7SM(gameType_))
-        return loadDSM(path);
-    if (isBDSP(gameType_))
-        return loadBDSP(path);
-    if (isLGPE(gameType_))
-        return loadLGPE(path);
-    return loadSCBlock(path);
+        ok = loadGBA(path);
+    else if (isGen1File(gameType_))
+        ok = loadGB(path);
+    else if (isGen2File(gameType_))
+        ok = loadGBC(path);
+    else if (isGen4File(gameType_))
+        ok = loadDS4(path);
+    else if (isGen5File(gameType_))
+        ok = loadDS5(path);
+    else if (isGen6XY(gameType_))
+        ok = loadDXY(path);
+    else if (isGen7SM(gameType_))
+        ok = loadDSM(path);
+    else if (isBDSP(gameType_))
+        ok = loadBDSP(path);
+    else if (isLGPE(gameType_))
+        ok = loadLGPE(path);
+    else
+        ok = loadSCBlock(path);
+    // Save vergine (zero mon in strip al load): l'exit-hook non deve mai
+    // forzare il segnaposto — vuoto e lo stato legittimo iniziale (Violetto
+    // inizio gioco). Solo chi SVUOTA una strip piena passa dal dialogo.
+    if (ok)
+        partyEmptyAtLoad_ = !hasParty();
+    return ok;
 }
 
 bool SaveFile::save(const std::string& path) {

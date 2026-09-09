@@ -56,6 +56,9 @@ public:
     void lgpeZeroFlatSlot(int flat);        // azzera i dati della cella (pointer invariato)
     void refreshPartyEntryFromPointer(int idx); // rileggi dsParty_[idx] dalla sua cella
     bool hasParty() const { for (auto &p: dsParty_) if (!p.isEmpty()) return true; return false; }
+    // Vera se la strip era gia vuota al load (save vergine inizio gioco):
+    // l'exit-hook salta il segnaposto, vuoto e legittimo e non forzato.
+    bool wasPartyEmptyAtLoad() const { return partyEmptyAtLoad_; }
     // Normalizza un save Delta/iPhone (+16B metadata) a raw 128K permanente
     // (mGBA & co. vogliono 131072B esatti). Rileva la finestra valida (testa
     // o coda) e riscrive solo quella, byte-identica. Mai silenzioso: info
@@ -128,6 +131,8 @@ private:
     bool loaded_ = false;
     // Set by any content mutator, cleared by load() and a successful save().
     bool dirty_ = false;
+    // Strip vuota al load (save vergine): vedi load().
+    bool partyEmptyAtLoad_ = true;
 
     // Game-specific parameters
     GameType gameType_  = GameType::ZA;

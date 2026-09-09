@@ -1905,6 +1905,12 @@ void UI::actionSelect() {
 bool UI::ensurePartyOnExit() {
     if (!save_.isLoaded() || isDualBankMode()) return true;
     if (save_.hasParty()) return true;
+    // Save vergine (strip vuota gia al load): niente dialogo, niente
+    // segnaposto forzato — vuoto e lo stato iniziale legittimo (Violetto).
+    if (save_.wasPartyEmptyAtLoad()) {
+        DebugLog::line("exit: strip vuota da load, nessun segnaposto (save vergine)");
+        return true;
+    }
     DebugLog::line("exit: party vuota, chiedo Caterpie/manuale");
     if (isFRLG(selectedGame_) || isImportedFile(selectedGame_)) {
         if (showConfirmDialog(i18n::get(StrKey::EmptyPartyTitle),
