@@ -2091,11 +2091,14 @@ uint16_t SaveFile::checkSum32GBA(const uint8_t* data, size_t len) {
 }
 
 bool SaveFile::normalizeDeltaSave(const std::string& path, std::string& info) {
+    // GBA_XTRA vive dentro loadGBA: qui costante locale gemella (16B, deve
+    // restare uguale — i Delta aggiungono esattamente 16B ai 128K raw).
+    static constexpr size_t XTRA = 16;
     std::ifstream f(path, std::ios::binary | std::ios::ate);
     if (!f.is_open()) { info = "cannot open"; return false; }
     size_t n = static_cast<size_t>(f.tellg());
     if (n == GBA_SAVE_SIZE) { info = "already clean 128K"; return false; }
-    if (n != GBA_SAVE_SIZE + GBA_XTRA) { info = "size not Delta-like"; return false; }
+    if (n != GBA_SAVE_SIZE + XTRA) { info = "size not Delta-like"; return false; }
     std::vector<uint8_t> d(n);
     f.seekg(0);
     f.read(reinterpret_cast<char*>(d.data()), n);
@@ -2121,7 +2124,7 @@ bool SaveFile::normalizeDeltaSave(const std::string& path, std::string& info) {
     size_t base = 0;
     const char* where = nullptr;
     if (windowOk(0)) { base = 0; where = "head"; }
-    else if (windowOk(GBA_XTRA)) { base = GBA_XTRA; where = "tail"; }
+    else if (windowOk(XTRA)) { base = XTRA; where = "tail"; }
     else { info = "16B extra but no valid sector window (not touched)"; return false; }
     FILE* w = std::fopen(path.c_str(), "wb");
     if (!w) { info = "cannot rewrite"; return false; }
