@@ -1,5 +1,100 @@
 # OpenHomeNX
 
+Box manager and cross-generation transfer for Nintendo Switch (homebrew `.nro`).
+
+Combines the **pkHouse** UI (C++/SDL2) with the **OpenHome** backend
+(Rust via FFI): box management across all generations with real cross-gen
+transfer. Failures are always explicit, never silent.
+
+## Features
+
+- Two-panel box viewer, pick & place, multi-select, ZL/ZR box view
+- Pokémon details, search/filters, learnset viewer, 9 themes, 12 languages
+- Real cross-gen transfer across 13 formats (gen 1–9, PA8/PA9/PB8/PB7) with
+  explicit dex-cut and move-drop, OHPKM tracking for lossless return
+- Party strip with OT, grab/swap/place from party, compaction on save
+- Native GB/GBC/GBA/DS/decrypted-3DS saves + SD/USB import
+- Wondercard injection, automatic save backups, LED, network indicator
+- Self-update from SD/GitHub releases
+
+## Install (Switch)
+
+1. Download `OpenHomeNX.nro` from the latest [release](../../releases) and copy it to
+   `sdmc:/switch/OpenHomeNX/OpenHomeNX.nro` (or launch from hbmenu).
+2. Start a Pokémon game at least once (creates the save), then open the app.
+3. Later updates: `+` menu → *Check for update* (SD or network).
+
+## Main controls
+
+| Button | Action |
+|---|---|
+| A | Pick / place |
+| B | Cancel / return |
+| X | Details (Y = moves in details) |
+| Y | Multi-select |
+| `-` | Release (hand or details) / About |
+| `+` | Menu (themes, language, update, wondercard…) |
+| L/R | Previous/next box |
+| ZL/ZR | Box overview |
+| Stick/D-Pad up | Reach the header party |
+
+## Build from source
+
+Requires: devkitPro + devkitA64 + libnx (portlibs: SDL2, SDL2_image,
+SDL2_ttf, curl…), Rust nightly (target `aarch64-unknown-none`,
+see `rust/.cargo/config.toml`).
+
+```sh
+./release.sh          # build + dist/OpenHomeNX.nro + dist/latest.json
+./release.sh serve    # as above + local server for the network updater
+```
+
+Plain `make` compiles without packaging. Never copy `.nro` into `dist/` by hand.
+Rust tests run on the host (never on the Switch):
+
+```sh
+cd rust && cargo +nightly test -p openhome_switch --features std \
+  --target aarch64-apple-darwin
+```
+
+## Layout
+
+```
+source/ include/   C++ frontend (pkHouse base) + FFI wrappers
+rust/              Rust workspace (openhome_switch + vendored pkm_rs)
+romfs/             sprites, fonts, strings, boxart
+tools/             save utilities and test fixtures
+```
+
+## Credits
+
+OpenHomeNX would not exist without these projects — thanks to the authors and
+communities maintaining them:
+
+- **[pkHouse](https://github.com/Insektaure/pkHouse)** by Insektaure —
+  user interface, graphics and Switch homebrew base (SDL2/libnx)
+- **[OpenHome](https://github.com/andrewbenington/OpenHome)** by andrewbenington —
+  Rust backend (cross-gen conversions, formats, crypto)
+- **[PKHeX](https://github.com/kwsch/PKHeX)** by kwsch — reference for
+  save-format specifications
+- [libnx](https://github.com/switchbrew/libnx) / devkitPro — Switch toolchain
+
+## License
+
+GNU GPL v3 (`LICENSE`). Combines GPLv2 code (pkHouse) with GPL-3.0+ code
+(OpenHome): the combined work is distributed under GPL v3.
+
+## Disclaimer
+
+Amateur project, not affiliated with or endorsed by Nintendo, Creatures Inc.,
+GAME FREAK, The Pokémon Company, or the authors of the projects above.
+Pokémon © Nintendo/Creatures Inc./GAME FREAK inc. Use only with legitimately
+owned game copies; always back up your saves.
+
+---
+
+# OpenHomeNX (Italiano)
+
 Box manager e trasferimento cross-generazione per Nintendo Switch (homebrew `.nro`).
 
 Unisce l'interfaccia di **pkHouse** (C++/SDL2) con il backend di **OpenHome**
@@ -15,14 +110,14 @@ cross-gen reale. I fallimenti sono sempre espliciti, mai silenziosi.
 - Party strip con OT, grab/swap/posa dal party, compattamento al salvataggio
 - Save nativi GB/GBC/GBA/DS/3DS-decifrati + import da SD/USB
 - Wondercard injection, backup automatici dei save, LED, indicatore rete
-- Self-update da SD/rete
+- Self-update da SD/release GitHub
 
 ## Installazione (Switch)
 
 1. Scarica `OpenHomeNX.nro` dall'ultima [release](../../releases) e copialo in
    `sdmc:/switch/OpenHomeNX/OpenHomeNX.nro` (o avvialo da hbmenu).
 2. Avvia un gioco Pokémon almeno una volta (crea il save), poi apri l'app.
-3. Aggiornamenti successivi: menu `+` → *Check for update* (SD o rete locale).
+3. Aggiornamenti successivi: menu `+` → *Check for update* (SD o rete).
 
 ## Comandi principali
 
@@ -63,9 +158,7 @@ cd rust && cargo +nightly test -p openhome_switch --features std \
 source/ include/   frontend C++ (base pkHouse) + wrapper FFI
 rust/              workspace Rust (openhome_switch + pkm_rs vendored)
 romfs/             sprite, font, stringhe, boxart
-tools/             utility dev (serve_upload.py, script vari)
-docs/archive/      documenti storici superati
-devtools/          strumenti di lavoro personali (non distribuito, solo locale)
+tools/             utility save e fixture di test
 ```
 
 ## Crediti
