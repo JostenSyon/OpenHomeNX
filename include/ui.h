@@ -576,6 +576,9 @@ private:
     // il Caterpie segnaposto (A = piazza ed esci, B = torno a sistemare a
     // mano); altrove blocca con messaggio. true = si puo uscire.
     bool ensurePartyOnExit();
+    // Quit vero con mano occupata: il mon in mano vive solo in memoria.
+    // true = si puo uscire (mano libera o utente consenziente).
+    bool confirmQuitWithHold();
 
     // Bank selector
     void drawBankSelectorFrame();

@@ -1014,7 +1014,11 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
         } else {
             handleInput(running);
             if (saveNow_) {
-                if (!saveBankFiles()) {
+                if (!confirmQuitWithHold()) {
+                    // Quit con mano occupata + B: resta, niente save.
+                    saveNow_ = false;
+                    running = true;
+                } else if (!saveBankFiles()) {
                     saveNow_ = false;
                     running = true;
                 } else if (!persistGameSaveIfDirty()) {

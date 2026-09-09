@@ -69,6 +69,8 @@
 	"cant_empty_party": "Das Team darf nicht leer bleiben: setze ein Pokemon zuruck.",
 	"empty_party_title": "Leeres Team",
 	"empty_party_caterpie": "Das Team ist leer: kein Spiel akzeptiert das. Ein Raupy als Platzhalter (L5)?",
+	"quit_hold_title": "Hand nicht leer",
+	"quit_hold_body": "Beim Beenden geht das Pokemon in der Hand verloren. Trotzdem beenden?",
 	"release_pokemon": "Pokemon freilassen",
 	"release_confirm": "{0} freilassen?",
 	"exported": "Exportiert!",

@@ -318,6 +318,8 @@ void UI::handleMenuInput(const SDL_Event& event, bool& running) {
                 saveBankFiles();
                 showMenu_ = false;
             } else {
+                // Quit dual-bank: la mano muore al quit, chiedi prima.
+                if (!confirmQuitWithHold()) { showMenu_ = false; return; }
                 running = false;
             }
         } else {
@@ -344,6 +346,9 @@ void UI::handleMenuInput(const SDL_Event& event, bool& running) {
                 saveNow_ = true;
                 running = false;
             } else {
+                // Quit Without Saving: niente scritture, ma la mano muore
+                // comunque al quit — chiedi prima.
+                if (!confirmQuitWithHold()) { showMenu_ = false; return; }
                 running = false;
             }
         }
@@ -1851,6 +1856,17 @@ bool UI::ensurePartyOnExit() {
     showMessageAndWait(i18n::get(StrKey::PartyPokemon),
                        i18n::get(StrKey::CantEmptyParty));
     return false;
+}
+
+// Quit vero con mano occupata: il mon in mano vive solo in memoria e al quit
+// andrebbe perso (Smeraldo: Pikachu sparito al quit, disco senza traccia).
+// La mano DEVE sopravvivere ai cambi gioco (carry cross-gen: selectGame non
+// la azzera), quindi il warn scatta solo qui, mai in uscita dal gioco.
+bool UI::confirmQuitWithHold() {
+    if (!holding_ && heldMulti_.empty()) return true;
+    DebugLog::line("quit: mano occupata, chiedo conferma");
+    return showConfirmDialog(i18n::get(StrKey::QuitHoldTitle),
+                             i18n::get(StrKey::QuitHoldBody));
 }
 
 void UI::returnToGameSelector() {

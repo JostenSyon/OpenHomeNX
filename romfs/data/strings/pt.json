@@ -69,6 +69,8 @@
 	"cant_empty_party": "A equipe nao pode ficar vazia: devolva um Pokemon.",
 	"empty_party_title": "Equipe vazia",
 	"empty_party_caterpie": "A equipe esta vazia: nenhum jogo aceita isso. Colocar um Caterpie provisorio (N5)?",
+	"quit_hold_title": "Mao ocupada",
+	"quit_hold_body": "Se sair agora, o Pokemon na mao sera perdido. Sair?",
 	"release_pokemon": "Liberar Pokemon",
 	"release_confirm": "Liberar {0}?",
 	"exported": "Exportado!",

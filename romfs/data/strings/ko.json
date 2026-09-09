@@ -69,6 +69,8 @@
 	"cant_empty_party": "파티를 비워 둘 수 없습니다: 포켓몬을 되돌려 놓으세요.",
 	"empty_party_title": "빈 파티",
 	"empty_party_caterpie": "파티가 비어 있습니다: 빈 파티로는 진행할 수 없습니다. 임시 캐터피(Lv5)를 넣을까요?",
+	"quit_hold_title": "손에 포켓몬 있음",
+	"quit_hold_body": "지금 종료하면 손에 든 포켓몬이 사라집니다. 종료할까요?",
 	"release_pokemon": "포켓몬 놓아주기",
 	"release_confirm": "{0}을(를) 놓아주시겠습니까?",
 	"exported": "내보내기 완료!",

@@ -72,6 +72,8 @@
 	"cant_empty_party": "The party can't be left empty: put a Pokemon back.",
 	"empty_party_title": "Empty party",
 	"empty_party_caterpie": "The party is empty: no game accepts that. Place a placeholder Caterpie (Lv 5)?",
+	"quit_hold_title": "Hand not empty",
+	"quit_hold_body": "If you quit now, the Pokemon in hand will be lost. Quit anyway?",
 	"release_pokemon": "Release Pokemon",
 	"release_confirm": "Release {0}?",
 	"exported": "Exported!",

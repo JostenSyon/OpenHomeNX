@@ -174,6 +174,8 @@ void UI::handleProfileSelectorInput(bool& running) {
                     showAbout_ = true;
                     break;
                 case SDL_CONTROLLER_BUTTON_START:
+                    // Quit dal selettore profili: la mano (carry) muore qui.
+                    if (!confirmQuitWithHold()) break;
                     running = false;
                     break;
             }
@@ -1364,6 +1366,8 @@ void UI::handleGameSelectorInput(bool& running) {
                         account_.unmountSave();
                         screen_ = AppScreen::ProfileSelector;
                     } else {
+                        // Quit dal selettore giochi: la mano (carry) muore qui.
+                        if (!confirmQuitWithHold()) break;
                         running = false;
                     }
                     break;

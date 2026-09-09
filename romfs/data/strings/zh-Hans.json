@@ -69,6 +69,8 @@
 	"cant_empty_party": "队伍不能为空：请放回一只宝可梦。",
 	"empty_party_title": "空队伍",
 	"empty_party_caterpie": "队伍为空：任何游戏都不接受空队伍。放入一只临时的绿毛虫（5级）吗？",
+	"quit_hold_title": "手中有宝可梦",
+	"quit_hold_body": "现在退出，手中的宝可梦将丢失。仍要退出吗？",
 	"release_pokemon": "放生宝可梦",
 	"release_confirm": "放生{0}？",
 	"exported": "已导出！",

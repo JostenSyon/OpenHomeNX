@@ -69,6 +69,8 @@
 	"cant_empty_party": "手持ちを空のままにはできません：ポケモンを戻してください。",
 	"empty_party_title": "手持ちが空です",
 	"empty_party_caterpie": "手持ちが空です：そのままでは遊べません。キャタピー（Lv5）を入れますか？",
+	"quit_hold_title": "持ち運び中",
+	"quit_hold_body": "今やめると、手持ちのポケモンは失われます。やめますか？",
 	"release_pokemon": "ポケモンを逃がす",
 	"release_confirm": "{0}を逃がしますか？",
 	"exported": "エクスポート完了！",
