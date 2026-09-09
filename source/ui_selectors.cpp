@@ -7,7 +7,10 @@
 #include "update_net.h"
 
 #include <cerrno>
+#include <ctime>
+#include <dirent.h>
 #include <fstream>
+#include <sys/stat.h>
 
 namespace {
 // update.cfg accanto all'NRO (o in sdmc:/switch/OpenHomeNX/). Righe key=value:
@@ -923,9 +926,13 @@ void UI::drawGameSelectorFrame() {
     if (usbHsFsGetMountedDeviceCount() > 0)
         ejectHint = i18n::get(StrKey::StatusGameEject);
 #endif
+    // Debug: X apre il popup save (backup/restore/send) sul gioco puntato.
+    std::string saveHint;
+    if (DebugLog::enabled())
+        saveHint = " | X: save";
     if (selectedProfile_ >= 0) {
         drawStatusBar((totalPages > 1 ? i18n::get(StrKey::StatusGameBackPage)
-                                      : i18n::get(StrKey::StatusGameBack)) + ejectHint);
+                                      : i18n::get(StrKey::StatusGameBack)) + ejectHint + saveHint);
         std::string profileLabel = account_.profiles()[selectedProfile_].nickname;
         profileLabel += " | ";
         profileLabel += useOpenHome() ? "OH" : "PK";
@@ -936,7 +943,7 @@ void UI::drawGameSelectorFrame() {
         if (e.tex) drawText(profileLabel, SCREEN_W - e.w - 15, SCREEN_H - 26, T().goldLabel, fontSmall_);
     } else {
         drawStatusBar((totalPages > 1 ? i18n::get(StrKey::StatusGameQuitPage)
-                                      : i18n::get(StrKey::StatusGameQuit)) + ejectHint);
+                                      : i18n::get(StrKey::StatusGameQuit)) + ejectHint + saveHint);
         // Show core even without profile so feedback is always visible
         std::string coreLabel = useOpenHome() ? "OH" : "PK";
         if (DebugLog::enabled())
@@ -1062,6 +1069,65 @@ void UI::handleGameSelectorInput(bool& running) {
             return;
         }
 
+        // Debug save popup intercepts input (sotto il menu +)
+        if (showSaveMenu_) {
+            if (event.type == SDL_CONTROLLERBUTTONDOWN) {
+                markDirty();
+                switch (event.cbutton.button) {
+                    case SDL_CONTROLLER_BUTTON_DPAD_UP:
+                    case SDL_CONTROLLER_BUTTON_DPAD_LEFT:
+                        saveMenuCursor_ = (saveMenuCursor_ + 3) % 4;
+                        break;
+                    case SDL_CONTROLLER_BUTTON_DPAD_DOWN:
+                    case SDL_CONTROLLER_BUTTON_DPAD_RIGHT:
+                        saveMenuCursor_ = (saveMenuCursor_ + 1) % 4;
+                        break;
+                    case SDL_CONTROLLER_BUTTON_B: { // Switch A = conferma
+                        if (saveMenuCursor_ == 0) {
+                            std::string out;
+                            showSaveMenu_ = false;
+                            if (backupGameSave(saveMenuGame_, out))
+                                showMessageAndWait("Save backup", std::string("OK:\n") + out);
+                            else
+                                showMessageAndWait("Save backup", "FAILED (vedi debug.log)");
+                        } else if (saveMenuCursor_ == 1) {
+                            std::string e = latestBackupEntry(saveMenuGame_);
+                            showSaveMenu_ = false;
+                            if (e.empty()) {
+                                showMessageAndWait("Restore backup", "No backups for this game.");
+                            } else if (showConfirmDialog("Restore backup",
+                                                       e + "\nSovrascrivo il save attuale. Procedo?")) {
+                                if (restoreBackupEntry(saveMenuGame_, e))
+                                    showMessageAndWait("Restore backup", "OK, save ripristinato.");
+                                else
+                                    showMessageAndWait("Restore backup", "FAILED (vedi debug.log)");
+                            }
+                        } else if (saveMenuCursor_ == 2) {
+                            showSaveMenu_ = false;
+                            sendSaveFor(saveMenuGame_, saveMenuOcc_);
+                        } else {
+                            showSaveMenu_ = false;
+                        }
+                        break;
+                    }
+                    case SDL_CONTROLLER_BUTTON_A: // Switch B = chiudi
+                    case SDL_CONTROLLER_BUTTON_X:
+                    case SDL_CONTROLLER_BUTTON_BACK:
+                    case SDL_CONTROLLER_BUTTON_START:
+                        showSaveMenu_ = false;
+                        break;
+                }
+            } else if (event.type == SDL_CONTROLLERAXISMOTION) {
+                if (event.caxis.axis == SDL_CONTROLLER_AXIS_LEFTX ||
+                    event.caxis.axis == SDL_CONTROLLER_AXIS_LEFTY) {
+                    int16_t lx = SDL_GameControllerGetAxis(pad_, SDL_CONTROLLER_AXIS_LEFTX);
+                    int16_t ly = SDL_GameControllerGetAxis(pad_, SDL_CONTROLLER_AXIS_LEFTY);
+                    updateStick(lx, ly);
+                }
+            }
+            continue;
+        }
+
         // Game selector menu intercepts input
         if (showGameSelMenu_) {
             if (event.type == SDL_CONTROLLERBUTTONDOWN) {
@@ -1117,61 +1183,14 @@ void UI::handleGameSelectorInput(bool& running) {
                                 }
                                 break;
                             }
-                            case GameSelMenuAction::SendSave: {
-                                // Debug-only: upload the save file of the game
-                                // under the grid cursor. File-backed games read
-                                // from SD/USB; installed titles via temporary
-                                // account mount (unmounted on every path).
-                                UpdateCfg cfg;
-                                std::string err;
-                                if (!readUpdateCfg(basePath_, cfg) || cfg.url.empty()) {
-                                    showMessageAndWait(i18n::get(StrKey::SendSaveTitle), i18n::get(StrKey::SendSaveNoUrl));
-                                } else if (!updateNetAvailable()) {
-                                    showMessageAndWait(i18n::get(StrKey::SendSaveTitle), i18n::get(StrKey::SendSaveNetOff));
-                                } else if (gameSelOnAllBanks_ || gameSelOnChevron_ != 0 ||
-                                           gameSelCursor_ < 0 || gameSelCursor_ >= (int)availableGames_.size()) {
+                            case GameSelMenuAction::SendSave:
+                                if (gameSelOnAllBanks_ || gameSelOnChevron_ != 0 ||
+                                    gameSelCursor_ < 0 || gameSelCursor_ >= (int)availableGames_.size())
                                     showMessageAndWait(i18n::get(StrKey::SendSaveTitle), i18n::get(StrKey::SendSaveNoGame));
-                                } else {
-                                    GameType g = availableGames_[gameSelCursor_];
-                                    std::string path = importedSavePath(g, importedOccurrence(gameSelCursor_));
-                                    if (!path.empty()) {
-                                        showWorking(i18n::fmt(StrKey::SendSaveUploading, gameInfo(g).gameTag));
-                                        if (updateNetUploadSave(cfg.url, cfg.token, path, gameInfo(g).gameTag, err))
-                                            showMessageAndWait(i18n::get(StrKey::SendSaveTitle), i18n::get(StrKey::SendSaveSent));
-                                        else
-                                            showMessageAndWait(i18n::get(StrKey::SendSaveTitle), i18n::fmt(StrKey::SendSaveFailed, err));
-                                    } else if (selectedProfile_ >= 0 && selectedProfile_ < account_.profileCount()
-                                               && titleIdOf(g) >= 0x0100000000010000ULL && saveFileNameOf(g)[0] != '\0') {
-                                        // v2: save account (titoli installati) — mount
-                                        // temporaneo, upload, unmount sempre.
-                                        // Il guard titleId/nome esclude i giochi
-                                        // sentinella (importati: 0x1-0x16, nome
-                                        // vuoto): senza, fsOpen riceverebbe un
-                                        // app_id falso e fpath sarebbe "save:/".
-                                        std::string fpath;
-                                        {
-                                            std::string mnt = account_.mountSave(selectedProfile_, g);
-                                            if (!mnt.empty())
-                                                fpath = mnt + saveFileNameOf(g);
-                                        }
-                                        if (fpath.empty()) {
-                                            account_.unmountSave();
-                                            showMessageAndWait(i18n::get(StrKey::SendSaveTitle), i18n::get(StrKey::SendSaveOnlyImported));
-                                        } else {
-                                            showWorking(i18n::fmt(StrKey::SendSaveUploading, gameInfo(g).gameTag));
-                                            bool ok = updateNetUploadSave(cfg.url, cfg.token, fpath, gameInfo(g).gameTag, err);
-                                            account_.unmountSave();
-                                            if (ok)
-                                                showMessageAndWait(i18n::get(StrKey::SendSaveTitle), i18n::get(StrKey::SendSaveSent));
-                                            else
-                                                showMessageAndWait(i18n::get(StrKey::SendSaveTitle), i18n::fmt(StrKey::SendSaveFailed, err));
-                                        }
-                                    } else {
-                                        showMessageAndWait(i18n::get(StrKey::SendSaveTitle), i18n::get(StrKey::SendSaveOnlyImported));
-                                    }
-                                }
+                                else
+                                    sendSaveFor(availableGames_[gameSelCursor_],
+                                                importedOccurrence(gameSelCursor_));
                                 break;
-                            }
                             case GameSelMenuAction::ImportSettings:
                                 showGameSelMenu_ = false;
                                 showImportSettings_ = true;
@@ -1266,7 +1285,13 @@ void UI::handleGameSelectorInput(bool& running) {
                     themeSelCursor_ = themeIndex_;
                     themeSelOriginal_ = themeIndex_;
                     break;
-                case SDL_CONTROLLER_BUTTON_Y: // Switch X = eject USB (hint shown only when mounted)
+                case SDL_CONTROLLER_BUTTON_Y: // Switch X = save menu (debug) / eject USB
+                    if (DebugLog::enabled() && !gameSelOnAllBanks_ && gameSelOnChevron_ == 0 &&
+                        gameSelCursor_ >= 0 && gameSelCursor_ < (int)availableGames_.size()) {
+                        openSaveMenu(availableGames_[gameSelCursor_],
+                                     importedOccurrence(gameSelCursor_));
+                        break;
+                    }
 #ifdef OH_USB_UPDATE
                 {
                     u32 n = usbHsFsGetMountedDeviceCount();
@@ -1740,6 +1765,174 @@ bool UI::checkForUpdate(bool usbOnly) {
     }
     showMessageAndWait(i18n::get(StrKey::UpdateTitle), i18n::fmt(StrKey::UpdateInstalled, foundVer));
     return false;
+}
+
+// --- Debug save popup (Switch X sul gioco, solo con debug on) -------------
+
+static std::string backupTimestamp() {
+    time_t now = time(nullptr);
+    struct tm* t = localtime(&now);
+    char b[32];
+    std::snprintf(b, sizeof(b), "%04d%02d%02d_%02d%02d%02d",
+                  t->tm_year + 1900, t->tm_mon + 1, t->tm_mday,
+                  t->tm_hour, t->tm_min, t->tm_sec);
+    return b;
+}
+
+static void ensureDirRecursive(const std::string& dir) {
+    std::string cur;
+    for (char c : dir) {
+        cur += c;
+        if (c == '/') mkdir(cur.c_str(), 0755);
+    }
+}
+
+void UI::openSaveMenu(GameType g, int occ) {
+    saveMenuGame_ = g;
+    saveMenuOcc_ = occ;
+    saveMenuCursor_ = 0;
+    showSaveMenu_ = true;
+}
+
+std::string UI::manualBackupDir(GameType g) const {
+    return basePath_ + "backups/manual/" + gamePathNameOf(g) + "/";
+}
+
+void UI::sendSaveFor(GameType g, int occ) {
+    // Ex blocco SendSave del menu + (cursor checks fuori, dal chiamante).
+    // File-backed: upload diretto; titoli installati: mount temporaneo.
+    UpdateCfg cfg;
+    std::string err;
+    if (!readUpdateCfg(basePath_, cfg) || cfg.url.empty()) {
+        showMessageAndWait(i18n::get(StrKey::SendSaveTitle), i18n::get(StrKey::SendSaveNoUrl));
+    } else if (!updateNetAvailable()) {
+        showMessageAndWait(i18n::get(StrKey::SendSaveTitle), i18n::get(StrKey::SendSaveNetOff));
+    } else {
+        std::string path = importedSavePath(g, occ);
+        if (!path.empty()) {
+            showWorking(i18n::fmt(StrKey::SendSaveUploading, gameInfo(g).gameTag));
+            if (updateNetUploadSave(cfg.url, cfg.token, path, gameInfo(g).gameTag, err))
+                showMessageAndWait(i18n::get(StrKey::SendSaveTitle), i18n::get(StrKey::SendSaveSent));
+            else
+                showMessageAndWait(i18n::get(StrKey::SendSaveTitle), i18n::fmt(StrKey::SendSaveFailed, err));
+        } else if (selectedProfile_ >= 0 && selectedProfile_ < account_.profileCount()
+                   && titleIdOf(g) >= 0x0100000000010000ULL && saveFileNameOf(g)[0] != '\0') {
+            // v2: save account (titoli installati) — mount temporaneo,
+            // upload, unmount sempre. Il guard titleId/nome esclude i giochi
+            // sentinella (importati: 0x1-0x16, nome vuoto).
+            std::string fpath;
+            {
+                std::string mnt = account_.mountSave(selectedProfile_, g);
+                if (!mnt.empty())
+                    fpath = mnt + saveFileNameOf(g);
+            }
+            if (fpath.empty()) {
+                account_.unmountSave();
+                showMessageAndWait(i18n::get(StrKey::SendSaveTitle), i18n::get(StrKey::SendSaveOnlyImported));
+            } else {
+                showWorking(i18n::fmt(StrKey::SendSaveUploading, gameInfo(g).gameTag));
+                bool ok = updateNetUploadSave(cfg.url, cfg.token, fpath, gameInfo(g).gameTag, err);
+                account_.unmountSave();
+                if (ok)
+                    showMessageAndWait(i18n::get(StrKey::SendSaveTitle), i18n::get(StrKey::SendSaveSent));
+                else
+                    showMessageAndWait(i18n::get(StrKey::SendSaveTitle), i18n::fmt(StrKey::SendSaveFailed, err));
+            }
+        } else {
+            showMessageAndWait(i18n::get(StrKey::SendSaveTitle), i18n::get(StrKey::SendSaveOnlyImported));
+        }
+    }
+}
+
+bool UI::backupGameSave(GameType g, std::string& out) {
+    std::string dir = manualBackupDir(g);
+    ensureDirRecursive(dir);
+    std::string path = importedSavePath(g, saveMenuOcc_);
+    if (!path.empty()) {
+        std::string base = path.substr(path.find_last_of("/\\") + 1);
+        std::string dst = dir + backupTimestamp() + "_" + base;
+        if (!copyFileTo(path, dst)) return false;
+        out = dst;
+        DebugLog::line("save backup: %s -> %s", path.c_str(), dst.c_str());
+        return true;
+    }
+    if (selectedProfile_ >= 0 && selectedProfile_ < account_.profileCount()
+        && titleIdOf(g) >= 0x0100000000010000ULL && saveFileNameOf(g)[0] != '\0') {
+        std::string dst = dir + backupTimestamp() + "/";
+        ensureDirRecursive(dst);
+        std::string mnt = account_.mountSave(selectedProfile_, g);
+        if (mnt.empty()) return false;
+        bool ok = AccountManager::backupSaveDir(mnt, dst);
+        account_.unmountSave();
+        if (!ok) return false;
+        out = dst;
+        DebugLog::line("save backup (account): %s -> %s", gameInfo(g).gameTag, dst.c_str());
+        return true;
+    }
+    return false;
+}
+
+std::string UI::latestBackupEntry(GameType g) {
+    std::string dir = manualBackupDir(g);
+    DIR* d = opendir(dir.c_str());
+    if (!d) return "";
+    std::vector<std::string> names;
+    while (dirent* e = readdir(d)) {
+        std::string n = e->d_name;
+        if (n == "." || n == "..") continue;
+        names.push_back(n);
+    }
+    closedir(d);
+    if (names.empty()) return "";
+    std::sort(names.begin(), names.end(), std::greater<std::string>());
+    return dir + names[0];
+}
+
+bool UI::restoreBackupEntry(GameType g, const std::string& entry) {
+    struct stat st;
+    if (stat(entry.c_str(), &st) != 0) return false;
+    if (!S_ISDIR(st.st_mode)) {
+        std::string orig = importedSavePath(g, saveMenuOcc_);
+        if (orig.empty()) return false;
+        bool ok = copyFileTo(entry, orig);
+        DebugLog::line("save restore: %s -> %s (%s)", entry.c_str(), orig.c_str(), ok ? "ok" : "FAIL");
+        return ok;
+    }
+    if (selectedProfile_ >= 0 && selectedProfile_ < account_.profileCount()
+        && titleIdOf(g) >= 0x0100000000010000ULL && saveFileNameOf(g)[0] != '\0') {
+        std::string mnt = account_.mountSave(selectedProfile_, g);
+        if (mnt.empty()) return false;
+        bool ok = AccountManager::backupSaveDir(entry + "/", mnt);
+        account_.unmountSave();
+        DebugLog::line("save restore (account): %s (%s)", entry.c_str(), ok ? "ok" : "FAIL");
+        return ok;
+    }
+    return false;
+}
+
+void UI::drawSaveMenuPopup() {
+    drawRect(0, 0, SCREEN_W, SCREEN_H, T().overlay);
+    static const char* rows[] = { "Backup save", "Restore latest backup", "Send save", "Close" };
+    constexpr int NROWS = 4;
+    constexpr int POP_W = 360;
+    int rowH = 36;
+    int POP_H = 50 + NROWS * rowH + 30;
+    int popX = (SCREEN_W - POP_W) / 2;
+    int popY = (SCREEN_H - POP_H) / 2;
+    drawRect(popX, popY, POP_W, POP_H, T().panelBg);
+    drawRectOutline(popX, popY, POP_W, POP_H, T().cursor, 2);
+    std::string title = std::string("Save: ") + gameInfo(saveMenuGame_).gameTag;
+    drawTextCentered(title, popX + POP_W / 2, popY + 22, T().text, font_);
+    int startY = popY + 50;
+    for (int i = 0; i < NROWS; i++) {
+        int rowY = startY + i * rowH;
+        if (i == saveMenuCursor_) {
+            drawRect(popX + 20, rowY, POP_W - 40, rowH - 4, T().menuHighlight);
+            drawRectOutline(popX + 20, rowY, POP_W - 40, rowH - 4, T().cursor, 2);
+        }
+        drawTextCentered(rows[i], popX + POP_W / 2, rowY + (rowH - 4) / 2, T().text, font_);
+    }
+    drawTextCentered(i18n::get(StrKey::ASelectBCancel), popX + POP_W / 2, popY + POP_H - 18, T().textDim, fontSmall_);
 }
 
 std::vector<GameSelMenuAction> UI::gameSelMenuActions() const {

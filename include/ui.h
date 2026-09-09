@@ -280,6 +280,21 @@ private:
     bool showGameSelMenu_ = false;
     int  gameSelMenuCursor_ = 0;
 
+    // Debug save popup (Switch X sul gioco con debug on): Backup save /
+    // Restore latest backup / Send save. Opera sullo stesso occurrence che
+    // aprirebbe A (niente lista separata: semplice, niente UI in piu).
+    bool showSaveMenu_ = false;
+    int  saveMenuCursor_ = 0;
+    GameType saveMenuGame_ = GameType::EMERALD;
+    int  saveMenuOcc_ = 0;
+    void openSaveMenu(GameType g, int occ);
+    void drawSaveMenuPopup();
+    void sendSaveFor(GameType g, int occ);
+    std::string manualBackupDir(GameType g) const;
+    bool backupGameSave(GameType g, std::string& out);
+    std::string latestBackupEntry(GameType g);
+    bool restoreBackupEntry(GameType g, const std::string& entry);
+
     // Wondercard list state
     bool showWondercardList_ = false;
     int  wcListCursor_  = 0;

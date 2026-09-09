@@ -562,6 +562,7 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
                 else if (screen_ == AppScreen::GameSelector) {
                     drawGameSelectorFrame();
                     if (showGameSelMenu_) drawGameSelMenuPopup();
+                if (showSaveMenu_) drawSaveMenuPopup();
                 }
                 else if (screen_ == AppScreen::BankSelector) drawBankSelectorFrame();
                 else drawFrame();
@@ -633,6 +634,7 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
                 else if (screen_ == AppScreen::GameSelector) {
                     drawGameSelectorFrame();
                     if (showGameSelMenu_) drawGameSelMenuPopup();
+                if (showSaveMenu_) drawSaveMenuPopup();
                 }
                 else if (screen_ == AppScreen::BankSelector) drawBankSelectorFrame();
                 else drawFrame();
@@ -694,6 +696,7 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
             else if (screen_ == AppScreen::GameSelector) {
                 drawGameSelectorFrame();
                 if (showGameSelMenu_) drawGameSelMenuPopup();
+                if (showSaveMenu_) drawSaveMenuPopup();
             }
             else if (screen_ == AppScreen::BankSelector) drawBankSelectorFrame();
             else drawFrame();
@@ -786,6 +789,7 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
                 else if (screen_ == AppScreen::GameSelector) {
                     drawGameSelectorFrame();
                     if (showGameSelMenu_) drawGameSelMenuPopup();
+                if (showSaveMenu_) drawSaveMenuPopup();
                 }
                 else if (screen_ == AppScreen::BankSelector) drawBankSelectorFrame();
                 else drawFrame();
@@ -858,6 +862,7 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
                 else if (screen_ == AppScreen::GameSelector) {
                     drawGameSelectorFrame();
                     if (showGameSelMenu_) drawGameSelMenuPopup();
+                if (showSaveMenu_) drawSaveMenuPopup();
                 }
                 else if (screen_ == AppScreen::BankSelector) drawBankSelectorFrame();
                 else drawFrame();
@@ -934,6 +939,7 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
                 else if (screen_ == AppScreen::GameSelector) {
                     drawGameSelectorFrame();
                     if (showGameSelMenu_) drawGameSelMenuPopup();
+                if (showSaveMenu_) drawSaveMenuPopup();
                 }
                 else if (screen_ == AppScreen::BankSelector) drawBankSelectorFrame();
                 else drawFrame();
@@ -1039,6 +1045,7 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
             else if (screen_ == AppScreen::GameSelector) {
                 drawGameSelectorFrame();
                 if (showGameSelMenu_) drawGameSelMenuPopup();
+                if (showSaveMenu_) drawSaveMenuPopup();
             }
             else if (screen_ == AppScreen::BankSelector) drawBankSelectorFrame();
             else drawFrame();

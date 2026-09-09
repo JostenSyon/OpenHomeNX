@@ -11,7 +11,7 @@ include $(DEVKITPRO)/libnx/switch_rules
 
 #---------------------------------------------------------------------------------
 APP_TITLE	:=	OpenHomeNX
-APP_VERSION :=	0.2.69.2
+APP_VERSION :=	0.2.70
 APP_AUTHOR	:=	JostenSyon
 
 TARGET		:=	OpenHomeNX
