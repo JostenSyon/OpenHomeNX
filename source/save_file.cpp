@@ -504,6 +504,24 @@ void SaveFile::setPartySlot(int idx, const Pokemon& pkm) {
             if (!dsParty_[i].isEmpty()) fixed[j++] = dsParty_[i];
         dsParty_ = std::move(fixed);
     }
+    // UNIVERSAL (tutte le famiglie): mai persistere una squadra vuota —
+    // nessuno stato valido di gioco la produce (Smeraldo count-0 -> glitch;
+    // vale per posizionali SCBlock/BDSP/XY/SM, count byte GB/GBC/DS/GBA,
+    // pointer LGPE). La memoria segue la mano (strip si svuota, B annulla),
+    // il disco tiene l'ultimo party valido; l'exit-hook offre il Caterpie
+    // (GBA) o blocca l'uscita. Copre TUTTI i persist, anche bank-switch
+    // senza uscita dal gioco (persistGameSaveIfDirty li attraversa).
+    {
+        bool anyLeft = !toWrite.isEmpty();
+        for (size_t i = 0; i < dsParty_.size() && !anyLeft; i++)
+            if ((int)i != idx && !dsParty_[i].isEmpty()) anyLeft = true;
+        if (!anyLeft) {
+            if (idx >= 0 && idx < (int)dsParty_.size()) dsParty_[idx] = toWrite;
+            dirty_ = true; invalidateAllBoxCache();
+            DebugLog::line("setPartySlot: party emptied in memory, disk keeps last valid party");
+            return;
+        }
+    }
     // Persist to underlying storage per family — block index == party index.
     // The SCBlock branch is gated on the game REALLY being SCBlock-based, not
     // just on blocks_ being non-empty: a stale blocks_ from a previous game
@@ -563,16 +581,8 @@ void SaveFile::setPartySlot(int idx, const Pokemon& pkm) {
             std::vector<Pokemon> compact;
             for (auto& pp : cur)
                 if (!pp.isEmpty() && pp.species() != 0) compact.push_back(pp);
-            // Mai persistere count 0: nessuno stato valido di gioco lo produce
-            // (lo Smeraldo con party vuoto spawnava glitch all'uscita).
-            // Debug: la memoria segue la mano (strip si svuota), il disco
-            // tiene l'ultimo party valido; l'exit-hook offrira il Caterpie.
-            if (compact.empty()) {
-                dsParty_[idx] = toWrite;
-                dirty_ = true; invalidateAllBoxCache();
-                DebugLog::line("setPartySlot GBA: party emptied in memory, disk keeps last valid party");
-                return;
-            }
+            // (Il caso compact vuoto e intercettato dal guard universale sopra:
+            // qui compact non e mai vuoto, count 0 mai scritto.)
             for (int slot = 0; slot < 2; slot++) {
                 long co = gbaLargeToRaw(static_cast<size_t>(gbaPartyLargeOff_), slot);
                 if (co >= 0)
@@ -780,6 +790,20 @@ const std::vector<Pokemon>& SaveFile::getCachedBox(int box) const {
 
     DebugLog::line("getCachedBox: box=%d engine=%s", box,
                    useOpenHome() ? "OH" : "PK");
+
+    // Mai cachare il vuoto: senza dati (load fallito, gioco cambiato a meta)
+    // servi uno scratch non cachato — evita viste "box vuoto" appiccicose
+    // che restano fino al prossimo invalidate (Smeraldo 2026-09-09: box
+    // apparso solo dopo click in banca).
+    bool haveData = (boxData_ != nullptr && boxDataLen_ > 0) ||
+        (useOpenHome() && saveHandleRust_ &&
+         openhome_get_box_count(saveHandleRust_.get()) > 0);
+    if (!haveData) {
+        thread_local std::vector<Pokemon> scratch;
+        scratch.assign(slotsPerBox_ > 0 ? slotsPerBox_ : 30, Pokemon{});
+        for (auto& p : scratch) p.gameType_ = gameType_;
+        return scratch;
+    }
 
     // Evict oldest if cache is full
     if (static_cast<int>(boxCache_.size()) >= BOX_CACHE_MAX)
