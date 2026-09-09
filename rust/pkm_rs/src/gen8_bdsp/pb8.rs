@@ -326,7 +326,9 @@ impl Pb8 {
 
     pub fn calculate_stats(&self) -> Stats16Le {
         helpers::calculate_stats_modern(
-            MetadataSource::SwordShield,
+            // OUR FIX (same upstream divergence as try_new above): BDSP
+            // base stats come from the Sinnoh tables, not Galar's.
+            MetadataSource::DiamondPearl,
             self.species_and_form.0,
             &self.ivs,
             &self.evs,

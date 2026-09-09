@@ -35,8 +35,14 @@ pub struct Pb8SpeciesAndForm(SpeciesForm);
 
 impl Pb8SpeciesAndForm {
     fn try_new(species_and_form: SpeciesForm) -> Option<Self> {
+        // OUR FIX (diverges from upstream OpenHome, candidate for PR):
+        // upstream gates BDSP on the SwordShield table, wrongly rejecting
+        // ~90 Sinnoh-dex mons absent from Galar (Pidgey, Chimchar, Staravia
+        // — proven by blanket transfer matrix). BDSP holds the full Sinnoh
+        // dex 1-493 with no new forms, so the DiamondPearl table is the
+        // correct dex model (same data PKHeX/HOME enforce).
         if source_has_form_metadata(
-            MetadataSource::SwordShield,
+            MetadataSource::DiamondPearl,
             species_and_form.get_ndex() as u16,
             species_and_form.get_forme_index(),
         ) {
