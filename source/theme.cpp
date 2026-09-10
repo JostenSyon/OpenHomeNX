@@ -397,3 +397,21 @@ void saveZoomGrow(const std::string& basePath, int grow) {
     std::fwrite(&v, 1, 1, f);
     std::fclose(f);
 }
+
+int loadGameSelectorLayout(const std::string& basePath) {
+    FILE* f = std::fopen((basePath + "gallery.cfg").c_str(), "rb");
+    if (!f) return 0; // 0 = Classico di default
+    uint8_t v = 0;
+    if (std::fread(&v, 1, 1, f) != 1) v = 0;
+    std::fclose(f);
+    return (v > 1) ? 0 : v;
+}
+
+void saveGameSelectorLayout(const std::string& basePath, int layout) {
+    if (layout < 0 || layout > 1) layout = 0;
+    FILE* f = std::fopen((basePath + "gallery.cfg").c_str(), "wb");
+    if (!f) return;
+    uint8_t v = static_cast<uint8_t>(layout);
+    std::fwrite(&v, 1, 1, f);
+    std::fclose(f);
+}

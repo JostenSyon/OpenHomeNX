@@ -234,6 +234,9 @@ namespace StrKey {
     constexpr const char* SetTheme        = "set_theme";
     constexpr const char* SetLanguage     = "set_language";
     constexpr const char* SetZoom         = "set_zoom";
+    constexpr const char* SetGalleryLayout = "set_gallery_layout";
+    constexpr const char* LayoutClassic    = "layout_classic";
+    constexpr const char* LayoutGallery    = "layout_gallery";
     constexpr const char* SetCore         = "set_core";
     constexpr const char* SetCoreOh       = "set_core_oh";
     constexpr const char* SetCorePk       = "set_core_pk";

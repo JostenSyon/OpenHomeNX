@@ -79,3 +79,8 @@ int  loadThemeIndex(const std::string& basePath);
 void saveThemeIndex(const std::string& basePath, int index);
 int  loadZoomGrow(const std::string& basePath);
 void saveZoomGrow(const std::string& basePath, int grow);
+
+// Layout selettore giochi (0 = Classico, 1 = Galleria). Stesso schema a
+// singolo byte di theme.cfg/zoom.cfg.
+int  loadGameSelectorLayout(const std::string& basePath);
+void saveGameSelectorLayout(const std::string& basePath, int layout);

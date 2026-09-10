@@ -562,6 +562,7 @@ void UI::loadGameIcons() {
 
         SDL_Surface* surf = IMG_Load(cachePath.c_str());
         if (surf) DebugLog::line("icons: %s surf %dx%d", gameInfo(game).gameTag, surf->w, surf->h);
+        if (surf) gameAccentCache_[game] = computeAccentColor(surf);
         if (surf) {
             if (SDL_Surface* rr = roundCornersSurface(surf, std::min(surf->w, surf->h) / 12)) {
                 SDL_FreeSurface(surf);
@@ -651,6 +652,7 @@ void UI::loadGameIcons() {
             if (!rw)
                 continue;
             SDL_Surface* surf = IMG_Load_RW(rw, 1);
+            if (surf) gameAccentCache_[game] = computeAccentColor(surf);
             if (surf) {
                 if (SDL_Surface* rr = roundCornersSurface(surf, std::min(surf->w, surf->h) / 12)) {
                     SDL_FreeSurface(surf);
@@ -681,6 +683,7 @@ void UI::freeGameIcons() {
             SDL_DestroyTexture(tex);
     }
     gameIconCache_.clear();
+    gameAccentCache_.clear();
 }
 
 // --- Game Selector ---
@@ -737,6 +740,10 @@ void UI::drawGameSelectorFrame() {
     }
     }
 
+    int totalPages = 1; // Galleria: nessuna paginazione (lista scorrevole unica)
+    if (gameSelectorLayout_ == GameSelectorLayout::Gallery) {
+        drawGameList_Gallery();
+    } else {
     int numGames = (int)availableGames_.size();
     constexpr int COLS = 6;
     constexpr int ROWS_PER_PAGE = 2;
@@ -746,7 +753,7 @@ void UI::drawGameSelectorFrame() {
     constexpr int CARD_GAP = 20;
     constexpr int ICON_SIZE = 128;
 
-    int totalPages = (numGames + GAMES_PER_PAGE - 1) / GAMES_PER_PAGE;
+    totalPages = (numGames + GAMES_PER_PAGE - 1) / GAMES_PER_PAGE;
     // Slide orizzontale tipo Switch: la pagina disegnata insegue il target.
     // Fase 1 (selPageShown_ != target): vecchia esce verso -dir.
     // Allo swap l'offset salta sul lato opposto e la nuova rientra verso 0.
@@ -1031,6 +1038,8 @@ void UI::drawGameSelectorFrame() {
                          T().textDim, fontSmall_);
     }
 
+    }
+
     // Riga bassa: zaino (sx, fisso) + banche (centro, fisso) + espelli USB
     // (dx, animato). Etichetta banche solo quando evidenziata.
     {
@@ -1231,7 +1240,8 @@ void UI::selectorTap(float px, float py, bool& running) {
     }
     // Frecce pagine
     int numGames = (int)availableGames_.size();
-    int totalPages = (numGames + 12 - 1) / 12;
+    int totalPages = (gameSelectorLayout_ == GameSelectorLayout::Gallery)
+                    ? 1 : (numGames + 12 - 1) / 12;
     if (totalPages > 1) {
         if (dist2(px, py, 34, SCREEN_H / 2) < 34 * 34 && gameSelPage_ > 0) {
             gameSelPage_--;
@@ -1251,6 +1261,10 @@ void UI::selectorTap(float px, float py, bool& running) {
             markDirty();
             return;
         }
+    }
+    if (gameSelectorLayout_ == GameSelectorLayout::Gallery) {
+        selectorTapGallery(px, py, running);
+        return;
     }
     // Card giochi (stesso layout del draw)
     constexpr int COLS = 6, CARD_W = 160, CARD_H = 200, CARD_GAP = 20;
@@ -1341,9 +1355,10 @@ void UI::handleGameSelectorInput(bool& running) {
     int numGames = (int)availableGames_.size();
     if (numGames == 0) return;
 
-    constexpr int COLS = 6;
+    const bool gallerySel_ = (gameSelectorLayout_ == GameSelectorLayout::Gallery);
+    const int COLS = gallerySel_ ? 1 : 6;
 
-    constexpr int GAMES_PER_PAGE = 12;
+    const int GAMES_PER_PAGE = gallerySel_ ? numGames : 12;
 
     int totalPages = (numGames + GAMES_PER_PAGE - 1) / GAMES_PER_PAGE;
 
@@ -3048,7 +3063,7 @@ bool UI::writeUpdateCfgUrl(const std::string& basePath, const std::string& url) 
 int UI::settingsRowCount(int cat) const {
     switch (cat) {
         case 0: return 1; // Utente predefinito
-        case 1: return 3; // Tema, Lingua, Zoom
+        case 1: return 4; // Tema, Lingua, Zoom, Layout selettore
         case 2: return 1; // Core
         case 3: return 4; // Cartelle, Scansiona, Max, Pulisci
         case 4: {
@@ -3068,7 +3083,8 @@ std::string UI::settingsRowLabel(int cat, int row) const {
     if (cat == 1) {
         if (row == 0) return i18n::get(StrKey::SetTheme);
         if (row == 1) return i18n::get(StrKey::SetLanguage);
-        return i18n::get(StrKey::SetZoom);
+        if (row == 2) return i18n::get(StrKey::SetZoom);
+        return i18n::get(StrKey::SetGalleryLayout);
     }
     if (cat == 2) return i18n::get(StrKey::SetCore);
     if (cat == 3) {
@@ -3099,7 +3115,9 @@ std::string UI::settingsRowValue(int cat, int row) {
     if (cat == 1) {
         if (row == 0) return getThemeName(themeIndex_);
         if (row == 1) return langDisplayName(i18n::currentLang());
-        return std::to_string(zoomGrow_) + "px";
+        if (row == 2) return std::to_string(zoomGrow_) + "px";
+        return (gameSelectorLayout_ == GameSelectorLayout::Gallery)
+             ? i18n::get(StrKey::LayoutGallery) : i18n::get(StrKey::LayoutClassic);
     }
     if (cat == 2)
         return useOpenHome() ? i18n::get(StrKey::SetCoreOh) : i18n::get(StrKey::SetCorePk);
@@ -3232,7 +3250,7 @@ void UI::settingsRowActivate(int cat, int row, int dir, bool& running) {
                 FILE* f = std::fopen((basePath_ + "language.txt").c_str(), "w");
                 if (f) { std::fputs(nl.c_str(), f); std::fclose(f); }
             }
-        } else {
+        } else if (row == 2) {
             static const int STEPS[] = {0, 4, 8, 12, 16};
             int i = 0;
             for (; i < 5; i++)
@@ -3243,6 +3261,17 @@ void UI::settingsRowActivate(int cat, int row, int dir, bool& running) {
             if (ni > 4) ni = 4;
             zoomGrow_ = STEPS[ni];
             saveZoomGrow(basePath_, zoomGrow_);
+        } else {
+            // Layout selettore giochi: solo 2 valori, qualunque dir alterna.
+            gameSelectorLayout_ = (gameSelectorLayout_ == GameSelectorLayout::Classic)
+                ? GameSelectorLayout::Gallery : GameSelectorLayout::Classic;
+            saveGameSelectorLayout(basePath_, (int)gameSelectorLayout_);
+            // GAMES_PER_PAGE cambia con il layout: azzera pagina/slide per
+            // evitare un pageStart stale (pagina vuota) al prossimo draw.
+            gameSelPage_ = 0;
+            selPageShown_ = 0;
+            selSlide_ = 0.0f;
+            gameSelOnChevron_ = 0;
         }
     } else if (cat == 2) {
         setCryptoEngine(useOpenHome() ? CryptoEngine::PK : CryptoEngine::OH);

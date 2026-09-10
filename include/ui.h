@@ -219,6 +219,11 @@ private:
     static constexpr int BV_PREVIEW_PAD  = 8;
     static constexpr int BV_PREVIEW_HDR  = 22;
 
+    // Layout selettore giochi (Classico = griglia storica, Galleria = lista
+    // + anteprima grande). Persistito in gallery.cfg, vedi theme.h/.cpp.
+    enum class GameSelectorLayout : int { Classic = 0, Gallery = 1 };
+    GameSelectorLayout gameSelectorLayout_ = GameSelectorLayout::Classic;
+
     // Theme
     int themeIndex_ = DEFAULT_THEME_INDEX;
     const Theme* theme_ = nullptr;
@@ -479,6 +484,10 @@ private:
     bool bankRightCrossGen_ = false;  // right-panel bank selector showing ALL games (cross-gen), normal mode
     std::vector<GameType> availableGames_;
     std::unordered_map<GameType, SDL_Texture*> gameIconCache_;
+    // Colore medio della cover (campionato una volta al caricamento in
+    // loadGameIcons()): sfondo "vetro" della vista Galleria.
+    std::unordered_map<GameType, SDL_Color> gameAccentCache_;
+    SDL_Color computeAccentColor(SDL_Surface* surf) const;
     std::unordered_map<GameType, int> gameBankCounts_;
     void refreshBankCounts();
     void loadGameIcons();
@@ -613,6 +622,10 @@ private:
     // Game selector
     void drawGameSelectorFrame();
     void handleGameSelectorInput(bool& running);
+    // Vista Galleria (source/ui_gallery.cpp): lista + anteprima grande,
+    // alternativa alla griglia Classica scelta in Impostazioni > Aspetto.
+    void drawGameList_Gallery();
+    void selectorTapGallery(float px, float py, bool& running);
     void selectGame(GameType game, int occurrence = 0);
     std::string buildBackupDir(GameType game) const;
     bool saveBankFiles();
