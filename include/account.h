@@ -12,6 +12,7 @@ struct UserProfile {
     std::string pathSafeName;
     AccountUid uid{};
     SDL_Texture* iconTexture = nullptr;
+    SDL_Texture* iconTextureRound = nullptr; // maschera circolare (home)
 };
 
 class AccountManager {

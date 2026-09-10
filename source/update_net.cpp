@@ -137,6 +137,7 @@ std::string sha256HexBuf(const uint8_t* data, size_t len) {
     return s;
 }
 
+
 std::string toLower(std::string s) {
     for (char& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
     return s;
@@ -144,8 +145,51 @@ std::string toLower(std::string s) {
 
 } // namespace
 
+std::string sha256HexFile(const std::string& path) {
+    FILE* f = std::fopen(path.c_str(), "rb");
+    if (!f) return "";
+    mbedtls_sha256_context ctx;
+    mbedtls_sha256_init(&ctx);
+    mbedtls_sha256_starts_ret(&ctx, 0);
+    unsigned char buf[65536];
+    size_t n = 0;
+    bool ok = true;
+    while ((n = std::fread(buf, 1, sizeof(buf), f)) > 0) {
+        if (mbedtls_sha256_update_ret(&ctx, buf, n) != 0) { ok = false; break; }
+    }
+    if (std::ferror(f)) ok = false;
+    std::fclose(f);
+    if (!ok) { mbedtls_sha256_free(&ctx); return ""; }
+    unsigned char out[32];
+    mbedtls_sha256_finish_ret(&ctx, out);
+    mbedtls_sha256_free(&ctx);
+    static const char* hex = "0123456789abcdef";
+    std::string s;
+    s.reserve(64);
+    for (unsigned char b : out) { s += hex[b >> 4]; s += hex[b & 0xF]; }
+    return s;
+}
+
 bool updateNetAvailable() { return g_netReady; }
 void updateNetSetReady(bool ready) { g_netReady = ready; }
+
+bool updateNetEnsureReady() {
+    static bool curlDone = false;
+    if (!g_netReady) {
+        Result rc = socketInitializeDefault();
+        g_netReady = R_SUCCEEDED(rc);
+        DebugLog::line("update-net: retry socket -> 0x%08X (%s)", (unsigned)rc,
+                       g_netReady ? "on" : "off");
+    }
+    if (g_netReady && !curlDone) {
+        if (curl_global_init(CURL_GLOBAL_DEFAULT) != CURLE_OK) {
+            g_netReady = false;
+            return false;
+        }
+        curlDone = true;
+    }
+    return g_netReady;
+}
 
 // Poll throttled dello stato link via nifm (nifm:u). Lazy-init: se nifm non si
 // apre, resta OFF e riprova al poll successivo. Mai fatale, mai bloccante.

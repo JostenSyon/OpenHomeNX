@@ -1,4 +1,5 @@
 #include "ui.h"
+#include "ui_util.h"
 #include "i18n.h"
 #include "crypto_engine.h"
 #include "debug_log.h"
@@ -101,6 +102,11 @@ void UI::freeSprites() {
     if (iconVault_)        { SDL_DestroyTexture(iconVault_);        iconVault_ = nullptr; }
     if (iconEject_)        { SDL_DestroyTexture(iconEject_);        iconEject_ = nullptr; }
     if (iconSettings_)     { SDL_DestroyTexture(iconSettings_);     iconSettings_ = nullptr; }
+    if (iconWifi_)         { SDL_DestroyTexture(iconWifi_);         iconWifi_ = nullptr; }
+    if (iconLan_)          { SDL_DestroyTexture(iconLan_);          iconLan_ = nullptr; }
+    if (iconDebug_)        { SDL_DestroyTexture(iconDebug_);        iconDebug_ = nullptr; }
+    if (iconArrow_)        { SDL_DestroyTexture(iconArrow_);        iconArrow_ = nullptr; }
+    if (iconPack_)         { SDL_DestroyTexture(iconPack_);         iconPack_ = nullptr; }
 }
 
 SDL_Texture* UI::getRibbonSprite(const std::string& filename) {
@@ -149,12 +155,106 @@ void UI::drawRect(int x, int y, int w, int h, SDL_Color color) {
     SDL_RenderFillRect(renderer_, &r);
 }
 
+// Base rotonda stile card giochi (stessi colori T(): panelBg sempre,
+// menuHighlight + anello cursor quando focused) — cosi i pulsanti tondi
+// seguono tutti i temi come le card.
+void UI::drawRoundSelect(int cx, int cy, int r, bool focused) {
+    auto disc = [&](int rr, SDL_Color c) {
+        SDL_SetRenderDrawColor(renderer_, c.r, c.g, c.b, c.a);
+        for (int dy = -rr; dy <= rr; dy++) {
+            int dx = static_cast<int>(std::sqrt((double)(rr * rr - dy * dy)));
+            SDL_RenderDrawLine(renderer_, cx - dx, cy + dy, cx + dx, cy + dy);
+        }
+    };
+    if (focused) {
+        disc(r + 6, T().menuHighlight);
+        disc(r + 3, T().cursor);
+    }
+    disc(r, T().panelBg);
+}
+
 void UI::drawRectOutline(int x, int y, int w, int h, SDL_Color color, int thickness) {
     SDL_SetRenderDrawColor(renderer_, color.r, color.g, color.b, color.a);
     for (int t = 0; t < thickness; t++) {
         SDL_Rect r = {x + t, y + t, w - 2*t, h - 2*t};
         SDL_RenderDrawRect(renderer_, &r);
     }
+}
+
+// Rettangolo arrotondato pieno (stile card giochi): corpo + 4 dischi angolo.
+void UI::drawRoundRect(int x, int y, int w, int h, int r, SDL_Color color) {
+    if (r < 0) r = 0;
+    if (r * 2 > w) r = w / 2;
+    if (r * 2 > h) r = h / 2;
+    SDL_SetRenderDrawColor(renderer_, color.r, color.g, color.b, color.a);
+    SDL_Rect hbar = {x + r, y, w - 2 * r, h};
+    SDL_RenderFillRect(renderer_, &hbar);
+    SDL_Rect vbar = {x, y + r, w, h - 2 * r};
+    SDL_RenderFillRect(renderer_, &vbar);
+    for (int dy = -r; dy <= r; dy++) {
+        int dx = static_cast<int>(std::sqrt((double)(r * r - dy * dy)));
+        SDL_RenderDrawLine(renderer_, x + r - dx, y + r + dy, x + r + dx, y + r + dy);
+        SDL_RenderDrawLine(renderer_, x + w - r - dx, y + r + dy, x + w - r + dx, y + r + dy);
+        SDL_RenderDrawLine(renderer_, x + r - dx, y + h - r + dy, x + r + dx, y + h - r + dy);
+        SDL_RenderDrawLine(renderer_, x + w - r - dx, y + h - r + dy, x + w - r + dx, y + h - r + dy);
+    }
+}
+
+// Bordo arrotondato: spigoli + 4 archi come polilinee (matematica esatta).
+void UI::drawRoundRectOutline(int x, int y, int w, int h, int r, SDL_Color color, int thickness) {
+    if (r < 0) r = 0;
+    SDL_SetRenderDrawColor(renderer_, color.r, color.g, color.b, color.a);
+    auto arc = [&](int cx, int cy, double a0, double a1, int rr) {
+        const int STEPS = 12;
+        int px = 0, py = 0;
+        for (int i = 0; i <= STEPS; i++) {
+            double a = (a0 + (a1 - a0) * i / STEPS) * 3.14159265 / 180.0;
+            int qx = cx + static_cast<int>(rr * std::cos(a));
+            int qy = cy + static_cast<int>(rr * std::sin(a));
+            if (i > 0) SDL_RenderDrawLine(renderer_, px, py, qx, qy);
+            px = qx;
+            py = qy;
+        }
+    };
+    for (int t = 0; t < thickness; t++) {
+        int rr = r - t;
+        if (rr < 0) rr = 0;
+        int xx = x + t, yy = y + t, ww = w - 2 * t, hh = h - 2 * t;
+        if (ww <= 0 || hh <= 0) break;
+        SDL_RenderDrawLine(renderer_, xx + rr, yy, xx + ww - rr, yy);
+        SDL_RenderDrawLine(renderer_, xx + rr, yy + hh, xx + ww - rr, yy + hh);
+        SDL_RenderDrawLine(renderer_, xx, yy + rr, xx, yy + hh - rr);
+        SDL_RenderDrawLine(renderer_, xx + ww, yy + rr, xx + ww, yy + hh - rr);
+        arc(xx + rr, yy + rr, 180.0, 270.0, rr);
+        arc(xx + ww - rr, yy + rr, 270.0, 360.0, rr);
+        arc(xx + rr, yy + hh - rr, 90.0, 180.0, rr);
+        arc(xx + ww - rr, yy + hh - rr, 0.0, 90.0, rr);
+    }
+}
+
+// Copia con angoli arrotondati (raggio proporzionale): per le texture delle card.
+SDL_Surface* roundCornersSurface(SDL_Surface* src, int radius) {
+    if (!src) return nullptr;
+    SDL_Surface* rgba = SDL_ConvertSurfaceFormat(src, SDL_PIXELFORMAT_RGBA32, 0);
+    if (!rgba) return nullptr;
+    int w = rgba->w, h = rgba->h;
+    if (radius * 2 > w) radius = w / 2;
+    if (radius * 2 > h) radius = h / 2;
+    SDL_LockSurface(rgba);
+    Uint32* px = (Uint32*)rgba->pixels;
+    int stride = rgba->pitch / 4;
+    auto inside = [&](int x, int y) {
+        // dentro se non nei quadrati d'angolo fuori dal quarto di cerchio
+        int cx = x < radius ? radius - x : (x >= w - radius ? x - (w - radius) : -1);
+        int cy = y < radius ? radius - y : (y >= h - radius ? y - (h - radius) : -1);
+        if (cx < 0 || cy < 0) return true;
+        return cx * cx + cy * cy <= radius * radius;
+    };
+    for (int y = 0; y < h; y++)
+        for (int x = 0; x < w; x++)
+            if (!inside(x, y)) px[y * stride + x] &= 0x00FFFFFF;
+    SDL_UnlockSurface(rgba);
+    return rgba;
 }
 
 static uint32_t packColor(SDL_Color c) {
@@ -1055,22 +1155,22 @@ void UI::drawDetailPopup(const Pokemon& pkm) {
 
 int UI::menuVisibleCount() const {
     // Layout voci: vedi labelsNormal/labelsApplet in drawMenuPopup().
-    // Indice 5 = Wondercard (solo se il gioco le supporta),
-    // indice 6 = Export Selected (solo se ci sono slot selezionati),
-    // indice 7 = Import PK files (sempre visibile),
-    // indice 8 (solo normal + debug) = Generate test mons,
-    // indice 9 (solo normal, mai dual) = Send current save (solo a save caricato).
+    // Indice 4 = Wondercard (solo se il gioco le supporta),
+    // indice 5 = Export Selected (solo se ci sono slot selezionati),
+    // indice 6 = Import PK files (sempre visibile),
+    // indice 7 (solo normal + debug) = Generate test mons,
+    // indice 8 (solo normal, mai dual) = Send current save (solo a save caricato).
     bool hasWC = gameInfo(selectedGame_).hasWondercards;
     bool hasExport = !selectedSlots_.empty();
     bool hasSend = !isDualBankMode() && save_.isLoaded();
     bool hasGen = DebugLog::enabled() && !isDualBankMode();
-    int allCount = isDualBankMode() ? 13 : 14;
+    int allCount = isDualBankMode() ? 12 : 13;
     int count = 0;
     for (int i = 0; i < allCount; i++) {
-        if (!hasWC && i == 5) continue;
-        if (!hasExport && i == 6) continue;
-        if (!hasGen && !isDualBankMode() && i == 8) continue;
-        if (!hasSend && !isDualBankMode() && i == 9) continue;
+        if (!hasWC && i == 4) continue;
+        if (!hasExport && i == 5) continue;
+        if (!hasGen && !isDualBankMode() && i == 7) continue;
+        if (!hasSend && !isDualBankMode() && i == 8) continue;
         count++;
     }
     return count;
@@ -1081,7 +1181,7 @@ void UI::drawMenuPopup() {
     drawRect(0, 0, SCREEN_W, SCREEN_H, T().overlay);
 
     // Menu items differ by mode and game
-    // SV/SwSh games get a "Wondercard" item after Search — +1 Crypto (M3d) +1 Gen (M6a)
+    // SV/SwSh games get a "Wondercard" item after Search — +1 Crypto (M3d)
     bool hasWC = gameInfo(selectedGame_).hasWondercards;
     bool hasExport = !selectedSlots_.empty();
     // "Send current save": solo a save caricato e mai in dual-bank.
@@ -1094,14 +1194,11 @@ void UI::drawMenuPopup() {
         std::snprintf(exportBuf, sizeof(exportBuf), "%s", i18n::fmt(StrKey::MenuExportSelected, std::to_string((int)selectedSlots_.size())).c_str());
     static char cryptoBuf[32];
     std::snprintf(cryptoBuf, sizeof(cryptoBuf), "Crypto: %s", useOpenHome() ? "OpenHome" : "pkHouse");
-    static char genBuf[32];
-    std::snprintf(genBuf, sizeof(genBuf), "Target Gen: %d", targetGen_);
 
     const std::string labelsNormal[] = {
         i18n::get(StrKey::MenuTheme),
         i18n::get(StrKey::MenuLanguage),
         cryptoBuf,
-        genBuf,
         i18n::get(StrKey::MenuSearch),
         i18n::get(StrKey::MenuWondercard),
         exportBuf,
@@ -1117,7 +1214,6 @@ void UI::drawMenuPopup() {
         i18n::get(StrKey::MenuTheme),
         i18n::get(StrKey::MenuLanguage),
         cryptoBuf,
-        genBuf,
         i18n::get(StrKey::MenuSearch),
         i18n::get(StrKey::MenuWondercard),
         exportBuf,
@@ -1131,13 +1227,13 @@ void UI::drawMenuPopup() {
     // Build label list, skipping conditional items — menuCount = vi
     std::string visibleLabels[15];
     const std::string* allLabels = isDualBankMode() ? labelsApplet : labelsNormal;
-    int allCount = isDualBankMode() ? 13 : 14;
+    int allCount = isDualBankMode() ? 12 : 13;
     int vi = 0;
     for (int i = 0; i < allCount; i++) {
-        if (!hasWC && i == 5) continue;
-        if (!hasExport && i == 6) continue;
-        if (!hasGen && !isDualBankMode() && i == 8) continue;
-        if (!hasSend && !isDualBankMode() && i == 9) continue;
+        if (!hasWC && i == 4) continue;
+        if (!hasExport && i == 5) continue;
+        if (!hasGen && !isDualBankMode() && i == 7) continue;
+        if (!hasSend && !isDualBankMode() && i == 8) continue;
         visibleLabels[vi++] = allLabels[i];
     }
     int menuCount = vi;
@@ -1336,39 +1432,6 @@ void UI::drawLanguageSelectorPopup() {
         }
         std::string label = langDisplayName(langList_[i]);
         if (langList_[i] == i18n::currentLang()) label = "* " + label + " *";
-        drawTextCentered(label, popX + POP_W / 2, rowY + (rowH - 4) / 2, T().text, font_);
-    }
-
-    drawTextCentered(i18n::get(StrKey::ASelectBCancel), popX + POP_W / 2, popY + POP_H - 18, T().textDim, fontSmall_);
-}
-
-void UI::drawGenSelectorPopup() {
-    drawRect(0, 0, SCREEN_W, SCREEN_H, T().overlay);
-
-    constexpr int POP_W = 380;
-    constexpr int GEN_COUNT = 7;
-    int POP_H = 50 + GEN_COUNT * 36 + 30;
-    int popX = (SCREEN_W - POP_W) / 2;
-    int popY = (SCREEN_H - POP_H) / 2;
-
-    drawRect(popX, popY, POP_W, POP_H, T().panelBg);
-    drawRectOutline(popX, popY, POP_W, POP_H, T().cursor, 2);
-
-    drawTextCentered("Target Generation", popX + POP_W / 2, popY + 22, T().text, font_);
-
-    int rowH = 36;
-    int startY = popY + 50;
-
-    for (int i = 0; i < GEN_COUNT; i++) {
-        int rowY = startY + i * rowH;
-        if (i == genSelCursor_) {
-            drawRect(popX + 20, rowY, POP_W - 40, rowH - 4, T().menuHighlight);
-            drawRectOutline(popX + 20, rowY, POP_W - 40, rowH - 4, T().cursor, 2);
-        }
-        char buf[16];
-        std::snprintf(buf, sizeof(buf), "Gen %d", GEN_LIST[i]);
-        std::string label = buf;
-        if (GEN_LIST[i] == targetGen_) label = "* " + label + " *";
         drawTextCentered(label, popX + POP_W / 2, rowY + (rowH - 4) / 2, T().text, font_);
     }
 

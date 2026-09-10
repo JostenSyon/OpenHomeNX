@@ -28,3 +28,4 @@ package-lock.json
 /dist/
 include/app_version.h
 update.cfg
+.build-variant

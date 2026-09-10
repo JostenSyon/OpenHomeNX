@@ -159,7 +159,7 @@ void UI::handleMenuInput(const SDL_Event& event, bool& running) {
     if (menuSelection_ >= menuCount) menuSelection_ = menuCount - 1;
     if (menuSelection_ < 0) menuSelection_ = 0;
     auto menuConfirm = [&]() {
-        // 0=Theme, 1=Language, 2=Crypto, 3=Gen (M6a), 4=Search
+        // 0=Theme, 1=Language, 2=Crypto, 3=Search
         if (menuSelection_ == 0) {
             showThemeSelector_ = true;
             themeSelCursor_ = themeIndex_;
@@ -183,12 +183,6 @@ void UI::handleMenuInput(const SDL_Event& event, bool& running) {
             return;
         }
         if (menuSelection_ == 3) {
-            // Gen selector (M6a) — apri popup
-            for (int i = 0; i < 7; i++) if (GEN_LIST[i] == targetGen_) { genSelCursor_ = i; break; }
-            showGenSelector_ = true;
-            return;
-        }
-        if (menuSelection_ == 4) {
             showMenu_ = false;
             showSearchFilter_ = true;
             searchFilterCursor_ = 0;
@@ -196,8 +190,8 @@ void UI::handleMenuInput(const SDL_Event& event, bool& running) {
             clearSearchHighlight();
             return;
         }
-        // Wondercard (index 5) for SV/SwSh games (shifted +2 per Crypto+Gen)
-        if (hasWC && menuSelection_ == 5) {
+        // Wondercard (index 4) for SV/SwSh games (shifted +1 per Crypto)
+        if (hasWC && menuSelection_ == 4) {
             showMenu_ = false;
             wcList_ = scanWondercards(basePath_, selectedGame_);
             wcListCursor_ = 0;
@@ -206,7 +200,7 @@ void UI::handleMenuInput(const SDL_Event& event, bool& running) {
             return;
         }
         // Export Selected (after Wondercard)
-        int exportIdx = hasWC ? 6 : 5;
+        int exportIdx = hasWC ? 5 : 4;
         if (hasExport && menuSelection_ == exportIdx) {
             showMenu_ = false;
             int exported = 0;
@@ -254,7 +248,7 @@ void UI::handleMenuInput(const SDL_Event& event, bool& running) {
             std::string err;
             if (!readMainMenuUpdateCfg(basePath_, url, token) || url.empty()) {
                 showMessageAndWait(i18n::get(StrKey::SendSaveTitle), i18n::get(StrKey::SendSaveNoUrl));
-            } else if (!updateNetAvailable()) {
+            } else if (!updateNetEnsureReady()) {
                 showMessageAndWait(i18n::get(StrKey::SendSaveTitle), i18n::get(StrKey::SendSaveNetOff));
             } else {
                 showWorking(i18n::fmt(StrKey::SendSaveUploading, gameInfo(selectedGame_).gameTag));
@@ -265,7 +259,7 @@ void UI::handleMenuInput(const SDL_Event& event, bool& running) {
             }
             return;
         }
-        int sel = menuSelection_ - (hasWC ? 6 : 5) - (hasExport ? 1 : 0) - 1 - (hasGen ? 1 : 0) - (hasSend ? 1 : 0);
+        int sel = menuSelection_ - (hasWC ? 5 : 4) - (hasExport ? 1 : 0) - 1 - (hasGen ? 1 : 0) - (hasSend ? 1 : 0);
         if (isDualBankMode()) {
             // sel: 0=Switch Left Bank, 1=Switch Right Bank, 2=Change Game,
             // 3=Save Banks, 4=Quit

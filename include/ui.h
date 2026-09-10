@@ -27,13 +27,13 @@ enum class AppScreen { ProfileSelector, GameSelector, BankSelector, MainView };
 enum class TextInputPurpose {
     CreateBank, RenameBank, RenameBoxName,
     SearchSpecies, SearchOT, SearchLevelMin, SearchLevelMax,
-    ImportPathEntry
+    ImportPathEntry, EditUpdateUrl
 };
 
 // Rows of the "+" game-selector menu. A single list drives both the popup's
 // draw order and its input handling — the old parallel hardcoded row-count
 // arithmetic (see v0.1.37's alignment bug) drifts every time a row is added.
-enum class GameSelMenuAction { SwitchCore, DebugLog, SendLog, SendSave, ImportSettings, CheckUpdate, Exit };
+enum class GameSelMenuAction { SwitchCore, DebugLog, SendLog, SendSave, ImportSettings, CheckUpdate, OpenSettings, Exit };
 
 // Search filter enums
 enum class GenderFilter { Any, Male, Female, Genderless };
@@ -168,6 +168,12 @@ private:
     SDL_Texture* iconVault_        = nullptr; // cassaforte rotonda "tutte le banche"
     SDL_Texture* iconEject_        = nullptr; // espulsione sicura USB
     SDL_Texture* iconSettings_     = nullptr; // ingranaggio impostazioni
+    SDL_Texture* iconWifi_         = nullptr; // stato rete in alto a dx
+    SDL_Texture* iconLan_          = nullptr; // cavo al posto del wifi
+    SDL_Texture* iconDebug_        = nullptr; // bug accanto al wifi con debug on
+    SDL_Texture* iconArrow_        = nullptr; // frecce pagine (dx ruotata 180)
+    SDL_Texture* iconPack_         = nullptr; // zaino eventi/strumenti (48px 1:1)
+    bool gameSelOnPack_ = false;      // cursore sullo zaino a sx delle banche
 
     // Game-selector logos for imported (titleId-less) games — see init()'s
     // loadLogo(). Keyed by GameType since there are only a handful of these.
@@ -275,15 +281,27 @@ private:
     // Counts same-type tiles before it (duplicates = same game, other device).
     int importedOccurrence(int cursor) const;
 
-    // Cross-gen transfer selector state (M6a)
-    bool showGenSelector_ = false;
-    int  genSelCursor_    = 0;
-    int  targetGen_       = 9;
-    static constexpr int GEN_LIST[7] = {3,4,5,6,7,8,9};
-
     // Game selector menu state (+ button: Switch Core / Debug log / Exit)
     bool showGameSelMenu_ = false;
     int  gameSelMenuCursor_ = 0;
+
+    // Pagina impostazioni (ingranaggio selettore): 6 sezioni con header.
+    bool showSettings_ = false;
+    bool importFromSettings_ = false; // chiudendo import torna alle impostazioni
+    int  setCat_ = 0; // 0 Utente, 1 Aspetto, 2 Motore, 3 Dati, 4 Update, 5 Debug, 6 Info
+    int zoomGrow_ = 12; // zoom card selezionata (px, step 4: niente aliasing)
+    int zoomCard_ = -2, zoomPrev_ = -2;
+    float zoomT_ = 1.0f;
+    int setRow_ = 0;
+    bool setFocusLeft_ = true; // true = colonna sezioni, false = righe destra
+    void openSettings();
+    int defaultUserIndex() const; // profilo da defaultuser.txt, -1 = chiedi
+    void drawSettingsPopup();
+    void handleSettingsInput(const SDL_Event& event, bool& running);
+    int settingsRowCount(int cat) const;
+    std::string settingsRowLabel(int cat, int row) const;
+    std::string settingsRowValue(int cat, int row);
+    void settingsRowActivate(int cat, int row, int dir, bool& running);
 
     // Debug save popup (Switch X sul gioco con debug on): Backup save /
     // Restore latest backup / Send save. Opera sullo stesso occurrence che
@@ -434,17 +452,28 @@ private:
     int gameSelCursor_ = 0;
     int gameSelPage_ = 0;
     bool gameSelOnAllBanks_ = false;  // cursor is on "View All Banks" option
+    bool gameSelOnAvatar_ = false;    // cursore sull'avatar utente in alto a sx
+    float touchStartX_ = 0, touchStartY_ = 0;
+    bool touchDown_ = false, touchMoved_ = false;
+    void selectorTap(float px, float py, bool& running);
     int gameSelOnChevron_ = 0;        // 0=none, -1=left chevron, 1=right chevron
     bool gameSelOnSettings_ = false;  // cursore sull'ingranaggio in basso a dx
     bool gameSelOnEject_ = false;     // cursore sull'icona espelli USB
     // Animazione pulsanti bassi: posizioni/alpha correnti -> target per frame.
-    float vaultBtnX_ = -1.0f;
     float ejectBtnX_ = -1.0f;
     float ejectBtnA_ = 0.0f;
     int ejectAnimStage_ = 0; // 0 idle, 1 fade eject dopo espulsione, 2 rientro vault
     int selPageShown_ = 0;   // pagina disegnata (segue gameSelPage_ con slide)
     float selSlide_ = 0.0f;  // offset slide in unita pagina (-1..1)
     void ejectUsbDevices();
+    void sendLogNow();
+    bool sendAvailable() const; // debug on + override url attivo
+    uint64_t prunePoolToCap(bool fileBacked); // tetto cumulativo, oldest-first
+    // update.cfg / update.cfg.off (sorgente update custom on/off)
+    static bool hasCustomUrlFile(const std::string& basePath);
+    static void findUpdateCfgFiles(const std::string& basePath, std::string& cfg, std::string& off);
+    static std::string customUrlAny(const std::string& basePath);
+    static bool writeUpdateCfgUrl(const std::string& basePath, const std::string& url);
     bool bottomButtonsAnim(); // true mentre lerp banche/eject non a target
     bool allBanksMode_ = false;       // entered bank selector via "View All Banks"
     bool bankRightCrossGen_ = false;  // right-panel bank selector showing ALL games (cross-gen), normal mode
@@ -620,7 +649,6 @@ private:
     void drawAboutPopup();
     void drawThemeSelectorPopup();
     void drawLanguageSelectorPopup();
-    void drawGenSelectorPopup();
     void drawGameSelMenuPopup();
     void drawSearchFilterPopup();
     void drawSearchResultsPopup();
@@ -642,6 +670,9 @@ private:
     void drawTextCentered(const std::string& text, int cx, int cy, SDL_Color color, TTF_Font* f);
     void drawRect(int x, int y, int w, int h, SDL_Color color);
     void drawRectOutline(int x, int y, int w, int h, SDL_Color color, int thickness);
+    void drawRoundRect(int x, int y, int w, int h, int r, SDL_Color color);
+    void drawRoundRectOutline(int x, int y, int w, int h, int r, SDL_Color color, int thickness);
+    void drawRoundSelect(int cx, int cy, int r, bool focused);
     void drawStatusBar(const std::string& msg);
 
     // Input handling

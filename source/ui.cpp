@@ -53,10 +53,6 @@ bool UI::init() {
         SDL_Quit();
         return false;
     }
-    // Filtro lineare per le texture scalate (icone 512 -> 48px): senza,
-    // SDL campiona nearest e le icone sgranano.
-    SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "1");
-
     SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_BLEND);
 
     // Load font
@@ -106,6 +102,11 @@ bool UI::init() {
         iconVault_       = loadIcon("safe.png");
         iconEject_       = loadIcon("eject.png");
         iconSettings_    = loadIcon("settings.png");
+        iconWifi_        = loadIcon("wifi.png");
+        iconLan_         = loadIcon("lan.png");
+        iconDebug_       = loadIcon("debug.png");
+        iconArrow_       = loadIcon("arrow.png");
+        iconPack_        = loadIcon("backpack.png");
     }
 
     // Game-selector logos for imported (titleId-less) games: no NS control
@@ -118,8 +119,13 @@ bool UI::init() {
             std::string path = std::string("romfs:/logos/") + name + ".png";
             SDL_Surface* s = IMG_Load(path.c_str());
             if (!s) return nullptr;
+            if (SDL_Surface* rr = roundCornersSurface(s, std::min(s->w, s->h) / 12)) {
+                SDL_FreeSurface(s);
+                s = rr;
+            }
             SDL_Texture* t = SDL_CreateTextureFromSurface(renderer_, s);
             SDL_FreeSurface(s);
+            if (t) SDL_SetTextureBlendMode(t, SDL_BLENDMODE_BLEND);
             return t;
         };
         gameLogoCache_[GameType::RUBY]     = loadLogo("Ruby");
@@ -129,14 +135,36 @@ bool UI::init() {
 
     // HD box art for the tiles (user-provided PNGs, aspect-preserved).
     // Tries .png first, then .jpg (RBY art ships as optimized jpg).
+    // Pre-ritagliate quadrate + angoli arrotondati: il draw ricampiona lo
+    // stesso quadrato centrale, cosi gli angoli restano tondi.
     {
+        auto prepSquare = [&](SDL_Surface* s) -> SDL_Surface* {
+            if (!s) return nullptr;
+            int side = std::min(s->w, s->h);
+            SDL_Surface* sq = SDL_CreateRGBSurfaceWithFormat(0, side, side, 32, SDL_PIXELFORMAT_RGBA32);
+            if (sq) {
+                SDL_Rect src = {(s->w - side) / 2, (s->h - side) / 2, side, side};
+                if (SDL_BlitSurface(s, &src, sq, nullptr) != 0) {
+                    SDL_FreeSurface(sq);
+                    sq = nullptr;
+                }
+            }
+            SDL_FreeSurface(s);
+            if (!sq) return nullptr;
+            if (SDL_Surface* rr = roundCornersSurface(sq, side / 12)) {
+                SDL_FreeSurface(sq);
+                sq = rr;
+            }
+            return sq;
+        };
         auto loadArt = [&](const char* name) -> SDL_Texture* {
             for (const char* ext : {".png", ".jpg"}) {
                 std::string path = std::string("romfs:/boxart/") + name + ext;
-                SDL_Surface* s = IMG_Load(path.c_str());
+                SDL_Surface* s = prepSquare(IMG_Load(path.c_str()));
                 if (!s) continue;
                 SDL_Texture* t = SDL_CreateTextureFromSurface(renderer_, s);
                 SDL_FreeSurface(s);
+                if (t) SDL_SetTextureBlendMode(t, SDL_BLENDMODE_BLEND);
                 if (t) return t;
             }
             return nullptr;
@@ -150,13 +178,30 @@ bool UI::init() {
     }
 
     // Tile backgrounds (user-provided). Missing file = flat color stays.
+    // Stesso pre-crop quadrato delle boxart (il draw ricampiona al centro).
     {
         auto loadBg = [&](const char* name) -> SDL_Texture* {
             std::string path = std::string("romfs:/backgrounds/") + name + ".png";
             SDL_Surface* s = IMG_Load(path.c_str());
             if (!s) return nullptr;
-            SDL_Texture* t = SDL_CreateTextureFromSurface(renderer_, s);
+            int side = std::min(s->w, s->h);
+            SDL_Surface* sq = SDL_CreateRGBSurfaceWithFormat(0, side, side, 32, SDL_PIXELFORMAT_RGBA32);
+            if (sq) {
+                SDL_Rect src = {(s->w - side) / 2, (s->h - side) / 2, side, side};
+                if (SDL_BlitSurface(s, &src, sq, nullptr) != 0) {
+                    SDL_FreeSurface(sq);
+                    sq = nullptr;
+                }
+            }
             SDL_FreeSurface(s);
+            if (!sq) return nullptr;
+            if (SDL_Surface* rr = roundCornersSurface(sq, side / 12)) {
+                SDL_FreeSurface(sq);
+                sq = rr;
+            }
+            SDL_Texture* t = SDL_CreateTextureFromSurface(renderer_, sq);
+            SDL_FreeSurface(sq);
+            if (t) SDL_SetTextureBlendMode(t, SDL_BLENDMODE_BLEND);
             return t;
         };
         tileBgCache_[GameType::EMERALD]  = loadBg("emerald");
@@ -518,6 +563,7 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
 
     // Load persisted theme
     themeIndex_ = loadThemeIndex(basePath_);
+    zoomGrow_ = loadZoomGrow(basePath_);
     theme_ = &getTheme(themeIndex_);
 
     // Load persisted crypto engine (PK/OH)
@@ -528,6 +574,8 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
     // always seeds basePath_+"import/" if the config is missing/empty).
     importPaths_ = loadImportPaths(basePath_);
     autoCheckUsb_ = loadAutoCheckUsb(basePath_);
+    for (auto& e : importPaths_)
+        DebugLog::line("boot: import path [%s] %s", e.enabled ? "on" : "off", e.path.c_str());
 
     // All games in menu order
     constexpr GameType allGames[] = {
@@ -575,7 +623,15 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
         runMark("prima profili");
         if (account_.init() && account_.loadProfiles(renderer_)) {
             runMark("profili pronti");
-            screen_ = AppScreen::ProfileSelector;
+            // Utente predefinito: salta il selettore profili (torna a chiedere
+            // se il profilo non esiste piu o non ha save).
+            int autoIdx = defaultUserIndex();
+            if (autoIdx >= 0) {
+                selectProfile(autoIdx);
+                DebugLog::line("boot: utente predefinito #%d", autoIdx);
+            }
+            if (autoIdx < 0 || availableGames_.empty())
+                screen_ = AppScreen::ProfileSelector;
         } else {
             runMark("no profili");
             screen_ = AppScreen::GameSelector;
@@ -628,6 +684,7 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
                 else if (screen_ == AppScreen::GameSelector) {
                     drawGameSelectorFrame();
                     if (showGameSelMenu_) drawGameSelMenuPopup();
+                    if (showSettings_) drawSettingsPopup();
                 if (showSaveMenu_) drawSaveMenuPopup();
                 if (showBackupList_) drawBackupListPopup();
                 }
@@ -701,6 +758,7 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
                 else if (screen_ == AppScreen::GameSelector) {
                     drawGameSelectorFrame();
                     if (showGameSelMenu_) drawGameSelMenuPopup();
+                    if (showSettings_) drawSettingsPopup();
                 if (showSaveMenu_) drawSaveMenuPopup();
                 if (showBackupList_) drawBackupListPopup();
                 }
@@ -764,6 +822,7 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
             else if (screen_ == AppScreen::GameSelector) {
                 drawGameSelectorFrame();
                 if (showGameSelMenu_) drawGameSelMenuPopup();
+                    if (showSettings_) drawSettingsPopup();
                 if (showSaveMenu_) drawSaveMenuPopup();
                 if (showBackupList_) drawBackupListPopup();
             }
@@ -836,6 +895,11 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
                             // profile reselect or USB hotplug, which isn't
                             // discoverable from this screen.
                             rescanImportedGames();
+                            if (importFromSettings_) {
+                                importFromSettings_ = false;
+                                showSettings_ = true; // torna dov'eri (cat/row intatti)
+                                markDirty();
+                            }
                             break;
                     }
                 }
@@ -858,6 +922,7 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
                 else if (screen_ == AppScreen::GameSelector) {
                     drawGameSelectorFrame();
                     if (showGameSelMenu_) drawGameSelMenuPopup();
+                    if (showSettings_) drawSettingsPopup();
                 if (showSaveMenu_) drawSaveMenuPopup();
                 if (showBackupList_) drawBackupListPopup();
                 }
@@ -932,90 +997,13 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
                 else if (screen_ == AppScreen::GameSelector) {
                     drawGameSelectorFrame();
                     if (showGameSelMenu_) drawGameSelMenuPopup();
+                    if (showSettings_) drawSettingsPopup();
                 if (showSaveMenu_) drawSaveMenuPopup();
                 if (showBackupList_) drawBackupListPopup();
                 }
                 else if (screen_ == AppScreen::BankSelector) drawBankSelectorFrame();
                 else drawFrame();
                 drawLanguageSelectorPopup();
-                SDL_RenderPresent(renderer_);
-                dirty_ = false;
-            }
-            SDL_Delay(16);
-            continue;
-        }
-
-        // Gen selector intercepts input from any screen (M6a)
-        if (showGenSelector_) {
-            SDL_Event event;
-            while (SDL_PollEvent(&event)) {
-                if (event.type == SDL_QUIT) { running = false; break; }
-                if (event.type == SDL_CONTROLLERAXISMOTION) {
-                    if (event.caxis.axis == SDL_CONTROLLER_AXIS_LEFTX ||
-                        event.caxis.axis == SDL_CONTROLLER_AXIS_LEFTY) {
-                        int16_t lx = SDL_GameControllerGetAxis(pad_, SDL_CONTROLLER_AXIS_LEFTX);
-                        int16_t ly = SDL_GameControllerGetAxis(pad_, SDL_CONTROLLER_AXIS_LEFTY);
-                        updateStick(lx, ly);
-                    }
-                }
-                if (event.type == SDL_CONTROLLERBUTTONDOWN) {
-                    markDirty();
-                    switch (event.cbutton.button) {
-                        case SDL_CONTROLLER_BUTTON_DPAD_UP:
-                            genSelCursor_ = (genSelCursor_ + 7 - 1) % 7;
-                            break;
-                        case SDL_CONTROLLER_BUTTON_DPAD_DOWN:
-                            genSelCursor_ = (genSelCursor_ + 1) % 7;
-                            break;
-                        case SDL_CONTROLLER_BUTTON_B: // Switch A = confirm
-                            targetGen_ = GEN_LIST[genSelCursor_];
-                            showGenSelector_ = false;
-                            showMenu_ = false;
-                            // M6 (2026-09-02): the gen selector is no longer the
-                            // conversion point. Converting here was meaningless:
-                            // whichever box the Pokemon is dropped into re-encrypts
-                            // it with that destination's own layout, so the
-                            // destination — not this menu — decides the format.
-                            // Conversion now happens on drop, in
-                            // UI::prepareForPlacement (source/ui_input.cpp).
-                            // (The old code here also never worked: it fed box
-                            // bytes to openhome_load_pkm, which only accepts real
-                            // OHPKM files, so it always took the failure branch.)
-                            if (holding_) {
-                                showMessageAndWait(i18n::get(StrKey::XGenTitle),
-                                    i18n::get(StrKey::XGenBody));
-                            }
-                            break;
-                        case SDL_CONTROLLER_BUTTON_A: // Switch B = cancel
-                        case SDL_CONTROLLER_BUTTON_X:
-                            showGenSelector_ = false;
-                            break;
-                    }
-                }
-            }
-            if (stickDirY_ != 0) {
-                uint32_t now = SDL_GetTicks();
-                uint32_t delay = stickMoved_ ? STICK_REPEAT_DELAY : STICK_INITIAL_DELAY;
-                if (now - stickMoveTime_ >= delay) {
-                    genSelCursor_ = (genSelCursor_ + (stickDirY_ > 0 ? 1 : 7 - 1)) % 7;
-                    stickMoveTime_ = now;
-                    stickMoved_ = true;
-                    markDirty();
-                }
-            }
-            if (!showGenSelector_) continue;
-            if (dirty_) {
-                if (theme_ != lastTheme_) { clearTextCache(); lastTheme_ = theme_; }
-                if (screen_ == AppScreen::ProfileSelector) drawProfileSelectorFrame();
-                else if (screen_ == AppScreen::GameSelector) {
-                    drawGameSelectorFrame();
-                    if (showGameSelMenu_) drawGameSelMenuPopup();
-                if (showSaveMenu_) drawSaveMenuPopup();
-                if (showBackupList_) drawBackupListPopup();
-                }
-                else if (screen_ == AppScreen::BankSelector) drawBankSelectorFrame();
-                else drawFrame();
-                drawGenSelectorPopup();
                 SDL_RenderPresent(renderer_);
                 dirty_ = false;
             }
@@ -1123,6 +1111,7 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
             else if (screen_ == AppScreen::GameSelector) {
                 drawGameSelectorFrame();
                 if (showGameSelMenu_) drawGameSelMenuPopup();
+                    if (showSettings_) drawSettingsPopup();
                 if (showSaveMenu_) drawSaveMenuPopup();
                 if (showBackupList_) drawBackupListPopup();
             }
@@ -1225,7 +1214,7 @@ void UI::selectGame(GameType game, int occurrence) {
                             return;
                         }
                     } else {
-                        pruneBackupsToCap(game, false);
+                        prunePoolToCap(false);
                     }
                 }
             }

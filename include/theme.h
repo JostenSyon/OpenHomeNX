@@ -70,10 +70,12 @@ struct Theme {
 
 inline constexpr int THEME_COUNT = 9;
 // Default for fresh installs (existing theme.cfg choices are preserved).
-inline constexpr int DEFAULT_THEME_INDEX = 8; // OH
+inline constexpr int DEFAULT_THEME_INDEX = 0; // OH
 
 const Theme& getTheme(int index);
 const char*  getThemeName(int index);
 
 int  loadThemeIndex(const std::string& basePath);
 void saveThemeIndex(const std::string& basePath, int index);
+int  loadZoomGrow(const std::string& basePath);
+void saveZoomGrow(const std::string& basePath, int grow);

@@ -60,7 +60,33 @@ bool AccountManager::loadProfile(AccountUid uid, SDL_Renderer* renderer, UserPro
             if (rw) {
                 SDL_Surface* surf = IMG_Load_RW(rw, 1); // 1 = auto-close rw
                 if (surf) {
+                    // Quadrata originale per il menu profili.
                     out.iconTexture = SDL_CreateTextureFromSurface(renderer, surf);
+                    // Copia con maschera circolare (raggio 46%) per la home.
+                    SDL_Surface* rgba = SDL_ConvertSurfaceFormat(surf, SDL_PIXELFORMAT_RGBA32, 0);
+                    SDL_FreeSurface(surf);
+                    surf = rgba;
+                }
+                if (surf) {
+                    int side = surf->w < surf->h ? surf->w : surf->h;
+                    int r = (int)(0.46 * side);
+                    int cx = surf->w / 2, cy = surf->h / 2;
+                    int r2 = r * r;
+                    SDL_LockSurface(surf);
+                    Uint32* px = (Uint32*)surf->pixels;
+                    int stride = surf->pitch / 4;
+                    for (int y = 0; y < surf->h; y++) {
+                        int dy = y - cy;
+                        for (int x = 0; x < surf->w; x++) {
+                            int dx = x - cx;
+                            if (dx * dx + dy * dy > r2)
+                                px[y * stride + x] &= 0x00FFFFFF; // alpha=0 (RGBA32 LE)
+                        }
+                    }
+                    SDL_UnlockSurface(surf);
+                    out.iconTextureRound = SDL_CreateTextureFromSurface(renderer, surf);
+                    if (out.iconTextureRound)
+                        SDL_SetTextureBlendMode(out.iconTextureRound, SDL_BLENDMODE_BLEND);
                     SDL_FreeSurface(surf);
                 }
             }
@@ -296,6 +322,10 @@ void AccountManager::freeTextures() {
         if (user.iconTexture) {
             SDL_DestroyTexture(user.iconTexture);
             user.iconTexture = nullptr;
+        }
+        if (user.iconTextureRound) {
+            SDL_DestroyTexture(user.iconTextureRound);
+            user.iconTextureRound = nullptr;
         }
     }
 }

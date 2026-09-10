@@ -688,6 +688,11 @@ void UI::beginTextInput(TextInputPurpose purpose) {
     else if (purpose == TextInputPurpose::ImportPathEntry) {
         swkbdConfigSetHeaderText(&kbd, i18n::get(StrKey::ImportPathInputHdr).c_str());
         swkbdConfigSetStringLenMax(&kbd, 127); // paths run longer than a bank/box name
+    } else if (purpose == TextInputPurpose::EditUpdateUrl) {
+        textInputBuffer_ = customUrlAny(basePath_);
+        textInputCursorPos_ = (int)textInputBuffer_.size();
+        swkbdConfigSetHeaderText(&kbd, i18n::get(StrKey::SetEditUrlHdr).c_str());
+        swkbdConfigSetStringLenMax(&kbd, 127);
     }
     if (purpose == TextInputPurpose::RenameBank && !renamingBankName_.empty())
         swkbdConfigSetInitialText(&kbd, renamingBankName_.c_str());
@@ -790,6 +795,15 @@ void UI::commitTextInput(const std::string& text) {
                 saveImportPaths(basePath_, importPaths_);
                 importSettingsCursor_ = (int)importPaths_.size(); // row 0 is the autocheck toggle
             }
+        }
+    } else if (textInputPurpose_ == TextInputPurpose::EditUpdateUrl) {
+        if (!text.empty()) {
+            // Toglie spazi e attiva subito (scrive update.cfg, toglie .off).
+            std::string u = text;
+            while (!u.empty() && (u.front() == ' ' || u.front() == '\t')) u.erase(u.begin());
+            while (!u.empty() && (u.back() == ' ' || u.back() == '\t' || u.back() == '/')) u.pop_back();
+            if (!u.empty() && writeUpdateCfgUrl(basePath_, u))
+                DebugLog::line("settings: url -> %s", u.c_str());
         }
     }
 }
