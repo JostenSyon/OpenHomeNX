@@ -7,6 +7,7 @@
 #include "app_version.h"
 #include "update_net.h"
 
+#include <algorithm>
 #include <cerrno>
 #include <cmath>
 #include <ctime>
@@ -255,6 +256,7 @@ void UI::selectProfile(int index) {
             availableGames_.push_back(g);
     }
     appendImportedGames();
+    applyFavoritesOrder();
 
     if (availableGames_.empty()) {
         showMessageAndWait(i18n::get(StrKey::NoSaveData),
@@ -287,6 +289,7 @@ void UI::appendImportedGames() {
     importedGames_ = scanImportPaths(importPaths_, autoCheckUsb_);
     for (const auto& ig : importedGames_)
         availableGames_.push_back(ig.type);
+    // Non riordino qui: il chiamante (selectProfile/fillPresentGames) fa già apply; rescan fa a parte.
 }
 
 std::string UI::importedSavePath(GameType game, int occurrence) const {
@@ -339,6 +342,7 @@ void UI::rescanImportedGames() {
     importedGames_ = scanImportPaths(importPaths_, autoCheckUsb_);
     for (const auto& ig : importedGames_)
         availableGames_.push_back(ig.type);
+    applyFavoritesOrder();
 
     // Clamp cursor/page: removals may have shrunk the list under them, and a
     // stale cursor + A press would OOB-read availableGames_.
@@ -1932,6 +1936,16 @@ void UI::handleGameSelectorInput(bool& running) {
             markDirty();
 
         if (event.type == SDL_CONTROLLERAXISMOTION) {
+            if (event.caxis.axis == SDL_CONTROLLER_AXIS_TRIGGERRIGHT) {
+                bool pressed = event.caxis.value > TRIGGER_DEADZONE;
+                if (pressed && !favTriggerHeld_ && gallerySel_ && !showGameSelMenu_ && !showSaveMenu_ && !showBackupList_ && !showSettings_ && !showAbout_ && !showThemeSelector_ && !showLanguageSelector_ && !gameSelOnAllBanks_ && !gameSelOnAvatar_ && !gameSelOnPack_ && !gameSelOnEject_ && !gameSelOnSettings_ && gameSelOnChevron_ == 0) {
+                    if (gameSelCursor_ >= 0 && gameSelCursor_ < (int)availableGames_.size()) {
+                        GameType g = availableGames_[gameSelCursor_];
+                        toggleFavorite(g);
+                    }
+                }
+                favTriggerHeld_ = pressed;
+            }
             if (event.caxis.axis == SDL_CONTROLLER_AXIS_LEFTX ||
                 event.caxis.axis == SDL_CONTROLLER_AXIS_LEFTY) {
                 int16_t lx = SDL_GameControllerGetAxis(pad_, SDL_CONTROLLER_AXIS_LEFTX);
@@ -2106,6 +2120,69 @@ void UI::handleGameSelectorInput(bool& running) {
             markDirty();
         }
     }
+}
+
+// --- Preferiti galleria (ZR toggle, persistenza favorites.cfg, ordine stabile in cima) ---
+void UI::loadFavorites() {
+    favorites_.clear();
+    std::string p = basePath_ + "favorites.cfg";
+    FILE* f = std::fopen(p.c_str(), "rb");
+    if (!f) return;
+    uint8_t n = 0;
+    if (std::fread(&n, 1, 1, f) != 1) { std::fclose(f); return; }
+    if (n > GAME_TYPE_COUNT) n = GAME_TYPE_COUNT;
+    for (int i = 0; i < n; i++) {
+        uint8_t v = 0;
+        if (std::fread(&v, 1, 1, f) != 1) break;
+        if (v < GAME_TYPE_COUNT) favorites_.insert((int)v);
+    }
+    std::fclose(f);
+}
+void UI::saveFavorites() const {
+    std::string p = basePath_ + "favorites.cfg";
+    if (favorites_.empty()) {
+        std::remove(p.c_str());
+        return;
+    }
+    FILE* f = std::fopen(p.c_str(), "wb");
+    if (!f) return;
+    uint8_t n = (uint8_t)std::min<size_t>(favorites_.size(), GAME_TYPE_COUNT);
+    std::fwrite(&n, 1, 1, f);
+    for (int v : favorites_) {
+        uint8_t b = (uint8_t)v;
+        std::fwrite(&b, 1, 1, f);
+    }
+    std::fclose(f);
+}
+void UI::applyFavoritesOrder() {
+    // Stabile: preferiti in testa mantenendo ordine originale relativo
+    std::stable_partition(availableGames_.begin(), availableGames_.end(),
+        [&](GameType g){ return isFavorite(g); });
+}
+void UI::toggleFavorite(GameType g) {
+    int v = static_cast<int>(g);
+    if (favorites_.count(v)) favorites_.erase(v);
+    else favorites_.insert(v);
+    saveFavorites();
+    // Riordina mantenendo il gioco toggolato sotto il cursore
+    GameType cur = g;
+    applyFavoritesOrder();
+    for (int i = 0; i < (int)availableGames_.size(); i++) {
+        if (availableGames_[i] == cur) { gameSelCursor_ = i; break; }
+    }
+    // Riallinea scroll/pagina galleria
+    if (gameSelectorLayout_ == GameSelectorLayout::Gallery) {
+        int numGames = (int)availableGames_.size();
+        constexpr int GAL_VISIBLE_ROWS = 9;
+        int maxScroll = std::max(0, numGames - GAL_VISIBLE_ROWS);
+        int scroll = gameSelCursor_ - GAL_VISIBLE_ROWS / 2;
+        if (scroll < 0) scroll = 0;
+        if (scroll > maxScroll) scroll = maxScroll;
+        galScrollX_ = (float)scroll;
+    } else {
+        gameSelPage_ = gameSelCursor_ / 12;
+    }
+    markDirty();
 }
 
 void UI::enterAllBanksMode() {
@@ -3584,9 +3661,11 @@ void UI::drawSettingsPopup() {
         }
         if (setCat_ == 1 && r == 3) {
             // Slider zoom 0..16px con pallino, accanto al valore (stessa riga).
-            const auto& ev = getTextEntry(settingsRowValue(setCat_, r), font_, T().selected);
+            // Larghezza riservata fissa su "16px" così la barra non balla quando passa da 1 a 2 cifre.
+            static int maxVw = -1;
+            if (maxVw < 0) maxVw = getTextEntry("16px", font_, T().selected).w;
             int bw = 100, bh = 8;
-            int bx = popX + POP_W - 36 - ev.w - 14 - bw;
+            int bx = popX + POP_W - 36 - maxVw - 14 - bw;
             int by = rowY + (ROW_H - 4) / 2 - bh / 2;
             drawRect(bx, by, bw, bh, T().textDim);
             int dx = bx + (int)(bw * zoomGrow_ / 16.0);
@@ -3602,17 +3681,39 @@ void UI::drawSettingsPopup() {
             dot(dx, by + bh / 2, 7, T().selected);
         }
     }
-    drawTextCentered(i18n::get(StrKey::SetFooter), popX + POP_W / 2, popY + POP_H - 20, T().textDim, fontSmall_);
+    // Footer contestuale: se la riga focalizzata è uno slider, mostra hint con Stick ←/→
+    bool _isSlider = !setFocusLeft_ && ((setCat_ == 1 && setRow_ == 3) || (setCat_ == 3 && setRow_ == 2));
+    const char* _footKey = _isSlider ? StrKey::SetFooterSlider : StrKey::SetFooter;
+    std::string _foot = i18n::get(_footKey);
+    if (_isSlider && _foot == _footKey) _foot = i18n::get(StrKey::SetFooter); // fallback se traduzione manca
+    drawTextCentered(_foot, popX + POP_W / 2, popY + POP_H - 20, T().textDim, fontSmall_);
 }
 
 void UI::handleSettingsInput(const SDL_Event& event, bool& running) {
+    auto _isSliderRow = [&](int cat, int row) -> bool {
+        return (cat == 1 && row == 3) || (cat == 3 && row == 2);
+    };
     // Stick analogico: su/giu come il D-pad (con repeat), sulla colonna attiva.
+    // In impostazioni usiamo anche LEFTX per regolare gli slider (zoom / backup).
     if (event.type == SDL_CONTROLLERAXISMOTION) {
-        if (event.caxis.axis == SDL_CONTROLLER_AXIS_LEFTY ||
+        if (event.caxis.axis == SDL_CONTROLLER_AXIS_LEFTX ||
+            event.caxis.axis == SDL_CONTROLLER_AXIS_LEFTY ||
             event.caxis.axis == SDL_CONTROLLER_AXIS_RIGHTY) {
             int16_t lx = SDL_GameControllerGetAxis(pad_, SDL_CONTROLLER_AXIS_LEFTX);
             int16_t ly = SDL_GameControllerGetAxis(pad_, SDL_CONTROLLER_AXIS_LEFTY);
             updateStick(lx, ly);
+        }
+    }
+    // Slider via stick orizzontale: ← diminuisce, → aumenta (solo a fuoco destro su riga slider)
+    if (!setFocusLeft_ && stickDirX_ != 0 && _isSliderRow(setCat_, setRow_)) {
+        uint32_t now = SDL_GetTicks();
+        if (now - stickMoveTime_ >= (stickMoved_ ? STICK_REPEAT_DELAY : STICK_INITIAL_DELAY)) {
+            int dir = (stickDirX_ > 0) ? 1 : -1;
+            settingsRowActivate(setCat_, setRow_, dir, running);
+            stickMoveTime_ = now;
+            stickMoved_ = true;
+            markDirty();
+            return;
         }
     }
     if (stickDirY_ != 0) {
@@ -3644,10 +3745,12 @@ void UI::handleSettingsInput(const SDL_Event& event, bool& running) {
                 else setRow_ = (setRow_ + 1) % n;
                 break;
             case SDL_CONTROLLER_BUTTON_DPAD_LEFT:
-                if (!setFocusLeft_) setFocusLeft_ = true;
+                if (!setFocusLeft_ && _isSliderRow(setCat_, setRow_)) settingsRowActivate(setCat_, setRow_, -1, running);
+                else if (!setFocusLeft_) setFocusLeft_ = true;
                 break;
             case SDL_CONTROLLER_BUTTON_DPAD_RIGHT:
                 if (setFocusLeft_) { setFocusLeft_ = false; setRow_ = 0; }
+                else if (_isSliderRow(setCat_, setRow_)) settingsRowActivate(setCat_, setRow_, 1, running);
                 break;
             case SDL_CONTROLLER_BUTTON_B: // Switch A
                 if (setFocusLeft_) { setFocusLeft_ = false; setRow_ = 0; }

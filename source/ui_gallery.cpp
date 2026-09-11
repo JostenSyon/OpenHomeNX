@@ -15,8 +15,10 @@
 #include "ui.h"
 #include "i18n.h"
 #include "debug_log.h"
+#include "pokedex.h"
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <sys/stat.h>
 
@@ -138,6 +140,44 @@ void UI::drawGameList_Gallery() {
             SDL_RenderDrawLine(renderer_, cx - dx, cy + dy, cx + dx, cy + dy);
         }
     };
+    auto star = [&](int cx, int cy, int rr, SDL_Color col) {
+        SDL_SetRenderDrawColor(renderer_, col.r, col.g, col.b, col.a);
+        const float PI = 3.14159265f;
+        float outer = (float)rr;
+        float inner = outer * 0.45f;
+        struct Pt { float x, y; };
+        Pt pts[10];
+        for (int k = 0; k < 10; k++) {
+            float r = (k % 2 == 0) ? outer : inner;
+            float ang = -90.0f + k * 36.0f;
+            float rad = ang * PI / 180.0f;
+            pts[k].x = cx + r * std::cos(rad);
+            pts[k].y = cy + r * std::sin(rad);
+        }
+        int y0 = (int)std::floor(cy - outer);
+        int y1 = (int)std::ceil(cy + outer);
+        float xs[12];
+        for (int y = y0; y <= y1; y++) {
+            int xn = 0;
+            for (int e = 0; e < 10; e++) {
+                Pt a = pts[e];
+                Pt b = pts[(e + 1) % 10];
+                float minY = std::min(a.y, b.y);
+                float maxY = std::max(a.y, b.y);
+                if (y < minY || y >= maxY) continue;
+                if (std::fabs(b.y - a.y) < 0.001f) continue;
+                float x = a.x + (y - a.y) * (b.x - a.x) / (b.y - a.y);
+                if (xn < 12) xs[xn++] = x;
+            }
+            if (xn < 2) continue;
+            for (int a = 0; a < xn - 1; a++) for (int b = a + 1; b < xn; b++) if (xs[a] > xs[b]) std::swap(xs[a], xs[b]);
+            for (int k = 0; k + 1 < xn; k += 2) {
+                int x0 = (int)std::ceil(xs[k]);
+                int x1 = (int)std::floor(xs[k + 1]);
+                if (x1 >= x0) SDL_RenderDrawLine(renderer_, x0, y, x1, y);
+            }
+        }
+    };
 
     for (int i = scroll; i < rowEnd; i++) {
         int rowY = GAL_LIST_Y + (i - scroll) * GAL_ROW_H - pixOff;
@@ -151,7 +191,9 @@ void UI::drawGameList_Gallery() {
         GameType g = availableGames_[i];
         auto acIt = gameAccentCache_.find(g);
         SDL_Color accent = (acIt != gameAccentCache_.end()) ? acIt->second : flatBgColorFor(g);
-        dot(GAL_LIST_X + 18, rowY + rowH / 2, 5, boostSaturation(accent, 1.5f));
+        SDL_Color col = boostSaturation(accent, 1.5f);
+        if (isFavorite(g)) star(GAL_LIST_X + 18, rowY + rowH / 2, 7, col);
+        else dot(GAL_LIST_X + 18, rowY + rowH / 2, 5, col);
 
         std::string name = gameDisplayNameOf(g);
         if (name.substr(0, 8) == "Pokemon ") name = name.substr(8);
@@ -297,10 +339,10 @@ void UI::drawGameList_Gallery() {
                     SDL_SetTextureAlphaMod(spr, 255);
                 }
             }
+            int statRowY = partyY + 40;
             if (!pit->second.otName.empty()) {
                 std::string lbl = i18n::get(StrKey::FilterOT);
-                int rowY = partyY + 40;
-                drawText(lbl, textX, rowY, T().textDim, fontSmall_);
+                drawText(lbl, textX, statRowY, T().textDim, fontSmall_);
                 // OT troncato se supera l'ultima ball
                 std::string ot = pit->second.otName;
                 int maxOtW = rightEdge - (textX + (int)getTextEntry(lbl, fontSmall_, T().textDim).w + 12);
@@ -311,7 +353,21 @@ void UI::drawGameList_Gallery() {
                     otw = getTextEntry(ot, fontSmall_, T().text).w;
                 }
                 const auto& ve = getTextEntry(ot, fontSmall_, T().text);
-                drawText(ot, rightEdge - (int)ve.w, rowY, T().text, fontSmall_);
+                drawText(ot, rightEdge - (int)ve.w, statRowY, T().text, fontSmall_);
+                statRowY += 26;
+            }
+            if (pit->second.dexSupported) {
+                // Non tradotto di proposito: e' lo stesso trattamento che
+                // questo repo gia' riserva alla parola "Pokedex" altrove
+                // (romfs/data/strings/it.json "transfer_not_in_dex" la tiene
+                // testuale anche in italiano, "Pokédex"), quindi non serve
+                // una nuova chiave i18n -- coerente col resto del progetto.
+                std::string lbl = "Pokédex";
+                drawText(lbl, textX, statRowY, T().textDim, fontSmall_);
+                std::string val = std::to_string(pit->second.dexCaught) + "/" +
+                                   std::to_string(pit->second.dexTotal);
+                const auto& ve = getTextEntry(val, fontSmall_, T().text);
+                drawText(val, rightEdge - (int)ve.w, statRowY, T().text, fontSmall_);
             }
         }
     }
@@ -395,11 +451,43 @@ long UI::galSaveMtime(GameType g) {
 }
 
 void UI::galEnsureParty(GameType g) {
+    if (!galCacheLoadedFromDisk_) {
+        galCacheLoadedFromDisk_ = true;
+        galLoadCacheFromDisk();
+    }
+    // Override OT (per screenshot/registrazioni): sdmc:/.../overrideOT.cfg
+    // accanto all'nro, stessa basePath_ di theme.cfg/gallery.cfg. Letto ad
+    // OGNI chiamata, PRIMA del controllo cache sotto -- se fosse dentro il
+    // ramo "carica da zero" soltanto, creare/rimuovere il file non avrebbe
+    // mai effetto su un gioco gia' in cache finche' il suo save non cambia
+    // davvero (l'mtime combacerebbe e la funzione uscirebbe subito, bug
+    // segnalato 2026-09-11). Pura lettura: non tocca mai il save reale.
+    std::string overrideOt;
+    {
+        FILE* f = std::fopen((basePath_ + "overrideOT.cfg").c_str(), "rb");
+        if (f) {
+            char buf[64] = {0};
+            size_t n = std::fread(buf, 1, sizeof(buf) - 1, f);
+            std::fclose(f);
+            overrideOt.assign(buf, n);
+            while (!overrideOt.empty() && (overrideOt.back() == '\n' || overrideOt.back() == '\r' || overrideOt.back() == ' '))
+                overrideOt.pop_back();
+        }
+    }
     long mt = galSaveMtime(g);
     auto it = galPartyCache_.find(g);
     // Cache valida: esci (niente mount a ogni frame). Ricontrolla al max
     // ogni 10s per i save cambiati fuori dall'app.
     if (it != galPartyCache_.end()) {
+        // Applica/rimuovi l'override sull'entry gia' in cache -- indipendente
+        // da quanto sotto, cosi' funziona anche restando fermi sullo stesso
+        // gioco con save invariato (il caso comune per gli screenshot).
+        std::string wanted = overrideOt.empty() ? it->second.otNameReal : overrideOt;
+        if (it->second.otName != wanted) {
+            it->second.otName = wanted;
+            galSaveCacheToDisk();
+            markDirty();
+        }
         if (it->second.mtime == mt) return;
         if (SDL_GetTicks() - galPreviewTick_ < 10000) return;
     }
@@ -437,7 +525,11 @@ void UI::galEnsureParty(GameType g) {
                     pv.mons[s] = m;
                     filled++;
                 }
-                pv.otName = sf.dsOtName();
+                pv.otNameReal = sf.dsOtName();
+                Pokedex::DexStatus dex = Pokedex::getDexStatus(sf);
+                pv.dexSupported = dex.supported;
+                pv.dexCaught = dex.caught;
+                pv.dexTotal = dex.total;
             } else {
                 DebugLog::line("gal party: %s load FALLITO path=%s", gameInfo(g).gameTag, path.c_str());
             }
@@ -448,28 +540,138 @@ void UI::galEnsureParty(GameType g) {
         }
         if (!mnt.empty()) account_.unmountSave();
     }
-    // Per screenshot/registrazioni: se sdmc:/.../overrideOT.cfg esiste (accanto
-    // all'nro, stessa basePath_ di theme.cfg/gallery.cfg), il suo contenuto
-    // sostituisce l'OT reale ovunque in Galleria — niente nome vero in giro.
-    {
-        FILE* f = std::fopen((basePath_ + "overrideOT.cfg").c_str(), "rb");
-        if (f) {
-            char buf[64] = {0};
-            size_t n = std::fread(buf, 1, sizeof(buf) - 1, f);
-            std::fclose(f);
-            std::string ov(buf, n);
-            while (!ov.empty() && (ov.back() == '\n' || ov.back() == '\r' || ov.back() == ' '))
-                ov.pop_back();
-            if (!ov.empty()) {
-                DebugLog::line("gal party: overrideOT.cfg attivo, OT mostrato come '%s'", ov.c_str());
-                pv.otName = ov;
-            }
-        }
-    }
+    // overrideOt gia' letto in cima alla funzione (vedi commento li').
+    pv.otName = overrideOt.empty() ? pv.otNameReal : overrideOt;
+    if (!overrideOt.empty())
+        DebugLog::line("gal party: overrideOT.cfg attivo, OT mostrato come '%s'", overrideOt.c_str());
     galPartyCache_[g] = pv;
+    galSaveCacheToDisk();
     markDirty();
 }
 
 void UI::galInvalidateParty(GameType g) {
     galPartyCache_.erase(g);
+    galSaveCacheToDisk();
+}
+
+namespace {
+constexpr uint32_t GAL_CACHE_MAGIC = 0x47414331; // "GAC1"
+}
+
+// Persistenza di galPartyCache_ (party/OT/dex) tra un avvio e l'altro:
+// senza, ad ogni riavvio la Galleria mostra "..." finche' non ti fermi di
+// nuovo su ogni gioco, anche se il save di quel gioco non e' mai cambiato.
+// Formato binario minimo (stesso stile di theme.cfg/zoom.cfg, non serve un
+// parser): l'mtime salvato qui e' la stessa garanzia di validita' gia'
+// usata a runtime in galEnsureParty() (mtime combacia col save reale ->
+// niente ricaricamento, mtime diverso -> ricarica e riscrive).
+void UI::galLoadCacheFromDisk() {
+    FILE* f = std::fopen((basePath_ + "gallery_cache.dat").c_str(), "rb");
+    if (!f) return;
+    uint32_t magic = 0;
+    if (std::fread(&magic, sizeof(magic), 1, f) != 1 || magic != GAL_CACHE_MAGIC) {
+        std::fclose(f);
+        return;
+    }
+    uint8_t version = 0;
+    uint32_t count = 0;
+    if (std::fread(&version, sizeof(version), 1, f) != 1 || version != 2 ||
+        std::fread(&count, sizeof(count), 1, f) != 1 || count > 4096) {
+        std::fclose(f);
+        return;
+    }
+    for (uint32_t i = 0; i < count; i++) {
+        uint8_t gameByte = 0;
+        int64_t mtime = -1;
+        uint8_t dexSupported = 0;
+        int32_t dexCaught = 0, dexTotal = 0;
+        uint8_t otLen = 0;
+        if (std::fread(&gameByte, 1, 1, f) != 1 ||
+            std::fread(&mtime, sizeof(mtime), 1, f) != 1 ||
+            std::fread(&dexSupported, 1, 1, f) != 1 ||
+            std::fread(&dexCaught, sizeof(dexCaught), 1, f) != 1 ||
+            std::fread(&dexTotal, sizeof(dexTotal), 1, f) != 1 ||
+            std::fread(&otLen, 1, 1, f) != 1)
+            break;
+        std::string ot;
+        if (otLen > 0) {
+            std::vector<char> buf(otLen);
+            if (std::fread(buf.data(), 1, otLen, f) != otLen) break;
+            ot.assign(buf.data(), otLen);
+        }
+        uint8_t otRealLen = 0;
+        if (std::fread(&otRealLen, 1, 1, f) != 1) break;
+        std::string otReal;
+        if (otRealLen > 0) {
+            std::vector<char> buf(otRealLen);
+            if (std::fread(buf.data(), 1, otRealLen, f) != otRealLen) break;
+            otReal.assign(buf.data(), otRealLen);
+        }
+        PartyPreview pv;
+        pv.mtime = static_cast<long>(mtime);
+        pv.dexSupported = dexSupported != 0;
+        pv.dexCaught = dexCaught;
+        pv.dexTotal = dexTotal;
+        pv.otName = ot;
+        pv.otNameReal = otReal;
+        pv.mons.assign(6, PartyPreviewMon{});
+        bool ok = true;
+        for (int s = 0; s < 6 && ok; s++) {
+            uint8_t empty = 1, egg = 0, shiny = 0, level = 0, form = 0;
+            uint16_t species = 0;
+            if (std::fread(&empty, 1, 1, f) != 1 || std::fread(&egg, 1, 1, f) != 1 ||
+                std::fread(&shiny, 1, 1, f) != 1 || std::fread(&species, sizeof(species), 1, f) != 1 ||
+                std::fread(&level, 1, 1, f) != 1 || std::fread(&form, 1, 1, f) != 1) {
+                ok = false;
+                break;
+            }
+            pv.mons[s] = PartyPreviewMon{species, level, form, shiny != 0, egg != 0, empty != 0};
+        }
+        if (!ok) break;
+        if (gameByte >= GAME_TYPE_COUNT) continue; // file da una build futura/diversa: salta la voce
+        galPartyCache_[static_cast<GameType>(gameByte)] = pv;
+    }
+    std::fclose(f);
+    DebugLog::line("gal cache: caricate %zu voci da disco", galPartyCache_.size());
+}
+
+void UI::galSaveCacheToDisk() const {
+    FILE* f = std::fopen((basePath_ + "gallery_cache.dat").c_str(), "wb");
+    if (!f) return;
+    uint32_t magic = GAL_CACHE_MAGIC;
+    uint8_t version = 2;
+    uint32_t count = static_cast<uint32_t>(galPartyCache_.size());
+    std::fwrite(&magic, sizeof(magic), 1, f);
+    std::fwrite(&version, sizeof(version), 1, f);
+    std::fwrite(&count, sizeof(count), 1, f);
+    for (const auto& [game, pv] : galPartyCache_) {
+        uint8_t gameByte = static_cast<uint8_t>(game);
+        int64_t mtime = pv.mtime;
+        uint8_t dexSupported = pv.dexSupported ? 1 : 0;
+        int32_t dexCaught = pv.dexCaught, dexTotal = pv.dexTotal;
+        uint8_t otLen = static_cast<uint8_t>(std::min<size_t>(pv.otName.size(), 255));
+        uint8_t otRealLen = static_cast<uint8_t>(std::min<size_t>(pv.otNameReal.size(), 255));
+        std::fwrite(&gameByte, 1, 1, f);
+        std::fwrite(&mtime, sizeof(mtime), 1, f);
+        std::fwrite(&dexSupported, 1, 1, f);
+        std::fwrite(&dexCaught, sizeof(dexCaught), 1, f);
+        std::fwrite(&dexTotal, sizeof(dexTotal), 1, f);
+        std::fwrite(&otLen, 1, 1, f);
+        if (otLen > 0) std::fwrite(pv.otName.data(), 1, otLen, f);
+        std::fwrite(&otRealLen, 1, 1, f);
+        if (otRealLen > 0) std::fwrite(pv.otNameReal.data(), 1, otRealLen, f);
+        for (int s = 0; s < 6; s++) {
+            const PartyPreviewMon& m = pv.mons[s];
+            uint8_t empty = m.empty ? 1 : 0, egg = m.egg ? 1 : 0, shiny = m.shiny ? 1 : 0;
+            uint16_t species = m.species;
+            uint8_t level = m.level, form = m.form;
+            std::fwrite(&empty, 1, 1, f);
+            std::fwrite(&egg, 1, 1, f);
+            std::fwrite(&shiny, 1, 1, f);
+            std::fwrite(&species, sizeof(species), 1, f);
+            std::fwrite(&level, 1, 1, f);
+            std::fwrite(&form, 1, 1, f);
+        }
+    }
+    std::fclose(f);
 }

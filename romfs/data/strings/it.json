@@ -67,7 +67,7 @@
     "export_failed_count": "{0} fallito/i.",
     "no_banks_available": "Nessuna banca disponibile",
     "create_new_bank": "Creare una nuova banca?",
-    "party_pokemon": "Pokemon della squadra",
+    "party_pokemon": "Squadra",
     "cant_release_party": "Impossibile rilasciare un Pokemon della squadra.",
     "cant_empty_party": "La squadra non puo restare vuota: rimetti un Pokemon.",
     "empty_party_title": "Squadra vuota",
@@ -347,5 +347,6 @@
     "create_bank_title": "Crea banca",
     "create_bank_body": "Cross-gen (OHPKM, tutti i giochi)?\nA = Cross-gen  B = Normale (questo gioco)",
     "applet_title": "Modalità applet",
-    "applet_body": "Lettura/scrittura salvataggi non disponibile in modalità applet.\nPer caricare un salvataggio, riavvia OpenHomeNX come\napplicazione (tieni premuto R su un gioco nel menu HOME).\n\nNavigazione banche e cross-gen funzionano qui."
+    "applet_body": "Lettura/scrittura salvataggi non disponibile in modalità applet.\nPer caricare un salvataggio, riavvia OpenHomeNX come\napplicazione (tieni premuto R su un gioco nel menu HOME).\n\nNavigazione banche e cross-gen funzionano qui.",
+    "set_footer_slider": "←/→ o Stick ←/→: regola  A:+ Y:-  B: indietro"
 }

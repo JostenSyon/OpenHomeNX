@@ -400,7 +400,7 @@ void saveZoomGrow(const std::string& basePath, int grow) {
 
 int loadGameSelectorLayout(const std::string& basePath) {
     FILE* f = std::fopen((basePath + "gallery.cfg").c_str(), "rb");
-    if (!f) return 0; // 0 = Classico di default
+    if (!f) return 1; // 1 = Galleria di default
     uint8_t v = 0;
     if (std::fread(&v, 1, 1, f) != 1) v = 0;
     std::fclose(f);

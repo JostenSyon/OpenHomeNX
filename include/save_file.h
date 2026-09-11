@@ -24,6 +24,16 @@ public:
     // Gen4 layout picked by loadDS4 (DP/Pt/HGSS sizes differ).
     enum class Ds4Layout { DP, PT, HGSS };
     Ds4Layout dsLayout() const { return ds4Layout_; }
+    // Partizione attiva scelta da loadDS4 (0/1): serve per localizzare il
+    // blocco Generale da fuori (es. Pokedex::getDexStatus() read-only).
+    int dsPartition() const { return dsPart_; }
+    // Dimensione di una partizione Gen4 (DS_PARTITION e' privato): esposta
+    // per non duplicare il numero altrove (es. pokedex.cpp).
+    static constexpr size_t dsPartitionBytes() { return DS_PARTITION; }
+    // Offset assoluto del bitfield "caught" del Pokedex Gen2 (G/S vs
+    // Crystal): unica fonte di verita', GbcLayout resta privato a
+    // save_file.cpp. 0 se il gameType_ corrente non e' Gen2.
+    size_t gen2DexCaughtOffset() const;
     // HGSS ROMCode (Trainer1+0x1C: 7 = HeartGold, 8 = SoulSilver), 0 if N/A.
     uint8_t dsRomCode() const { return dsRomCode_; }
     // Gen5 PlayerData.Game byte (20 = White, 21 = Black), 0 if N/A.

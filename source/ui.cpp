@@ -568,6 +568,7 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
     zoomGrow_ = loadZoomGrow(basePath_);
     gameSelectorLayout_ = (GameSelectorLayout)loadGameSelectorLayout(basePath_);
     theme_ = &getTheme(themeIndex_);
+    loadFavorites();
 
     // Load persisted crypto engine (PK/OH)
     int cryptoVal = loadCryptoEngine(basePath_);
@@ -608,6 +609,7 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
                 availableGames_.assign(std::begin(allGames), std::end(allGames));
         }
         appendImportedGames();
+        applyFavoritesOrder();
     };
 
     if (appletMode_) {

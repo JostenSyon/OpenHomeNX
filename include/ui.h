@@ -223,7 +223,7 @@ private:
     // Layout selettore giochi (Classico = griglia storica, Galleria = lista
     // + anteprima grande). Persistito in gallery.cfg, vedi theme.h/.cpp.
     enum class GameSelectorLayout : int { Classic = 0, Gallery = 1 };
-    GameSelectorLayout gameSelectorLayout_ = GameSelectorLayout::Classic;
+    GameSelectorLayout gameSelectorLayout_ = GameSelectorLayout::Gallery;
     float galScrollX_ = 0.0f; // scroll fluido galleria (lerp verso il target)
 
     // Theme
@@ -508,6 +508,15 @@ private:
     void freeGameIcons();
     void enterAllBanksMode();
 
+    // Preferiti galleria: ZR toggla, stella al posto del pallino, ordine stabile in cima.
+    std::unordered_set<int> favorites_;
+    bool favTriggerHeld_ = false;
+    bool isFavorite(GameType g) const { return favorites_.count(static_cast<int>(g)) != 0; }
+    void loadFavorites();
+    void saveFavorites() const;
+    void toggleFavorite(GameType g);
+    void applyFavoritesOrder();
+
     // Owned save + bank manager (initialized after game selection)
     SaveFile save_;
     BankManager bankManager_;
@@ -655,13 +664,27 @@ private:
     // validata via mtime (mount+stat, niente decrypt). Load completo solo
     // se cambiato, mai eager.
     struct PartyPreviewMon { uint16_t species = 0; uint8_t level = 0; uint8_t form = 0; bool shiny = false; bool egg = false; bool empty = true; };
-    struct PartyPreview { long mtime = -1; bool loading = false; std::vector<PartyPreviewMon> mons; std::string otName; };
+    struct PartyPreview {
+        long mtime = -1; bool loading = false; std::vector<PartyPreviewMon> mons;
+        std::string otName;     // valore mostrato (puo' essere l'override)
+        std::string otNameReal; // valore vero dal save, mai sovrascritto
+        bool dexSupported = false; int dexCaught = 0; int dexTotal = 0;
+    };
     std::unordered_map<GameType, PartyPreview> galPartyCache_;
     int galPreviewGame_ = -1;
     uint32_t galPreviewTick_ = 0;
     long galSaveMtime(GameType g);
     void galEnsureParty(GameType g);
     void galInvalidateParty(GameType g);
+    // Persistenza su disco di galPartyCache_ (party/OT/dex): sopravvive al
+    // riavvio, cosi' al rientro in Galleria si vede subito l'ultimo party
+    // noto invece di "..." finche' non ti fermi di nuovo — galEnsureParty()
+    // ricontrolla comunque l'mtime del save e aggiorna solo se cambiato,
+    // stessa garanzia di correttezza di prima, solo senza dover rileggere
+    // ogni save ad ogni avvio. File in basePath_ (vedi theme.cfg/gallery.cfg).
+    bool galCacheLoadedFromDisk_ = false;
+    void galLoadCacheFromDisk();
+    void galSaveCacheToDisk() const;
     // true mentre lo slide dell'anteprima Galleria (galSelShown_/
     // galSlide_) non ha ancora raggiunto il target: stesso schema di
     // galleryScrollAnim(), interrogato da bottomButtonsAnim() cosi' il

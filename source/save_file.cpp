@@ -1903,6 +1903,12 @@ struct GbcLayout {
 };
 constexpr GbcLayout GBC_GS = {0x288A, 0x2724, 0x2727, 0x2A4C, 0x2A6C, 0x2D6C, 0x2D68, 0x2D69, 0x7E6D};
 constexpr GbcLayout GBC_C = {0x2865, 0x2700, 0x2703, 0x2A27, 0x2A47, 0x2D10, 0x2B82, 0x2D0D, 0x1F0D};
+
+size_t SaveFile::gen2DexCaughtOffset() const {
+    if (!isGen2File(gameType_)) return 0;
+    return static_cast<size_t>(gameType_ == GameType::CRYSTAL ? GBC_C.dexCaught : GBC_GS.dexCaught);
+}
+
 constexpr size_t GB2_SAVE_SIZE = 0x8000;
 constexpr int GB2_BOX_COUNT = 14;
 constexpr int GB2_SLOTS_PER_BOX = 20;

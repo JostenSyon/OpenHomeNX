@@ -261,6 +261,7 @@ namespace StrKey {
     constexpr const char* SetCredits      = "set_credits";
     constexpr const char* BagSoon         = "bag_soon";
     constexpr const char* SetFooter       = "set_footer";
+    constexpr const char* SetFooterSlider = "set_footer_slider";
     constexpr const char* ImportFoundTitle     = "import_found_title";
     constexpr const char* ImportAutoCheckUsb   = "import_autocheck_usb";
 
