@@ -39,6 +39,10 @@ Cross-gen bank covers all 13 stored formats (PK1/PK2/PK3/PK4/PK5/PK6/PK7/PK8/PK9
 
 USB drives via `libusbhsfs` (FAT-only, ISC build in `libusbhsfs/lib`). Hotplug detected, safe eject via trash icon or `Y` in game selector, LED + `debug.log` hints (`physical>0 mounted==0` → MBR/FS issue). Backups and import both work from USB; update can also be fetched from `usb:/switch/OpenHomeNX/update/` or network.
 
+## Self-update (integrated)
+
+No manual copy needed. `+` → *Check for update* looks for a newer `OpenHomeNX.nro` in `sdmc:/switch/OpenHomeNX/update/`, on any mounted USB (`usb:/switch/OpenHomeNX/update/`), and on the network if `update.cfg` (`url=…/latest.json`) is set. Network fetch shows `latest.json { version, nro, sha256 }`, downloads to `OpenHomeNX.nro.new` and chainloads via `envSetNextLoad` on next exit. Also checked silently on boot.
+
 ## Cross-gen bank (flagship)
 
 Any Pokémon can be moved between any supported save via the cross-gen bank (`banks/All/` or per-family with `banks/<Family>/`). Conversion goes through OHPKM in Rust: PID re-rolled to keep nature/ability/gender/shininess, dex-cut and 4-move drop are shown explicitly (`A: proceed / B: cancel`), and `OriginalBackup` keeps the initial bytes for a lossless return. No silent failures — `transfer_cant_read_src` etc.
@@ -173,6 +177,10 @@ Banca cross-gen: tutti i 13 formati (PK1/PK2/PK3/PK4/PK5/PK6/PK7/PK8/PK9/PA8/PA9
 ## Periferiche USB
 
 Chiavette USB via `libusbhsfs` (solo FAT, build ISC in `libusbhsfs/lib`). Hotplug rilevato, espulsione sicura via icona cestino o `Y` nel selettore giochi, LED + hint `debug.log` (`physical>0 mounted==0` → MBR/FS). Backup e import funzionano da USB; update anche da `usb:/switch/OpenHomeNX/update/` o rete.
+
+## Autoupdater (integrato)
+
+Nessuna copia manuale. `+` → *Check for update* cerca un `OpenHomeNX.nro` più nuovo in `sdmc:/switch/OpenHomeNX/update/`, su qualsiasi USB (`usb:/switch/OpenHomeNX/update/`) e in rete se `update.cfg` (`url=…/latest.json`) è impostato. Fetch di `latest.json { version, nro, sha256 }`, download su `OpenHomeNX.nro.new` e chainload via `envSetNextLoad` all'uscita. Controllo anche silenzioso al boot.
 
 ## Banca cross-gen (punto forte)
 
