@@ -7,10 +7,13 @@
 #include <cctype>
 #include <ctime>
 #include <vector>
+#include <atomic>
+#include <memory>
 
 #include <switch.h>
 #include <curl/curl.h>
 #include <mbedtls/sha256.h>
+#include <SDL2/SDL.h>
 
 namespace {
 
@@ -137,6 +140,7 @@ std::string sha256HexBuf(const uint8_t* data, size_t len) {
     return s;
 }
 
+
 std::string toLower(std::string s) {
     for (char& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
     return s;
@@ -144,8 +148,51 @@ std::string toLower(std::string s) {
 
 } // namespace
 
+std::string sha256HexFile(const std::string& path) {
+    FILE* f = std::fopen(path.c_str(), "rb");
+    if (!f) return "";
+    mbedtls_sha256_context ctx;
+    mbedtls_sha256_init(&ctx);
+    mbedtls_sha256_starts_ret(&ctx, 0);
+    unsigned char buf[65536];
+    size_t n = 0;
+    bool ok = true;
+    while ((n = std::fread(buf, 1, sizeof(buf), f)) > 0) {
+        if (mbedtls_sha256_update_ret(&ctx, buf, n) != 0) { ok = false; break; }
+    }
+    if (std::ferror(f)) ok = false;
+    std::fclose(f);
+    if (!ok) { mbedtls_sha256_free(&ctx); return ""; }
+    unsigned char out[32];
+    mbedtls_sha256_finish_ret(&ctx, out);
+    mbedtls_sha256_free(&ctx);
+    static const char* hex = "0123456789abcdef";
+    std::string s;
+    s.reserve(64);
+    for (unsigned char b : out) { s += hex[b >> 4]; s += hex[b & 0xF]; }
+    return s;
+}
+
 bool updateNetAvailable() { return g_netReady; }
 void updateNetSetReady(bool ready) { g_netReady = ready; }
+
+bool updateNetEnsureReady() {
+    static bool curlDone = false;
+    if (!g_netReady) {
+        Result rc = socketInitializeDefault();
+        g_netReady = R_SUCCEEDED(rc);
+        DebugLog::line("update-net: retry socket -> 0x%08X (%s)", (unsigned)rc,
+                       g_netReady ? "on" : "off");
+    }
+    if (g_netReady && !curlDone) {
+        if (curl_global_init(CURL_GLOBAL_DEFAULT) != CURLE_OK) {
+            g_netReady = false;
+            return false;
+        }
+        curlDone = true;
+    }
+    return g_netReady;
+}
 
 // Poll throttled dello stato link via nifm (nifm:u). Lazy-init: se nifm non si
 // apre, resta OFF e riprova al poll successivo. Mai fatale, mai bloccante.
@@ -217,38 +264,30 @@ namespace {
 double wallSeconds() {
     return (double)armTicksToNs(armGetSystemTick()) / 1.0e9;
 }
+
+// Throttle UI a 0.1s (era 0.25s): barra piu fluida senza affamare il socket.
 struct DlProgress {
     UpdateProgressFn cb;
-    std::string label;
+    std::string label = "Downloading";
     double lastEmit = 0.0;
-    double startTime = 0.0;  // media stabile su tutto il trasferimento
+    double startTime = 0.0;
 };
-int xferInfo(void* p, curl_off_t dltotal, curl_off_t dlnow, curl_off_t, curl_off_t) {
+
+int dlXferInfoUI(void* p, curl_off_t dltotal, curl_off_t dlnow, curl_off_t, curl_off_t) {
     auto* dp = static_cast<DlProgress*>(p);
-    if (!dp || !dp->cb) return 0;
-    // No all-zero frames: the "Downloading vX..." card stays up until the
-    // first bytes arrive (avoids the ugly 0% / 0.0 MB/s flash on connect).
-    if (dlnow <= 0 && dltotal <= 0) return 0;
     double now = wallSeconds();
-    if (dp->startTime == 0.0) dp->startTime = now;
-    if (dp->lastEmit != 0.0 && now - dp->lastEmit < 0.25) return 0;
-    // Media dall'inizio: stabile e veritiera. L'istantanea su finestre da
-    // 0.25s oscilla (lettura rete a burst + scrittura SD bloccante) e
-    // mostra 0.5 MB/s anche quando la media reale è 2 MB/s.
+    if (dp->lastEmit != 0.0 && now - dp->lastEmit < 0.1) return 0;
+    dp->lastEmit = now;
     double elapsed = now - dp->startTime;
     double mbps = (elapsed > 0.05) ? ((double)dlnow / elapsed / (1024.0 * 1024.0)) : 0.0;
-    dp->lastEmit = now;
     char line[160];
-    // NOTE: ASCII '-' separator, not '·' (U+00B7): the Switch system font
-    // lacks it and renders tofu (box with X) instead.
     if (dltotal > 0) {
         int pct = (int)((dlnow * 100) / dltotal);
-        std::snprintf(line, sizeof(line), "%s\n  %d%%  (%.1f / %.1f MB)  -  %.1f MB/s",
-                      dp->label.c_str(), pct,
-                      dlnow / (1024.0 * 1024.0), dltotal / (1024.0 * 1024.0), mbps);
+        std::snprintf(line, sizeof(line), "Downloading\n  %d%%  (%.1f / %.1f MB)  -  %.1f MB/s",
+                      pct, dlnow / (1024.0 * 1024.0), dltotal / (1024.0 * 1024.0), mbps);
     } else {
-        std::snprintf(line, sizeof(line), "%s\n  %.1f MB  -  %.1f MB/s",
-                      dp->label.c_str(), dlnow / (1024.0 * 1024.0), mbps);
+        std::snprintf(line, sizeof(line), "Downloading\n  %.1f MB  -  %.1f MB/s",
+                      dlnow / (1024.0 * 1024.0), mbps);
     }
     dp->cb(line);
     return 0;
@@ -260,7 +299,8 @@ bool updateNetDownload(const std::string& url, const std::string& token,
                        std::string& err, UpdateProgressFn progress) {
     if (!g_netReady) { err = "rete non inizializzata"; return false; }
 
-    // Fase 1: rete -> RAM (la SD non rallenta mai il socket).
+    // Tutto in RAM (veloce: niente SD nel percorso caldo), poi una sola
+    // scrittura sequenziale + rename. Throttle UI 0.1s.
     MemSink mem;
     CURL* c = curl_easy_init();
     if (!c) { err = "curl_easy_init fallito"; return false; }
@@ -274,16 +314,16 @@ bool updateNetDownload(const std::string& url, const std::string& token,
     curl_easy_setopt(c, CURLOPT_TIMEOUT, 600L);
 
     DlProgress dp;
-    dp.label = "Downloading";
     if (progress) {
         dp.cb = progress;
+        dp.startTime = wallSeconds();
         curl_easy_setopt(c, CURLOPT_NOPROGRESS, 0L);
-        curl_easy_setopt(c, CURLOPT_XFERINFOFUNCTION, xferInfo);
+        curl_easy_setopt(c, CURLOPT_XFERINFOFUNCTION, dlXferInfoUI);
         curl_easy_setopt(c, CURLOPT_XFERINFODATA, &dp);
     }
 
     // Niente eccezioni nel build Switch (-fno-exceptions): la protezione
-    // OOM è il tetto kRamCap controllato in writeToMemory/headerToMem.
+    // OOM e il tetto kRamCap controllato in writeToMemory/headerToMem.
     CURLcode rc = curl_easy_perform(c);
     long http = 0;
     curl_easy_getinfo(c, CURLINFO_RESPONSE_CODE, &http);
@@ -313,7 +353,6 @@ bool updateNetDownload(const std::string& url, const std::string& token,
                        mem.data.size() / (1024.0 * 1024.0),
                        dlNanos / 1.0e6, dlAvg / (1024.0 * 1024.0));
 
-    // Fase 2: sha in RAM (niente rilettura da SD).
     if (!expectSha256.empty()) {
         std::string got = sha256HexBuf(mem.data.data(), mem.data.size());
         if (got != toLower(expectSha256)) {
@@ -324,9 +363,6 @@ bool updateNetDownload(const std::string& url, const std::string& token,
         DebugLog::line("update-net: sha256 ok");
     }
 
-    // Fase 3: un'unica scrittura sequenziale su SD (veloce su flash).
-    if (progress) progress("Scrittura su SD…");
-    double w0 = wallSeconds();
     const std::string tmp = destPath + ".part";
     std::remove(tmp.c_str());
     FILE* f = std::fopen(tmp.c_str(), "wb");
@@ -340,12 +376,6 @@ bool updateNetDownload(const std::string& url, const std::string& token,
               std::to_string(mem.data.size()) + " byte)";
         return false;
     }
-    double wsec = wallSeconds() - w0;
-    if (wsec > 0.01)
-        DebugLog::line("update-net: %.1f MB su SD in %.1fs (%.1f MB/s)",
-                       mem.data.size() / (1024.0 * 1024.0), wsec,
-                       mem.data.size() / (1024.0 * 1024.0) / wsec);
-
     std::remove(destPath.c_str());
     if (std::rename(tmp.c_str(), destPath.c_str()) != 0) {
         std::remove(tmp.c_str());
@@ -356,9 +386,6 @@ bool updateNetDownload(const std::string& url, const std::string& token,
     return true;
 }
 
-// POST binario di un file su <baseUrl><endpoint>[?f=nome]. Ritorna false + err
-// su qualunque problema. Usato sia per debug.log che per libusbhsfs.log
-// (endpoint /upload) che per i save (endpoint /upload-save).
 static bool uploadOneFile(const std::string& baseUrl, const std::string& token,
                           const std::string& path, const std::string& remoteName,
                           std::string& err, const std::string& endpoint = "/upload",

@@ -20,6 +20,9 @@ struct RemoteUpdateInfo {
 // true quando i socket sono pronti (impostato da main dopo socketInitializeDefault).
 bool updateNetAvailable();
 void updateNetSetReady(bool ready);
+// Ritenta l'init socket (+curl) se giu: il boot puo fallire la race col WiFi.
+// true se rete usabile. Chiamato dai gate update prima di dichiararla off.
+bool updateNetEnsureReady();
 
 // Stato reale del link (WiFi/LAN/OFF) via nifm, throttled (~1 query ogni 2s,
 // risultato cachato). updateNetAvailable() dice solo "socket pronti" — vero
@@ -36,6 +39,9 @@ inline std::string githubReleasesUrl(const std::string& owner, const std::string
 // false + `err` su qualunque problema (rete, HTTP != 200, JSON senza i campi).
 bool updateNetFetchInfo(const std::string& baseUrl, const std::string& token,
                         RemoteUpdateInfo& out, std::string& err);
+
+// SHA256 hex di un file (streaming, per NRO grandi). "" se illeggibile.
+std::string sha256HexFile(const std::string& path);
 
 // Scarica `url` (assoluto) in `destPath` in due fasi: rete -> RAM (tetto
 // 256MB, mai OOM silenzioso) poi un'unica scrittura sequenziale su SD.

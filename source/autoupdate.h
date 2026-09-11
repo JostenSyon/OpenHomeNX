@@ -17,6 +17,10 @@ bool autoUpdateTakeResult(std::string& outVersion);
 // serve a distinguere "fetch in corso" da "morto prima della fetch".
 void autoUpdateLogOnceDone();
 
+// Da chiamare in uscita prima di smontare rete/USB: ferma il worker e lo
+// aspetta (mai due volte). Senza: fetch a metà teardown = crash in uscita.
+void autoUpdateJoin();
+
 // Legge update.cfg (stessi due path di ui_selectors.cpp): ritorna true solo
 // con `auto=1`; url/token restano vuoti se assenti (url vuoto = default GitHub).
 bool readUpdateAutoCfg(const std::string& basePath, std::string& urlOut,

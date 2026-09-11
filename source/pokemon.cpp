@@ -907,8 +907,15 @@ void Pokemon::loadFromEncrypted(const uint8_t* encrypted, size_t len) {
         PokemonFFI::decryptArray9(encrypted, len, data.data());
 }
 
-void Pokemon::refreshChecksum() {
-    if (isGbFile(gameType_)) return; // GB records have no checksum (file-level only)
+bool Pokemon::pk3ChecksumValid() const {
+    if (data.size() < 0x50) return false;
+    uint16_t chk = 0;
+    for (int i = 0x20; i < 0x50; i += 2)
+        chk += readU16(i);
+    return chk == readU16(0x1C);
+}
+
+void Pokemon::refreshChecksum() {    if (isGbFile(gameType_)) return; // GB records have no checksum (file-level only)
     if (isFRLG(gameType_) || isImportedFile(gameType_)) {
         // PK3: sum u16 words from 0x20 to 0x4F (48 bytes = 24 words), store at 0x1C
         uint16_t chk = 0;

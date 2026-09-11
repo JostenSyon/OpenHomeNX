@@ -1,4 +1,5 @@
 #include "ui.h"
+#include "ui_util.h"
 #include "i18n.h"
 #include "crypto_engine.h"
 #include "debug_log.h"
@@ -6,8 +7,13 @@
 #include "app_version.h"
 #include "update_net.h"
 
+#include <algorithm>
 #include <cerrno>
+#include <cmath>
+#include <ctime>
+#include <dirent.h>
 #include <fstream>
+#include <sys/stat.h>
 
 namespace {
 // update.cfg accanto all'NRO (o in sdmc:/switch/OpenHomeNX/). Righe key=value:
@@ -17,7 +23,35 @@ namespace {
 // Senza `url=` il check update usa le GitHub releases pubbliche
 // (githubReleasesUrl sotto); Send log/save richiedono comunque `url=`
 // (GitHub non riceve upload).
-struct UpdateCfg { std::string url, token; };
+// Etichetta corta per la sorgente update nei popup: l'URL intero sborda
+// dalle card (github.../download = 60+ caratteri). Il fetch usa sempre
+// l'URL completo, qui solo display.
+static std::string updateSourceLabel(const std::string& url) {    auto gh = url.find("github.com/");
+    if (gh != std::string::npos) {
+        std::string rest = url.substr(gh + 11);
+        auto slash = rest.find('/');
+        if (slash != std::string::npos) {
+            std::string repo = rest.substr(slash + 1);
+            auto end = repo.find('/');
+            if (end != std::string::npos) repo = repo.substr(0, end);
+            return "GitHub (" + rest.substr(0, slash) + "/" + repo + ")";
+        }
+        return "GitHub";
+    }
+    std::string h = url;
+    auto proto = h.find("://");
+    if (proto != std::string::npos) h = h.substr(proto + 3);
+    auto slash = h.find('/');
+    if (slash != std::string::npos) h = h.substr(0, slash);
+    if (!h.empty() && h.size() <= 48) return "Rete locale (" + h + ")";
+    const std::string& t = h.empty() ? url : h;
+    return t.size() <= 48 ? t : "..." + t.substr(t.size() - 45);
+}
+struct UpdateCfg {
+    std::string url, token;
+    long backupMb = 256;   // tetto CUMULATIVO auto-backup titoli installati
+    long backupMbSd = 32;  // tetto cumulativo save file-backed (SD, piccoli)
+};
 
 bool readUpdateCfg(const std::string& basePath, UpdateCfg& out) {
     const std::string paths[] = { basePath + "update.cfg",
@@ -39,12 +73,27 @@ bool readUpdateCfg(const std::string& basePath, UpdateCfg& out) {
             trim(k); trim(v);
             if (k == "url") out.url = v;
             else if (k == "token") out.token = v;
+            else if (k == "backup_mb") out.backupMb = std::atol(v.c_str());
+            else if (k == "backup_mb_sd") out.backupMbSd = std::atol(v.c_str());
         }
         if (!out.url.empty()) return true;
     }
     return false;
 }
 } // namespace
+
+static bool readQuickMenu(const std::string& basePath);
+static void writeQuickMenu(const std::string& basePath, bool on);
+
+// Righe popup save (X con debug): Normalize solo per GBA (RSE/FRLG, anche
+// via USB se con +16B) — per gli altri giochi non serve e resta nascosta.
+static std::vector<std::string> saveMenuRows(GameType g) {
+    std::vector<std::string> r = { "Backup save", "Browse backups", "Clean old backups" };
+    if (isImportedFile(g) || isFRLG(g)) r.push_back("Normalize save");
+    r.push_back("Send save");
+    r.push_back("Close");
+    return r;
+}
 #ifdef OH_USB_UPDATE
 #include <usbhsfs.h>
 #endif
@@ -93,10 +142,10 @@ void UI::drawProfileSelectorFrame() {
         int cardY = startY;
 
         if (i == profileSelCursor_) {
-            drawRect(cardX, cardY, CARD_W, CARD_H, T().menuHighlight);
-            drawRectOutline(cardX, cardY, CARD_W, CARD_H, T().cursor, 3);
+            drawRoundRect(cardX, cardY, CARD_W, CARD_H, 12, T().menuHighlight);
+            drawRoundRectOutline(cardX, cardY, CARD_W, CARD_H, 12, T().cursor, 3);
         } else {
-            drawRect(cardX, cardY, CARD_W, CARD_H, T().panelBg);
+            drawRoundRect(cardX, cardY, CARD_W, CARD_H, 12, T().panelBg);
         }
 
         int iconX = cardX + (CARD_W - ICON_SIZE) / 2;
@@ -165,6 +214,8 @@ void UI::handleProfileSelectorInput(bool& running) {
                     showAbout_ = true;
                     break;
                 case SDL_CONTROLLER_BUTTON_START:
+                    // Quit dal selettore profili: la mano (carry) muore qui.
+                    if (!confirmQuitWithHold()) break;
                     running = false;
                     break;
             }
@@ -205,6 +256,7 @@ void UI::selectProfile(int index) {
             availableGames_.push_back(g);
     }
     appendImportedGames();
+    applyFavoritesOrder();
 
     if (availableGames_.empty()) {
         showMessageAndWait(i18n::get(StrKey::NoSaveData),
@@ -216,19 +268,28 @@ void UI::selectProfile(int index) {
 
     gameSelCursor_ = 0;
     gameSelPage_ = 0;
+    selPageShown_ = 0;
+    selSlide_ = 0.0f;
+    galSelShown_ = -1;
+    galSlide_ = 0.0f;
     gameSelOnAllBanks_ = false;
+    gameSelOnSettings_ = false;
+    gameSelOnEject_ = false;
+    gameSelOnAvatar_ = false;
+    gameSelOnPack_ = false;
     gameSelOnChevron_ = 0;
     showWorking(i18n::get(StrKey::LoadingGameIcons));
     loadGameIcons();
     screen_ = AppScreen::GameSelector;
 }
 
-// --- File import (docs/archive/GEN_PLAN.md Fase 2/5: emulator saves on SD/USB) ---
+// --- File import (save SD/USB da emulatori o dump) ---
 
 void UI::appendImportedGames() {
     importedGames_ = scanImportPaths(importPaths_, autoCheckUsb_);
     for (const auto& ig : importedGames_)
         availableGames_.push_back(ig.type);
+    // Non riordino qui: il chiamante (selectProfile/fillPresentGames) fa già apply; rescan fa a parte.
 }
 
 std::string UI::importedSavePath(GameType game, int occurrence) const {
@@ -281,6 +342,7 @@ void UI::rescanImportedGames() {
     importedGames_ = scanImportPaths(importPaths_, autoCheckUsb_);
     for (const auto& ig : importedGames_)
         availableGames_.push_back(ig.type);
+    applyFavoritesOrder();
 
     // Clamp cursor/page: removals may have shrunk the list under them, and a
     // stale cursor + A press would OOB-read availableGames_.
@@ -293,6 +355,8 @@ void UI::rescanImportedGames() {
         int totalPages = ((int)availableGames_.size() + 12 - 1) / 12;
         if (gameSelPage_ >= totalPages)
             gameSelPage_ = totalPages - 1;
+        selPageShown_ = gameSelPage_;
+        selSlide_ = 0.0f;
         if (gameSelCursor_ < gameSelPage_ * 12)
             gameSelCursor_ = gameSelPage_ * 12;
     }
@@ -503,10 +567,19 @@ void UI::loadGameIcons() {
         std::string cachePath = cacheDir + hexId + ".jpg";
 
         SDL_Surface* surf = IMG_Load(cachePath.c_str());
+        if (surf) DebugLog::line("icons: %s surf %dx%d", gameInfo(game).gameTag, surf->w, surf->h);
+        if (surf) gameAccentCache_[game] = computeAccentColor(surf);
+        if (surf) {
+            if (SDL_Surface* rr = roundCornersSurface(surf, std::min(surf->w, surf->h) / 12)) {
+                SDL_FreeSurface(surf);
+                surf = rr;
+            }
+        }
         if (surf) {
             SDL_Texture* tex = SDL_CreateTextureFromSurface(renderer_, surf);
             SDL_FreeSurface(surf);
             if (tex) {
+                SDL_SetTextureBlendMode(tex, SDL_BLENDMODE_BLEND);
                 gameIconCache_[game] = tex;
                 continue;
             }
@@ -585,6 +658,13 @@ void UI::loadGameIcons() {
             if (!rw)
                 continue;
             SDL_Surface* surf = IMG_Load_RW(rw, 1);
+            if (surf) gameAccentCache_[game] = computeAccentColor(surf);
+            if (surf) {
+                if (SDL_Surface* rr = roundCornersSurface(surf, std::min(surf->w, surf->h) / 12)) {
+                    SDL_FreeSurface(surf);
+                    surf = rr;
+                }
+            }
             if (!surf) {
                 DebugLog::line("icons: %s icon decode failed (%zu B): %s",
                     gameInfo(game).gameTag, iconSize, IMG_GetError());
@@ -593,6 +673,7 @@ void UI::loadGameIcons() {
             SDL_Texture* tex = SDL_CreateTextureFromSurface(renderer_, surf);
             SDL_FreeSurface(surf);
             if (tex) {
+                SDL_SetTextureBlendMode(tex, SDL_BLENDMODE_BLEND);
                 gameIconCache_[game] = tex;
                 DebugLog::line("icons: %s loaded from system (%zu B)",
                     gameInfo(game).gameTag, iconSize);
@@ -608,9 +689,222 @@ void UI::freeGameIcons() {
             SDL_DestroyTexture(tex);
     }
     gameIconCache_.clear();
+    gameAccentCache_.clear();
 }
 
 // --- Game Selector ---
+
+// Icona/box-art di availableGames_[i] dentro il rettangolo (iconX, iconY,
+// size, size): copertina reale se disponibile, altrimenti loghi/colori
+// flat per GameType, posizionamento custom RSE, badge sorgente import.
+// Estratta da drawGameSelectorFrame() cosi' la stessa logica si riusa
+// identica per la griglia Classica (size=IS) e l'anteprima Galleria
+// (size=COVER): tutte le formule qui dentro sono gia' espresse come
+// percentuali di IS, quindi scalano automaticamente.
+// Colore di sfondo flat per i GameType senza titleId (Bulbapedia color
+// templates, stessi valori di pkm_rs_types::OriginGame::color()). Estratto
+// da drawGameArt() cosi' lo stesso colore alimenta anche l'accent del
+// pannello "vetro" in Galleria per questi giochi (vedi drawGameList_Gallery
+// in ui_gallery.cpp): non avendo un titleId non hanno mai una texture in
+// gameIconCache_, quindi gameAccentCache_ (popolata solo li') non li copre.
+SDL_Color UI::flatBgColorFor(GameType g) const {
+    switch (g) {
+        case GameType::RUBY:     return {0xCD, 0x22, 0x36, 255};
+        case GameType::SAPPHIRE: return {0x3D, 0x51, 0xA7, 255};
+        case GameType::DIAMOND:  return {0x7E, 0xC8, 0xE8, 255};
+        case GameType::PEARL:    return {0xE8, 0xA0, 0xC0, 255};
+        case GameType::PLATINUM: return {0x90, 0x90, 0x98, 255};
+        case GameType::HEARTGOLD: return {0xE8, 0xB8, 0x28, 255};
+        case GameType::SOULSILVER: return {0x98, 0xB8, 0xD8, 255};
+        case GameType::BLACK:    return {0x28, 0x28, 0x30, 255};
+        case GameType::WHITE:    return {0xE8, 0xE8, 0xE8, 255};
+        case GameType::BLACK2:   return {0x18, 0x18, 0x20, 255};
+        case GameType::WHITE2:   return {0xF8, 0xF8, 0xF8, 255};
+        case GameType::X:        return {0x20, 0x60, 0xC0, 255};
+        case GameType::Y:        return {0xC0, 0x30, 0x30, 255};
+        case GameType::SUN:      return {0xE8, 0x70, 0x20, 255};
+        case GameType::MOON:     return {0x30, 0x30, 0x60, 255};
+        case GameType::RED:      return {0xE0, 0x20, 0x20, 255};
+        case GameType::BLUE:     return {0x20, 0x60, 0xE0, 255};
+        case GameType::YELLOW:   return {0xE8, 0xC8, 0x10, 255};
+        case GameType::GOLD:     return {0xD8, 0xA8, 0x20, 255};
+        case GameType::SILVER:   return {0xA0, 0xB0, 0xC0, 255};
+        case GameType::CRYSTAL:  return {0x40, 0xC0, 0xE0, 255};
+        case GameType::EMERALD: default: return {0x50, 0xC8, 0x78, 255};
+    }
+}
+
+void UI::drawGameArt(int i, int iconX, int iconY, int size, bool scaleInner) {
+    const int IS = size;
+    // Unita di riferimento interna: 128 fisso (Classico invariato), oppure
+    // size se scaleInner (Galleria: tutto in proporzione).
+    const int UU = scaleInner ? size : 128;
+    auto it = gameIconCache_.find(availableGames_[i]);
+    if (it != gameIconCache_.end() && it->second) {
+        SDL_Rect dst = {iconX, iconY, IS, IS};
+        SDL_RenderCopy(renderer_, it->second, nullptr, &dst);
+    } else if (isImportedFile(availableGames_[i]) || isGen1File(availableGames_[i]) || isGen2File(availableGames_[i])) {
+        // No NS control data (no titleId) — a fixed per-game background
+        // (Bulbapedia color templates, same values pkm_rs_types uses for
+        // OriginGame::color()) plus the OpenHome logo PNG, letterboxed to
+        // fit without stretching.
+        SDL_Color bg = flatBgColorFor(availableGames_[i]);
+        drawRoundRect(iconX, iconY, IS, IS, (10 * UU) / 128, bg);
+        // Tile background image (e.g. Emerald artwork): center-cropped
+        // square stretched over the icon rect, on top of the flat color
+        // (which stays as fallback when the file is missing).
+        auto bgIt = tileBgCache_.find(availableGames_[i]);
+        if (bgIt != tileBgCache_.end() && bgIt->second) {
+            int texW = 0, texH = 0;
+            SDL_QueryTexture(bgIt->second, nullptr, nullptr, &texW, &texH);
+            if (texW > 0 && texH > 0) {
+                int side = std::min(texW, texH);
+                SDL_Rect src = {(texW - side) / 2, (texH - side) / 2, side, side};
+                SDL_Rect dst = {iconX, iconY, IS, IS};
+                SDL_RenderCopy(renderer_, bgIt->second, &src, &dst);
+            }
+        }
+        if (availableGames_[i] == GameType::RUBY ||
+            availableGames_[i] == GameType::SAPPHIRE ||
+            availableGames_[i] == GameType::EMERALD ||
+            availableGames_[i] == GameType::RED ||
+            availableGames_[i] == GameType::BLUE ||
+            availableGames_[i] == GameType::YELLOW) {
+            // RSE tile: box art grande quasi tutto il riquadro (box 120px
+            // dentro 128, non esce mai), logo sopra come titolo. Entrambi
+            // con sfondo trasparente verificato, quindi sovrapponibili.
+            auto artIt = boxArtCache_.find(availableGames_[i]);
+            if (artIt != boxArtCache_.end() && artIt->second) {
+                int texW = 0, texH = 0;
+                SDL_QueryTexture(artIt->second, nullptr, nullptr, &texW, &texH);
+                if (texW > 0 && texH > 0) {
+                    if (availableGames_[i] == GameType::RED ||
+                        availableGames_[i] == GameType::BLUE ||
+                        availableGames_[i] == GameType::YELLOW) {
+                        // RBY: artwork full-bleed su tutto il riquadro
+                        // (center-crop quadrato, nessun valore custom).
+                        int side = std::min(texW, texH);
+                        SDL_Rect src = {(texW - side) / 2, (texH - side) / 2, side, side};
+                        SDL_Rect dst = {iconX, iconY, IS, IS};
+                        SDL_RenderCopy(renderer_, artIt->second, &src, &dst);
+                    } else {
+                        // Base +15% di dimensione, a destra del 15% e in basso
+                        // del 5% (coordinate tunate a mano per ogni gioco:
+                        // NON scalarle col grow, si rompe il framing).
+                        // Ruby: Groudon centrato orizzontalmente.
+                        // Sapphire: Kyogre centrato, +10% dimensione e +5pp in
+                        // basso rispetto alla base. Logo identico per tutti.
+                        const int SPR = (117 * UU) / 128;
+                        const int SHIFT_X = (UU * 15) / 100;
+                        const int SHIFT_Y = (UU * 5) / 100;
+                    int shiftX = SHIFT_X;
+                    int spr = SPR;
+                    int shiftY = SHIFT_Y;
+                    if (availableGames_[i] == GameType::RUBY) {
+                        // Come all'inizio: nessuno shift custom.
+                        shiftX = 0;
+                    }
+                    if (availableGames_[i] == GameType::SAPPHIRE) {
+                        shiftX = (UU * 5) / 100;
+                        spr = (SPR * 110) / 100;
+                        shiftY = (UU * 15) / 100;
+                    }
+                    // Scala sulle dimensioni della texture (intera per RSE).
+                    float scale = std::min((float)spr / texW, (float)spr / texH);
+                    int dstW = (int)(texW * scale);
+                    int dstH = (int)(texH * scale);
+                    // Overlay RSE fisso come tunato (non segue il grow):
+                    // box 128 originale centrato nell'icona ingrandita.
+                    int oX = iconX + (IS - UU) / 2;
+                    int oY = iconY + (IS - UU) / 2;
+                    SDL_Rect dst = {oX + (UU - dstW) / 2 + shiftX,
+                                    oY + UU - dstH + shiftY, dstW, dstH};
+                    SDL_Rect clip = {oX, oY, UU, UU};
+                    SDL_RenderSetClipRect(renderer_, &clip);
+                    SDL_RenderCopy(renderer_, artIt->second, nullptr, &dst);
+                    SDL_RenderSetClipRect(renderer_, nullptr);
+                    } // else (RSE con valori custom)
+                }
+            }
+            auto logoIt = gameLogoCache_.find(availableGames_[i]);
+            if (logoIt != gameLogoCache_.end() && logoIt->second) {
+                int texW = 0, texH = 0;
+                SDL_QueryTexture(logoIt->second, nullptr, nullptr, &texW, &texH);
+                    if (texW > 0 && texH > 0) {
+                        const int LOGO_H = (54 * UU) / 128;
+                        int dstW = (int)(texW * ((float)LOGO_H / texH));
+                        if (dstW > UU) dstW = UU;
+                        int oX = iconX + (IS - UU) / 2;
+                        int oY = iconY + (IS - UU) / 2;
+                        SDL_Rect dst = {oX + (UU - dstW) / 2, oY, dstW, LOGO_H};
+                    SDL_RenderCopy(renderer_, logoIt->second, nullptr, &dst);
+                }
+            }
+        } else {
+            auto logoIt = gameLogoCache_.find(availableGames_[i]);
+            bool drewLogo = false;
+            if (logoIt != gameLogoCache_.end() && logoIt->second) {
+                int texW = 0, texH = 0;
+                SDL_QueryTexture(logoIt->second, nullptr, nullptr, &texW, &texH);
+                if (texW > 0 && texH > 0) {
+                    float scale = std::min((float)IS / texW, (float)IS / texH);
+                    int dstW = (int)(texW * scale);
+                    int dstH = (int)(texH * scale);
+                    SDL_Rect dst = {iconX + (IS - dstW) / 2, iconY + (IS - dstH) / 2, dstW, dstH};
+                    SDL_RenderCopy(renderer_, logoIt->second, nullptr, &dst);
+                    drewLogo = true;
+                }
+            }
+            if (!drewLogo) {
+                // No logo asset (Gen1 file games): centered game tag.
+                const char* tag = gameInfo(availableGames_[i]).gameTag;
+                const auto& te = getTextEntry(tag, font_, T().text);
+                drawText(tag, iconX + (IS - te.w) / 2, iconY + (IS - te.h) / 2,
+                         T().text, font_);
+            }
+        }
+        // Small source-folder badge (bottom-left corner of the icon) —
+        // only useful when more than one plausible source could hold the
+        // same game (e.g. a "roms/saves" copy AND a "roms" companion
+        // file); harmless/redundant otherwise, so always shown rather
+        // than only-on-ambiguity, which would need an extra pass to
+        // detect and would still surprise the user the first time a
+        // second source shows up.
+        std::string tag = importedSourceTag(availableGames_[i], importedOccurrence(i));
+        if (!tag.empty()) {
+            if (tag.length() > 10) tag = tag.substr(0, 9) + ".";
+            const auto& te = getTextEntry(tag, fontSmall_, T().text);
+            int badgeW = te.w + 8, badgeH = te.h + 4;
+            int badgeX = iconX + 2, badgeY = iconY + IS - badgeH - 2;
+            SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_BLEND);
+            SDL_SetRenderDrawColor(renderer_, 0, 0, 0, 160);
+            SDL_Rect badgeRect = {badgeX, badgeY, badgeW, badgeH};
+            SDL_RenderFillRect(renderer_, &badgeRect);
+            drawText(tag, badgeX + 4, badgeY + 2, T().text, fontSmall_);
+        }
+    } else {
+        // Colored placeholder with game abbreviation
+        drawRoundRect(iconX, iconY, IS, IS, 10, T().iconPlaceholder);
+        const char* abbr = "";
+        switch (availableGames_[i]) {
+            case GameType::Sw: abbr = "Sw"; break;
+            case GameType::Sh: abbr = "Sh"; break;
+            case GameType::BD: abbr = "BD"; break;
+            case GameType::SP: abbr = "SP"; break;
+            case GameType::LA: abbr = "LA"; break;
+            case GameType::S:  abbr = "S";  break;
+            case GameType::V:  abbr = "V";  break;
+            case GameType::ZA: abbr = "ZA"; break;
+            case GameType::GP: abbr = "GP"; break;
+            case GameType::GE: abbr = "GE"; break;
+            case GameType::FR: case GameType::FR_ES: case GameType::FR_DE: case GameType::FR_IT: case GameType::FR_FR: case GameType::FR_JA: abbr = "FR"; break;
+            case GameType::LG: case GameType::LG_ES: case GameType::LG_DE: case GameType::LG_IT: case GameType::LG_FR: case GameType::LG_JA: abbr = "LG"; break;
+            default: break;
+        }
+        drawTextCentered(abbr, iconX + IS / 2, iconY + IS / 2,
+                         T().text, font_);
+    }
+}
 
 void UI::drawGameSelectorFrame() {
     SDL_SetRenderDrawColor(renderer_, T().bg.r, T().bg.g, T().bg.b, 255);
@@ -624,6 +918,50 @@ void UI::drawGameSelectorFrame() {
         drawTextCentered(i18n::get(StrKey::SelectGame), SCREEN_W / 2, 40, T().text, font_);
     }
 
+    // Avatar utente in alto a sinistra: A torna al selettore profili.
+    if (selectedProfile_ >= 0 && selectedProfile_ < account_.profileCount()) {
+        constexpr int AV = 56;
+        constexpr int AVX = 36, AVY = 30;
+        if (gameSelOnAvatar_) {
+            drawRoundSelect(AVX + AV / 2, AVY + AV / 2, AV / 2 + 1, true);
+        }
+        SDL_Texture* av = account_.profiles()[selectedProfile_].iconTextureRound;
+        if (!av) av = account_.profiles()[selectedProfile_].iconTexture;
+        if (av) {
+            SDL_Rect dst = {AVX, AVY, AV, AV};
+            SDL_RenderCopy(renderer_, av, nullptr, &dst);
+        }
+        drawText(account_.profiles()[selectedProfile_].nickname, AVX + AV + 10, AVY + 14, T().text, font_);
+    }
+
+    // WiFi/LAN in alto a destra come nella barra Switch: pieno se rete on,
+    // grigio se off. LAN col cavo mostra la sua icona al posto del wifi.
+    {
+        std::string link = updateNetLinkStr();
+        bool netOn = link != "OFF";
+        SDL_Texture* nic = (link == "LAN" && iconLan_) ? iconLan_ : iconWifi_;
+        if (nic) {
+            if (netOn)
+                SDL_SetTextureColorMod(nic, T().text.r, T().text.g, T().text.b);
+            else
+                SDL_SetTextureColorMod(nic, 110, 110, 110);
+        SDL_Rect wdst = {SCREEN_W - 36 - 36, 34, 36, 36};
+        SDL_RenderCopy(renderer_, nic, nullptr, &wdst);
+        SDL_SetTextureColorMod(nic, 255, 255, 255);
+        // Bug debug a sinistra del wifi, solo con debug attivo.
+        if (DebugLog::enabled() && iconDebug_) {
+            SDL_SetTextureColorMod(iconDebug_, T().text.r, T().text.g, T().text.b);
+            SDL_Rect ddst = {SCREEN_W - 36 - 36 - 8 - 36, 34, 36, 36};
+            SDL_RenderCopy(renderer_, iconDebug_, nullptr, &ddst);
+            SDL_SetTextureColorMod(iconDebug_, 255, 255, 255);
+        }
+    }
+    }
+
+    int totalPages = 1; // Galleria: nessuna paginazione (lista scorrevole unica)
+    if (gameSelectorLayout_ == GameSelectorLayout::Gallery) {
+        drawGameList_Gallery();
+    } else {
     int numGames = (int)availableGames_.size();
     constexpr int COLS = 6;
     constexpr int ROWS_PER_PAGE = 2;
@@ -633,14 +971,40 @@ void UI::drawGameSelectorFrame() {
     constexpr int CARD_GAP = 20;
     constexpr int ICON_SIZE = 128;
 
-    int totalPages = (numGames + GAMES_PER_PAGE - 1) / GAMES_PER_PAGE;
-    int pageStart = gameSelPage_ * GAMES_PER_PAGE;
+    totalPages = (numGames + GAMES_PER_PAGE - 1) / GAMES_PER_PAGE;
+    // Slide orizzontale tipo Switch: la pagina disegnata insegue il target.
+    // Fase 1 (selPageShown_ != target): vecchia esce verso -dir.
+    // Allo swap l'offset salta sul lato opposto e la nuova rientra verso 0.
+    if (selPageShown_ != gameSelPage_) {
+        float dir = (gameSelPage_ > selPageShown_) ? -1.0f : 1.0f;
+        float mag = std::fabs(selSlide_) + (1.0f - std::fabs(selSlide_)) * 0.3f + 0.02f;
+        if (mag >= 1.0f) {
+            selPageShown_ = gameSelPage_;
+            selSlide_ = -dir; // lato opposto: rientro
+        } else {
+            selSlide_ = mag * dir;
+        }
+        markDirty();
+    } else if (selSlide_ != 0.0f) {
+        // Fase 2: rientro verso 0
+        float s = selSlide_ * 0.7f;
+        selSlide_ = (std::fabs(s) < 0.02f) ? 0.0f : s;
+        markDirty();
+    }
+    int showPage = selPageShown_;
+    int pageStart = showPage * GAMES_PER_PAGE;
     int pageEnd = std::min(pageStart + GAMES_PER_PAGE, numGames);
     int pageCount = pageEnd - pageStart;
 
     int rows = (pageCount + COLS - 1) / COLS;
     int totalH = rows * CARD_H + (rows - 1) * CARD_GAP;
-    int gridStartY = (SCREEN_H - totalH) / 2;
+    int gridStartY = (SCREEN_H - totalH) / 2 - 20; // griglia 20px piu in alto
+    // Avanza zoom selezione (step interi via cast: niente aliasing frazionario)
+    if (zoomT_ < 1.0f) {
+        zoomT_ += 0.2f;
+        if (zoomT_ > 1.0f) zoomT_ = 1.0f;
+        markDirty();
+    }
 
     for (int i = pageStart; i < pageEnd; i++) {
         int idx = i - pageStart;
@@ -652,201 +1016,42 @@ void UI::drawGameSelectorFrame() {
         int rowW = rowItems * CARD_W + (rowItems - 1) * CARD_GAP;
         int rowStartX = (SCREEN_W - rowW) / 2;
 
-        int cardX = rowStartX + c * (CARD_W + CARD_GAP);
+        int cardX = rowStartX + c * (CARD_W + CARD_GAP)
+                  + (int)(selSlide_ * COLS * (CARD_W + CARD_GAP));
         int cardY = gridStartY + r * (CARD_H + CARD_GAP);
 
-        // Card background
-        if (i == gameSelCursor_ && !gameSelOnAllBanks_ && gameSelOnChevron_ == 0) {
-            drawRect(cardX, cardY, CARD_W, CARD_H, T().menuHighlight);
-            drawRectOutline(cardX, cardY, CARD_W, CARD_H, T().cursor, 3);
+        // Card selezionata ingrandita (zoom animato intero): sfondo e icona
+        // crescono, i testi restano centrati (il centro non si sposta).
+        bool sel = (i == gameSelCursor_ && !gameSelOnAllBanks_ && !gameSelOnSettings_ && !gameSelOnEject_ && !gameSelOnAvatar_ && !gameSelOnPack_ && gameSelOnChevron_ == 0);
+        if (gameSelCursor_ != zoomCard_) {
+            zoomPrev_ = zoomCard_;
+            zoomCard_ = gameSelCursor_;
+            zoomT_ = 0.0f;
+        }
+        float ze = zoomT_ * zoomT_ * (3 - 2 * zoomT_); // smoothstep
+        int grow = 0;
+        if (i == zoomCard_ && sel) grow = (int)(zoomGrow_ * ze);
+        else if (i == zoomPrev_) grow = (int)(zoomGrow_ * (1.0f - ze));
+        if (zoomT_ >= 1.0f) zoomPrev_ = -2;
+        int cw = CARD_W + 2 * grow;
+        int ch = CARD_H + 2 * grow;
+        int cx0 = cardX - grow;
+        int cy0 = cardY - grow;
+        int IS = ICON_SIZE + 2 * grow;
+
+        // Card background (angoli arrotondati)
+        if (sel) {
+            drawRoundRect(cx0, cy0, cw, ch, 12, T().menuHighlight);
+            drawRoundRectOutline(cx0, cy0, cw, ch, 12, T().cursor, 3);
         } else {
-            drawRect(cardX, cardY, CARD_W, CARD_H, T().panelBg);
+            drawRoundRect(cardX, cardY, CARD_W, CARD_H, 12, T().panelBg);
         }
 
         // Icon
-        int iconX = cardX + (CARD_W - ICON_SIZE) / 2;
-        int iconY = cardY + 10;
+        int iconX = cx0 + (cw - IS) / 2;
+        int iconY = cy0 + 10;
 
-        auto it = gameIconCache_.find(availableGames_[i]);
-        if (it != gameIconCache_.end() && it->second) {
-            SDL_Rect dst = {iconX, iconY, ICON_SIZE, ICON_SIZE};
-            SDL_RenderCopy(renderer_, it->second, nullptr, &dst);
-        } else if (isImportedFile(availableGames_[i]) || isGen1File(availableGames_[i]) || isGen2File(availableGames_[i])) {
-            // No NS control data (no titleId) — a fixed per-game background
-            // (Bulbapedia color templates, same values pkm_rs_types uses for
-            // OriginGame::color()) plus the OpenHome logo PNG, letterboxed to
-            // fit without stretching.
-            SDL_Color bg;
-            switch (availableGames_[i]) {
-                case GameType::RUBY:     bg = {0xCD, 0x22, 0x36, 255}; break;
-                case GameType::SAPPHIRE: bg = {0x3D, 0x51, 0xA7, 255}; break;
-                case GameType::DIAMOND:  bg = {0x7E, 0xC8, 0xE8, 255}; break;
-                case GameType::PEARL:    bg = {0xE8, 0xA0, 0xC0, 255}; break;
-                case GameType::PLATINUM: bg = {0x90, 0x90, 0x98, 255}; break;
-                case GameType::HEARTGOLD: bg = {0xE8, 0xB8, 0x28, 255}; break;
-                case GameType::SOULSILVER: bg = {0x98, 0xB8, 0xD8, 255}; break;
-                case GameType::BLACK:    bg = {0x28, 0x28, 0x30, 255}; break;
-                case GameType::WHITE:    bg = {0xE8, 0xE8, 0xE8, 255}; break;
-                case GameType::BLACK2:   bg = {0x18, 0x18, 0x20, 255}; break;
-                case GameType::WHITE2:   bg = {0xF8, 0xF8, 0xF8, 255}; break;
-                case GameType::X:        bg = {0x20, 0x60, 0xC0, 255}; break;
-                case GameType::Y:        bg = {0xC0, 0x30, 0x30, 255}; break;
-                case GameType::SUN:      bg = {0xE8, 0x70, 0x20, 255}; break;
-                case GameType::MOON:     bg = {0x30, 0x30, 0x60, 255}; break;
-                case GameType::RED:      bg = {0xE0, 0x20, 0x20, 255}; break;
-                case GameType::BLUE:     bg = {0x20, 0x60, 0xE0, 255}; break;
-                case GameType::YELLOW:   bg = {0xE8, 0xC8, 0x10, 255}; break;
-                case GameType::GOLD:     bg = {0xD8, 0xA8, 0x20, 255}; break;
-                case GameType::SILVER:   bg = {0xA0, 0xB0, 0xC0, 255}; break;
-                case GameType::CRYSTAL:  bg = {0x40, 0xC0, 0xE0, 255}; break;
-                case GameType::EMERALD: default: bg = {0x50, 0xC8, 0x78, 255}; break;
-            }
-            drawRect(iconX, iconY, ICON_SIZE, ICON_SIZE, bg);
-            // Tile background image (e.g. Emerald artwork): center-cropped
-            // square stretched over the icon rect, on top of the flat color
-            // (which stays as fallback when the file is missing).
-            auto bgIt = tileBgCache_.find(availableGames_[i]);
-            if (bgIt != tileBgCache_.end() && bgIt->second) {
-                int texW = 0, texH = 0;
-                SDL_QueryTexture(bgIt->second, nullptr, nullptr, &texW, &texH);
-                if (texW > 0 && texH > 0) {
-                    int side = std::min(texW, texH);
-                    SDL_Rect src = {(texW - side) / 2, (texH - side) / 2, side, side};
-                    SDL_Rect dst = {iconX, iconY, ICON_SIZE, ICON_SIZE};
-                    SDL_RenderCopy(renderer_, bgIt->second, &src, &dst);
-                }
-            }
-            if (availableGames_[i] == GameType::RUBY ||
-                availableGames_[i] == GameType::SAPPHIRE ||
-                availableGames_[i] == GameType::EMERALD ||
-                availableGames_[i] == GameType::RED ||
-                availableGames_[i] == GameType::BLUE ||
-                availableGames_[i] == GameType::YELLOW) {
-                // RSE tile: box art grande quasi tutto il riquadro (box 120px
-                // dentro 128, non esce mai), logo sopra come titolo. Entrambi
-                // con sfondo trasparente verificato, quindi sovrapponibili.
-                auto artIt = boxArtCache_.find(availableGames_[i]);
-                if (artIt != boxArtCache_.end() && artIt->second) {
-                    int texW = 0, texH = 0;
-                    SDL_QueryTexture(artIt->second, nullptr, nullptr, &texW, &texH);
-                    if (texW > 0 && texH > 0) {
-                        if (availableGames_[i] == GameType::RED ||
-                            availableGames_[i] == GameType::BLUE ||
-                            availableGames_[i] == GameType::YELLOW) {
-                            // RBY: artwork full-bleed su tutto il riquadro
-                            // (center-crop quadrato, nessun valore custom).
-                            int side = std::min(texW, texH);
-                            SDL_Rect src = {(texW - side) / 2, (texH - side) / 2, side, side};
-                            SDL_Rect dst = {iconX, iconY, ICON_SIZE, ICON_SIZE};
-                            SDL_RenderCopy(renderer_, artIt->second, &src, &dst);
-                        } else {
-                        // Base +15% di dimensione, a destra del 15% e in basso
-                        // del 5% (percentuali su ICON_SIZE). L'eccesso viene
-                        // tagliato netto sul bordo riquadro via clip.
-                        // Ruby: Groudon centrato orizzontalmente.
-                        // Sapphire: Kyogre centrato, +10% dimensione e +5pp in
-                        // basso rispetto alla base. Logo identico per tutti.
-                        constexpr int SPR = 117;
-                        constexpr int SHIFT_X = (128 * 15) / 100;
-                        constexpr int SHIFT_Y = (128 * 5) / 100;
-                        int shiftX = SHIFT_X;
-                        int spr = SPR;
-                        int shiftY = SHIFT_Y;
-                        if (availableGames_[i] == GameType::RUBY)
-                            shiftX = 0;
-                        if (availableGames_[i] == GameType::SAPPHIRE) {
-                            shiftX = (128 * 5) / 100;
-                            spr = (SPR * 110) / 100;
-                            shiftY = (128 * 15) / 100;
-                        }
-                        float scale = std::min((float)spr / texW, (float)spr / texH);
-                        int dstW = (int)(texW * scale);
-                        int dstH = (int)(texH * scale);
-                        SDL_Rect dst = {iconX + (ICON_SIZE - dstW) / 2 + shiftX,
-                                        iconY + ICON_SIZE - dstH + shiftY, dstW, dstH};
-                        SDL_Rect clip = {iconX, iconY, ICON_SIZE, ICON_SIZE};
-                        SDL_RenderSetClipRect(renderer_, &clip);
-                        SDL_RenderCopy(renderer_, artIt->second, nullptr, &dst);
-                        SDL_RenderSetClipRect(renderer_, nullptr);
-                        } // else (RSE con valori custom)
-                    }
-                }
-                auto logoIt = gameLogoCache_.find(availableGames_[i]);
-                if (logoIt != gameLogoCache_.end() && logoIt->second) {
-                    int texW = 0, texH = 0;
-                    SDL_QueryTexture(logoIt->second, nullptr, nullptr, &texW, &texH);
-                    if (texW > 0 && texH > 0) {
-                        constexpr int LOGO_H = 54;
-                        int dstW = (int)(texW * ((float)LOGO_H / texH));
-                        if (dstW > ICON_SIZE) dstW = ICON_SIZE;
-                        SDL_Rect dst = {iconX + (ICON_SIZE - dstW) / 2, iconY, dstW, LOGO_H};
-                        SDL_RenderCopy(renderer_, logoIt->second, nullptr, &dst);
-                    }
-                }
-            } else {
-                auto logoIt = gameLogoCache_.find(availableGames_[i]);
-                bool drewLogo = false;
-                if (logoIt != gameLogoCache_.end() && logoIt->second) {
-                    int texW = 0, texH = 0;
-                    SDL_QueryTexture(logoIt->second, nullptr, nullptr, &texW, &texH);
-                    if (texW > 0 && texH > 0) {
-                        float scale = std::min((float)ICON_SIZE / texW, (float)ICON_SIZE / texH);
-                        int dstW = (int)(texW * scale);
-                        int dstH = (int)(texH * scale);
-                        SDL_Rect dst = {iconX + (ICON_SIZE - dstW) / 2, iconY + (ICON_SIZE - dstH) / 2, dstW, dstH};
-                        SDL_RenderCopy(renderer_, logoIt->second, nullptr, &dst);
-                        drewLogo = true;
-                    }
-                }
-                if (!drewLogo) {
-                    // No logo asset (Gen1 file games): centered game tag.
-                    const char* tag = gameInfo(availableGames_[i]).gameTag;
-                    const auto& te = getTextEntry(tag, font_, T().text);
-                    drawText(tag, iconX + (ICON_SIZE - te.w) / 2, iconY + (ICON_SIZE - te.h) / 2,
-                             T().text, font_);
-                }
-            }
-            // Small source-folder badge (bottom-left corner of the icon) —
-            // only useful when more than one plausible source could hold the
-            // same game (e.g. a "roms/saves" copy AND a "roms" companion
-            // file); harmless/redundant otherwise, so always shown rather
-            // than only-on-ambiguity, which would need an extra pass to
-            // detect and would still surprise the user the first time a
-            // second source shows up.
-            std::string tag = importedSourceTag(availableGames_[i], importedOccurrence(i));
-            if (!tag.empty()) {
-                if (tag.length() > 10) tag = tag.substr(0, 9) + ".";
-                const auto& te = getTextEntry(tag, fontSmall_, T().text);
-                int badgeW = te.w + 8, badgeH = te.h + 4;
-                int badgeX = iconX + 2, badgeY = iconY + ICON_SIZE - badgeH - 2;
-                SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_BLEND);
-                SDL_SetRenderDrawColor(renderer_, 0, 0, 0, 160);
-                SDL_Rect badgeRect = {badgeX, badgeY, badgeW, badgeH};
-                SDL_RenderFillRect(renderer_, &badgeRect);
-                drawText(tag, badgeX + 4, badgeY + 2, T().text, fontSmall_);
-            }
-        } else {
-            // Colored placeholder with game abbreviation
-            drawRect(iconX, iconY, ICON_SIZE, ICON_SIZE, T().iconPlaceholder);
-            const char* abbr = "";
-            switch (availableGames_[i]) {
-                case GameType::Sw: abbr = "Sw"; break;
-                case GameType::Sh: abbr = "Sh"; break;
-                case GameType::BD: abbr = "BD"; break;
-                case GameType::SP: abbr = "SP"; break;
-                case GameType::LA: abbr = "LA"; break;
-                case GameType::S:  abbr = "S";  break;
-                case GameType::V:  abbr = "V";  break;
-                case GameType::ZA: abbr = "ZA"; break;
-                case GameType::GP: abbr = "GP"; break;
-                case GameType::GE: abbr = "GE"; break;
-                case GameType::FR: case GameType::FR_ES: case GameType::FR_DE: case GameType::FR_IT: case GameType::FR_FR: case GameType::FR_JA: abbr = "FR"; break;
-                case GameType::LG: case GameType::LG_ES: case GameType::LG_DE: case GameType::LG_IT: case GameType::LG_FR: case GameType::LG_JA: abbr = "LG"; break;
-                default: break;
-            }
-            drawTextCentered(abbr, iconX + ICON_SIZE / 2, iconY + ICON_SIZE / 2,
-                             T().text, font_);
-        }
+        drawGameArt(i, iconX, iconY, IS);
 
         // Game name below icon (RSE show the logo on top too, but the
         // text label below stays for readability at a glance).
@@ -868,53 +1073,121 @@ void UI::drawGameSelectorFrame() {
                          T().textDim, fontSmall_);
     }
 
-    // "View All Banks" option below the grid
-    {
-        int lastRow = (pageCount - 1) / COLS;
-        int gridBottomY = gridStartY + (lastRow + 1) * (CARD_H + CARD_GAP);
-        int allBanksY = gridBottomY + 10;
-
-        std::string label = i18n::get(StrKey::ViewAllBanks);
-        const auto& te = getTextEntry(label, font_, T().text);
-        int labelW = te.w + 40;  // padding
-        int labelH = 36;
-        int labelX = (SCREEN_W - labelW) / 2;
-
-        if (gameSelOnAllBanks_) {
-            drawRect(labelX, allBanksY, labelW, labelH, T().menuHighlight);
-            drawRectOutline(labelX, allBanksY, labelW, labelH, T().cursor, 2);
-        } else {
-            drawRect(labelX, allBanksY, labelW, labelH, T().panelBg);
-        }
-        drawTextCentered(label, SCREEN_W / 2, allBanksY + labelH / 2,
-                         T().text, font_);
     }
 
-    // Chevron buttons for page navigation
-    if (totalPages > 1) {
-        constexpr int BTN_W = 40;
-        constexpr int BTN_H = 60;
-        int btnY = SCREEN_H / 2 - BTN_H / 2;
+    // Riga bassa: zaino (sx, fisso) + banche (centro, fisso) + espelli USB
+    // (dx, animato). Etichetta banche solo quando evidenziata.
+    {
+        constexpr int R = 34;
+        constexpr int ICON_R = 24;
+        constexpr int BTN_Y = SCREEN_H - 110;
+        constexpr int ROW_DX = 104; // distanza fissa tra i pulsanti
+        constexpr int VCX = SCREEN_W / 2;
+        constexpr int PCX = SCREEN_W / 2 - ROW_DX;
+#ifdef OH_USB_UPDATE
+        bool ejectVisible = usbHsFsGetMountedDeviceCount() > 0;
+#else
+        bool ejectVisible = false;
+#endif
+        float ejectTarget = (float)SCREEN_W / 2 + ROW_DX;
+        float ejectAlphaT = ejectVisible ? 255.0f : 0.0f;
+        if (ejectBtnX_ < 0) ejectBtnX_ = ejectTarget;
+        if (ejectVisible) ejectAnimStage_ = 0; // chiavetta tornata: annulla sequenza
+        if (ejectAnimStage_ == 1) {
+            // Appena espulso: prima sparisce l'eject.
+            ejectAlphaT = 0.0f;
+            if (ejectBtnA_ == 0.0f) ejectAnimStage_ = 2;
+        } else if (ejectAnimStage_ == 2) {
+            ejectAlphaT = 0.0f;
+            ejectAnimStage_ = 0;
+        } else if (ejectVisible) {
+            ejectAnimStage_ = 0;
+        }
+        if (ejectBtnA_ == 0 && ejectVisible) ejectBtnX_ = ejectTarget + 60.0f; // entra da destra
+        auto approach = [](float cur, float tgt) {
+            float d = tgt - cur;
+            if (d > -1.0f && d < 1.0f) return tgt;
+            return cur + d * 0.25f;
+        };
+        float ne = approach(ejectBtnX_, ejectTarget);
+        float na = approach(ejectBtnA_, ejectAlphaT);
+        if (ne != ejectBtnX_ || na != ejectBtnA_) markDirty();
+        ejectBtnX_ = ne; ejectBtnA_ = na;
+        auto drawIcon = [&](SDL_Texture* tex, int cx) {
+            SDL_SetTextureColorMod(tex, T().text.r, T().text.g, T().text.b);
+            SDL_Rect dst = {cx - ICON_R, BTN_Y - ICON_R, ICON_R * 2, ICON_R * 2};
+            SDL_RenderCopy(renderer_, tex, nullptr, &dst);
+            SDL_SetTextureColorMod(tex, 255, 255, 255);
+        };
+        // Zaino (WIP: messaggio finche non c'e l'injector eventi/strumenti).
+        // Texture gia a misura (48px): blit 1:1, niente scaling = niente aliasing.
+        drawRoundSelect(PCX, BTN_Y, R + 1, gameSelOnPack_);
+        if (iconPack_) {
+            SDL_SetTextureColorMod(iconPack_, T().text.r, T().text.g, T().text.b);
+            SDL_Rect dst = {PCX - ICON_R, BTN_Y - ICON_R, ICON_R * 2, ICON_R * 2};
+            SDL_RenderCopy(renderer_, iconPack_, nullptr, &dst);
+            SDL_SetTextureColorMod(iconPack_, 255, 255, 255);
+        }
+        // Banche
+        drawRoundSelect(VCX, BTN_Y, R + 1, gameSelOnAllBanks_);
+        if (iconVault_) drawIcon(iconVault_, VCX);
+        if (gameSelOnAllBanks_) {
+            drawTextCentered(i18n::get(StrKey::ViewAllBanks), SCREEN_W / 2,
+                             BTN_Y + R + 17, T().text, font_);
+        }
+        if (ejectBtnA_ > 1.0f && iconEject_) {
+            int ecx = (int)(ejectBtnX_ + 0.5f);
+            drawRoundSelect(ecx, BTN_Y, R + 1, gameSelOnEject_);
+            SDL_SetTextureAlphaMod(iconEject_, (Uint8)ejectBtnA_);
+            SDL_SetTextureColorMod(iconEject_, T().text.r, T().text.g, T().text.b);
+            SDL_Rect dst = {ecx - ICON_R, BTN_Y - ICON_R, ICON_R * 2, ICON_R * 2};
+            SDL_RenderCopy(renderer_, iconEject_, nullptr, &dst);
+            SDL_SetTextureAlphaMod(iconEject_, 255);
+            SDL_SetTextureColorMod(iconEject_, 255, 255, 255);
+        } else if (!ejectVisible) {
+            gameSelOnEject_ = false;
+        }
+    }
 
-        // Left button
-        int leftX = 10;
-        bool canLeft = gameSelPage_ > 0;
+    // Ingranaggio impostazioni in basso a destra, stessa riga delle banche.
+    // Apre lo stesso menu del tasto + (menu dedicato in futuro).
+    {
+        constexpr int GR = 26;
+        int gcx = SCREEN_W - 64;
+        int gcy = SCREEN_H - 110;
+        drawRoundSelect(gcx, gcy, GR + 1, gameSelOnSettings_);
+        if (iconSettings_) {
+            constexpr int SET_R = 20;
+            SDL_SetTextureColorMod(iconSettings_, T().text.r, T().text.g, T().text.b);
+            SDL_Rect dst = {gcx - SET_R, gcy - SET_R, SET_R * 2, SET_R * 2};
+            SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "1");
+            SDL_RenderCopy(renderer_, iconSettings_, nullptr, &dst);
+            SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "0");
+            SDL_SetTextureColorMod(iconSettings_, 255, 255, 255);
+        }
+    }
+
+    // Frecce pagine: icona diretta senza riquadro (dx = stessa ruotata 180).
+    // Grigia se non disponibile, colore tema se attiva, cursor se evidenziata.
+    if (totalPages > 1 && iconArrow_) {
+        constexpr int AR = 24;
+        int midY = SCREEN_H / 2;
+        auto arrow = [&](int cx, bool flip, bool can, bool focused) {
+            SDL_Color c = !can ? SDL_Color{110, 110, 110, 255}
+                        : focused ? T().cursor : T().text;
+            SDL_SetTextureColorMod(iconArrow_, c.r, c.g, c.b);
+            SDL_Rect dst = {cx - AR, midY - AR, AR * 2, AR * 2};
+            SDL_Point ctr = {AR, AR};
+            SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "1");
+            SDL_RenderCopyEx(renderer_, iconArrow_, nullptr, &dst,
+                             flip ? 180.0 : 0.0, &ctr, SDL_FLIP_NONE);
+            SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "0");
+            SDL_SetTextureColorMod(iconArrow_, 255, 255, 255);
+        };
         bool leftFocused = gameSelOnChevron_ == -1;
-        drawRect(leftX, btnY, BTN_W, BTN_H, leftFocused ? T().menuHighlight : T().panelBg);
-        if (leftFocused)
-            drawRectOutline(leftX, btnY, BTN_W, BTN_H, T().cursor, 3);
-        drawTextCentered("<", leftX + BTN_W / 2, btnY + BTN_H / 2,
-                         canLeft ? T().text : T().textDim, font_);
-
-        // Right button
-        int rightX = SCREEN_W - BTN_W - 10;
-        bool canRight = gameSelPage_ < totalPages - 1;
         bool rightFocused = gameSelOnChevron_ == 1;
-        drawRect(rightX, btnY, BTN_W, BTN_H, rightFocused ? T().menuHighlight : T().panelBg);
-        if (rightFocused)
-            drawRectOutline(rightX, btnY, BTN_W, BTN_H, T().cursor, 3);
-        drawTextCentered(">", rightX + BTN_W / 2, btnY + BTN_H / 2,
-                         canRight ? T().text : T().textDim, font_);
+        arrow(34, false, gameSelPage_ > 0, leftFocused);
+        arrow(SCREEN_W - 34, true, gameSelPage_ < totalPages - 1, rightFocused);
     }
 
     // "X: Espelli USB" suffix only while a device is actually mounted.
@@ -923,9 +1196,13 @@ void UI::drawGameSelectorFrame() {
     if (usbHsFsGetMountedDeviceCount() > 0)
         ejectHint = i18n::get(StrKey::StatusGameEject);
 #endif
+    // Debug: X apre il popup save (backup/restore/send) sul gioco puntato.
+    std::string saveHint;
+    if (DebugLog::enabled())
+        saveHint = " | X: save";
     if (selectedProfile_ >= 0) {
         drawStatusBar((totalPages > 1 ? i18n::get(StrKey::StatusGameBackPage)
-                                      : i18n::get(StrKey::StatusGameBack)) + ejectHint);
+                                      : i18n::get(StrKey::StatusGameBack)) + ejectHint + saveHint);
         std::string profileLabel = account_.profiles()[selectedProfile_].nickname;
         profileLabel += " | ";
         profileLabel += useOpenHome() ? "OH" : "PK";
@@ -936,7 +1213,7 @@ void UI::drawGameSelectorFrame() {
         if (e.tex) drawText(profileLabel, SCREEN_W - e.w - 15, SCREEN_H - 26, T().goldLabel, fontSmall_);
     } else {
         drawStatusBar((totalPages > 1 ? i18n::get(StrKey::StatusGameQuitPage)
-                                      : i18n::get(StrKey::StatusGameQuit)) + ejectHint);
+                                      : i18n::get(StrKey::StatusGameQuit)) + ejectHint + saveHint);
         // Show core even without profile so feedback is always visible
         std::string coreLabel = useOpenHome() ? "OH" : "PK";
         if (DebugLog::enabled())
@@ -955,13 +1232,170 @@ void UI::drawGameSelectorFrame() {
     }
 }
 
+void UI::selectorTap(float px, float py, bool& running) {
+    auto dist2 = [](float ax, float ay, float bx, float by) {
+        float dx = ax - bx, dy = ay - by;
+        return dx * dx + dy * dy;
+    };
+    // Avatar -> profili
+    if (selectedProfile_ >= 0 && px >= 36 && px <= 36 + 56 && py >= 30 && py <= 30 + 56) {
+        freeGameIcons();
+        account_.unmountSave();
+        screen_ = AppScreen::ProfileSelector;
+        markDirty();
+        return;
+    }
+    // Vault / eject / gear (riga bassa fissa)
+    constexpr float BTN_Y = SCREEN_H - 110;
+    if (dist2(px, py, SCREEN_W / 2, BTN_Y) < 45 * 45) {
+        gameSelOnAllBanks_ = true;
+        gameSelOnAvatar_ = gameSelOnPack_ = false;
+        gameSelOnEject_ = gameSelOnSettings_ = false;
+        gameSelOnChevron_ = 0;
+        enterAllBanksMode();
+        return;
+    }
+    if (dist2(px, py, SCREEN_W / 2 - 104, BTN_Y) < 45 * 45) {
+        gameSelOnPack_ = true;
+        gameSelOnAvatar_ = gameSelOnAllBanks_ = false;
+        gameSelOnEject_ = gameSelOnSettings_ = false;
+        gameSelOnChevron_ = 0;
+        showMessageAndWait(i18n::get(StrKey::SetTitle),
+            i18n::get(StrKey::BagSoon)); // WIP: injector eventi/strumenti
+        return;
+    }
+    if (ejectBtnA_ > 128 && dist2(px, py, ejectBtnX_, BTN_Y) < 45 * 45) {
+        ejectUsbDevices();
+        return;
+    }
+    if (dist2(px, py, SCREEN_W - 64, BTN_Y) < 40 * 40) {
+        openSettings(); // il gear apre SEMPRE le impostazioni
+        markDirty();
+        return;
+    }
+    // Frecce pagine
+    int numGames = (int)availableGames_.size();
+    int totalPages = (gameSelectorLayout_ == GameSelectorLayout::Gallery)
+                    ? 1 : (numGames + 12 - 1) / 12;
+    if (totalPages > 1) {
+        if (dist2(px, py, 34, SCREEN_H / 2) < 34 * 34 && gameSelPage_ > 0) {
+            gameSelPage_--;
+            gameSelCursor_ = gameSelPage_ * 12;
+            gameSelOnAllBanks_ = gameSelOnAvatar_ = false;
+            gameSelOnEject_ = gameSelOnSettings_ = false;
+            gameSelOnChevron_ = 0;
+            markDirty();
+            return;
+        }
+        if (dist2(px, py, SCREEN_W - 34, SCREEN_H / 2) < 34 * 34 && gameSelPage_ < totalPages - 1) {
+            gameSelPage_++;
+            gameSelCursor_ = gameSelPage_ * 12;
+            gameSelOnAllBanks_ = gameSelOnAvatar_ = false;
+            gameSelOnEject_ = gameSelOnSettings_ = false;
+            gameSelOnChevron_ = 0;
+            markDirty();
+            return;
+        }
+    }
+    if (gameSelectorLayout_ == GameSelectorLayout::Gallery) {
+        selectorTapGallery(px, py, running);
+        return;
+    }
+    // Card giochi (stesso layout del draw)
+    constexpr int COLS = 6, CARD_W = 160, CARD_H = 200, CARD_GAP = 20;
+    int pageStart = selPageShown_ * 12;
+    int pageEnd = std::min(pageStart + 12, numGames);
+    int pageCount = pageEnd - pageStart;
+    int rows = (pageCount + COLS - 1) / COLS;
+    int totalH = rows * CARD_H + (rows - 1) * CARD_GAP;
+    int gridStartY = (SCREEN_H - totalH) / 2 - 20;
+    for (int i = pageStart; i < pageEnd; i++) {
+        int idx = i - pageStart;
+        int r = idx / COLS, c = idx % COLS;
+        int rowItems = std::min(COLS, pageCount - r * COLS);
+        int rowW = rowItems * CARD_W + (rowItems - 1) * CARD_GAP;
+        int cardX = (SCREEN_W - rowW) / 2 + c * (CARD_W + CARD_GAP);
+        int cardY = gridStartY + r * (CARD_H + CARD_GAP);
+        if (px >= cardX && px <= cardX + CARD_W && py >= cardY && py <= cardY + CARD_H) {
+            gameSelCursor_ = i;
+            gameSelOnAllBanks_ = gameSelOnAvatar_ = false;
+            gameSelOnEject_ = gameSelOnSettings_ = false;
+            gameSelOnChevron_ = 0;
+            selectGame(availableGames_[i], importedOccurrence(i));
+            markDirty();
+            return;
+        }
+    }
+    (void)running;
+}
+
+void UI::ejectUsbDevices() {
+#ifdef OH_USB_UPDATE
+    u32 n = usbHsFsGetMountedDeviceCount();
+    if (n > 8) n = 8;
+    std::vector<UsbHsFsDevice> devs(n > 0 ? n : 1);
+    u32 got = n > 0 ? usbHsFsListMountedDevices(devs.data(), n) : 0;
+    int ok = 0;
+    for (u32 i = 0; i < got; i++)
+        if (usbHsFsUnmountDevice(&devs[i], true)) ok++;
+    DebugLog::line("usb eject: unmounted %d/%u device(s)", ok, got);
+    rescanImportedGames();
+    gameSelOnEject_ = false;
+    if (ok > 0) ejectAnimStage_ = 1; // sequenza: fade eject, poi rientro vault
+    markDirty();
+#else
+    (void)0;
+#endif
+}
+
+bool UI::bottomButtonsAnim() {
+#ifdef OH_USB_UPDATE
+    bool vis = usbHsFsGetMountedDeviceCount() > 0;
+#else
+    bool vis = false;
+#endif
+    float et = (float)SCREEN_W / 2 + 104.0f;
+    float at = vis ? 255.0f : 0.0f;
+    if (ejectBtnX_ < 0) return true;
+    if (ejectAnimStage_ != 0) return true;
+    if (selSlide_ != 0.0f || selPageShown_ != gameSelPage_) return true;
+    if (zoomT_ < 1.0f) return true;
+    if (galleryScrollAnim()) return true;
+    if (galleryPreviewAnim()) return true;
+    // Link rete cambiato: aggiorna l'icona wifi anche a schermo fermo.
+    static std::string lastLink;
+    std::string link = updateNetLinkStr();
+    if (link != lastLink) { lastLink = link; return true; }
+    return ejectBtnX_ != et || ejectBtnA_ != at;
+}
+
+void UI::sendLogNow() {
+    UpdateCfg cfg;
+    std::string err;
+    if (!readUpdateCfg(basePath_, cfg) || cfg.url.empty()) {
+        showMessageAndWait(i18n::get(StrKey::SendLogTitle), i18n::get(StrKey::SendLogNoUrl));
+    } else if (!updateNetEnsureReady()) {
+        showMessageAndWait(i18n::get(StrKey::SendLogTitle), i18n::get(StrKey::SendLogNetOff));
+    } else {
+        showWorking(i18n::fmt(StrKey::SendLogUploading, cfg.url));
+        bool sentLib = false;
+        if (updateNetUploadLog(cfg.url, cfg.token, basePath_, err, &sentLib))
+            showMessageAndWait(i18n::get(StrKey::SendLogTitle),
+                sentLib ? i18n::get(StrKey::SendLogSentBoth)
+                        : i18n::get(StrKey::SendLogSent));
+        else
+            showMessageAndWait(i18n::get(StrKey::SendLogTitle), i18n::fmt(StrKey::SendLogFailed, err));
+    }
+}
+
 void UI::handleGameSelectorInput(bool& running) {
     int numGames = (int)availableGames_.size();
     if (numGames == 0) return;
 
-    constexpr int COLS = 6;
+    const bool gallerySel_ = (gameSelectorLayout_ == GameSelectorLayout::Gallery);
+    const int COLS = gallerySel_ ? 1 : 6;
 
-    constexpr int GAMES_PER_PAGE = 12;
+    const int GAMES_PER_PAGE = gallerySel_ ? numGames : 12;
 
     int totalPages = (numGames + GAMES_PER_PAGE - 1) / GAMES_PER_PAGE;
 
@@ -987,7 +1421,11 @@ void UI::handleGameSelectorInput(bool& running) {
             }
             if (dy > 0) {
                 gameSelOnChevron_ = 0;
+                gameSelOnSettings_ = false;
+                gameSelOnEject_ = false;
+                gameSelOnAvatar_ = false;
                 gameSelOnAllBanks_ = true;
+                gameSelOnPack_ = false;
             }
             if (dy < 0) {
                 gameSelOnChevron_ = 0;
@@ -995,17 +1433,144 @@ void UI::handleGameSelectorInput(bool& running) {
             return;
         }
 
+        if (gameSelOnPack_) {
+            // Sullo zaino (prima icona a sx della dock): destra torna alle
+            // banche, sinistra torna alla lista/griglia (posizione
+            // invariata), su torna in griglia (ultima riga).
+            if (dx > 0) {
+                gameSelOnPack_ = false;
+                gameSelOnAllBanks_ = true;
+            } else if (dx < 0) {
+                gameSelOnPack_ = false;
+            } else if (dy < 0) {
+                gameSelOnPack_ = false;
+                if (!gallerySel_) {
+                    // Solo Classica: la griglia ha piu' righe, "su" atterra
+                    // sull'ultima riga mantenendo la colonna. In Galleria e'
+                    // una lista sola: il cursore resta dov'era (il
+                    // "segnalino" non deve saltare all'ultimo gioco).
+                    int totalRows = (pageCount + COLS - 1) / COLS;
+                    int lastRowStart = (totalRows - 1) * COLS;
+                    int lastRowItems = pageCount - lastRowStart;
+                    int col = (gameSelCursor_ - pageStart) % COLS;
+                    if (col >= lastRowItems) col = lastRowItems - 1;
+                    gameSelCursor_ = pageStart + lastRowStart + col;
+                }
+            }
+            return;
+        }
+
         if (gameSelOnAllBanks_) {
-            // On "All Banks" row: up goes back to grid, left/right ignored
+            // Riga bassa: sinistra = zaino, destra = eject/gear, su = griglia
+            if (dx < 0) {
+                gameSelOnAllBanks_ = false;
+                gameSelOnPack_ = true;
+                return;
+            }
+            if (dx > 0) {
+                gameSelOnAllBanks_ = false;
+#ifdef OH_USB_UPDATE
+                if (usbHsFsGetMountedDeviceCount() > 0)
+                    gameSelOnEject_ = true;
+                else
+                    gameSelOnSettings_ = true;
+#else
+                gameSelOnSettings_ = true;
+#endif
+                return;
+            }
             if (dy < 0) {
                 gameSelOnAllBanks_ = false;
-                // Place cursor on bottom row of current page
-                int totalRows = (pageCount + COLS - 1) / COLS;
-                int lastRowStart = (totalRows - 1) * COLS;
-                int lastRowItems = pageCount - lastRowStart;
-                int col = (gameSelCursor_ - pageStart) % COLS;
-                if (col >= lastRowItems) col = lastRowItems - 1;
-                gameSelCursor_ = pageStart + lastRowStart + col;
+                if (!gallerySel_) {
+                    // Place cursor on bottom row of current page
+                    // (Galleria: cursore invariato, vedi commento sopra su onPack_)
+                    int totalRows = (pageCount + COLS - 1) / COLS;
+                    int lastRowStart = (totalRows - 1) * COLS;
+                    int lastRowItems = pageCount - lastRowStart;
+                    int col = (gameSelCursor_ - pageStart) % COLS;
+                    if (col >= lastRowItems) col = lastRowItems - 1;
+                    gameSelCursor_ = pageStart + lastRowStart + col;
+                }
+            }
+            return;
+        }
+
+        if (gameSelOnEject_) {
+            // Sull'espelli: sinistra torna alle banche, destra al gear, su in griglia
+            if (dx < 0) {
+                gameSelOnEject_ = false;
+                gameSelOnAllBanks_ = true;
+                gameSelOnPack_ = false;
+            } else if (dx > 0) {
+                gameSelOnEject_ = false;
+                gameSelOnSettings_ = true;
+            } else if (dy < 0) {
+                gameSelOnEject_ = false;
+                if (!gallerySel_) {
+                    // (Galleria: cursore invariato, vedi commento sopra su onPack_)
+                    int totalRows = (pageCount + COLS - 1) / COLS;
+                    int lastRowStart = (totalRows - 1) * COLS;
+                    int lastRowItems = pageCount - lastRowStart;
+                    int col = (gameSelCursor_ - pageStart) % COLS;
+                    if (col >= lastRowItems) col = lastRowItems - 1;
+                    gameSelCursor_ = pageStart + lastRowStart + col;
+                }
+            }
+            return;
+        }
+
+        if (gameSelOnSettings_) {
+            // Sull'ingranaggio: sinistra torna a eject (se c'e) o banche
+            if (dx < 0) {
+                gameSelOnSettings_ = false;
+#ifdef OH_USB_UPDATE
+                if (usbHsFsGetMountedDeviceCount() > 0)
+                    gameSelOnEject_ = true;
+                else
+                    gameSelOnAllBanks_ = true;
+                gameSelOnPack_ = false;
+#else
+                gameSelOnAllBanks_ = true;
+                gameSelOnPack_ = false;
+#endif
+            } else if (dy < 0) {
+                gameSelOnSettings_ = false;
+                if (!gallerySel_) {
+                    // (Galleria: cursore invariato, vedi commento sopra su onPack_)
+                    int totalRows = (pageCount + COLS - 1) / COLS;
+                    int lastRowStart = (totalRows - 1) * COLS;
+                    int lastRowItems = pageCount - lastRowStart;
+                    int col = (gameSelCursor_ - pageStart) % COLS;
+                    if (col >= lastRowItems) col = lastRowItems - 1;
+                    gameSelCursor_ = pageStart + lastRowStart + col;
+                }
+            }
+            return;
+        }
+
+        // Galleria: sinistra/destra scavalcano subito in cima (avatar) o
+        // in fondo (riga banche/zaino/eject/gear), cosi' non serve
+        // scorrere tutta la lista dei giochi per raggiungerli. Solo
+        // quando il cursore e' nella lista stessa: l'avatar (unico
+        // elemento periferico non gia' filtrato dai return sopra) ha
+        // la sua gestione dx piu' sotto (nessun effetto), invariata.
+        if (gallerySel_ && dx != 0 && !gameSelOnAvatar_) {
+            if (dx < 0) {
+                if (selectedProfile_ >= 0) {
+                    gameSelOnAvatar_ = true;
+                } else {
+                    gameSelOnSettings_ = false;
+                    gameSelOnEject_ = false;
+                    gameSelOnAllBanks_ = true;
+                    gameSelOnPack_ = false;
+                }
+            } else {
+                // Destra: prima icona della dock (zaino/pack), non banche.
+                gameSelOnSettings_ = false;
+                gameSelOnEject_ = false;
+                gameSelOnAvatar_ = false;
+                gameSelOnAllBanks_ = false;
+                gameSelOnPack_ = true;
             }
             return;
         }
@@ -1018,9 +1583,20 @@ void UI::handleGameSelectorInput(bool& running) {
         col += dx;
         row += dy;
 
-        // Moving down past the last row goes to "All Banks"
+        // Moving down past the last row goes to "All Banks" in Classica;
+        // in Galleria va invece alla prima icona della dock (lo zaino),
+        // coerente con "destra" dalla lista (vedi blocco piu' sotto).
         if (row >= totalRows) {
-            gameSelOnAllBanks_ = true;
+            gameSelOnSettings_ = false;
+            gameSelOnEject_ = false;
+            gameSelOnAvatar_ = false;
+            if (gallerySel_) {
+                gameSelOnAllBanks_ = false;
+                gameSelOnPack_ = true;
+            } else {
+                gameSelOnAllBanks_ = true;
+                gameSelOnPack_ = false;
+            }
             return;
         }
 
@@ -1043,9 +1619,21 @@ void UI::handleGameSelectorInput(bool& running) {
         if (col < 0) col = rowItems - 1;
         if (col >= rowItems) col = 0;
 
-        // Wrap rows (up from top goes to "All Banks")
+        // Wrap rows (up from top goes to avatar, down from avatar to grid)
+        if (gameSelOnAvatar_) {
+            // Giu' o destra tornano alla lista/griglia (posizione invariata).
+            if (dy > 0 || dx > 0) gameSelOnAvatar_ = false;
+            return;
+        }
         if (row < 0) {
-            gameSelOnAllBanks_ = true;
+            if (selectedProfile_ >= 0) {
+                gameSelOnAvatar_ = true;
+            } else {
+                gameSelOnSettings_ = false;
+                gameSelOnEject_ = false;
+                gameSelOnAllBanks_ = true;
+                gameSelOnPack_ = false;
+            }
             return;
         }
 
@@ -1060,6 +1648,199 @@ void UI::handleGameSelectorInput(bool& running) {
         if (event.type == SDL_QUIT) {
             running = false;
             return;
+        }
+
+        // Touch: tap = click, swipe orizzontale = cambio pagina.
+        if (event.type == SDL_FINGERDOWN) {
+            touchDown_ = true;
+            touchMoved_ = false;
+            touchStartX_ = event.tfinger.x * SCREEN_W;
+            touchStartY_ = event.tfinger.y * SCREEN_H;
+            continue;
+        }
+        if (event.type == SDL_FINGERMOTION && touchDown_) {
+            float mdx = event.tfinger.x * SCREEN_W - touchStartX_;
+            float mdy = event.tfinger.y * SCREEN_H - touchStartY_;
+            if (mdx * mdx + mdy * mdy > 30.0f * 30.0f) touchMoved_ = true;
+            continue;
+        }
+        if (event.type == SDL_FINGERUP && touchDown_) {
+            touchDown_ = false;
+            float px = event.tfinger.x * SCREEN_W;
+            float py = event.tfinger.y * SCREEN_H;
+            float dx = px - touchStartX_, dy = py - touchStartY_;
+            if (!showBackupList_ && !showSaveMenu_ && !showGameSelMenu_ && !showSettings_) {
+                if (dx < -120 && std::fabs(dy) < 200) {
+                    if (totalPages > 1 && gameSelPage_ < totalPages - 1) {
+                        gameSelPage_++;
+                        gameSelCursor_ = gameSelPage_ * GAMES_PER_PAGE;
+                        gameSelOnAllBanks_ = gameSelOnAvatar_ = false;
+                        gameSelOnEject_ = gameSelOnSettings_ = false;
+                        gameSelOnChevron_ = 0;
+                        markDirty();
+                    }
+                } else if (dx > 120 && std::fabs(dy) < 200) {
+                    if (totalPages > 1 && gameSelPage_ > 0) {
+                        gameSelPage_--;
+                        gameSelCursor_ = gameSelPage_ * GAMES_PER_PAGE;
+                        gameSelOnAllBanks_ = gameSelOnAvatar_ = false;
+                        gameSelOnEject_ = gameSelOnSettings_ = false;
+                        gameSelOnChevron_ = 0;
+                        markDirty();
+                    }
+                } else if (!touchMoved_) {
+                    selectorTap(px, py, running);
+                }
+            }
+            continue;
+        }
+
+        // Debug backup list intercepts input (sopra il popup save)
+        if (showBackupList_) {
+            int count = (int)backupListEntries_.size();
+            auto scrollIntoView = [&]() {
+                constexpr int VISIBLE = 12;
+                if (backupListCursor_ < backupListScroll_)
+                    backupListScroll_ = backupListCursor_;
+                else if (backupListCursor_ >= backupListScroll_ + VISIBLE)
+                    backupListScroll_ = backupListCursor_ - VISIBLE + 1;
+            };
+            if (event.type == SDL_CONTROLLERBUTTONDOWN) {
+                markDirty();
+                switch (event.cbutton.button) {
+                    case SDL_CONTROLLER_BUTTON_DPAD_UP:
+                        if (count > 0) {
+                            if (backupListCursor_ > 0) backupListCursor_--;
+                            else backupListCursor_ = count - 1;
+                            scrollIntoView();
+                        }
+                        break;
+                    case SDL_CONTROLLER_BUTTON_DPAD_DOWN:
+                        if (count > 0) {
+                            if (backupListCursor_ < count - 1) backupListCursor_++;
+                            else backupListCursor_ = 0;
+                            scrollIntoView();
+                        }
+                        break;
+                    case SDL_CONTROLLER_BUTTON_LEFTSHOULDER:
+                        if (count > 0) {
+                            backupListCursor_ = std::max(0, backupListCursor_ - 10);
+                            scrollIntoView();
+                        }
+                        break;
+                    case SDL_CONTROLLER_BUTTON_RIGHTSHOULDER:
+                        if (count > 0) {
+                            backupListCursor_ = std::min(count - 1, backupListCursor_ + 10);
+                            scrollIntoView();
+                        }
+                        break;
+                    case SDL_CONTROLLER_BUTTON_B: { // Switch A = restore selezionato
+                        if (count == 0) break;
+                        std::string e = backupListEntries_[backupListCursor_].path;
+                        auto slash = e.find_last_of('/');
+                        std::string base = (slash == std::string::npos) ? e : e.substr(slash + 1);
+                        if (showConfirmDialog("Restore backup",
+                                              base + "\nSovrascrivo il save attuale. Procedo?")) {
+                            if (restoreBackupEntry(backupListGame_, e))
+                                showMessageAndWait("Restore backup", "OK, save ripristinato.");
+                            else
+                                showMessageAndWait("Restore backup", "FAILED (vedi debug.log)");
+                        }
+                        break;
+                    }
+                    case SDL_CONTROLLER_BUTTON_A: // Switch B = indietro
+                    case SDL_CONTROLLER_BUTTON_X:
+                    case SDL_CONTROLLER_BUTTON_BACK:
+                    case SDL_CONTROLLER_BUTTON_START:
+                        showBackupList_ = false;
+                        break;
+                }
+            } else if (event.type == SDL_CONTROLLERAXISMOTION) {
+                if (event.caxis.axis == SDL_CONTROLLER_AXIS_LEFTX ||
+                    event.caxis.axis == SDL_CONTROLLER_AXIS_LEFTY) {
+                    int16_t lx = SDL_GameControllerGetAxis(pad_, SDL_CONTROLLER_AXIS_LEFTX);
+                    int16_t ly = SDL_GameControllerGetAxis(pad_, SDL_CONTROLLER_AXIS_LEFTY);
+                    updateStick(lx, ly);
+                }
+            }
+            continue;
+        }
+
+        // Debug save popup intercepts input (sotto il menu +)
+        if (showSaveMenu_) {
+            if (event.type == SDL_CONTROLLERBUTTONDOWN) {
+                markDirty();
+                int smN = (int)saveMenuRows(saveMenuGame_).size();
+                switch (event.cbutton.button) {
+                    case SDL_CONTROLLER_BUTTON_DPAD_UP:
+                    case SDL_CONTROLLER_BUTTON_DPAD_LEFT:
+                        saveMenuCursor_ = (saveMenuCursor_ + smN - 1) % smN;
+                        break;
+                    case SDL_CONTROLLER_BUTTON_DPAD_DOWN:
+                    case SDL_CONTROLLER_BUTTON_DPAD_RIGHT:
+                        saveMenuCursor_ = (saveMenuCursor_ + 1) % smN;
+                        break;
+                    case SDL_CONTROLLER_BUTTON_B: { // Switch A = conferma
+                        std::string sel = saveMenuRows(saveMenuGame_)[saveMenuCursor_];
+                        if (sel == "Backup save") {
+                            std::string out;
+                            showSaveMenu_ = false;
+                            if (backupGameSave(saveMenuGame_, out))
+                                showMessageAndWait("Save backup", std::string("OK:\n") + out);
+                            else
+                                showMessageAndWait("Save backup", "FAILED (vedi debug.log)");
+                        } else if (sel == "Browse backups") {
+                            openBackupList(saveMenuGame_);
+                        } else if (sel == "Clean old backups") {
+                            // Pulisci: applica il tetto retroattivamente (mai i manuali).
+                            bool fb = !importedSavePath(saveMenuGame_, saveMenuOcc_).empty();
+                            showSaveMenu_ = false;
+                            uint64_t freed = pruneBackupsToCap(saveMenuGame_, fb);
+                            char msg[128];
+                            std::snprintf(msg, sizeof(msg), "Liberati %.1f MB di auto-backup.",
+                                          freed / 1048576.0);
+                            showMessageAndWait("Clean old backups", msg);
+                        } else if (sel == "Normalize save") {
+                            // Normalizza Delta: via i 16B extra, file raw 128K.
+                            std::string p = importedSavePath(saveMenuGame_, saveMenuOcc_);
+                            showSaveMenu_ = false;
+                            if (p.empty()) {
+                                showMessageAndWait("Normalize save", "Solo save SD (niente titoli installati).");
+                            } else {
+                                std::string info;
+                                SaveFile::normalizeDeltaSave(p, info);
+                                showMessageAndWait("Normalize save", info);
+                            }
+                        } else if (sel == "Send save") {
+                            showSaveMenu_ = false;
+                            sendSaveFor(saveMenuGame_, saveMenuOcc_);
+                        } else {
+                            showSaveMenu_ = false;
+                        }
+                        break;
+                    }
+                    case SDL_CONTROLLER_BUTTON_A: // Switch B = chiudi
+                    case SDL_CONTROLLER_BUTTON_X:
+                    case SDL_CONTROLLER_BUTTON_BACK:
+                    case SDL_CONTROLLER_BUTTON_START:
+                        showSaveMenu_ = false;
+                        break;
+                }
+            } else if (event.type == SDL_CONTROLLERAXISMOTION) {
+                if (event.caxis.axis == SDL_CONTROLLER_AXIS_LEFTX ||
+                    event.caxis.axis == SDL_CONTROLLER_AXIS_LEFTY) {
+                    int16_t lx = SDL_GameControllerGetAxis(pad_, SDL_CONTROLLER_AXIS_LEFTX);
+                    int16_t ly = SDL_GameControllerGetAxis(pad_, SDL_CONTROLLER_AXIS_LEFTY);
+                    updateStick(lx, ly);
+                }
+            }
+            continue;
+        }
+
+        // Settings page intercepts input (above game selector menu)
+        if (showSettings_) {
+            handleSettingsInput(event, running);
+            continue;
         }
 
         // Game selector menu intercepts input
@@ -1098,54 +1879,17 @@ void UI::handleGameSelectorInput(bool& running) {
                                 if (gameSelMenuCursor_ >= ms) gameSelMenuCursor_ = ms - 1;
                                 break;
                             }
-                            case GameSelMenuAction::SendLog: {
-                                UpdateCfg cfg;
-                                std::string err;
-                                if (!readUpdateCfg(basePath_, cfg) || cfg.url.empty()) {
-                                    showMessageAndWait(i18n::get(StrKey::SendLogTitle), i18n::get(StrKey::SendLogNoUrl));
-                                } else if (!updateNetAvailable()) {
-                                    showMessageAndWait(i18n::get(StrKey::SendLogTitle), i18n::get(StrKey::SendLogNetOff));
-                                } else {
-                                    showWorking(i18n::fmt(StrKey::SendLogUploading, cfg.url));
-                                    bool sentLib = false;
-                                    if (updateNetUploadLog(cfg.url, cfg.token, basePath_, err, &sentLib))
-                                        showMessageAndWait(i18n::get(StrKey::SendLogTitle),
-                                            sentLib ? i18n::get(StrKey::SendLogSentBoth)
-                                                    : i18n::get(StrKey::SendLogSent));
-                                    else
-                                        showMessageAndWait(i18n::get(StrKey::SendLogTitle), i18n::fmt(StrKey::SendLogFailed, err));
-                                }
+                            case GameSelMenuAction::SendLog:
+                                sendLogNow();
                                 break;
-                            }
-                            case GameSelMenuAction::SendSave: {
-                                // Debug-only: upload the save file of the game
-                                // under the grid cursor. v1 resolves imported
-                                // (file-backed) games only — account saves need
-                                // mount/read/unmount (v2, same resolver shape).
-                                UpdateCfg cfg;
-                                std::string err;
-                                if (!readUpdateCfg(basePath_, cfg) || cfg.url.empty()) {
-                                    showMessageAndWait(i18n::get(StrKey::SendSaveTitle), i18n::get(StrKey::SendSaveNoUrl));
-                                } else if (!updateNetAvailable()) {
-                                    showMessageAndWait(i18n::get(StrKey::SendSaveTitle), i18n::get(StrKey::SendSaveNetOff));
-                                } else if (gameSelOnAllBanks_ || gameSelOnChevron_ != 0 ||
-                                           gameSelCursor_ < 0 || gameSelCursor_ >= (int)availableGames_.size()) {
+                            case GameSelMenuAction::SendSave:
+                                if (gameSelOnAllBanks_ || gameSelOnChevron_ != 0 ||
+                                    gameSelCursor_ < 0 || gameSelCursor_ >= (int)availableGames_.size())
                                     showMessageAndWait(i18n::get(StrKey::SendSaveTitle), i18n::get(StrKey::SendSaveNoGame));
-                                } else {
-                                    GameType g = availableGames_[gameSelCursor_];
-                                    std::string path = importedSavePath(g, importedOccurrence(gameSelCursor_));
-                                    if (path.empty()) {
-                                        showMessageAndWait(i18n::get(StrKey::SendSaveTitle), i18n::get(StrKey::SendSaveOnlyImported));
-                                    } else {
-                                        showWorking(i18n::fmt(StrKey::SendSaveUploading, gameInfo(g).gameTag));
-                                        if (updateNetUploadSave(cfg.url, cfg.token, path, gameInfo(g).gameTag, err))
-                                            showMessageAndWait(i18n::get(StrKey::SendSaveTitle), i18n::get(StrKey::SendSaveSent));
-                                        else
-                                            showMessageAndWait(i18n::get(StrKey::SendSaveTitle), i18n::fmt(StrKey::SendSaveFailed, err));
-                                    }
-                                }
+                                else
+                                    sendSaveFor(availableGames_[gameSelCursor_],
+                                                importedOccurrence(gameSelCursor_));
                                 break;
-                            }
                             case GameSelMenuAction::ImportSettings:
                                 showGameSelMenu_ = false;
                                 showImportSettings_ = true;
@@ -1158,6 +1902,10 @@ void UI::handleGameSelectorInput(bool& running) {
                                     running = false;
                                     return;
                                 }
+                                break;
+                            case GameSelMenuAction::OpenSettings:
+                                showGameSelMenu_ = false;
+                                openSettings();
                                 break;
                             case GameSelMenuAction::Exit:
                                 DebugLog::line("nav: menu Exit -> QUIT");
@@ -1188,6 +1936,16 @@ void UI::handleGameSelectorInput(bool& running) {
             markDirty();
 
         if (event.type == SDL_CONTROLLERAXISMOTION) {
+            if (event.caxis.axis == SDL_CONTROLLER_AXIS_TRIGGERRIGHT) {
+                bool pressed = event.caxis.value > TRIGGER_DEADZONE;
+                if (pressed && !favTriggerHeld_ && gallerySel_ && !showGameSelMenu_ && !showSaveMenu_ && !showBackupList_ && !showSettings_ && !showAbout_ && !showThemeSelector_ && !showLanguageSelector_ && !gameSelOnAllBanks_ && !gameSelOnAvatar_ && !gameSelOnPack_ && !gameSelOnEject_ && !gameSelOnSettings_ && gameSelOnChevron_ == 0) {
+                    if (gameSelCursor_ >= 0 && gameSelCursor_ < (int)availableGames_.size()) {
+                        GameType g = availableGames_[gameSelCursor_];
+                        toggleFavorite(g);
+                    }
+                }
+                favTriggerHeld_ = pressed;
+            }
             if (event.caxis.axis == SDL_CONTROLLER_AXIS_LEFTX ||
                 event.caxis.axis == SDL_CONTROLLER_AXIS_LEFTY) {
                 int16_t lx = SDL_GameControllerGetAxis(pad_, SDL_CONTROLLER_AXIS_LEFTX);
@@ -1221,10 +1979,25 @@ void UI::handleGameSelectorInput(bool& running) {
                         gameSelOnChevron_ = 0;
                     } else if (gameSelOnAllBanks_)
                         enterAllBanksMode();
+                    else if (gameSelOnPack_)
+                        showMessageAndWait(i18n::get(StrKey::SetTitle),
+                            i18n::get(StrKey::BagSoon)); // WIP: injector eventi/strumenti
+                    else if (gameSelOnAvatar_) {
+                        gameSelOnAvatar_ = false;
+                        freeGameIcons();
+                        account_.unmountSave();
+                        screen_ = AppScreen::ProfileSelector;
+                    }
+                    else if (gameSelOnEject_)
+                        ejectUsbDevices();
+                    else if (gameSelOnSettings_) {
+                        openSettings(); // il gear apre SEMPRE le impostazioni
+                    }
                     else
                         selectGame(availableGames_[gameSelCursor_], importedOccurrence(gameSelCursor_));
                     break;
                 case SDL_CONTROLLER_BUTTON_A: // Switch B = back
+                    if (gameSelOnAvatar_) { gameSelOnAvatar_ = false; break; }
                     DebugLog::line("nav: B in games profile=%d -> %s", selectedProfile_,
                         selectedProfile_ >= 0 ? "ProfileSelector" : "QUIT");
                     if (selectedProfile_ >= 0) {
@@ -1232,6 +2005,8 @@ void UI::handleGameSelectorInput(bool& running) {
                         account_.unmountSave();
                         screen_ = AppScreen::ProfileSelector;
                     } else {
+                        // Quit dal selettore giochi: la mano (carry) muore qui.
+                        if (!confirmQuitWithHold()) break;
                         running = false;
                     }
                     break;
@@ -1240,21 +2015,14 @@ void UI::handleGameSelectorInput(bool& running) {
                     themeSelCursor_ = themeIndex_;
                     themeSelOriginal_ = themeIndex_;
                     break;
-                case SDL_CONTROLLER_BUTTON_Y: // Switch X = eject USB (hint shown only when mounted)
-#ifdef OH_USB_UPDATE
-                {
-                    u32 n = usbHsFsGetMountedDeviceCount();
-                    if (n > 8) n = 8;
-                    std::vector<UsbHsFsDevice> devs(n > 0 ? n : 1);
-                    u32 got = n > 0 ? usbHsFsListMountedDevices(devs.data(), n) : 0;
-                    int ok = 0;
-                    for (u32 i = 0; i < got; i++)
-                        if (usbHsFsUnmountDevice(&devs[i], true)) ok++;
-                    DebugLog::line("usb eject: unmounted %d/%u device(s)", ok, got);
-                    rescanImportedGames();
-                    markDirty();
-                }
-#endif
+                case SDL_CONTROLLER_BUTTON_Y: // Switch X = save menu (debug) / eject USB
+                    if (DebugLog::enabled() && !gameSelOnAllBanks_ && !gameSelOnSettings_ && !gameSelOnEject_ && !gameSelOnAvatar_ && !gameSelOnPack_ && gameSelOnChevron_ == 0 &&
+                        gameSelCursor_ >= 0 && gameSelCursor_ < (int)availableGames_.size()) {
+                        openSaveMenu(availableGames_[gameSelCursor_],
+                                     importedOccurrence(gameSelCursor_));
+                        break;
+                    }
+                    ejectUsbDevices();
                     break;
                 case SDL_CONTROLLER_BUTTON_LEFTSHOULDER: { // L = previous page
                     if (totalPages > 1 && gameSelPage_ > 0) {
@@ -1277,16 +2045,51 @@ void UI::handleGameSelectorInput(bool& running) {
                 case SDL_CONTROLLER_BUTTON_BACK: // - = about
                     showAbout_ = true;
                     break;
-                case SDL_CONTROLLER_BUTTON_START: // + (open game selector menu)
-                    showGameSelMenu_ = true;
-                    gameSelMenuCursor_ = 0;
+                case SDL_CONTROLLER_BUTTON_START: // + : menu rapido se ON, impostazioni se OFF
+                    if (readQuickMenu(basePath_)) {
+                        showGameSelMenu_ = true;
+                        gameSelMenuCursor_ = 0;
+                    } else {
+                        openSettings();
+                    }
                     break;
             }
         }
     }
 
     // Joystick repeat navigation
-    if (showGameSelMenu_ && stickDirY_ != 0) {
+    if (showBackupList_ && stickDirY_ != 0 && !backupListEntries_.empty()) {
+        uint32_t now = SDL_GetTicks();
+        uint32_t delay = stickMoved_ ? STICK_REPEAT_DELAY : STICK_INITIAL_DELAY;
+        if (now - stickMoveTime_ >= delay) {
+            int count = (int)backupListEntries_.size();
+            if (stickDirY_ > 0) {
+                if (backupListCursor_ < count - 1) backupListCursor_++;
+                else backupListCursor_ = 0;
+            } else {
+                if (backupListCursor_ > 0) backupListCursor_--;
+                else backupListCursor_ = count - 1;
+            }
+            constexpr int VISIBLE = 12;
+            if (backupListCursor_ < backupListScroll_)
+                backupListScroll_ = backupListCursor_;
+            else if (backupListCursor_ >= backupListScroll_ + VISIBLE)
+                backupListScroll_ = backupListCursor_ - VISIBLE + 1;
+            stickMoveTime_ = now;
+            stickMoved_ = true;
+            markDirty();
+        }
+    } else     if (showSaveMenu_ && stickDirY_ != 0) {
+        uint32_t now = SDL_GetTicks();
+        uint32_t delay = stickMoved_ ? STICK_REPEAT_DELAY : STICK_INITIAL_DELAY;
+        if (now - stickMoveTime_ >= delay) {
+            int smN = (int)saveMenuRows(saveMenuGame_).size();
+            saveMenuCursor_ = (saveMenuCursor_ + (stickDirY_ > 0 ? 1 : smN - 1)) % smN;
+            stickMoveTime_ = now;
+            stickMoved_ = true;
+            markDirty();
+        }
+    } else if (showGameSelMenu_ && stickDirY_ != 0) {
         uint32_t now = SDL_GetTicks();
         uint32_t delay = stickMoved_ ? STICK_REPEAT_DELAY : STICK_INITIAL_DELAY;
         if (now - stickMoveTime_ >= delay) {
@@ -1296,9 +2099,19 @@ void UI::handleGameSelectorInput(bool& running) {
             stickMoved_ = true;
             markDirty();
         }
-    } else if (!showGameSelMenu_ && (stickDirX_ != 0 || stickDirY_ != 0)) {
+    } else if (!showGameSelMenu_ && !showSaveMenu_ && !showBackupList_ && !showSettings_ && (stickDirX_ != 0 || stickDirY_ != 0)) {
         uint32_t now = SDL_GetTicks();
         uint32_t delay = stickMoved_ ? STICK_REPEAT_DELAY : STICK_INITIAL_DELAY;
+        // Galleria: lista verticale una voce alla volta. Con lo stesso passo
+        // fisso della griglia Classica (che avanza per colonne/pagine molto
+        // piu' in fretta) scendere fino in fondo a tanti giochi e' lentissimo.
+        // Levetta ferma su/giu': dopo un po' accelera progressivamente.
+        if (gameSelectorLayout_ == GameSelectorLayout::Gallery && stickDirY_ != 0 && stickMoved_) {
+            uint32_t held = now - stickHoldStart_;
+            if (held > 1500) delay = 40;
+            else if (held > 800) delay = 80;
+            else if (held > 400) delay = 130;
+        }
         if (now - stickMoveTime_ >= delay) {
             if (stickDirX_ != 0) moveGrid(stickDirX_, 0);
             if (stickDirY_ != 0) moveGrid(0, stickDirY_);
@@ -1307,6 +2120,69 @@ void UI::handleGameSelectorInput(bool& running) {
             markDirty();
         }
     }
+}
+
+// --- Preferiti galleria (ZR toggle, persistenza favorites.cfg, ordine stabile in cima) ---
+void UI::loadFavorites() {
+    favorites_.clear();
+    std::string p = basePath_ + "favorites.cfg";
+    FILE* f = std::fopen(p.c_str(), "rb");
+    if (!f) return;
+    uint8_t n = 0;
+    if (std::fread(&n, 1, 1, f) != 1) { std::fclose(f); return; }
+    if (n > GAME_TYPE_COUNT) n = GAME_TYPE_COUNT;
+    for (int i = 0; i < n; i++) {
+        uint8_t v = 0;
+        if (std::fread(&v, 1, 1, f) != 1) break;
+        if (v < GAME_TYPE_COUNT) favorites_.insert((int)v);
+    }
+    std::fclose(f);
+}
+void UI::saveFavorites() const {
+    std::string p = basePath_ + "favorites.cfg";
+    if (favorites_.empty()) {
+        std::remove(p.c_str());
+        return;
+    }
+    FILE* f = std::fopen(p.c_str(), "wb");
+    if (!f) return;
+    uint8_t n = (uint8_t)std::min<size_t>(favorites_.size(), GAME_TYPE_COUNT);
+    std::fwrite(&n, 1, 1, f);
+    for (int v : favorites_) {
+        uint8_t b = (uint8_t)v;
+        std::fwrite(&b, 1, 1, f);
+    }
+    std::fclose(f);
+}
+void UI::applyFavoritesOrder() {
+    // Stabile: preferiti in testa mantenendo ordine originale relativo
+    std::stable_partition(availableGames_.begin(), availableGames_.end(),
+        [&](GameType g){ return isFavorite(g); });
+}
+void UI::toggleFavorite(GameType g) {
+    int v = static_cast<int>(g);
+    if (favorites_.count(v)) favorites_.erase(v);
+    else favorites_.insert(v);
+    saveFavorites();
+    // Riordina mantenendo il gioco toggolato sotto il cursore
+    GameType cur = g;
+    applyFavoritesOrder();
+    for (int i = 0; i < (int)availableGames_.size(); i++) {
+        if (availableGames_[i] == cur) { gameSelCursor_ = i; break; }
+    }
+    // Riallinea scroll/pagina galleria
+    if (gameSelectorLayout_ == GameSelectorLayout::Gallery) {
+        int numGames = (int)availableGames_.size();
+        constexpr int GAL_VISIBLE_ROWS = 9;
+        int maxScroll = std::max(0, numGames - GAL_VISIBLE_ROWS);
+        int scroll = gameSelCursor_ - GAL_VISIBLE_ROWS / 2;
+        if (scroll < 0) scroll = 0;
+        if (scroll > maxScroll) scroll = maxScroll;
+        galScrollX_ = (float)scroll;
+    } else {
+        gameSelPage_ = gameSelCursor_ / 12;
+    }
+    markDirty();
 }
 
 void UI::enterAllBanksMode() {
@@ -1440,6 +2316,8 @@ bool UI::finalizePendingUpdate() {
 // continues a normal boot. Needs init() (renderer) already done.
 bool UI::tryUpdateBounce(const std::string& basePath) {
     basePath_ = basePath;
+    // Card PRIMA della copia finalize (18MB a schermo nero sembravano un hang).
+    showWorking(i18n::get(StrKey::UpdateUpdating));
     if (!finalizePendingUpdate())
         return false;
     // finalizePendingUpdate() armed envSetNextLoad(the real .nro). Draw one
@@ -1573,24 +2451,24 @@ bool UI::checkForUpdate(bool usbOnly) {
         {
             DebugLog::line("update: net url=%s token=%s", netUrl.c_str(),
                            cfg.token.empty() ? "no" : "yes");
-            if (!updateNetAvailable()) {
+            if (!updateNetEnsureReady()) {
                 DebugLog::line("update: rete non disponibile, salto Layer 1");
                 showMessageAndWait(i18n::get(StrKey::UpdateTitle),
-                    i18n::fmt(StrKey::UpdateNetOff, netUrl));
+                    i18n::fmt(StrKey::UpdateNetOff, updateSourceLabel(netUrl)));
             } else {
-                showWorking(i18n::fmt(StrKey::UpdateContacting, netUrl));
+                showWorking(i18n::fmt(StrKey::UpdateContacting, updateSourceLabel(netUrl)));
                 RemoteUpdateInfo info;
                 std::string err;
                 if (!updateNetFetchInfo(netUrl, cfg.token, info, err)) {
                     DebugLog::line("update: fetch info fallito: %s", err.c_str());
                     showMessageAndWait(i18n::get(StrKey::UpdateTitle),
-                        i18n::fmt(StrKey::UpdateUnreachable, err, netUrl));
+                        i18n::fmt(StrKey::UpdateUnreachable, err, updateSourceLabel(netUrl)));
                 } else {
                     int cmp = compareVersionStrings(info.version, curVer);
                     DebugLog::line("update: remoto v%s cmp=%d", info.version.c_str(), cmp);
                     if (cmp > 0) {
                         if (!showConfirmDialog(i18n::get(StrKey::UpdateAvailNetTitle),
-                                i18n::fmt(StrKey::UpdateAvailNetBody, info.version, curVer, netUrl)))
+                                i18n::fmt(StrKey::UpdateAvailNetBody, info.version, curVer, updateSourceLabel(netUrl))))
                             return false;
                         removeStaleLocalUpdates(basePath_, runningNro);
                         showWorking(i18n::fmt(StrKey::UpdateDownloading, info.version));
@@ -1605,12 +2483,53 @@ bool UI::checkForUpdate(bool usbOnly) {
                         foundVer = info.version;
                         foundCmp = 1;
                         fromNet = true;
+                    } else if (cmp < 0) {
+                        // Downgrade: la rete e piu vecchia. Mai silenzioso:
+                        // solo debug offre installazione esplicita.
+                        DebugLog::line("update: downgrade remoto v%s < v%s",
+                            info.version.c_str(), curVer.c_str());
+                        if (DebugLog::enabled()) {
+                            if (!showConfirmDialog(i18n::get(StrKey::UpdateDowngradeTitle),
+                                    i18n::fmt(StrKey::UpdateDowngradeBody, info.version, curVer,
+                                              updateSourceLabel(netUrl))))
+                                return false;
+                            removeStaleLocalUpdates(basePath_, runningNro);
+                            showWorking(i18n::fmt(StrKey::UpdateDownloading, info.version));
+                            const std::string dst = basePath_ + "update/OpenHomeNX.nro";
+                            if (!updateNetDownload(info.nroUrl, cfg.token, dst, info.sha256, err,
+                                    [this](const std::string& s){ showWorking(s); })) {
+                                showMessageAndWait(i18n::get(StrKey::UpdateTitle),
+                                    i18n::fmt(StrKey::UpdateDlFailed, err));
+                                return false;
+                            }
+                            foundPath = dst;
+                            foundVer = info.version;
+                            foundCmp = -1;
+                            fromNet = true;
+                        } else {
+                            showMessageAndWait(i18n::get(StrKey::UpdateTitle),
+                                i18n::fmt(StrKey::UpdateLatestBody, curVer, info.version));
+                            return false;
+                        }
                     } else {
                         // La rete ha risposto e non c'è niente di più recente:
-                        // con debug attivo offri reinstall per testare l'updater anche a pari versione.
+                        // con debug attivo confronta lo SHA live solo per
+                        // dirtelo (stessi bit o no), ma chiede SEMPRE se
+                        // reinstallare — mai skip automatico.
                         if (DebugLog::enabled()) {
+                            std::string localShort = "?", remoteShort = "?";
+                            if (!info.sha256.empty()) {
+                                showWorking(i18n::fmt(StrKey::UpdateContacting, "sha…"));
+                                std::string local = sha256HexFile(runningNro);
+                                localShort = local.empty() ? "?" : local.substr(0, 8);
+                                remoteShort = info.sha256.substr(0, 8);
+                                DebugLog::line("update: sha local=%s remote=%.16s same=%d",
+                                    local.empty() ? "(unreadable)" : local.c_str(),
+                                    info.sha256.c_str(), local == info.sha256 ? 1 : 0);
+                            }
                             if (showConfirmDialog(i18n::get(StrKey::UpdateSameDbgTitle),
-                                    i18n::fmt(StrKey::UpdateSameDbgBody, curVer, info.version))) {
+                                    i18n::fmt(StrKey::UpdateSameDbgBody, curVer, localShort,
+                                              info.version, remoteShort))) {
                                 removeStaleLocalUpdates(basePath_, runningNro);
                                 showWorking(i18n::fmt(StrKey::UpdateDownloading, info.version));
                                 const std::string dst = basePath_ + "update/OpenHomeNX.nro";
@@ -1716,14 +2635,497 @@ bool UI::checkForUpdate(bool usbOnly) {
     return false;
 }
 
+// --- Debug save popup (Switch X sul gioco, solo con debug on) -------------
+
+static std::string backupTimestamp() {
+    time_t now = time(nullptr);
+    struct tm* t = localtime(&now);
+    char b[32];
+    std::snprintf(b, sizeof(b), "%04d%02d%02d_%02d%02d%02d",
+                  t->tm_year + 1900, t->tm_mon + 1, t->tm_mday,
+                  t->tm_hour, t->tm_min, t->tm_sec);
+    return b;
+}
+
+static void ensureDirRecursive(const std::string& dir) {
+    std::string cur;
+    for (char c : dir) {
+        cur += c;
+        if (c == '/') mkdir(cur.c_str(), 0755);
+    }
+}
+
+void UI::openSaveMenu(GameType g, int occ) {
+    saveMenuGame_ = g;
+    saveMenuOcc_ = occ;
+    saveMenuCursor_ = 0;
+    showSaveMenu_ = true;
+}
+
+std::string UI::manualBackupDir(GameType g) const {
+    return basePath_ + "backups/manual/" + gamePathNameOf(g) + "/";
+}
+
+std::string UI::autoBackupDir(GameType g) const {
+    return basePath_ + "backups/auto/" + gamePathNameOf(g) + "/";
+}
+
+static std::vector<std::string> listDirNames(const std::string& dir) {
+    std::vector<std::string> out;
+    DIR* d = opendir(dir.c_str());
+    if (!d) return out;
+    while (dirent* e = readdir(d)) {
+        std::string n = e->d_name;
+        if (n == "." || n == "..") continue;
+        out.push_back(n);
+    }
+    closedir(d);
+    return out;
+}
+
+static bool dirHasFile(const std::string& dir) {
+    for (auto& n : listDirNames(dir)) {
+        struct stat st2;
+        std::string full = dir + n;
+        if (stat(full.c_str(), &st2) == 0 && !S_ISDIR(st2.st_mode)) return true;
+    }
+    return false;
+}
+
+// "20260909_162349..." -> "2026-09-09 16:23", altrimenti nome invariato.
+static std::string prettyBackupName(const std::string& n) {
+    if (n.size() >= 15 && n[8] == '_' && n[15] == '_') {
+        bool digits = true;
+        for (int i = 0; i < 15 && digits; i++)
+            if (i != 8 && (n[i] < '0' || n[i] > '9')) digits = false;
+        if (digits) {
+            std::string rest = n.substr(16);
+            char b[64];
+            std::snprintf(b, sizeof(b), "%.4s-%.2s-%.2s %.2s:%.2s%s%s",
+                          n.c_str(), n.c_str() + 4, n.c_str() + 6,
+                          n.c_str() + 9, n.c_str() + 11,
+                          rest.empty() ? "" : " ", rest.c_str());
+            return b;
+        }
+    }
+    return n;
+}
+
+std::vector<UI::BackupListEntry> UI::collectBackupEntries(GameType g) {
+    // Solo unita ripristinabili: file per i save file-backed, dir con file
+    // dentro per i titoli installati. Le dir intermedie (legacy) e i file
+    // sciolti dentro i backup-dir (es. "main") non sono cliccabili -> fuori.
+    bool isTitle = selectedProfile_ >= 0 && selectedProfile_ < account_.profileCount()
+        && titleIdOf(g) >= 0x0100000000010000ULL && saveFileNameOf(g)[0] != '\0';
+    struct Root { std::string dir; const char* tag; };
+    std::vector<Root> roots = { { manualBackupDir(g), "MAN" }, { autoBackupDir(g), "AUTO" } };
+    if (selectedProfile_ >= 0 && selectedProfile_ < account_.profileCount())
+        roots.push_back({ basePath_ + "backups/" +
+                          account_.profiles()[selectedProfile_].pathSafeName +
+                          "/" + gamePathNameOf(g) + "/", "AUTO" });
+    std::vector<BackupListEntry> entries;
+    auto consider = [&](const std::string& full, const std::string& name, const char* tag) {
+        struct stat st;
+        if (stat(full.c_str(), &st) != 0) return;
+        bool restorable = S_ISDIR(st.st_mode) ? (isTitle && dirHasFile(full + "/"))
+                                              : !isTitle;
+        if (!restorable) return;
+        char label[128];
+        std::snprintf(label, sizeof(label), "[%s] %s", tag, prettyBackupName(name).c_str());
+        entries.push_back({ full, label });
+    };
+    for (auto& r : roots) {
+        for (auto& n : listDirNames(r.dir)) {
+            std::string full = r.dir + n;
+            struct stat st;
+            if (stat(full.c_str(), &st) != 0) continue;
+            if (S_ISDIR(st.st_mode) && !dirHasFile(full + "/")) {
+                // Dir intermedia legacy: scendi di un livello.
+                for (auto& m : listDirNames(full + "/"))
+                    consider(full + "/" + m, n + "/" + m, r.tag);
+            } else {
+                consider(full, n, r.tag);
+            }
+        }
+    }
+    std::sort(entries.begin(), entries.end(),
+              [](const BackupListEntry& a, const BackupListEntry& b) { return a.path > b.path; });
+    // Deduplica mantenendo l'ordine (stesso file da due dir mai, ma gratis).
+    std::vector<BackupListEntry> uniq;
+    for (auto& e : entries)
+        if (uniq.empty() || uniq.back().path != e.path) uniq.push_back(e);
+    return uniq;
+}
+
+void UI::openBackupList(GameType g) {
+    backupListGame_ = g;
+    backupListEntries_ = collectBackupEntries(g);
+    backupListCursor_ = 0;
+    backupListScroll_ = 0;
+    showBackupList_ = true;
+    showSaveMenu_ = false;
+}
+
+void UI::drawBackupListPopup() {
+    drawRect(0, 0, SCREEN_W, SCREEN_H, T().overlay);
+    std::string title = std::string("Backups: ") + gameInfo(backupListGame_).gameTag;
+    constexpr int POP_W = 560;
+    constexpr int ROW_H = 36;
+    constexpr int VISIBLE = 12;
+    int count = (int)backupListEntries_.size();
+    int rows = count > 0 ? std::min(count, VISIBLE) : 1;
+    int POP_H = 50 + rows * ROW_H + 30;
+    int popX = (SCREEN_W - POP_W) / 2;
+    int popY = (SCREEN_H - POP_H) / 2;
+    drawRect(popX, popY, POP_W, POP_H, T().panelBg);
+    drawRectOutline(popX, popY, POP_W, POP_H, T().cursor, 2);
+    drawTextCentered(title, popX + POP_W / 2, popY + 22, T().text, font_);
+    int startY = popY + 50;
+    if (count == 0) {
+        drawTextCentered("No backups for this game.", popX + POP_W / 2,
+                         startY + (ROW_H - 4) / 2, T().textDim, font_);
+    } else {
+        for (int r = 0; r < rows; r++) {
+            int i = backupListScroll_ + r;
+            if (i >= count) break;
+            int rowY = startY + r * ROW_H;
+            if (i == backupListCursor_) {
+                drawRect(popX + 20, rowY, POP_W - 40, ROW_H - 4, T().menuHighlight);
+                drawRectOutline(popX + 20, rowY, POP_W - 40, ROW_H - 4, T().cursor, 2);
+            }
+            std::string base = backupListEntries_[i].label;
+            if (base.size() > 52) base = base.substr(0, 51) + "~";
+            drawText(base, popX + 30, rowY + 6, T().text, fontSmall_);
+        }
+    }
+    drawTextCentered("A: restore  B: back", popX + POP_W / 2, popY + POP_H - 18, T().textDim, fontSmall_);
+}
+
+void UI::autoBackupFileSave(GameType g, const std::string& path) {
+    struct stat sst;
+    bool haveSrc = stat(path.c_str(), &sst) == 0;
+    uint64_t sz = haveSrc ? (uint64_t)sst.st_size : 0;
+    long mt = haveSrc ? (long)sst.st_mtime : 0;
+    if (!autoBackupNeeded(g, path, sz, mt, haveSrc)) {
+        DebugLog::line("save: auto backup saltato (invariato)");
+        return;
+    }
+    std::string dir = autoBackupDir(g);
+    ensureDirRecursive(dir);
+    std::string base = path.substr(path.find_last_of("/\\") + 1);
+    std::string dst = dir + backupTimestamp() + "_" + base;
+    if (!copyFileTo(path, dst)) {
+        DebugLog::line("auto backup FAILED: %s", path.c_str());
+        return;
+    }
+    DebugLog::line("auto backup: %s -> %s", path.c_str(), dst.c_str());
+    writeAutoInfo(dst, sz, mt);
+    prunePoolToCap(true);
+}
+
+// Backup titoli all'apertura (solo first-ever) e all'uscita (se dirty):
+// check via sidecar, mai walk. Ritorna true se ha copiato.
+bool UI::backupTitleNow(GameType g, const std::string& mountPath, const std::string& saveFile) {
+    struct stat sst;
+    bool haveSrc = stat(saveFile.c_str(), &sst) == 0;
+    uint64_t sz = haveSrc ? (uint64_t)sst.st_size : 0;
+    long mt = haveSrc ? (long)sst.st_mtime : 0;
+    if (!autoBackupNeeded(g, saveFile, sz, mt, haveSrc)) {
+        DebugLog::line("save: auto backup saltato (invariato)");
+        return false;
+    }
+    std::string backupDir = buildBackupDir(g);
+    bool ok = AccountManager::backupSaveDir(mountPath, backupDir);
+    if (!ok) return false;
+    writeAutoInfo(backupDir, sz, mt);
+    prunePoolToCap(false);
+    return true;
+}
+
+// Choke point uscita: backup una tantum se il save e stato modificato.
+// Idempotente (sidecar): chiamabile da piu punti senza doppie copie.
+void UI::backupOnExitIfNeeded() {
+    if (!save_.isLoaded() || exitBackedUp_) return;
+    if (!save_.isDirty()) { exitBackedUp_ = true; return; }
+    if (isDualBankMode()) { exitBackedUp_ = true; return; }
+    uint32_t t0 = SDL_GetTicks();
+    // Titoli = savePath_ dentro "save:/" (mount); resto = file su SD.
+    bool fileBacked = savePath_.rfind("save:/", 0) != 0;
+    if (fileBacked) {
+        autoBackupFileSave(selectedGame_, savePath_);
+    } else if (selectedProfile_ >= 0) {
+        std::string mnt = account_.mountSave(selectedProfile_, selectedGame_);
+        if (!mnt.empty()) {
+            backupTitleNow(selectedGame_, mnt, mnt + saveFileNameOf(selectedGame_));
+            account_.unmountSave();
+        }
+    }
+    exitBackedUp_ = true;
+    DebugLog::line("exit backup: %ums", SDL_GetTicks() - t0);
+}
+
+long UI::backupCapMb(bool fileBacked) const {
+    UpdateCfg cfg;
+    readUpdateCfg(basePath_, cfg); // url non richiesto per il tetto
+    long mb = fileBacked ? cfg.backupMbSd : cfg.backupMb;
+    return mb < 0 ? 0 : mb;
+}
+
+static uint64_t entryDiskSize(const std::string& p) {
+    struct stat st;
+    if (stat(p.c_str(), &st) != 0) return 0;
+    if (S_ISDIR(st.st_mode))
+        return (uint64_t)AccountManager::calculateDirSize(p);
+    return (uint64_t)st.st_size;
+}
+
+// Solo AUTO (auto/ + legacy profilo): i manuali non si toccano mai.
+// Newest first (nomi con timestamp decrescente).
+std::vector<std::string> UI::autoBackupEntries(GameType g) const {
+    std::vector<std::string> entries;
+    for (auto& n : listDirNames(autoBackupDir(g)))
+        entries.push_back(autoBackupDir(g) + n);
+    if (selectedProfile_ >= 0 && selectedProfile_ < account_.profileCount()) {
+        std::string leg = basePath_ + "backups/" +
+                          account_.profiles()[selectedProfile_].pathSafeName +
+                          "/" + gamePathNameOf(g) + "/";
+        for (auto& n : listDirNames(leg))
+            entries.push_back(leg + n);
+    }
+    std::sort(entries.begin(), entries.end(), std::greater<std::string>());
+    entries.erase(std::unique(entries.begin(), entries.end()), entries.end());
+    return entries;
+}
+
+// Throttle 30 min + skip se invariato. Solo auto (i manuali sempre).
+// Sidecar .info accanto a ogni auto-backup (byte+mtime della sorgente al
+// momento della copia): i check diventano stat singoli, mai walk ricorsivi.
+static std::string autoInfoPath(const std::string& entry) {
+    struct stat st;
+    if (stat(entry.c_str(), &st) == 0 && S_ISDIR(st.st_mode)) return entry + "/.info";
+    return entry + ".info";
+}
+
+static bool readAutoInfo(const std::string& entry, uint64_t& bytes, long& mt) {
+    std::ifstream f(autoInfoPath(entry));
+    if (!f.good()) return false;
+    std::string line;
+    bytes = 0;
+    mt = 0;
+    while (std::getline(f, line)) {
+        if (line.rfind("bytes=", 0) == 0) bytes = std::strtoull(line.c_str() + 6, nullptr, 10);
+        else if (line.rfind("mt=", 0) == 0) mt = std::atol(line.c_str() + 3);
+    }
+    return true;
+}
+
+void UI::writeAutoInfo(const std::string& entry, uint64_t bytes, long mt) {
+    std::ofstream o(autoInfoPath(entry), std::ios::trunc);
+    if (!o.good()) return;
+    o << "bytes=" << bytes << "\nmt=" << mt << "\n";
+}
+
+bool UI::autoBackupNeeded(GameType g, const std::string& srcFile, uint64_t srcSize, long srcMt, bool haveSrc) {
+    auto entries = autoBackupEntries(g);
+    if (entries.empty()) return true;
+    if (!haveSrc) return true;
+    uint64_t b = 0;
+    long mt = 0;
+    if (!readAutoInfo(entries[0], b, mt)) {
+        // Backup legacy senza .info: un walk una tantum, poi sidecar con lo
+        // stato corrente (vale per i confronti futuri).
+        b = entryDiskSize(entries[0]);
+        writeAutoInfo(entries[0], b, srcMt);
+        mt = srcMt;
+    }
+    if (srcSize == b && srcMt == mt) {
+        DebugLog::line("auto backup skipped (invariato): %s", gameInfo(g).gameTag);
+        return false;
+    }
+    return true;
+}
+
+static bool removeRecursive(const std::string& p) {
+    struct stat st;
+    if (stat(p.c_str(), &st) != 0) return false;
+    if (!S_ISDIR(st.st_mode)) return std::remove(p.c_str()) == 0;
+    DIR* d = opendir(p.c_str());
+    if (!d) return false;
+    bool ok = true;
+    while (dirent* e = readdir(d)) {
+        std::string n = e->d_name;
+        if (n == "." || n == "..") continue;
+        if (!removeRecursive(p + "/" + n)) ok = false;
+    }
+    closedir(d);
+    if (rmdir(p.c_str()) != 0) ok = false;
+    return ok;
+}
+
+// Pota gli AUTO dal piu vecchio finche si rientra nel tetto (0 = no tetto).
+// Tiene sempre almeno il piu recente. Ritorna i byte liberati.
+uint64_t UI::pruneBackupsToCap(GameType g, bool fileBacked) {
+    long mb = backupCapMb(fileBacked);
+    if (mb <= 0) return 0;
+    uint64_t cap = (uint64_t)mb * 1024 * 1024;
+    auto entries = autoBackupEntries(g);
+    uint64_t total = 0;
+    for (auto& e : entries) total += entryDiskSize(e);
+    uint64_t freed = 0;
+    while (total > cap && entries.size() > 1) {
+        std::string oldest = entries.back();
+        entries.pop_back();
+        uint64_t sz = entryDiskSize(oldest);
+        if (removeRecursive(oldest)) {
+            total -= (sz < total) ? sz : total;
+            freed += sz;
+            DebugLog::line("backup prune: %s (-%llu B)", oldest.c_str(), (unsigned long long)sz);
+        } else {
+            DebugLog::line("backup prune FAILED: %s", oldest.c_str());
+            break;
+        }
+    }
+    return freed;
+}
+
+void UI::sendSaveFor(GameType g, int occ) {
+    // Ex blocco SendSave del menu + (cursor checks fuori, dal chiamante).
+    // File-backed: upload diretto; titoli installati: mount temporaneo.
+    UpdateCfg cfg;
+    std::string err;
+    if (!readUpdateCfg(basePath_, cfg) || cfg.url.empty()) {
+        showMessageAndWait(i18n::get(StrKey::SendSaveTitle), i18n::get(StrKey::SendSaveNoUrl));
+    } else if (!updateNetEnsureReady()) {
+        showMessageAndWait(i18n::get(StrKey::SendSaveTitle), i18n::get(StrKey::SendSaveNetOff));
+    } else {
+        std::string path = importedSavePath(g, occ);
+        if (!path.empty()) {
+            showWorking(i18n::fmt(StrKey::SendSaveUploading, gameInfo(g).gameTag));
+            if (updateNetUploadSave(cfg.url, cfg.token, path, gameInfo(g).gameTag, err))
+                showMessageAndWait(i18n::get(StrKey::SendSaveTitle), i18n::get(StrKey::SendSaveSent));
+            else
+                showMessageAndWait(i18n::get(StrKey::SendSaveTitle), i18n::fmt(StrKey::SendSaveFailed, err));
+        } else if (selectedProfile_ >= 0 && selectedProfile_ < account_.profileCount()
+                   && titleIdOf(g) >= 0x0100000000010000ULL && saveFileNameOf(g)[0] != '\0') {
+            // v2: save account (titoli installati) — mount temporaneo,
+            // upload, unmount sempre. Il guard titleId/nome esclude i giochi
+            // sentinella (importati: 0x1-0x16, nome vuoto).
+            std::string fpath;
+            {
+                std::string mnt = account_.mountSave(selectedProfile_, g);
+                if (!mnt.empty())
+                    fpath = mnt + saveFileNameOf(g);
+            }
+            if (fpath.empty()) {
+                account_.unmountSave();
+                showMessageAndWait(i18n::get(StrKey::SendSaveTitle), i18n::get(StrKey::SendSaveOnlyImported));
+            } else {
+                showWorking(i18n::fmt(StrKey::SendSaveUploading, gameInfo(g).gameTag));
+                bool ok = updateNetUploadSave(cfg.url, cfg.token, fpath, gameInfo(g).gameTag, err);
+                account_.unmountSave();
+                if (ok)
+                    showMessageAndWait(i18n::get(StrKey::SendSaveTitle), i18n::get(StrKey::SendSaveSent));
+                else
+                    showMessageAndWait(i18n::get(StrKey::SendSaveTitle), i18n::fmt(StrKey::SendSaveFailed, err));
+            }
+        } else {
+            showMessageAndWait(i18n::get(StrKey::SendSaveTitle), i18n::get(StrKey::SendSaveOnlyImported));
+        }
+    }
+}
+
+bool UI::backupGameSave(GameType g, std::string& out) {
+    std::string dir = manualBackupDir(g);
+    ensureDirRecursive(dir);
+    std::string path = importedSavePath(g, saveMenuOcc_);
+    if (!path.empty()) {
+        std::string base = path.substr(path.find_last_of("/\\") + 1);
+        std::string dst = dir + backupTimestamp() + "_" + base;
+        if (!copyFileTo(path, dst)) return false;
+        out = dst;
+        DebugLog::line("save backup: %s -> %s", path.c_str(), dst.c_str());
+        return true;
+    }
+    if (selectedProfile_ >= 0 && selectedProfile_ < account_.profileCount()
+        && titleIdOf(g) >= 0x0100000000010000ULL && saveFileNameOf(g)[0] != '\0') {
+        std::string dst = dir + backupTimestamp() + "/";
+        ensureDirRecursive(dst);
+        std::string mnt = account_.mountSave(selectedProfile_, g);
+        if (mnt.empty()) return false;
+        bool ok = AccountManager::backupSaveDir(mnt, dst);
+        account_.unmountSave();
+        if (!ok) return false;
+        out = dst;
+        DebugLog::line("save backup (account): %s -> %s", gameInfo(g).gameTag, dst.c_str());
+        return true;
+    }
+    return false;
+}
+
+bool UI::restoreBackupEntry(GameType g, const std::string& entry) {
+    struct stat st;
+    if (stat(entry.c_str(), &st) != 0) return false;
+    if (!S_ISDIR(st.st_mode)) {
+        std::string orig = importedSavePath(g, saveMenuOcc_);
+        if (orig.empty()) return false;
+        bool ok = copyFileTo(entry, orig);
+        DebugLog::line("save restore: %s -> %s (%s)", entry.c_str(), orig.c_str(), ok ? "ok" : "FAIL");
+        return ok;
+    }
+    if (selectedProfile_ >= 0 && selectedProfile_ < account_.profileCount()
+        && titleIdOf(g) >= 0x0100000000010000ULL && saveFileNameOf(g)[0] != '\0') {
+        std::string mnt = account_.mountSave(selectedProfile_, g);
+        if (mnt.empty()) return false;
+        bool ok = AccountManager::backupSaveDir(entry + "/", mnt);
+        // Senza commit l'unmount scarta le scritture (Horizon): restore
+        // fantasma che dice ok ma non cambia niente (Violetto 2026-09-09).
+        if (ok) account_.commitSave();
+        account_.unmountSave();
+        DebugLog::line("save restore (account): %s (%s)", entry.c_str(), ok ? "ok" : "FAIL");
+        return ok;
+    }
+    return false;
+}
+
+void UI::drawSaveMenuPopup() {
+    drawRect(0, 0, SCREEN_W, SCREEN_H, T().overlay);
+    std::vector<std::string> rows = saveMenuRows(saveMenuGame_);
+    int NROWS = (int)rows.size();
+    constexpr int POP_W = 360;
+    int rowH = 36;
+    int POP_H = 50 + NROWS * rowH + 30;
+    int popX = (SCREEN_W - POP_W) / 2;
+    int popY = (SCREEN_H - POP_H) / 2;
+    drawRect(popX, popY, POP_W, POP_H, T().panelBg);
+    drawRectOutline(popX, popY, POP_W, POP_H, T().cursor, 2);
+    std::string title = std::string("Save: ") + gameInfo(saveMenuGame_).gameTag;
+    drawTextCentered(title, popX + POP_W / 2, popY + 22, T().text, font_);
+    int startY = popY + 50;
+    for (int i = 0; i < NROWS; i++) {
+        int rowY = startY + i * rowH;
+        if (i == saveMenuCursor_) {
+            drawRect(popX + 20, rowY, POP_W - 40, rowH - 4, T().menuHighlight);
+            drawRectOutline(popX + 20, rowY, POP_W - 40, rowH - 4, T().cursor, 2);
+        }
+        drawTextCentered(rows[i], popX + POP_W / 2, rowY + (rowH - 4) / 2, T().text, font_);
+    }
+    drawTextCentered(i18n::get(StrKey::ASelectBCancel), popX + POP_W / 2, popY + POP_H - 18, T().textDim, fontSmall_);
+}
+
 std::vector<GameSelMenuAction> UI::gameSelMenuActions() const {
     std::vector<GameSelMenuAction> v = { GameSelMenuAction::SwitchCore, GameSelMenuAction::DebugLog };
+    // Invio log/save solo con override rete attivo (GitHub non riceve upload).
     if (DebugLog::enabled()) {
-        v.push_back(GameSelMenuAction::SendLog);
-        v.push_back(GameSelMenuAction::SendSave);
+        UpdateCfg cfg;
+        readUpdateCfg(basePath_, cfg);
+        if (!cfg.url.empty()) {
+            v.push_back(GameSelMenuAction::SendLog);
+            v.push_back(GameSelMenuAction::SendSave);
+        }
     }
     v.push_back(GameSelMenuAction::ImportSettings);
     v.push_back(GameSelMenuAction::CheckUpdate);
+    v.push_back(GameSelMenuAction::OpenSettings);
     v.push_back(GameSelMenuAction::Exit);
     return v;
 }
@@ -1764,10 +3166,607 @@ void UI::drawGameSelMenuPopup() {
             case GameSelMenuAction::SendSave:        label = "Send save"; break;
             case GameSelMenuAction::ImportSettings:  label = "Import settings"; break;
             case GameSelMenuAction::CheckUpdate:     label = "Check for update"; break;
+            case GameSelMenuAction::OpenSettings:     label = i18n::get(StrKey::SetTitle); break;
             case GameSelMenuAction::Exit:             label = "Exit"; break;
         }
         // drawTextCentered() takes the text's vertical CENTRE; match it to the
         // highlight box centre (box: top=rowY, height=rowH-4).
         drawTextCentered(label, popX + POP_W / 2, rowY + (rowH - 4) / 2, T().text, font_);
+    }
+}
+
+static std::string readDefaultUser(const std::string& basePath);
+int UI::defaultUserIndex() const {
+    std::string want = readDefaultUser(basePath_);
+    if (want.empty()) return -1;
+    const auto& users = account_.profiles();
+    for (int i = 0; i < (int)users.size(); i++)
+        if (users[i].nickname == want) return i;
+    return -1;
+}
+
+void UI::openSettings() {
+    showSettings_ = true;
+    setCat_ = 0;
+    setRow_ = 0;
+    setFocusLeft_ = true;
+    showGameSelMenu_ = false;
+    if (langList_.empty()) langList_ = i18n::availableLangs();
+    markDirty();
+}
+
+// Potatura cumulativa per pool (titoli o SD): dal piu vecchio finche il
+// totale supera il tetto unico. Mai i manuali, mai sotto 1 voce.
+uint64_t UI::prunePoolToCap(bool fileBacked) {
+    long mb = backupCapMb(fileBacked);
+    if (mb <= 0) return 0;
+    uint64_t cap = (uint64_t)mb * 1024 * 1024;
+    std::vector<std::string> all;
+    for (GameType g : availableGames_) {
+        bool title = titleIdOf(g) >= 0x0100000000010000ULL;
+        if (title == !fileBacked) {
+            auto e = autoBackupEntries(g);
+            all.insert(all.end(), e.begin(), e.end());
+        }
+    }
+    std::sort(all.begin(), all.end()); // nomi timestamp: oldest first
+    uint64_t total = 0;
+    for (auto& e : all) total += entryDiskSize(e);
+    uint64_t freed = 0;
+    while (total > cap && all.size() > 1) {
+        std::string oldest = all.front();
+        all.erase(all.begin());
+        uint64_t sz = entryDiskSize(oldest);
+        if (removeRecursive(oldest)) {
+            total -= (sz < total) ? sz : total;
+            freed += sz;
+            DebugLog::line("backup prune pool: %s (-%llu B)", oldest.c_str(), (unsigned long long)sz);
+        } else {
+            DebugLog::line("backup prune pool FAILED: %s", oldest.c_str());
+            break;
+        }
+    }
+    return freed;
+}
+
+bool UI::sendAvailable() const {
+    if (!DebugLog::enabled()) return false;
+    UpdateCfg cfg;
+    readUpdateCfg(basePath_, cfg);
+    return !cfg.url.empty();
+}
+
+// update.cfg (attivo) o update.cfg.off (spento): basta che esista uno dei
+// due (in basePath_ o nel percorso fisso) per mostrare toggle ed edit.
+bool UI::hasCustomUrlFile(const std::string& basePath) {
+    const std::string dirs[] = { basePath, "sdmc:/switch/OpenHomeNX/" };
+    for (auto& d : dirs) {
+        struct stat st;
+        if (stat((d + "update.cfg").c_str(), &st) == 0) return true;
+        if (stat((d + "update.cfg.off").c_str(), &st) == 0) return true;
+    }
+    return false;
+}
+
+// Trova update.cfg attivo (suo path) ed eventuale .off. "" se assenti.
+void UI::findUpdateCfgFiles(const std::string& basePath, std::string& cfg, std::string& off) {
+    cfg.clear();
+    off.clear();
+    const std::string dirs[] = { basePath, "sdmc:/switch/OpenHomeNX/" };
+    for (auto& d : dirs) {
+        struct stat st;
+        if (cfg.empty() && stat((d + "update.cfg").c_str(), &st) == 0) cfg = d + "update.cfg";
+        if (off.empty() && stat((d + "update.cfg.off").c_str(), &st) == 0) off = d + "update.cfg.off";
+    }
+}
+
+// URL custom da update.cfg o .off (per precompilare l'edit).
+std::string UI::customUrlAny(const std::string& basePath) {
+    std::string cfg, off;
+    findUpdateCfgFiles(basePath, cfg, off);
+    for (auto& p : {cfg, off}) {
+        if (p.empty()) continue;
+        std::ifstream f(p);
+        std::string line;
+        while (std::getline(f, line)) {
+            if (!line.empty() && line.back() == '\r') line.pop_back();
+            if (line.rfind("url=", 0) == 0) return line.substr(4);
+        }
+    }
+    return "";
+}
+
+// Scrive url= in update.cfg preservando le altre chiavi; attiva (toglie .off).
+bool UI::writeUpdateCfgUrl(const std::string& basePath, const std::string& url) {
+    std::string cfg, off;
+    findUpdateCfgFiles(basePath, cfg, off);
+    std::string dst = cfg.empty() ? basePath + "update.cfg" : cfg;
+    std::ifstream f(dst);
+    std::vector<std::string> lines;
+    std::string line;
+    bool found = false;
+    if (f.good()) {
+        while (std::getline(f, line)) {
+            if (!line.empty() && line.back() == '\r') line.pop_back();
+            if (line.rfind("url=", 0) == 0) { line = "url=" + url; found = true; }
+            lines.push_back(line);
+        }
+    }
+    if (!found) lines.push_back("url=" + url);
+    std::ofstream o(dst, std::ios::trunc);
+    if (!o.good()) return false;
+    for (auto& l : lines) o << l << "\n";
+    if (!off.empty() && off != dst) std::remove(off.c_str());
+    std::string baseOff = basePath + "update.cfg.off";
+    if (baseOff != off) std::remove(baseOff.c_str());
+    return true;
+}
+
+int UI::settingsRowCount(int cat) const {
+    switch (cat) {
+        case 0: return 1; // Utente predefinito
+        case 1: return 4; // Tema, Lingua, Zoom, Layout selettore
+        case 2: return 1; // Core
+        case 3: return 4; // Cartelle, Scansiona, Max, Pulisci
+        case 4: {
+            // Sorgente/edit custom solo con debug: l'utente normale resta su GitHub.
+            int n = 2;
+            if (DebugLog::enabled() && hasCustomUrlFile(basePath_)) n = 3;
+            return n; // Update, Sorgente [, Modifica]
+        }
+        case 5: return sendAvailable() ? 3 : 2; // Debug, Menu + [, Invia log]
+        default: return 2; // Versione, Crediti
+    }
+}
+
+static std::string readDefaultUser(const std::string& basePath);
+std::string UI::settingsRowLabel(int cat, int row) const {
+    if (cat == 0) return i18n::get(StrKey::SetDefaultUser);
+    if (cat == 1) {
+        if (row == 0) return i18n::get(StrKey::SetTheme);
+        if (row == 1) return i18n::get(StrKey::SetLanguage);
+        if (row == 2) return i18n::get(StrKey::SetGalleryLayout);
+        return i18n::get(StrKey::SetZoom);
+    }
+    if (cat == 2) return i18n::get(StrKey::SetCore);
+    if (cat == 3) {
+        if (row == 0) return i18n::get(StrKey::SetSavePaths);
+        if (row == 1) return i18n::get(StrKey::SetScan);
+        if (row == 2) return i18n::get(StrKey::SetBackupMax);
+        return i18n::get(StrKey::SetBackupClean);
+    }
+    if (cat == 4) {
+        if (row == 0) return i18n::get(StrKey::SetCheckUpdate);
+        if (row == 1) return i18n::get(StrKey::SetSource);
+        return i18n::get(StrKey::SetEditUrl);
+    }
+    if (cat == 5) {
+        if (row == 0) return i18n::get(StrKey::SetDebugToggle);
+        if (row == 1) return i18n::get(StrKey::SetDbgMenu);
+        return i18n::get(StrKey::SendLogTitle);
+    }
+    if (row == 0) return i18n::get(StrKey::SetVersion);
+    return i18n::get(StrKey::SetCredits);
+}
+std::string UI::settingsRowValue(int cat, int row) {
+    if (cat == 0) {
+        std::string want = readDefaultUser(basePath_);
+        if (want.empty()) return i18n::get(StrKey::SetUserAsk);
+        return want;
+    }
+    if (cat == 1) {
+        if (row == 0) return getThemeName(themeIndex_);
+        if (row == 1) return langDisplayName(i18n::currentLang());
+        if (row == 2)
+            return (gameSelectorLayout_ == GameSelectorLayout::Gallery)
+                 ? i18n::get(StrKey::LayoutGallery) : i18n::get(StrKey::LayoutClassic);
+        return std::to_string(zoomGrow_) + "px";
+    }
+    if (cat == 2)
+        return useOpenHome() ? i18n::get(StrKey::SetCoreOh) : i18n::get(StrKey::SetCorePk);
+    if (cat == 3) {
+        if (row == 0) {
+            int on = 0;
+            for (auto& e : importPaths_)
+                if (e.enabled) on++;
+            // "N (M ON)": la riga toggle USB della lista non e un percorso.
+            return std::to_string((int)importPaths_.size()) + " (" +
+                   std::to_string(on) + " " + i18n::get(StrKey::SetOn) + ")";
+        }
+        if (row == 1) return "";
+        if (row == 2)
+            return std::to_string(backupCapMb(false)) + " MB";
+        return "";
+    }
+    if (cat == 4) {
+        if (row == 0) return "";
+        if (row == 1) {
+            // Solo GitHub/Custom, mai l'IP (quello sta sotto).
+            UpdateCfg cfg;
+            readUpdateCfg(basePath_, cfg);
+            return cfg.url.empty() ? "GitHub" : "Custom";
+        }
+        // Modifica: mostra l'indirizzo custom a destra (come un tempo).
+        std::string cu = customUrlAny(basePath_);
+        if (cu.empty()) return "";
+        auto proto = cu.find("://");
+        std::string h = (proto == std::string::npos) ? cu : cu.substr(proto + 3);
+        auto slash = h.find('/');
+        if (slash != std::string::npos) h = h.substr(0, slash);
+        return h;
+    }
+    if (cat == 5) {
+        if (row == 0)
+            return DebugLog::enabled() ? i18n::get(StrKey::SetOn) : i18n::get(StrKey::SetOff);
+        if (row == 1)
+            return readQuickMenu(basePath_) ? i18n::get(StrKey::SetOn) : i18n::get(StrKey::SetOff);
+        return "";
+    }
+    if (row == 0) {
+#ifdef BUILD_SHA
+        return std::string("v") + APP_VERSION + " (" + BUILD_SHA + ")";
+#else
+        return "v" APP_VERSION;
+#endif
+    }
+    return "";
+}
+
+static std::string readDefaultUser(const std::string& basePath) {
+    std::ifstream f(basePath + "defaultuser.txt");
+    std::string nick;
+    if (f.good() && std::getline(f, nick)) {
+        if (!nick.empty() && nick.back() == '\r') nick.pop_back();
+        return nick;
+    }
+    return "";
+}
+
+// Menu debug rapido: ON = il gear apre il menu + classico, OFF = le impostazioni.
+static bool readQuickMenu(const std::string& basePath) {
+    std::ifstream f(basePath + "quickmenu.txt");
+    std::string v;
+    if (f.good() && std::getline(f, v)) return v == "1";
+    return false;
+}
+
+static void writeQuickMenu(const std::string& basePath, bool on) {
+    if (!on) {
+        std::remove((basePath + "quickmenu.txt").c_str());
+        return;
+    }
+    FILE* f = std::fopen((basePath + "quickmenu.txt").c_str(), "w");
+    if (f) { std::fputs("1", f); std::fclose(f); }
+}
+
+static bool writeBackupMb(const std::string& basePath, long mb) {    std::string path = basePath + "update.cfg";
+    std::ifstream f(path);
+    std::vector<std::string> lines;
+    std::string line;
+    bool found = false;
+    if (f.good()) {
+        while (std::getline(f, line)) {
+            if (!line.empty() && line.back() == '\r') line.pop_back();
+            auto eq = line.find('=');
+            std::string k = (eq == std::string::npos) ? line : line.substr(0, eq);
+            if (k == "backup_mb") { line = "backup_mb=" + std::to_string(mb); found = true; }
+            lines.push_back(line);
+        }
+    }
+    if (!found) lines.push_back("backup_mb=" + std::to_string(mb));
+    std::ofstream o(path, std::ios::trunc);
+    if (!o.good()) return false;
+    for (auto& l : lines) o << l << "\n";
+    return true;
+}
+
+void UI::settingsRowActivate(int cat, int row, int dir, bool& running) {
+    if (dir == 0) dir = 1;
+    int n = settingsRowCount(cat);
+    if (row < 0) row = 0;
+    if (row >= n) row = n - 1; // cursore stale dopo cambio conteggio (es. debug off)
+    if (cat == 0) {
+        // Utente predefinito: [Chiedi, ...profili]. Salva nickname, vuoto = chiedi.
+        std::vector<std::string> opts = {""};
+        for (auto& p : account_.profiles()) opts.push_back(p.nickname);
+        std::string cur = readDefaultUser(basePath_);
+        int i = 0;
+        for (; i < (int)opts.size(); i++)
+            if (opts[i] == cur) break;
+        if (i >= (int)opts.size()) i = 0;
+        std::string next = opts[(i + dir + (int)opts.size()) % (int)opts.size()];
+        if (next.empty()) {
+            std::remove((basePath_ + "defaultuser.txt").c_str());
+        } else {
+            FILE* f = std::fopen((basePath_ + "defaultuser.txt").c_str(), "w");
+            if (f) { std::fputs(next.c_str(), f); std::fclose(f); }
+        }
+    } else if (cat == 1) {
+        if (row == 0) {
+            themeIndex_ = (themeIndex_ + dir + THEME_COUNT) % THEME_COUNT;
+            theme_ = &getTheme(themeIndex_);
+            saveThemeIndex(basePath_, themeIndex_);
+            clearTextCache();
+        } else if (row == 1) {
+            int n = (int)langList_.size();
+            if (n > 0) {
+                int cur = 0;
+                for (int i = 0; i < n; i++)
+                    if (langList_[i] == i18n::currentLang()) cur = i;
+                std::string nl = langList_[(cur + dir + n) % n];
+                i18n::init(nl);
+                clearTextCache();
+                FILE* f = std::fopen((basePath_ + "language.txt").c_str(), "w");
+                if (f) { std::fputs(nl.c_str(), f); std::fclose(f); }
+            }
+        } else if (row == 2) {
+            // Layout selettore giochi: solo 2 valori, qualunque dir alterna.
+            gameSelectorLayout_ = (gameSelectorLayout_ == GameSelectorLayout::Classic)
+                ? GameSelectorLayout::Gallery : GameSelectorLayout::Classic;
+            saveGameSelectorLayout(basePath_, (int)gameSelectorLayout_);
+            // GAMES_PER_PAGE cambia con il layout: azzera pagina/slide per
+            // evitare un pageStart stale (pagina vuota) al prossimo draw.
+            gameSelPage_ = 0;
+            selPageShown_ = 0;
+            selSlide_ = 0.0f;
+            gameSelOnChevron_ = 0;
+            // Stessa ragione per l'anteprima Galleria: senza reset, al
+            // prossimo ingresso in Galleria galSelShown_ punterebbe a un
+            // indice della sessione precedente e farebbe partire uno slide
+            // enorme dal nulla verso la selezione corrente.
+            galSelShown_ = -1;
+            galSlide_ = 0.0f;
+        } else {
+            static const int STEPS[] = {0, 4, 8, 12, 16};
+            int i = 0;
+            for (; i < 5; i++)
+                if (STEPS[i] >= zoomGrow_) break;
+            if (i > 4) i = 4;
+            int ni = i + dir;
+            if (ni < 0) ni = 0;
+            if (ni > 4) ni = 4;
+            zoomGrow_ = STEPS[ni];
+            saveZoomGrow(basePath_, zoomGrow_);
+        }
+    } else if (cat == 2) {
+        setCryptoEngine(useOpenHome() ? CryptoEngine::PK : CryptoEngine::OH);
+    } else if (cat == 3) {
+        if (row == 0) {
+            // Stessa lista del menu + (Import): toggle/rimuovi percorsi.
+            showSettings_ = false;
+            importFromSettings_ = true;
+            showImportSettings_ = true;
+            importSettingsCursor_ = 0;
+        } else if (row == 1) {
+            rescanImportedGames();
+            showMessageAndWait(i18n::get(StrKey::SetTitle),
+                i18n::fmt(StrKey::SetScanDone, std::to_string((int)importedGames_.size())));
+        } else if (row == 2) {
+            static const long STEPS[] = {32, 64, 128, 256, 512, 1024};
+            long cur = backupCapMb(false);
+            int i = 0;
+            for (; i < 6; i++)
+                if (STEPS[i] >= cur) break;
+            if (i > 5) i = 5;
+            int ni = i + dir;
+            if (ni < 0) ni = 0;
+            if (ni > 5) ni = 5;
+            if (writeBackupMb(basePath_, STEPS[ni]))
+                DebugLog::line("settings: backup_mb=%ld", STEPS[ni]);
+        } else {
+            if (showConfirmDialog(i18n::get(StrKey::SetTitle),
+                    i18n::get(StrKey::SetCleanConfirm))) {
+                uint64_t freed = prunePoolToCap(false) + prunePoolToCap(true);
+                char msg[64];
+                std::snprintf(msg, sizeof(msg), "%s %.1f MB",
+                    i18n::get(StrKey::SetCleanDone).c_str(), freed / 1048576.0);
+                showMessageAndWait(i18n::get(StrKey::SetTitle), msg);
+            }
+        }
+        // Riga Spazio rimossa: il conteggio rallentava tutto (verra rifatta bene).
+    } else if (cat == 4) {
+        if (row == 0) {
+            if (checkForUpdate(false)) running = false;
+        } else if (row == 1) {
+            if (!DebugLog::enabled()) return; // solo display senza debug
+            // Switch GitHub <-> custom senza ridigitare: se non esiste alcun
+            // file, apre direttamente l'edit per crearlo.
+            std::string cfg, off;
+            findUpdateCfgFiles(basePath_, cfg, off);
+            if (cfg.empty() && off.empty()) {
+                beginTextInput(TextInputPurpose::EditUpdateUrl);
+            } else if (!cfg.empty()) {
+                std::string dst = cfg + ".off";
+                if (std::rename(cfg.c_str(), dst.c_str()) == 0)
+                    DebugLog::line("settings: sorgente -> GitHub (%s disattivato)", cfg.c_str());
+                else
+                    showMessageAndWait(i18n::get(StrKey::SetTitle), std::string("rename FAIL:\n") + cfg);
+            } else {
+                std::string dst = off.substr(0, off.size() - 4);
+                if (std::rename(off.c_str(), dst.c_str()) == 0)
+                    DebugLog::line("settings: sorgente -> custom (%s)", dst.c_str());
+                else
+                    showMessageAndWait(i18n::get(StrKey::SetTitle), std::string("rename FAIL:\n") + off);
+            }
+        } else {
+            beginTextInput(TextInputPurpose::EditUpdateUrl);
+        }
+    } else if (cat == 5) {
+        if (row == 0) {
+            bool on = !DebugLog::enabled();
+            DebugLog::setEnabled(on);
+            std::string flag = basePath_ + "debug.enable";
+            if (on) {
+                FILE* f = std::fopen(flag.c_str(), "w");
+                if (f) std::fclose(f);
+            } else {
+                std::remove(flag.c_str());
+                if (setRow_ > 1) setRow_ = 0; // le righe extra spariscono
+            }
+        } else if (row == 1) {
+            // Menu debug rapido: ON = gear apre il + classico, OFF = impostazioni.
+            writeQuickMenu(basePath_, !readQuickMenu(basePath_));
+        } else {
+            sendLogNow();
+        }
+    } else {
+        if (row == 1) {
+            // Crediti: resta nelle impostazioni, B dall'About torna qui.
+            showAbout_ = true;
+        }
+    }
+    markDirty();
+}
+
+void UI::drawSettingsPopup() {
+    drawRect(0, 0, SCREEN_W, SCREEN_H, T().overlay);
+    constexpr int POP_W = 1000;
+    constexpr int POP_H = 560;
+    constexpr int ROW_H = 44;
+    constexpr int CAT_W = 280;
+    int popX = (SCREEN_W - POP_W) / 2;
+    int popY = (SCREEN_H - POP_H) / 2;
+    drawRect(popX, popY, POP_W, POP_H, T().panelBg);
+    drawRectOutline(popX, popY, POP_W, POP_H, T().cursor, 2);
+    drawTextCentered(i18n::get(StrKey::SetTitle), popX + POP_W / 2, popY + 24, T().text, font_);
+    const char* cats[7] = { StrKey::SetUser, StrKey::SetAppearance, StrKey::SetEngine,
+                            StrKey::SetData, StrKey::SetUpdate, StrKey::SetDebug,
+                            StrKey::SetInfo };
+    int listY = popY + 70;
+    for (int c = 0; c < 7; c++) {
+        int rowY = listY + c * ROW_H;
+        if (c == setCat_ && setFocusLeft_) {
+            drawRect(popX + 20, rowY, CAT_W - 20, ROW_H - 4, T().menuHighlight);
+            drawRectOutline(popX + 20, rowY, CAT_W - 20, ROW_H - 4, T().cursor, 2);
+        }
+        drawText(i18n::get(cats[c]), popX + 36, rowY + 8, T().text, font_);
+    }
+    // Divisore verticale
+    SDL_SetRenderDrawColor(renderer_, T().popupBorder.r, T().popupBorder.g, T().popupBorder.b, T().popupBorder.a);
+    int divX = popX + CAT_W + 10;
+    SDL_RenderDrawLine(renderer_, divX, listY, divX, popY + POP_H - 50);
+    int rx = divX + 24;
+    int n = settingsRowCount(setCat_);
+    for (int r = 0; r < n; r++) {
+        int rowY = listY + r * ROW_H;
+        if (r == setRow_ && !setFocusLeft_) {
+            drawRect(rx - 8, rowY, POP_W - (rx - popX) - 28, ROW_H - 4, T().menuHighlight);
+            drawRectOutline(rx - 8, rowY, POP_W - (rx - popX) - 28, ROW_H - 4, T().cursor, 2);
+        }
+        drawText(settingsRowLabel(setCat_, r), rx, rowY + 8, T().text, font_);
+        std::string v = settingsRowValue(setCat_, r);
+        if (!v.empty()) {
+            const auto& e = getTextEntry(v, font_, T().selected);
+            drawText(v, popX + POP_W - 36 - e.w, rowY + 8, T().selected, font_);
+        }
+        if (setCat_ == 1 && r == 3) {
+            // Slider zoom 0..16px con pallino, accanto al valore (stessa riga).
+            // Larghezza riservata fissa su "16px" così la barra non balla quando passa da 1 a 2 cifre.
+            static int maxVw = -1;
+            if (maxVw < 0) maxVw = getTextEntry("16px", font_, T().selected).w;
+            int bw = 100, bh = 8;
+            int bx = popX + POP_W - 36 - maxVw - 14 - bw;
+            int by = rowY + (ROW_H - 4) / 2 - bh / 2;
+            drawRect(bx, by, bw, bh, T().textDim);
+            int dx = bx + (int)(bw * zoomGrow_ / 16.0);
+            if (dx < bx) dx = bx;
+            if (dx > bx + bw) dx = bx + bw;
+            auto dot = [&](int cx, int cy, int rr, SDL_Color c) {
+                SDL_SetRenderDrawColor(renderer_, c.r, c.g, c.b, c.a);
+                for (int dy = -rr; dy <= rr; dy++) {
+                    int ddx = static_cast<int>(std::sqrt((double)(rr * rr - dy * dy)));
+                    SDL_RenderDrawLine(renderer_, cx - ddx, cy + dy, cx + ddx, cy + dy);
+                }
+            };
+            dot(dx, by + bh / 2, 7, T().selected);
+        }
+    }
+    // Footer contestuale: se la riga focalizzata è uno slider, mostra hint con Stick ←/→
+    bool _isSlider = !setFocusLeft_ && ((setCat_ == 1 && setRow_ == 3) || (setCat_ == 3 && setRow_ == 2));
+    const char* _footKey = _isSlider ? StrKey::SetFooterSlider : StrKey::SetFooter;
+    std::string _foot = i18n::get(_footKey);
+    if (_isSlider && _foot == _footKey) _foot = i18n::get(StrKey::SetFooter); // fallback se traduzione manca
+    drawTextCentered(_foot, popX + POP_W / 2, popY + POP_H - 20, T().textDim, fontSmall_);
+}
+
+void UI::handleSettingsInput(const SDL_Event& event, bool& running) {
+    auto _isSliderRow = [&](int cat, int row) -> bool {
+        return (cat == 1 && row == 3) || (cat == 3 && row == 2);
+    };
+    // Stick analogico: su/giu come il D-pad (con repeat), sulla colonna attiva.
+    // In impostazioni usiamo anche LEFTX per regolare gli slider (zoom / backup).
+    if (event.type == SDL_CONTROLLERAXISMOTION) {
+        if (event.caxis.axis == SDL_CONTROLLER_AXIS_LEFTX ||
+            event.caxis.axis == SDL_CONTROLLER_AXIS_LEFTY ||
+            event.caxis.axis == SDL_CONTROLLER_AXIS_RIGHTY) {
+            int16_t lx = SDL_GameControllerGetAxis(pad_, SDL_CONTROLLER_AXIS_LEFTX);
+            int16_t ly = SDL_GameControllerGetAxis(pad_, SDL_CONTROLLER_AXIS_LEFTY);
+            updateStick(lx, ly);
+        }
+    }
+    // Slider via stick orizzontale: ← diminuisce, → aumenta (solo a fuoco destro su riga slider)
+    if (!setFocusLeft_ && stickDirX_ != 0 && _isSliderRow(setCat_, setRow_)) {
+        uint32_t now = SDL_GetTicks();
+        if (now - stickMoveTime_ >= (stickMoved_ ? STICK_REPEAT_DELAY : STICK_INITIAL_DELAY)) {
+            int dir = (stickDirX_ > 0) ? 1 : -1;
+            settingsRowActivate(setCat_, setRow_, dir, running);
+            stickMoveTime_ = now;
+            stickMoved_ = true;
+            markDirty();
+            return;
+        }
+    }
+    if (stickDirY_ != 0) {
+        uint32_t now = SDL_GetTicks();
+        if (now - stickMoveTime_ >= (stickMoved_ ? STICK_REPEAT_DELAY : STICK_INITIAL_DELAY)) {
+            int d = (stickDirY_ > 0) ? 1 : -1;
+            if (setFocusLeft_) {
+                setCat_ = (setCat_ + d + 7) % 7;
+                setRow_ = 0;
+            } else {
+                int n = settingsRowCount(setCat_);
+                setRow_ = (setRow_ + d + n) % n;
+            }
+            stickMoveTime_ = now;
+            stickMoved_ = true;
+            markDirty();
+        }
+    }
+    if (event.type == SDL_CONTROLLERBUTTONDOWN) {
+        markDirty();
+        int n = settingsRowCount(setCat_);
+        switch (event.cbutton.button) {
+            case SDL_CONTROLLER_BUTTON_DPAD_UP:
+                if (setFocusLeft_) { setCat_ = (setCat_ + 6) % 7; setRow_ = 0; }
+                else setRow_ = (setRow_ + n - 1) % n;
+                break;
+            case SDL_CONTROLLER_BUTTON_DPAD_DOWN:
+                if (setFocusLeft_) { setCat_ = (setCat_ + 1) % 7; setRow_ = 0; }
+                else setRow_ = (setRow_ + 1) % n;
+                break;
+            case SDL_CONTROLLER_BUTTON_DPAD_LEFT:
+                if (!setFocusLeft_ && _isSliderRow(setCat_, setRow_)) settingsRowActivate(setCat_, setRow_, -1, running);
+                else if (!setFocusLeft_) setFocusLeft_ = true;
+                break;
+            case SDL_CONTROLLER_BUTTON_DPAD_RIGHT:
+                if (setFocusLeft_) { setFocusLeft_ = false; setRow_ = 0; }
+                else if (_isSliderRow(setCat_, setRow_)) settingsRowActivate(setCat_, setRow_, 1, running);
+                break;
+            case SDL_CONTROLLER_BUTTON_B: // Switch A
+                if (setFocusLeft_) { setFocusLeft_ = false; setRow_ = 0; }
+                else settingsRowActivate(setCat_, setRow_, 1, running);
+                break;
+            case SDL_CONTROLLER_BUTTON_X: // Switch Y
+                if (!setFocusLeft_) settingsRowActivate(setCat_, setRow_, -1, running);
+                break;
+            case SDL_CONTROLLER_BUTTON_A: // Switch B
+                if (!setFocusLeft_) setFocusLeft_ = true;
+                else showSettings_ = false;
+                break;
+            case SDL_CONTROLLER_BUTTON_BACK:
+            case SDL_CONTROLLER_BUTTON_START:
+                showSettings_ = false;
+                break;
+        }
     }
 }

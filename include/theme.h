@@ -70,10 +70,17 @@ struct Theme {
 
 inline constexpr int THEME_COUNT = 9;
 // Default for fresh installs (existing theme.cfg choices are preserved).
-inline constexpr int DEFAULT_THEME_INDEX = 8; // OH
+inline constexpr int DEFAULT_THEME_INDEX = 0; // OH
 
 const Theme& getTheme(int index);
 const char*  getThemeName(int index);
 
 int  loadThemeIndex(const std::string& basePath);
 void saveThemeIndex(const std::string& basePath, int index);
+int  loadZoomGrow(const std::string& basePath);
+void saveZoomGrow(const std::string& basePath, int grow);
+
+// Layout selettore giochi (0 = Classico, 1 = Galleria). Stesso schema a
+// singolo byte di theme.cfg/zoom.cfg.
+int  loadGameSelectorLayout(const std::string& basePath);
+void saveGameSelectorLayout(const std::string& basePath, int layout);

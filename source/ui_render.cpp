@@ -1,4 +1,5 @@
 #include "ui.h"
+#include "ui_util.h"
 #include "i18n.h"
 #include "crypto_engine.h"
 #include "debug_log.h"
@@ -98,6 +99,14 @@ void UI::freeSprites() {
     if (iconBoxFull_)     { SDL_DestroyTexture(iconBoxFull_);     iconBoxFull_ = nullptr; }
     if (iconBoxEmpty_)    { SDL_DestroyTexture(iconBoxEmpty_);    iconBoxEmpty_ = nullptr; }
     if (iconBoxNonEmpty_) { SDL_DestroyTexture(iconBoxNonEmpty_); iconBoxNonEmpty_ = nullptr; }
+    if (iconVault_)        { SDL_DestroyTexture(iconVault_);        iconVault_ = nullptr; }
+    if (iconEject_)        { SDL_DestroyTexture(iconEject_);        iconEject_ = nullptr; }
+    if (iconSettings_)     { SDL_DestroyTexture(iconSettings_);     iconSettings_ = nullptr; }
+    if (iconWifi_)         { SDL_DestroyTexture(iconWifi_);         iconWifi_ = nullptr; }
+    if (iconLan_)          { SDL_DestroyTexture(iconLan_);          iconLan_ = nullptr; }
+    if (iconDebug_)        { SDL_DestroyTexture(iconDebug_);        iconDebug_ = nullptr; }
+    if (iconArrow_)        { SDL_DestroyTexture(iconArrow_);        iconArrow_ = nullptr; }
+    if (iconPack_)         { SDL_DestroyTexture(iconPack_);         iconPack_ = nullptr; }
 }
 
 SDL_Texture* UI::getRibbonSprite(const std::string& filename) {
@@ -146,12 +155,152 @@ void UI::drawRect(int x, int y, int w, int h, SDL_Color color) {
     SDL_RenderFillRect(renderer_, &r);
 }
 
+// Sprite inscritto nel box mantenendo le proporzioni (niente schiacciati).
+void UI::drawSpriteFit(int x, int y, int w, int h, SDL_Texture* tex) {
+    if (!tex) return;
+    int tw = 0, th = 0;
+    SDL_QueryTexture(tex, nullptr, nullptr, &tw, &th);
+    int dw = w, dh = h;
+    if (tw > 0 && th > 0) {
+        float s = std::min((float)w / tw, (float)h / th);
+        dw = (int)(tw * s);
+        dh = (int)(th * s);
+    }
+    SDL_Rect dst = {x + (w - dw) / 2, y + (h - dh) / 2, dw, dh};
+    SDL_RenderCopy(renderer_, tex, nullptr, &dst);
+}
+
+// Base rotonda stile card giochi (stessi colori T(): panelBg sempre,
+// menuHighlight + anello cursor quando focused) — cosi i pulsanti tondi
+// seguono tutti i temi come le card.
+void UI::drawRoundSelect(int cx, int cy, int r, bool focused) {
+    auto disc = [&](int rr, SDL_Color c) {
+        SDL_SetRenderDrawColor(renderer_, c.r, c.g, c.b, c.a);
+        for (int dy = -rr; dy <= rr; dy++) {
+            int dx = static_cast<int>(std::sqrt((double)(rr * rr - dy * dy)));
+            SDL_RenderDrawLine(renderer_, cx - dx, cy + dy, cx + dx, cy + dy);
+        }
+    };
+    if (focused) {
+        disc(r + 6, T().menuHighlight);
+        disc(r + 3, T().cursor);
+    }
+    disc(r, T().panelBg);
+}
+
 void UI::drawRectOutline(int x, int y, int w, int h, SDL_Color color, int thickness) {
     SDL_SetRenderDrawColor(renderer_, color.r, color.g, color.b, color.a);
     for (int t = 0; t < thickness; t++) {
         SDL_Rect r = {x + t, y + t, w - 2*t, h - 2*t};
         SDL_RenderDrawRect(renderer_, &r);
     }
+}
+
+// Rettangolo arrotondato pieno (stile card giochi): corpo + 4 dischi angolo.
+void UI::drawRoundRect(int x, int y, int w, int h, int r, SDL_Color color) {
+    if (r < 0) r = 0;
+    if (r * 2 > w) r = w / 2;
+    if (r * 2 > h) r = h / 2;
+    SDL_SetRenderDrawColor(renderer_, color.r, color.g, color.b, color.a);
+    SDL_Rect hbar = {x + r, y, w - 2 * r, h};
+    SDL_RenderFillRect(renderer_, &hbar);
+    SDL_Rect vbar = {x, y + r, w, h - 2 * r};
+    SDL_RenderFillRect(renderer_, &vbar);
+    for (int dy = -r; dy <= r; dy++) {
+        int dx = static_cast<int>(std::sqrt((double)(r * r - dy * dy)));
+        SDL_RenderDrawLine(renderer_, x + r - dx, y + r + dy, x + r + dx, y + r + dy);
+        SDL_RenderDrawLine(renderer_, x + w - r - dx, y + r + dy, x + w - r + dx, y + r + dy);
+        SDL_RenderDrawLine(renderer_, x + r - dx, y + h - r + dy, x + r + dx, y + h - r + dy);
+        SDL_RenderDrawLine(renderer_, x + w - r - dx, y + h - r + dy, x + w - r + dx, y + h - r + dy);
+    }
+}
+
+// Come drawRoundRect() ma con un gradiente orizzontale invece di un colore
+// piatto: per ogni colonna calcola l'estensione verticale piena (0..h-1 nel
+// corpo, ristretta dal cerchio negli angoli, stessa geometria esatta di
+// drawRoundRect) e la disegna con il colore interpolato per quella colonna.
+// Un solo giro, un solo draw call per colonna, sempre opaco.
+void UI::drawRoundRectGradientH(int x, int y, int w, int h, int r, SDL_Color left, SDL_Color right) {
+    if (r < 0) r = 0;
+    if (r * 2 > w) r = w / 2;
+    if (r * 2 > h) r = h / 2;
+    for (int cx = 0; cx < w; cx++) {
+        int insetX = std::min(cx, w - 1 - cx);
+        int yStart, yEnd;
+        if (insetX >= r) {
+            yStart = 0;
+            yEnd = h - 1;
+        } else {
+            int dxFromCenter = r - insetX;
+            int dyTrim = r - static_cast<int>(std::sqrt((double)(r * r - dxFromCenter * dxFromCenter)));
+            yStart = dyTrim;
+            yEnd = h - 1 - dyTrim;
+        }
+        if (yStart > yEnd) continue;
+        float t = (w > 1) ? (float)cx / (float)(w - 1) : 0.0f;
+        Uint8 cr = static_cast<Uint8>(left.r + (right.r - left.r) * t);
+        Uint8 cg = static_cast<Uint8>(left.g + (right.g - left.g) * t);
+        Uint8 cb = static_cast<Uint8>(left.b + (right.b - left.b) * t);
+        SDL_SetRenderDrawColor(renderer_, cr, cg, cb, 255);
+        SDL_RenderDrawLine(renderer_, x + cx, y + yStart, x + cx, y + yEnd);
+    }
+}
+
+// Bordo arrotondato: spigoli + 4 archi come polilinee (matematica esatta).
+void UI::drawRoundRectOutline(int x, int y, int w, int h, int r, SDL_Color color, int thickness) {
+    if (r < 0) r = 0;
+    SDL_SetRenderDrawColor(renderer_, color.r, color.g, color.b, color.a);
+    auto arc = [&](int cx, int cy, double a0, double a1, int rr) {
+        const int STEPS = 12;
+        int px = 0, py = 0;
+        for (int i = 0; i <= STEPS; i++) {
+            double a = (a0 + (a1 - a0) * i / STEPS) * 3.14159265 / 180.0;
+            int qx = cx + static_cast<int>(rr * std::cos(a));
+            int qy = cy + static_cast<int>(rr * std::sin(a));
+            if (i > 0) SDL_RenderDrawLine(renderer_, px, py, qx, qy);
+            px = qx;
+            py = qy;
+        }
+    };
+    for (int t = 0; t < thickness; t++) {
+        int rr = r - t;
+        if (rr < 0) rr = 0;
+        int xx = x + t, yy = y + t, ww = w - 2 * t, hh = h - 2 * t;
+        if (ww <= 0 || hh <= 0) break;
+        SDL_RenderDrawLine(renderer_, xx + rr, yy, xx + ww - rr, yy);
+        SDL_RenderDrawLine(renderer_, xx + rr, yy + hh, xx + ww - rr, yy + hh);
+        SDL_RenderDrawLine(renderer_, xx, yy + rr, xx, yy + hh - rr);
+        SDL_RenderDrawLine(renderer_, xx + ww, yy + rr, xx + ww, yy + hh - rr);
+        arc(xx + rr, yy + rr, 180.0, 270.0, rr);
+        arc(xx + ww - rr, yy + rr, 270.0, 360.0, rr);
+        arc(xx + rr, yy + hh - rr, 90.0, 180.0, rr);
+        arc(xx + ww - rr, yy + hh - rr, 0.0, 90.0, rr);
+    }
+}
+
+// Copia con angoli arrotondati (raggio proporzionale): per le texture delle card.
+SDL_Surface* roundCornersSurface(SDL_Surface* src, int radius) {
+    if (!src) return nullptr;
+    SDL_Surface* rgba = SDL_ConvertSurfaceFormat(src, SDL_PIXELFORMAT_RGBA32, 0);
+    if (!rgba) return nullptr;
+    int w = rgba->w, h = rgba->h;
+    if (radius * 2 > w) radius = w / 2;
+    if (radius * 2 > h) radius = h / 2;
+    SDL_LockSurface(rgba);
+    Uint32* px = (Uint32*)rgba->pixels;
+    int stride = rgba->pitch / 4;
+    auto inside = [&](int x, int y) {
+        // dentro se non nei quadrati d'angolo fuori dal quarto di cerchio
+        int cx = x < radius ? radius - x : (x >= w - radius ? x - (w - radius) : -1);
+        int cy = y < radius ? radius - y : (y >= h - radius ? y - (h - radius) : -1);
+        if (cx < 0 || cy < 0) return true;
+        return cx * cx + cy * cy <= radius * radius;
+    };
+    for (int y = 0; y < h; y++)
+        for (int x = 0; x < w; x++)
+            if (!inside(x, y)) px[y * stride + x] &= 0x00FFFFFF;
+    SDL_UnlockSurface(rgba);
+    return rgba;
 }
 
 static uint32_t packColor(SDL_Color c) {
@@ -412,7 +561,12 @@ void UI::drawPanel(int panelX, const std::string& boxName, int boxIdx,
                 bool isEmpty = (pi >= (int)party.size() || party[pi].isEmpty());
                 SDL_Texture* tex = nullptr;
                 if (!isEmpty) {
-                    tex = getSprite(party[pi].species(), party[pi].form());
+                    // Le uova mostrano il guscio, non la specie interna: senza
+                    // questo check un uovo sembrava il mon che contiene (bug
+                    // "Ditto diventa uovo" — era un uovo vero fin dall'inizio).
+                    if (party[pi].isEgg())
+                        tex = getSprite(0);
+                    if (!tex) tex = getSprite(party[pi].species(), party[pi].form());
                     if (!tex) tex = getSprite(party[pi].species(), 0);
                     if (!tex) tex = getBallSprite(party[pi].ball());
                     if (!tex) tex = getBallSprite(4);
@@ -421,21 +575,21 @@ void UI::drawPanel(int panelX, const std::string& boxName, int boxIdx,
                     if (!tex) tex = emptyFallback;
                 }
                 if (tex && mx + 24 <= panelX + PANEL_W - 20) {
-                    SDL_Rect dst = {mx, BOX_HDR_Y + (BOX_HDR_H - 24) / 2, 24, 24};
+                    SDL_Rect cell = {mx, BOX_HDR_Y + (BOX_HDR_H - 24) / 2, 24, 24};
                     if (isEmpty) {
                         SDL_SetTextureColorMod(tex, 110, 110, 110);
                         SDL_SetTextureAlphaMod(tex, 110);
                     }
-                    SDL_RenderCopy(renderer_, tex, nullptr, &dst);
+                    drawSpriteFit(cell.x, cell.y, cell.w, cell.h, tex);
                     if (isEmpty) {
                         SDL_SetTextureColorMod(tex, 255, 255, 255);
                         SDL_SetTextureAlphaMod(tex, 255);
                         SDL_SetRenderDrawColor(renderer_, 110, 110, 110, 90);
-                        SDL_RenderDrawRect(renderer_, &dst);
+                        SDL_RenderDrawRect(renderer_, &cell);
                     }
                     if (pi == partyCursor_) {
                         SDL_SetRenderDrawColor(renderer_, T().cursor.r, T().cursor.g, T().cursor.b, 255);
-                        SDL_RenderDrawRect(renderer_, &dst);
+                        SDL_RenderDrawRect(renderer_, &cell);
                     }
                 } else if (!tex) {
                     SDL_SetRenderDrawColor(renderer_, T().textDim.r, T().textDim.g, T().textDim.b, 80);
@@ -462,14 +616,16 @@ void UI::drawPanel(int panelX, const std::string& boxName, int boxIdx,
     drawTextCentered(">", panelX + PANEL_W - 20, BOX_HDR_Y + BOX_HDR_H / 2, T().arrow, font_);
     } // else (classic header)
 
-    // Grid: dynamic columns x 5 rows, sized from THIS panel's own source.
+    // Grid: dynamic columns x dynamic rows (5x4 for 20-slot GB/GBC boxes),
+    // sized from THIS panel's own source.
     int cols = gridColsFor(panelId);
+    int rows = gridRowsFor(panelId);
     int gridStartX = panelX + (PANEL_W - (cols * (CELL_W + CELL_PAD) - CELL_PAD)) / 2;
     int gridStartY = GRID_Y;
 
     const auto& displays = getSlotDisplays(panelId, box);
 
-    for (int row = 0; row < 5; row++) {
+    for (int row = 0; row < rows; row++) {
         for (int col = 0; col < cols; col++) {
             int slot = row * cols + col;
             int cellX = gridStartX + col * (CELL_W + CELL_PAD);
@@ -641,6 +797,11 @@ void UI::drawFrame() {
     // PK file import list popup
     if (showPkImportList_) {
         drawPkImportListPopup();
+    }
+
+    // Debug test-mon generator list popup
+    if (showGenMonList_) {
+        drawGenMonListPopup();
     }
 
     // Learnset viewer popup
@@ -886,18 +1047,18 @@ void UI::drawDetailPopup(const Pokemon& pkm) {
     else if (g == 1)
         drawText("\xe2\x99\x80", afterLvl, infoY, T().genderFemale, font_);
 
-    infoY += 30;
+    infoY += 34;
 
     // National dex ID
     std::string idStr = i18n::get(StrKey::NationalDexPrefix) + std::to_string(pkm.species());
     drawText(idStr, infoX, infoY, T().textDim, font_);
-    infoY += 28;
+    infoY += 34;
 
     // OT + TID/SID
     std::string otStr = i18n::get(StrKey::OTPrefix) + pkm.otName() + " | " + i18n::get(StrKey::TIDPrefix) + std::to_string(pkm.displayTid())
                         + " | " + i18n::get(StrKey::SIDPrefix) + std::to_string(pkm.displaySid());
     drawText(otStr, infoX, infoY, T().textDim, font_);
-    infoY += 28;
+    infoY += 34;
 
     // HT (handling trainer) — only for formats that store one
     if (pkm.hasHandlingTrainer()) {
@@ -905,24 +1066,24 @@ void UI::drawDetailPopup(const Pokemon& pkm) {
         std::string htStr = i18n::get(StrKey::HTPrefix) +
                             (ht.empty() ? i18n::get(StrKey::NoneItem) : ht);
         drawText(htStr, infoX, infoY, T().textDim, font_);
-        infoY += 28;
+        infoY += 34;
     }
 
     // Nature
     std::string natureStr = i18n::get(StrKey::NaturePrefix) + NatureName::get(pkm.nature());
     drawText(natureStr, infoX, infoY, T().textDim, font_);
-    infoY += 28;
+    infoY += 34;
 
     // Ability
     std::string abilityStr = i18n::get(StrKey::AbilityPrefix) + AbilityName::get(pkm.ability());
     drawText(abilityStr, infoX, infoY, T().textDim, font_);
-    infoY += 28;
+    infoY += 34;
 
     // Held item
     uint16_t item = pkm.heldItem();
     std::string itemStr = i18n::get(StrKey::HeldItemPrefix) + (item != 0 ? ItemName::get(item) : i18n::get(StrKey::NoneItem));
     drawText(itemStr, infoX, infoY, T().textDim, font_);
-    int infoBottom = infoY + 28; // baseline below the last info line
+    int infoBottom = infoY + 34; // baseline below the last info line
 
     // --- Below sprite: Moves ---
     // Start below whichever extends lower: the sprite or the info column.
@@ -935,7 +1096,7 @@ void UI::drawDetailPopup(const Pokemon& pkm) {
 
     constexpr int TYPE_ICON_W = 25;
     constexpr int TYPE_ICON_H = 25;
-    constexpr int MOVE_ROW_H = 28;
+    constexpr int MOVE_ROW_H = 32;
     constexpr int MOVE_COL_W = 230;
     int textH = TTF_FontHeight(font_);
     uint16_t moves[4] = {pkm.move1(), pkm.move2(), pkm.move3(), pkm.move4()};
@@ -972,7 +1133,7 @@ void UI::drawDetailPopup(const Pokemon& pkm) {
         int col1X = movesX + 4;
         int col2X = movesX + 230;
         int ribbonY = movesY;
-        constexpr int RIB_ROW_H = 26;
+        constexpr int RIB_ROW_H = 30;
         constexpr int ICON_SZ = 18;
         constexpr int ICON_PAD = 4;
         int maxY = popY + POP_H - 74;
@@ -1040,16 +1201,22 @@ void UI::drawDetailPopup(const Pokemon& pkm) {
 
 int UI::menuVisibleCount() const {
     // Layout voci: vedi labelsNormal/labelsApplet in drawMenuPopup().
-    // Indice 5 = Wondercard (solo se il gioco le supporta),
-    // indice 6 = Export Selected (solo se ci sono slot selezionati),
-    // indice 7 = Import PK files (sempre visibile).
+    // Indice 4 = Wondercard (solo se il gioco le supporta),
+    // indice 5 = Export Selected (solo se ci sono slot selezionati),
+    // indice 6 = Import PK files (sempre visibile),
+    // indice 7 (solo normal + debug) = Generate test mons,
+    // indice 8 (solo normal, mai dual) = Send current save (solo a save caricato).
     bool hasWC = gameInfo(selectedGame_).hasWondercards;
     bool hasExport = !selectedSlots_.empty();
-    int allCount = isDualBankMode() ? 13 : 12;
+    bool hasSend = !isDualBankMode() && save_.isLoaded();
+    bool hasGen = DebugLog::enabled() && !isDualBankMode();
+    int allCount = isDualBankMode() ? 12 : 13;
     int count = 0;
     for (int i = 0; i < allCount; i++) {
-        if (!hasWC && i == 5) continue;
-        if (!hasExport && i == 6) continue;
+        if (!hasWC && i == 4) continue;
+        if (!hasExport && i == 5) continue;
+        if (!hasGen && !isDualBankMode() && i == 7) continue;
+        if (!hasSend && !isDualBankMode() && i == 8) continue;
         count++;
     }
     return count;
@@ -1060,27 +1227,30 @@ void UI::drawMenuPopup() {
     drawRect(0, 0, SCREEN_W, SCREEN_H, T().overlay);
 
     // Menu items differ by mode and game
-    // SV/SwSh games get a "Wondercard" item after Search — +1 Crypto (M3d) +1 Gen (M6a)
+    // SV/SwSh games get a "Wondercard" item after Search — +1 Crypto (M3d)
     bool hasWC = gameInfo(selectedGame_).hasWondercards;
     bool hasExport = !selectedSlots_.empty();
+    // "Send current save": solo a save caricato e mai in dual-bank.
+    bool hasSend = !isDualBankMode() && save_.isLoaded();
+    // "Generate test mons": solo debug, mai dual-bank.
+    bool hasGen = DebugLog::enabled() && !isDualBankMode();
 
     static char exportBuf[64];
     if (hasExport)
         std::snprintf(exportBuf, sizeof(exportBuf), "%s", i18n::fmt(StrKey::MenuExportSelected, std::to_string((int)selectedSlots_.size())).c_str());
     static char cryptoBuf[32];
     std::snprintf(cryptoBuf, sizeof(cryptoBuf), "Crypto: %s", useOpenHome() ? "OpenHome" : "pkHouse");
-    static char genBuf[32];
-    std::snprintf(genBuf, sizeof(genBuf), "Target Gen: %d", targetGen_);
 
     const std::string labelsNormal[] = {
         i18n::get(StrKey::MenuTheme),
         i18n::get(StrKey::MenuLanguage),
         cryptoBuf,
-        genBuf,
         i18n::get(StrKey::MenuSearch),
         i18n::get(StrKey::MenuWondercard),
         exportBuf,
         i18n::get(StrKey::MenuImportPk),
+        "Generate test mons (DBG)",
+        i18n::get(StrKey::SendSaveTitle),
         i18n::get(StrKey::MenuSwitchBank),
         i18n::get(StrKey::MenuChangeGame),
         i18n::get(StrKey::MenuSaveQuit),
@@ -1090,7 +1260,6 @@ void UI::drawMenuPopup() {
         i18n::get(StrKey::MenuTheme),
         i18n::get(StrKey::MenuLanguage),
         cryptoBuf,
-        genBuf,
         i18n::get(StrKey::MenuSearch),
         i18n::get(StrKey::MenuWondercard),
         exportBuf,
@@ -1102,13 +1271,15 @@ void UI::drawMenuPopup() {
         i18n::get(StrKey::MenuQuit)
     };
     // Build label list, skipping conditional items — menuCount = vi
-    std::string visibleLabels[14];
+    std::string visibleLabels[15];
     const std::string* allLabels = isDualBankMode() ? labelsApplet : labelsNormal;
-    int allCount = isDualBankMode() ? 13 : 12;
+    int allCount = isDualBankMode() ? 12 : 13;
     int vi = 0;
     for (int i = 0; i < allCount; i++) {
-        if (!hasWC && i == 5) continue;
-        if (!hasExport && i == 6) continue;
+        if (!hasWC && i == 4) continue;
+        if (!hasExport && i == 5) continue;
+        if (!hasGen && !isDualBankMode() && i == 7) continue;
+        if (!hasSend && !isDualBankMode() && i == 8) continue;
         visibleLabels[vi++] = allLabels[i];
     }
     int menuCount = vi;
@@ -1307,39 +1478,6 @@ void UI::drawLanguageSelectorPopup() {
         }
         std::string label = langDisplayName(langList_[i]);
         if (langList_[i] == i18n::currentLang()) label = "* " + label + " *";
-        drawTextCentered(label, popX + POP_W / 2, rowY + (rowH - 4) / 2, T().text, font_);
-    }
-
-    drawTextCentered(i18n::get(StrKey::ASelectBCancel), popX + POP_W / 2, popY + POP_H - 18, T().textDim, fontSmall_);
-}
-
-void UI::drawGenSelectorPopup() {
-    drawRect(0, 0, SCREEN_W, SCREEN_H, T().overlay);
-
-    constexpr int POP_W = 380;
-    constexpr int GEN_COUNT = 7;
-    int POP_H = 50 + GEN_COUNT * 36 + 30;
-    int popX = (SCREEN_W - POP_W) / 2;
-    int popY = (SCREEN_H - POP_H) / 2;
-
-    drawRect(popX, popY, POP_W, POP_H, T().panelBg);
-    drawRectOutline(popX, popY, POP_W, POP_H, T().cursor, 2);
-
-    drawTextCentered("Target Generation", popX + POP_W / 2, popY + 22, T().text, font_);
-
-    int rowH = 36;
-    int startY = popY + 50;
-
-    for (int i = 0; i < GEN_COUNT; i++) {
-        int rowY = startY + i * rowH;
-        if (i == genSelCursor_) {
-            drawRect(popX + 20, rowY, POP_W - 40, rowH - 4, T().menuHighlight);
-            drawRectOutline(popX + 20, rowY, POP_W - 40, rowH - 4, T().cursor, 2);
-        }
-        char buf[16];
-        std::snprintf(buf, sizeof(buf), "Gen %d", GEN_LIST[i]);
-        std::string label = buf;
-        if (GEN_LIST[i] == targetGen_) label = "* " + label + " *";
         drawTextCentered(label, popX + POP_W / 2, rowY + (rowH - 4) / 2, T().text, font_);
     }
 
@@ -1867,6 +2005,40 @@ void UI::drawWondercardListPopup() {
     drawTextCentered(footer, popX + POP_W / 2, popY + POP_H - 18, T().textDim, fontSmall_);
 }
 
+void UI::drawGenMonListPopup() {
+    drawRect(0, 0, SCREEN_W, SCREEN_H, T().overlay);
+    int count = (int)genMonList_.size();
+    constexpr int POP_W = 520;
+    constexpr int ROW_H = 36;
+    constexpr int VISIBLE = 12;
+    int rows = count > 0 ? std::min(count, VISIBLE) : 1;
+    int POP_H = 50 + rows * ROW_H + 30;
+    int popX = (SCREEN_W - POP_W) / 2;
+    int popY = (SCREEN_H - POP_H) / 2;
+    drawRect(popX, popY, POP_W, POP_H, T().panelBg);
+    drawRectOutline(popX, popY, POP_W, POP_H, T().cursor, 2);
+    drawTextCentered("Generate test mon (DBG)", popX + POP_W / 2, popY + 22, T().text, font_);
+    int startY = popY + 50;
+    if (count == 0) {
+        drawTextCentered("Empty table.", popX + POP_W / 2, startY + (ROW_H - 4) / 2, T().textDim, font_);
+    } else {
+        for (int r = 0; r < rows; r++) {
+            int i = genMonScroll_ + r;
+            if (i >= count) break;
+            int rowY = startY + r * ROW_H;
+            if (i == genMonCursor_) {
+                drawRect(popX + 20, rowY, POP_W - 40, ROW_H - 4, T().menuHighlight);
+                drawRectOutline(popX + 20, rowY, POP_W - 40, ROW_H - 4, T().cursor, 2);
+            }
+            const auto& e = genMonList_[i];
+            char buf[128];
+            std::snprintf(buf, sizeof(buf), "%s  (Lv %u)", e.label, e.level);
+            drawText(buf, popX + 30, rowY + 6, T().text, fontSmall_);
+        }
+    }
+    drawTextCentered(i18n::get(StrKey::ASelectBCancel), popX + POP_W / 2, popY + POP_H - 18, T().textDim, fontSmall_);
+}
+
 void UI::drawPkImportListPopup() {
     drawRect(0, 0, SCREEN_W, SCREEN_H, T().overlay);
 
@@ -2115,11 +2287,11 @@ void UI::drawAboutPopup() {
         }
     };
 
-    drawWrappedCentered(i18n::get(StrKey::AboutDesc1), font_, T().text, MAX_W, 20, y);
-    y += 4;
+    drawWrappedCentered(i18n::get(StrKey::AboutDesc1), fontAbout_, T().text, MAX_W, 26, y);
+    y += 6;
     // AboutDesc2 uses smaller font and wrapping to avoid going off-screen (it.json is very long)
-    drawWrappedCentered(i18n::get(StrKey::AboutDesc2), fontSmall_, T().text, MAX_W, 18, y);
-    y += 8;
+    drawWrappedCentered(i18n::get(StrKey::AboutDesc2), fontAbout_, T().text, MAX_W, 26, y);
+    y += 16;
 
     drawTextCentered(i18n::get(StrKey::SupportedGames), cx, y, T().selected, font_);
     y += 22;
@@ -2130,6 +2302,8 @@ void UI::drawAboutPopup() {
     drawTextCentered(i18n::get(StrKey::SupportedSVZA), cx, y, T().textDim, fontSmall_);
     y += 18;
     drawTextCentered(i18n::get(StrKey::SupportedFRLG), cx, y, T().textDim, fontSmall_);
+    y += 18;
+    drawTextCentered(i18n::get(StrKey::SupportedGB), cx, y, T().textDim, fontSmall_);
     y += 14;
 
     // Divider

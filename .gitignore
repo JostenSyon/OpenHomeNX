@@ -28,8 +28,4 @@ package-lock.json
 /dist/
 include/app_version.h
 update.cfg
-
-
-# personal save dumps (OTveri) — local only; upstream fixtures stay tracked
-/tools/test save/*
-!/tools/test save/upstream/
+.build-variant

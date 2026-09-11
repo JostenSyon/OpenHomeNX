@@ -1053,4 +1053,209 @@ void registerPokemon(SaveFile& save, const Pokemon& pkm) {
     }
 }
 
+// ============================================================
+//  Read-only status (caught/total) per la preview Galleria.
+//  Pura lettura: nessuna delle funzioni sotto scrive un byte, riusano solo
+//  gli offset/tabelle dei registerXxx() sopra (stesso file, stessa
+//  anonymous namespace, quindi le tabelle SWSH_DEX_GALAR/SV_DEX_*/ecc.
+//  restano visibili qui senza duplicarle). Zero rischio per la logica di
+//  scrittura: getDexStatus() non è mai chiamata da registerPokemon().
+// ============================================================
+
+namespace {
+
+// Conta i bit a 1 nei primi nbits di base (bit N = byte N/8, bit N%8).
+int popcountBits(const uint8_t* base, int nbits) {
+    int c = 0;
+    int fullBytes = nbits / 8;
+    for (int i = 0; i < fullBytes; i++) c += __builtin_popcount(base[i]);
+    int rem = nbits % 8;
+    if (rem) {
+        uint8_t mask = static_cast<uint8_t>((1u << rem) - 1);
+        c += __builtin_popcount(base[fullBytes] & mask);
+    }
+    return c;
+}
+
+DexStatus getDexStatusFRLG(SaveFile& save) {
+    uint8_t* sect0 = save.findGbaSectorData(0);
+    if (!sect0) return {};
+    uint8_t* pdx = sect0 + FRLG_POKEDEX_OFS;
+    int caught = popcountBits(pdx + FRLG_CAUGHT_OFS, FRLG_MAX_SPECIES);
+    return {true, caught, FRLG_MAX_SPECIES};
+}
+
+DexStatus getDexStatusBDSP(SaveFile& save) {
+    uint8_t* raw = save.rawData();
+    size_t rawSize = save.rawDataSize();
+    if (rawSize < BDSP_ZUKAN_OFFSET + BDSP_ZUKAN_SIZE) return {};
+    uint8_t* z = raw + BDSP_ZUKAN_OFFSET;
+    int caught = 0;
+    for (int s = 0; s < BDSP_MAX_SPECIES; s++)
+        if (readU32LE(z + BDSP_STATE_BASE + s * 4) >= 3) caught++;
+    return {true, caught, BDSP_MAX_SPECIES};
+}
+
+DexStatus getDexStatusLGPE(SaveFile& save) {
+    uint8_t* raw = save.rawData();
+    size_t rawSize = save.rawDataSize();
+    size_t requiredEnd = LGPE_ZUKAN_BLOCK_OFFSET + LGPE_SIZE_OFS +
+                          LGPE_SIZE_ENTRY_SIZE * LGPE_SIZE_ENTRY_COUNT * 4;
+    if (rawSize < requiredEnd) return {};
+    uint8_t* pdx = raw + LGPE_ZUKAN_BLOCK_OFFSET;
+    auto isCaught = [&](int species) {
+        int bit = species - 1;
+        return (pdx[LGPE_CAUGHT_OFS + (bit >> 3)] >> (bit & 7)) & 1;
+    };
+    int caught = 0;
+    for (int s = 1; s <= 151; s++) caught += isCaught(s);
+    caught += isCaught(808) + isCaught(809); // Meltan/Melmetal
+    return {true, caught, 153};
+}
+
+DexStatus getDexStatusSwSh(SaveFile& save) {
+    SCBlock* block = save.findBlock(KZUKAN_GALAR);
+    if (!block || block->data.empty()) return {};
+    int maxDex = 0;
+    for (uint16_t v : SWSH_DEX_GALAR) if (v > maxDex) maxDex = v;
+    int caught = 0;
+    for (int d = 1; d <= maxDex; d++) {
+        size_t ofs = static_cast<size_t>(d - 1) * SWSH_ENTRY_SIZE;
+        if (ofs + SWSH_ENTRY_SIZE > block->data.size()) break;
+        uint32_t c = readU32LE(block->data.data() + ofs + 0x20);
+        if (c & 1) caught++;
+    }
+    return {true, caught, maxDex};
+}
+
+DexStatus getDexStatusSV(SaveFile& save) {
+    // Solo blocco Kitakami (vedi registerSVKitakami): dalla 2.0.1 il gioco
+    // usa sempre questo formato, anche senza DLC (il vecchio blocco
+    // Paldea-only 0x0DEAAEBD resta vuoto). Save mai aggiornati oltre la
+    // 2.0.1 (rarissimi) restano "supported=false" — non coperti.
+    SCBlock* block = save.findBlock(0xF5D7C0E2);
+    if (!block || block->data.empty()) return {};
+    int caught = 0, total = 0;
+    for (int s = 1; s < 1424; s++) {
+        if (!isPresentSV(static_cast<uint16_t>(s), 0)) continue;
+        total++;
+        uint16_t internal = SpeciesConverter::getInternal9(static_cast<uint16_t>(s));
+        size_t ofs = static_cast<size_t>(internal) * SV_KITA_ENTRY_SIZE;
+        if (ofs + SV_KITA_ENTRY_SIZE > block->data.size()) continue;
+        if (readU32LE(block->data.data() + ofs + SVK_FORMS_OBTAINED) != 0) caught++;
+    }
+    return {true, caught, total};
+}
+
+DexStatus getDexStatusZA(SaveFile& save) {
+    SCBlock* block = save.findBlock(0x2D87BE5C);
+    if (!block || block->data.empty()) return {};
+    int caught = 0, total = 0;
+    for (int s = 1; s < 1445; s++) {
+        if (!isPresentZA(static_cast<uint16_t>(s), 0)) continue;
+        total++;
+        uint16_t internal = SpeciesConverter::getInternal9(static_cast<uint16_t>(s));
+        size_t ofs = static_cast<size_t>(internal) * ZA_ENTRY_SIZE;
+        if (ofs + ZA_ENTRY_SIZE > block->data.size()) continue;
+        if (readU32LE(block->data.data() + ofs + ZA_FORMS_CAUGHT) != 0) caught++;
+    }
+    return {true, caught, total};
+}
+
+// Gen1 (R/B/Y): stesso bitfield che saveGB() gia' scrive ad ogni save
+// dell'app per ogni specie boxata (vedi save_file.cpp riga ~1877), quindi
+// leggerlo qui e' zero lavoro di formato nuovo: bit (species-1), 151 specie,
+// national dex order. Owned @0x25A3, 19 byte (151 bit).
+DexStatus getDexStatusGen1(SaveFile& save) {
+    if (save.rawDataSize() < 0x25A3 + 19) return {};
+    return {true, popcountBits(save.rawData() + 0x25A3, 151), 151};
+}
+
+// Gen2 (G/S/C): stesso bitfield gia' scritto da saveGBC() (save_file.cpp
+// riga ~2081-2082). Offset (diverso fra Crystal e Gold/Silver) esposto da
+// SaveFile::gen2DexCaughtOffset() -- unica fonte di verita', invece di
+// duplicare qui i due valori di GbcLayout. 251 specie.
+DexStatus getDexStatusGen2(SaveFile& save) {
+    size_t caughtOfs = save.gen2DexCaughtOffset();
+    if (caughtOfs == 0 || save.rawDataSize() < caughtOfs + 32) return {};
+    return {true, popcountBits(save.rawData() + caughtOfs, 251), 251};
+}
+
+// Gen4 (DP/Pt/HGSS): l'offset del blocco Pokedex dentro il blocco Generale
+// non e' mai stato documentato/portato in questo repo (ne' PKHeX ne'
+// Bulbapedia lo pubblicano in modo affidabile) -- determinato EMPIRICAMENTE
+// sui 3 save reali in tools/test save/ (Diamante/Platino/SoulSilver):
+// scansione a forza bruta di tutto il blocco Generale, tenendo solo gli
+// offset dove (a) ogni specie gia' presente nei box/party del save e'
+// marcata "caught", (b) caught e' un sottoinsieme di seen allo stesso
+// offset+0x40 -- risultato unico per ognuno dei 3 formati, incrociato anche
+// col party (es. Diamante: caught={390,396,399}, 390=Chimchar e' proprio la
+// specie nel party, non nei box). dexBase e' relativo all'inizio della
+// partizione attiva (SaveFile::dsPartition()*0x40000): caught @+4, seen
+// @+0x44, 64 byte l'uno, 493 specie (bit = specie-1), stesso layout
+// confermato da PKHeX Zukan4.cs per tutti e 3 i sotto-formati.
+DexStatus getDexStatusGen4(SaveFile& save) {
+    struct L { SaveFile::Ds4Layout id; size_t dexBase; };
+    static constexpr L LAYOUTS[3] = {
+        {SaveFile::Ds4Layout::DP,   0x12DC},
+        {SaveFile::Ds4Layout::PT,   0x1328},
+        {SaveFile::Ds4Layout::HGSS, 0x12B8},
+    };
+    const L* l = nullptr;
+    for (const auto& x : LAYOUTS) if (x.id == save.dsLayout()) { l = &x; break; }
+    if (!l) return {};
+    size_t gBase = static_cast<size_t>(save.dsPartition()) * SaveFile::dsPartitionBytes();
+    size_t caughtOfs = gBase + l->dexBase + 4;
+    if (save.rawDataSize() < caughtOfs + 64) return {};
+    return {true, popcountBits(save.rawData() + caughtOfs, 493), 493};
+}
+
+// Gen5 (Black/White soltanto — vedi nota B2W2 sotto). Stesso approccio
+// empirico di getDexStatusGen4(): scansione a forza bruta sul save reale
+// "Pokemon Versione Nera.dsv" (Black) in tools/test save/, vincolata a
+// "ogni specie gia' in box/party dev'essere caught" + "caught sottoinsieme
+// di seen a +0x54". Trovato un solo blocco valido, duplicato byte-per-byte
+// a +0x24000 (le due copie ridondanti standard dei save Gen5 flat, sempre
+// in sync fuori da un crash a meta' scrittura) — confermata la posizione,
+// non solo plausibile.
+// dexBase assoluto (nel file, non in un blocco separato: Gen5 BW e' piatto,
+// senza partizioni come Gen4) = 0x21600. Caught @+0x08, Seen @+0x5C, 0x54
+// byte l'uno (fino a 649 specie), stesso layout PKHeX Zukan5 per BW/B2W2.
+//
+// B2W2 (game byte 22/23) NON e' incluso: B2W2 ha piu' forme (FormLen 11 vs
+// 9 di BW) in una sezione del blocco successiva a caught/seen, quindi gli
+// offset relativi restano probabilmente identici, ma altri blocchi prima
+// di questo potrebbero avere dimensioni diverse e spostare dexBase — non
+// verificabile senza un save B2W2 reale sottomano. Meglio "non supportato"
+// che un numero silenziosamente sbagliato.
+DexStatus getDexStatusGen5(SaveFile& save) {
+    uint8_t game = save.dsGameByte();
+    if (game != 20 && game != 21) return {}; // White2/Black2: non verificato
+    constexpr size_t kDexBase = 0x21600;
+    constexpr size_t kCaughtOfs = kDexBase + 0x08;
+    if (save.rawDataSize() < kCaughtOfs + 84) return {};
+    return {true, popcountBits(save.rawData() + kCaughtOfs, 649), 649};
+}
+
+} // anon
+
+DexStatus getDexStatus(SaveFile& save) {
+    GameType game = save.gameType();
+    if (isSV(game))        return getDexStatusSV(save);
+    if (isSwSh(game))      return getDexStatusSwSh(save);
+    if (isBDSP(game))      return getDexStatusBDSP(save);
+    if (isLGPE(game))      return getDexStatusLGPE(save);
+    // FRLG e R/S/E condividono lo stesso contenitore a settori GBA (vedi
+    // game_type.h isImportedFile) E lo stesso offset del bitfield "owned"
+    // (sezione 0 + 0x28, confermato su Bulbapedia per tutti e 3 i gruppi):
+    // nessun nuovo formato da portare, riusa la stessa funzione as-is.
+    if (isFRLG(game) || isImportedFile(game)) return getDexStatusFRLG(save);
+    if (game == GameType::ZA) return getDexStatusZA(save);
+    if (isGen1File(game))  return getDexStatusGen1(save);
+    if (isGen2File(game))  return getDexStatusGen2(save);
+    if (isGen4File(game))  return getDexStatusGen4(save);
+    if (isGen5File(game))  return getDexStatusGen5(save); // solo B/W, vedi commento sopra
+    return {}; // Gen6/7(DS/3DS)/LA/B2W2: non ancora coperti
+}
+
 } // namespace Pokedex

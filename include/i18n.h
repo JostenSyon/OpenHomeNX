@@ -136,6 +136,12 @@ namespace StrKey {
     constexpr const char* CreateNewBank        = "create_new_bank";
     constexpr const char* PartyPokemon         = "party_pokemon";
     constexpr const char* CantReleaseParty     = "cant_release_party";
+    constexpr const char* CantEmptyParty       = "cant_empty_party";
+    constexpr const char* EmptyPartyTitle      = "empty_party_title";
+    constexpr const char* EmptyPartyCaterpie   = "empty_party_caterpie";
+    constexpr const char* EmptyPartyMagikarp   = "empty_party_magikarp";
+    constexpr const char* QuitHoldTitle        = "quit_hold_title";
+    constexpr const char* QuitHoldBody         = "quit_hold_body";
     constexpr const char* ReleasePokemon       = "release_pokemon";
     constexpr const char* ReleaseConfirm       = "release_confirm";
     constexpr const char* Exported             = "exported";
@@ -213,6 +219,49 @@ namespace StrKey {
     constexpr const char* FolderBrowserAdded   = "folderbrowser_added";
     constexpr const char* FolderBrowserExists  = "folderbrowser_exists";
     constexpr const char* ImportPathInputHdr   = "import_path_input_hdr";
+
+    // settings page (game selector gear)
+    constexpr const char* SetTitle        = "set_title";
+    constexpr const char* SetAppearance   = "set_appearance";
+    constexpr const char* SetEngine       = "set_engine";
+    constexpr const char* SetData         = "set_data";
+    constexpr const char* SetUpdate       = "set_update";
+    constexpr const char* SetDebug        = "set_debug";
+    constexpr const char* SetInfo         = "set_info";
+    constexpr const char* SetUser         = "set_user";
+    constexpr const char* SetDefaultUser  = "set_defaultuser";
+    constexpr const char* SetUserAsk      = "set_user_ask";
+    constexpr const char* SetTheme        = "set_theme";
+    constexpr const char* SetLanguage     = "set_language";
+    constexpr const char* SetZoom         = "set_zoom";
+    constexpr const char* SetGalleryLayout = "set_gallery_layout";
+    constexpr const char* LayoutClassic    = "layout_classic";
+    constexpr const char* LayoutGallery    = "layout_gallery";
+    constexpr const char* SetCore         = "set_core";
+    constexpr const char* SetCoreOh       = "set_core_oh";
+    constexpr const char* SetCorePk       = "set_core_pk";
+    constexpr const char* SetTargetGen    = "set_targetgen";
+    constexpr const char* SetSavePaths    = "set_savepaths";
+    constexpr const char* SetScan         = "set_scan";
+    constexpr const char* SetScanDone     = "set_scan_done";
+    constexpr const char* SetDbgMenu      = "set_dbgmenu";
+    constexpr const char* SetOpen         = "set_open";
+    constexpr const char* SetBackupMax    = "set_backupmax";
+    constexpr const char* SetBackupClean  = "set_backupclean";
+    constexpr const char* SetCleanConfirm = "set_clean_confirm";
+    constexpr const char* SetCleanDone    = "set_clean_done";
+    constexpr const char* SetCheckUpdate  = "set_checkupdate";
+    constexpr const char* SetSource       = "set_source";
+    constexpr const char* SetEditUrl      = "set_editurl";
+    constexpr const char* SetEditUrlHdr   = "set_editurl_hdr";
+    constexpr const char* SetDebugToggle  = "set_debugtoggle";
+    constexpr const char* SetOn           = "set_on";
+    constexpr const char* SetOff          = "set_off";
+    constexpr const char* SetVersion      = "set_version";
+    constexpr const char* SetCredits      = "set_credits";
+    constexpr const char* BagSoon         = "bag_soon";
+    constexpr const char* SetFooter       = "set_footer";
+    constexpr const char* SetFooterSlider = "set_footer_slider";
     constexpr const char* ImportFoundTitle     = "import_found_title";
     constexpr const char* ImportAutoCheckUsb   = "import_autocheck_usb";
 
@@ -292,6 +341,7 @@ namespace StrKey {
     constexpr const char* SupportedBDSPLA      = "supported_bdsp_la";
     constexpr const char* SupportedSVZA        = "supported_sv_za";
     constexpr const char* SupportedFRLG        = "supported_frlg";
+    constexpr const char* SupportedGB         = "supported_gb";
     constexpr const char* AboutBasedOn         = "about_based_on";
     constexpr const char* AboutBasedPKHouse    = "about_based_pkhouse";
     constexpr const char* AboutBasedOpenHome   = "about_based_openhome";
@@ -362,6 +412,8 @@ namespace StrKey {
     constexpr const char* SendSaveUploading    = "sendsave_uploading";
     constexpr const char* SendSaveSent         = "sendsave_sent";
     constexpr const char* SendSaveFailed       = "sendsave_failed";
+    constexpr const char* SaveFailedTitle      = "save_failed_title";
+    constexpr const char* SaveFailedBody       = "save_failed_body";
     constexpr const char* SendSaveNoGame       = "sendsave_no_game";
     constexpr const char* SendSaveOnlyImported = "sendsave_only_imported";
 
@@ -394,10 +446,8 @@ namespace StrKey {
     constexpr const char* CreateBankTitle      = "create_bank_title";
     constexpr const char* CreateBankBody       = "create_bank_body";
 
-    // Applet mode + gen selector info (ui.cpp)
+    // Applet mode info (ui.cpp)
     constexpr const char* AppletTitle          = "applet_title";
     constexpr const char* AppletBody           = "applet_body";
-    constexpr const char* XGenTitle            = "xgen_title";
-    constexpr const char* XGenBody             = "xgen_body";
 
 }

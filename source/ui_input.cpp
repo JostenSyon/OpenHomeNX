@@ -12,12 +12,46 @@
 #include "personal_bdsp.h"
 #include "personal_la.h"
 #include "personal_gg.h"
+#include "update_net.h"
 #include <algorithm>
 #include <cmath>
 #include <cctype>
 #include <cstdio>
+#include <fstream>
 #include <dirent.h>
 #include <sys/stat.h>
+
+namespace {
+// update.cfg accanto all'NRO (o in sdmc:/switch/OpenHomeNX/). Duplicato a
+// posta: readUpdateCfg in ui_selectors.cpp è in un anonymous namespace
+// (stesso precedente di readUpdateAutoCfg in autoupdate.cpp).
+bool readMainMenuUpdateCfg(const std::string& basePath, std::string& urlOut,
+                           std::string& tokenOut) {
+    const std::string paths[] = { basePath + "update.cfg",
+                                  "sdmc:/switch/OpenHomeNX/update.cfg" };
+    for (const auto& p : paths) {
+        std::ifstream f(p);
+        if (!f.good()) continue;
+        std::string line;
+        while (std::getline(f, line)) {
+            if (!line.empty() && line.back() == '\r') line.pop_back();
+            if (line.empty() || line[0] == '#') continue;
+            auto eq = line.find('=');
+            if (eq == std::string::npos) continue;
+            std::string k = line.substr(0, eq), v = line.substr(eq + 1);
+            auto trim = [](std::string& s) {
+                while (!s.empty() && (s.front() == ' ' || s.front() == '\t')) s.erase(s.begin());
+                while (!s.empty() && (s.back()  == ' ' || s.back()  == '\t')) s.pop_back();
+            };
+            trim(k); trim(v);
+            if (k == "url") urlOut = v;
+            else if (k == "token") tokenOut = v;
+        }
+        if (!urlOut.empty()) return true;
+    }
+    return false;
+}
+} // namespace
 
 // --- Joystick ---
 
@@ -33,6 +67,7 @@ void UI::updateStick(int16_t axisX, int16_t axisY) {
         stickDirY_ = newDirY;
         stickMoved_ = false;
         stickMoveTime_ = 0;
+        stickHoldStart_ = SDL_GetTicks();
     }
 }
 
@@ -101,6 +136,7 @@ void UI::handleInput(bool& running) {
         if (showSearchResults_)      { handleSearchResultsInput(event); continue; }
         if (showWondercardList_)     { handleWondercardListInput(event); continue; }
         if (showPkImportList_)       { handlePkImportListInput(event); continue; }
+        if (showGenMonList_)         { handleGenMonListInput(event); continue; }
         if (showLearnset_)           { handleLearnsetInput(event); continue; }
         if (showBoxView_)            { handleBoxViewInput(event); continue; }
         if (showDetail_)             { handleDetailInput(event); continue; }
@@ -115,11 +151,16 @@ void UI::handleInput(bool& running) {
 void UI::handleMenuInput(const SDL_Event& event, bool& running) {
     bool hasWC = gameInfo(selectedGame_).hasWondercards;
     bool hasExport = !selectedSlots_.empty();
+    // "Send current save": solo a save caricato e mai in dual-bank (lì il
+    // pannello sinistro è una banca, non il save del gioco aperto).
+    bool hasSend = !isDualBankMode() && save_.isLoaded();
+    // "Generate test mons": solo debug, mai dual-bank.
+    bool hasGen = DebugLog::enabled() && !isDualBankMode();
     int menuCount = menuVisibleCount();
     if (menuSelection_ >= menuCount) menuSelection_ = menuCount - 1;
     if (menuSelection_ < 0) menuSelection_ = 0;
     auto menuConfirm = [&]() {
-        // 0=Theme, 1=Language, 2=Crypto, 3=Gen (M6a), 4=Search
+        // 0=Theme, 1=Language, 2=Crypto, 3=Search
         if (menuSelection_ == 0) {
             showThemeSelector_ = true;
             themeSelCursor_ = themeIndex_;
@@ -143,12 +184,6 @@ void UI::handleMenuInput(const SDL_Event& event, bool& running) {
             return;
         }
         if (menuSelection_ == 3) {
-            // Gen selector (M6a) — apri popup
-            for (int i = 0; i < 7; i++) if (GEN_LIST[i] == targetGen_) { genSelCursor_ = i; break; }
-            showGenSelector_ = true;
-            return;
-        }
-        if (menuSelection_ == 4) {
             showMenu_ = false;
             showSearchFilter_ = true;
             searchFilterCursor_ = 0;
@@ -156,8 +191,8 @@ void UI::handleMenuInput(const SDL_Event& event, bool& running) {
             clearSearchHighlight();
             return;
         }
-        // Wondercard (index 5) for SV/SwSh games (shifted +2 per Crypto+Gen)
-        if (hasWC && menuSelection_ == 5) {
+        // Wondercard (index 4) for SV/SwSh games (shifted +1 per Crypto)
+        if (hasWC && menuSelection_ == 4) {
             showMenu_ = false;
             wcList_ = scanWondercards(basePath_, selectedGame_);
             wcListCursor_ = 0;
@@ -166,7 +201,7 @@ void UI::handleMenuInput(const SDL_Event& event, bool& running) {
             return;
         }
         // Export Selected (after Wondercard)
-        int exportIdx = hasWC ? 6 : 5;
+        int exportIdx = hasWC ? 5 : 4;
         if (hasExport && menuSelection_ == exportIdx) {
             showMenu_ = false;
             int exported = 0;
@@ -195,7 +230,37 @@ void UI::handleMenuInput(const SDL_Event& event, bool& running) {
             showPkImportList_ = true;
             return;
         }
-        int sel = menuSelection_ - (hasWC ? 6 : 5) - (hasExport ? 1 : 0) - 1;
+        // Send current save (indice importIdx+1, +1 se riga Generate debug)
+        int genIdx = importIdx + 1;
+        if (hasGen && menuSelection_ == genIdx) {
+            showMenu_ = false;
+            genMonList_ = genMonTable();
+            genMonCursor_ = 0;
+            genMonScroll_ = 0;
+            showGenMonList_ = true;
+            return;
+        }
+        int sendIdx = genIdx + (hasGen ? 1 : 0);
+        // Send current save: usa savePath_ già montato dal gioco aperto —
+        // NIENTE mount/unmount, NIENTE commit del save.
+        if (hasSend && menuSelection_ == sendIdx) {
+            showMenu_ = false;
+            std::string url, token;
+            std::string err;
+            if (!readMainMenuUpdateCfg(basePath_, url, token) || url.empty()) {
+                showMessageAndWait(i18n::get(StrKey::SendSaveTitle), i18n::get(StrKey::SendSaveNoUrl));
+            } else if (!updateNetEnsureReady()) {
+                showMessageAndWait(i18n::get(StrKey::SendSaveTitle), i18n::get(StrKey::SendSaveNetOff));
+            } else {
+                showWorking(i18n::fmt(StrKey::SendSaveUploading, gameInfo(selectedGame_).gameTag));
+                if (updateNetUploadSave(url, token, savePath_, gameInfo(selectedGame_).gameTag, err))
+                    showMessageAndWait(i18n::get(StrKey::SendSaveTitle), i18n::get(StrKey::SendSaveSent));
+                else
+                    showMessageAndWait(i18n::get(StrKey::SendSaveTitle), i18n::fmt(StrKey::SendSaveFailed, err));
+            }
+            return;
+        }
+        int sel = menuSelection_ - (hasWC ? 5 : 4) - (hasExport ? 1 : 0) - 1 - (hasGen ? 1 : 0) - (hasSend ? 1 : 0);
         if (isDualBankMode()) {
             // sel: 0=Switch Left Bank, 1=Switch Right Bank, 2=Change Game,
             // 3=Save Banks, 4=Quit
@@ -248,13 +313,15 @@ void UI::handleMenuInput(const SDL_Event& event, bool& running) {
                 saveBankFiles();
                 showMenu_ = false;
             } else {
+                // Quit dual-bank: la mano muore al quit, chiedi prima.
+                if (!confirmQuitWithHold()) { showMenu_ = false; return; }
                 running = false;
             }
         } else {
             // sel: 0=Switch Bank, 1=Change Game, 2=Save & Quit, 3=Quit Without Saving
             if (sel == 0) {
                 if (!saveBankFiles()) { showMenu_ = false; return; }
-                persistGameSaveIfDirty();
+                if (!persistGameSaveIfDirty()) { showMenu_ = false; return; }
                 bankManager_.refresh();
                 // Cross-gen: the right-panel bank selector lists ALL banks of
                 // every game, sectioned by game (same as "All Banks"). A SwSh
@@ -274,6 +341,9 @@ void UI::handleMenuInput(const SDL_Event& event, bool& running) {
                 saveNow_ = true;
                 running = false;
             } else {
+                // Quit Without Saving: niente scritture, ma la mano muore
+                // comunque al quit — chiedi prima.
+                if (!confirmQuitWithHold()) { showMenu_ = false; return; }
                 running = false;
             }
         }
@@ -438,7 +508,21 @@ void UI::handleNormalInput(const SDL_Event& event) {
             case SDL_CONTROLLER_BUTTON_B: // Switch A (right) = SDL B -> pick / take
                 if (!yHeld_) {
                     if (partyCursor_ >= 0) {
-                        if (holding_) {
+                        // La cella box puntata (solo LGPE, -1 altrove): pick e
+                        // place la cambiano su disco ma la vista box la cacha
+                        // (slotDisplayCache_) — senza invalidate resta
+                        // appiccicata fino al prossimo place (celle gialle
+                        // fantasma). Si invalida qui sotto, pre e post.
+                        int preFlat = save_.lgpeFlatOfParty(partyCursor_);
+                        if (!canEditParty()) {
+                            // Sola lettura (no debug, o GB/GBC): dettaglio come Y,
+                            // mano intatta.
+                            Pokemon pm = save_.getPartySlot(partyCursor_);
+                            if (!pm.isEmpty()) {
+                                detailParty_ = partyCursor_;
+                                showDetail_ = true;
+                            }
+                        } else if (holding_) {
                             // Place held mon into party slot (hand stays on strip)
                             Pokemon target = save_.getPartySlot(partyCursor_);
                             if (target.isEmpty()) {
@@ -477,9 +561,14 @@ void UI::handleNormalInput(const SDL_Event& event) {
                             }
                             refreshHighlightSet();
                         } else {
-                            // Pick from party: hand stays on strip, mon disappears from strip
+                            // Pick from party: hand stays on strip, mon disappears from strip.
+                            // Debug: anche l'ultimo mon si puo prendere (party svuotabile);
+                            // l'exit-hook (ensurePartyOnExit) offre il Caterpie prima del save.
                             Pokemon pm = save_.getPartySlot(partyCursor_);
                             if (!pm.isEmpty()) {
+                                DebugLog::line("party pick: slot=%d spc=%u gt=%d ec=%08x iv32=%08x egg=%d",
+                                    partyCursor_, pm.species(), (int)pm.gameType_,
+                                    pm.encryptionConstant(), pm.iv32(), pm.isEgg() ? 1 : 0);
                                 heldPkm_ = pm;
                                 holding_ = true;
                                 heldFromParty_ = true;
@@ -490,14 +579,22 @@ void UI::handleNormalInput(const SDL_Event& event) {
                                     lgpeHeldPartyIdx_ = partyCursor_;
                                     heldFromLGPEParty_ = true;
                                 }
-                                // LGPE: il mon vive nella cella box puntata — va svuotata
-                                // ANCHE lei, altrimenti resta un fantasma nel box che al
-                                // posaggio successivo diventa un clone (party ripetuto).
-                                int partyFlat = save_.lgpeFlatOfParty(partyCursor_);
+                                // LGPE: clearPartySlot svuota pointer E cella insieme
+                                // (LGPE esente dal guard: sempre subito).
                                 save_.clearPartySlot(partyCursor_);
-                                if (partyFlat >= 0)
-                                    save_.lgpeZeroFlatSlot(partyFlat);
                                 refreshHighlightSet();
+                            }
+                        }
+                        // Invalida la vista delle celle toccate (pre e post):
+                        // la box view cacha i display e resterebbe appiccicata.
+                        {
+                            int spb = save_.slotsPerBox();
+                            if (spb > 0) {
+                                if (preFlat >= 0)
+                                    invalidateSlotDisplay(Panel::Game, preFlat / spb);
+                                int postFlat = save_.lgpeFlatOfParty(partyCursor_);
+                                if (postFlat >= 0 && postFlat != preFlat)
+                                    invalidateSlotDisplay(Panel::Game, postFlat / spb);
                             }
                         }
                     } else {
@@ -512,10 +609,14 @@ void UI::handleNormalInput(const SDL_Event& event) {
                         if (holding_ && heldFromParty_) {
                             // Undo without loss: box-origin swap restores the box source
                             // too, pure-party swap restores both party slots.
+                            // VERBATIM: si rimette src.pkm (l'originale, con blob
+                            // OHPKM se da banca), MAI inD (la versione convertita
+                            // per la strip non rientra nelle celle blob e il
+                            // guard xbank la rifiuterebbe perdendo il mon —
+                            // Smeraldo: Pikachu banca sparito al cancel).
                             if (!swapHistory_.empty()) {
                                 auto src = swapHistory_.back();
-                                Pokemon inD = save_.getPartySlot(heldPartyIdx_);
-                                setPokemonAt(src.box, src.slot, src.panel, inD);
+                                setPokemonAt(src.box, src.slot, src.panel, src.pkm);
                                 save_.setPartySlot(heldPartyIdx_, heldPkm_);
                             } else if (heldPartyOrig_ >= 0 && heldPartyOrig_ != heldPartyIdx_) {
                                 Pokemon curD = save_.getPartySlot(heldPartyIdx_);
@@ -523,6 +624,20 @@ void UI::handleNormalInput(const SDL_Event& event) {
                                 save_.setPartySlot(heldPartyOrig_, curD);
                             } else {
                                 save_.setPartySlot(heldPartyIdx_, heldPkm_);
+                            }
+                            // Come sopra: le celle LGPE toccate dal restore
+                            // vanno invalidate nella vista box.
+                            {
+                                int spb = save_.slotsPerBox();
+                                if (spb > 0) {
+                                    int f1 = save_.lgpeFlatOfParty(heldPartyIdx_);
+                                    if (f1 >= 0) invalidateSlotDisplay(Panel::Game, f1 / spb);
+                                    if (heldPartyOrig_ >= 0 && heldPartyOrig_ != heldPartyIdx_) {
+                                        int f2 = save_.lgpeFlatOfParty(heldPartyOrig_);
+                                        if (f2 >= 0 && f2 != f1)
+                                            invalidateSlotDisplay(Panel::Game, f2 / spb);
+                                    }
+                                }
                             }
                             holding_=false; heldPkm_=Pokemon{}; heldFromParty_=false; heldPartyIdx_=-1; heldPartyOrig_=-1;
                             heldFromLGPEParty_=false; lgpeHeldPartyIdx_=-1;
@@ -667,6 +782,18 @@ void UI::handleNormalInput(const SDL_Event& event) {
 
 }
 
+bool UI::canEditParty() const {
+    if (!save_.isLoaded())
+        return false;
+    // Gen5: save intero read-only (footer CRC a blocchi) — editarne il party
+    // in memoria per poi fallire il save sarebbe perdita mascherata da edit.
+    if (isGen5File(save_.gameType()))
+        return false;
+    // Tutte le altre famiglie (incl. GB/GBC con write-back): solo con debug
+    // attivo (toggle dedicato in futuro).
+    return DebugLog::enabled();
+}
+
 void UI::handleStickRepeat() {
     if (stickDirX_ == 0 && stickDirY_ == 0) return;
 
@@ -764,6 +891,18 @@ void UI::handleStickRepeat() {
                 pkImportScroll_ = pkImportCursor_;
             else if (pkImportCursor_ >= pkImportScroll_ + visibleRows)
                 pkImportScroll_ = pkImportCursor_ - visibleRows + 1;
+        }
+    } else if (showGenMonList_) {
+        if (stickDirY_ != 0 && !genMonList_.empty()) {
+            int count = static_cast<int>(genMonList_.size());
+            genMonCursor_ += stickDirY_ > 0 ? 1 : -1;
+            if (genMonCursor_ < 0) genMonCursor_ = count - 1;
+            if (genMonCursor_ >= count) genMonCursor_ = 0;
+            constexpr int VISIBLE = 12;
+            if (genMonCursor_ < genMonScroll_)
+                genMonScroll_ = genMonCursor_;
+            else if (genMonCursor_ >= genMonScroll_ + VISIBLE)
+                genMonScroll_ = genMonCursor_ - VISIBLE + 1;
         }
     } else if (showLearnset_) {
         if (stickDirY_ != 0 && !learnset_.empty()) {
@@ -864,10 +1003,11 @@ void UI::moveCursor(int dx, int dy) {
 
     if (yHeld_) {
         // During drag: clamp to same panel, no wrapping
+        int maxRow = gridRowsFor(cursor_.panel) - 1;
         if (cursor_.col < 0) cursor_.col = 0;
         if (cursor_.col > maxCol) cursor_.col = maxCol;
         if (cursor_.row < 0) cursor_.row = 0;
-        if (cursor_.row > 4) cursor_.row = 4;
+        if (cursor_.row > maxRow) cursor_.row = maxRow;
 
         if (cursor_.col != dragAnchorCol_ || cursor_.row != dragAnchorRow_)
             yDragActive_ = true;
@@ -876,8 +1016,9 @@ void UI::moveCursor(int dx, int dy) {
     }
 
     // Wrap row
-    if (cursor_.row < 0) cursor_.row = 4;
-    if (cursor_.row > 4) cursor_.row = 0;
+    int wrapMaxRow = gridRowsFor(cursor_.panel) - 1;
+    if (cursor_.row < 0) cursor_.row = wrapMaxRow;
+    if (cursor_.row > wrapMaxRow) cursor_.row = 0;
 
     // Horizontal: crossing panel boundary or wrapping within single panel
     if (cursor_.col < 0) {
@@ -914,6 +1055,9 @@ void UI::moveCursor(int dx, int dy) {
     int destMaxCol = gridColsFor(cursor_.panel) - 1;
     if (cursor_.col > destMaxCol) cursor_.col = destMaxCol;
     if (cursor_.col < 0)          cursor_.col = 0;
+    int destMaxRow = gridRowsFor(cursor_.panel) - 1;
+    if (cursor_.row > destMaxRow) cursor_.row = destMaxRow;
+    if (cursor_.row < 0)          cursor_.row = 0;
 
     if (cursor_.panel != prevPanel)
         clearSelection();
@@ -1058,7 +1202,7 @@ bool UI::destIsCrossGenBank(Panel panel) const {
 // round-trip is needed and volatile fields (met date, PP, friendship) can never
 // trigger a false positive. Tags with no local GameType (Pk7/Alola) return false
 // (unverifiable -> no fallback, explicit fail). EXP-without-level and ribbon-only
-// edits are NOT detected (known limit, documented in GenPorting.md).
+// edits are NOT detected (known limit, see PKHeX SAV7 reference).
 static bool monEditedSinceBackup(const Pokemon& cur, const std::vector<uint8_t>& backup) {
     if (backup.size() <= 2)
         return false;
@@ -1189,10 +1333,34 @@ bool UI::prepareForPlacement(Pokemon& pkm, Panel panel, std::string& whyNot) con
     if (!pkm.ohpkmBlob_.empty()) {
         const GameType d = destGameFor(panel);
         if (sameStoredFormat(GameType::S, d) && !pkm.data.empty()) {
-            // dest is PK9-shaped: the preview bytes are already correct.
-            pkm.ohpkmBlob_.clear();
-            pkm.gameType_ = d;
-            return true;
+            // Fast path ONLY for faithful previews: the bank shows a stub
+            // preview (EC=1, species only) when no dex accepts the species,
+            // and placing it would land unparseable bytes while dropping the
+            // blob (proven: Violet party mon stuck with gen9 read error).
+            // Parse-test the preview; on failure fall through to the real
+            // transfer below, which refuses dex-cut explicitly with the blob
+            // (and the mon) intact in hand.
+            const int dg0 = ohTargetGenFor(d);
+            bool faithful = false;
+            if (dg0 != 0) {
+                int sz0 = ohRecordBytesFor(dg0);
+                if (sz0 > 0 && sz0 <= (int)pkm.data.size()) {
+                    std::vector<uint8_t> pre(pkm.data.begin(), pkm.data.begin() + sz0);
+                    PkmHandle* th = OpenHomeNX::loadPkmFromGen(pre, static_cast<uint32_t>(dg0));
+                    if (th) {
+                        OpenHomeNX::freePkm(th);
+                        faithful = true;
+                    } else {
+                        DebugLog::line("xfer: stub preview for %s, forcing real transfer",
+                                       gameDisplayNameOf(d));
+                    }
+                }
+            }
+            if (faithful) {
+                pkm.ohpkmBlob_.clear();
+                pkm.gameType_ = d;
+                return true;
+            }
         }
         if (!useOpenHome()) {
             whyNot = i18n::get(StrKey::TransferNeedOh);
@@ -1205,8 +1373,15 @@ bool UI::prepareForPlacement(Pokemon& pkm, Panel panel, std::string& whyNot) con
         }
         PkmHandle* h = OpenHomeNX::loadOhpkm(pkm.ohpkmBlob_);
         if (!h) { whyNot = i18n::get(StrKey::TransferBadOhpkm); return false; }
+        {
+            uint16_t mm[4] = { 0, 0, 0, 0 };
+            if (OpenHomeNX::ohpkmMoves(h, mm))
+                DebugLog::line("xfer: in moves=%u,%u,%u,%u -> g%d",
+                               mm[0], mm[1], mm[2], mm[3], dg);
+        }
         PkmHandle* out = PokemonFFI::transfer(h, static_cast<uint32_t>(dg));
         PokemonFFI::free(h);
+        DebugLog::line("xfer: blob -> g%d %s", dg, out ? "ok" : "NULL");
         if (!out) {
             whyNot = i18n::fmt(StrKey::TransferNotInDex, pkm.displayName(), gameDisplayNameOf(d));
             return false;
@@ -1223,6 +1398,7 @@ bool UI::prepareForPlacement(Pokemon& pkm, Panel panel, std::string& whyNot) con
             gen1Nick = OpenHomeNX::ohpkmNickname(out);
         }
         PokemonFFI::free(out);
+        DebugLog::line("xfer: g%d bytes=%zu data=%zu", dg, bytes.size(), pkm.data.size());
         if (bytes.empty() || bytes.size() > pkm.data.size()) {
             whyNot = i18n::get(StrKey::TransferNoBytes);
             return false;
@@ -1273,7 +1449,7 @@ bool UI::prepareForPlacement(Pokemon& pkm, Panel panel, std::string& whyNot) con
     DebugLog::line("xfer: %s -> %s (gen? -> gen%d)",
                    gameDisplayNameOf(pkm.gameType_), gameDisplayNameOf(dest), dstGen);
 
-    // Primary path = upstream method (GenPorting.md): always rebuild the
+    // Primary path = upstream method: always rebuild the
     // destination record via the Rust engine below. The carried OriginalBackup
     // is only a fallback (restoreVerbatimFallback) if that fails — never
     // preferred, so moves/levels gained meanwhile survive by construction.
@@ -1296,7 +1472,7 @@ bool UI::prepareForPlacement(Pokemon& pkm, Panel panel, std::string& whyNot) con
         return false;
     }
 
-    // Lossless return (GenPorting.md rev.3): when coming BACK to the format of
+    // Lossless return: when coming BACK to the format of
     // a carried OriginalBackup, test whether the user changed anything since
     // conversion by re-running that same conversion now (deterministic, see
     // transfer_is_deterministic_per_target): backup -> current format.
@@ -1407,6 +1583,12 @@ void UI::actionSelect() {
 
     int box = cursor_.box;
     int slot = cursor_.slot(gridCols());
+    // Mai depositare fuori box: con griglie piu strette del pannello (GB/GBC
+    // 20 slot) uno slot oltre il limite cadrebbe nel box dopo. Tieni in mano.
+    if (slot < 0 || slot >= maxSlotsFor(cursor_.panel)) {
+        DebugLog::line("actionSelect: REFUSED box=%d slot=%d oltre griglia, mano intatta", box, slot);
+        return;
+    }
 
     // Multi-select pick up
     if (!holding_ && !selectedSlots_.empty()) {
@@ -1471,12 +1653,34 @@ void UI::actionSelect() {
         // converted we place none, so a partial multi-drop is impossible.
         // Covers both the position-preserving and first-available branches.
         {
-            // Gen1-dest move-drop warning (F2): count non-native moves BEFORE
-            // anything converts (preview load, no mutation). A proceeds,
-            // B keeps the whole batch in hand, untouched. One dialog per drop.
+            // Move-drop warning (F2, generalizzato Gen 1-6): conta le mosse non
+            // native PRIMA di convertire (preview load, no mutation). A procede,
+            // B tiene tutto in mano, intatto. Un dialogo per drop. Il body e
+            // parametrizzato sulla gen ("Gen {2}") e drop+refill vale per 1-6.
+            // Dex-cut PRIMA del warning mosse (tutto il batch resta in mano).
+            // Primo loop: se un mon non e nel dex target, messaggio subito e
+            // niente dialoghi mosse. Secondo loop: warning drop come prima.
             for (int i = 0; i < (int)heldMulti_.size(); i++) {
                 const int dg0 = ohTargetGenFor(destGameFor(cursor_.panel));
-                if (!useOpenHome() || dg0 != 1) break;
+                if (!useOpenHome() || dg0 < 1 || dg0 > 6) break;
+                const int sg0 = ohSourceGenFor(heldMulti_[i].gameType_);
+                const int sz0 = ohRecordBytesFor(sg0);
+                if (sg0 == 0 || sz0 <= 0 || sz0 > (int)heldMulti_[i].data.size()) continue;
+                std::vector<uint8_t> src0(heldMulti_[i].data.begin(), heldMulti_[i].data.begin() + sz0);
+                PkmHandle* ih = OpenHomeNX::loadPkmFromGen(src0, static_cast<uint32_t>(sg0));
+                if (!ih) continue;
+                uint32_t legal = OpenHomeNX::speciesLegalInGen(ih, static_cast<uint32_t>(dg0));
+                OpenHomeNX::freePkm(ih);
+                if (legal == 0) {
+                    showMessageAndWait(i18n::get(StrKey::TransferTitle),
+                        i18n::fmt(StrKey::TransferNotInDex, heldMulti_[i].displayName(),
+                                  gameDisplayNameOf(destGameFor(cursor_.panel))));
+                    return; // tutto resta in mano, intatto
+                }
+            }
+            for (int i = 0; i < (int)heldMulti_.size(); i++) {
+                const int dg0 = ohTargetGenFor(destGameFor(cursor_.panel));
+                if (!useOpenHome() || dg0 < 1 || dg0 > 6) break;
                 const int sg0 = ohSourceGenFor(heldMulti_[i].gameType_);
                 const int sz0 = ohRecordBytesFor(sg0);
                 if (sg0 == 0 || sz0 <= 0 || sz0 > (int)heldMulti_[i].data.size()) continue;
@@ -1487,7 +1691,7 @@ void UI::actionSelect() {
                 OpenHomeNX::freePkm(ih);
                 if (dropped != UINT32_MAX && dropped > 0) {
                     if (!showConfirmDialog(i18n::get(StrKey::Gen1DropsTitle),
-                            i18n::fmt(StrKey::Gen1DropsBody, heldMulti_[i].displayName(), std::to_string(dropped), "1")))
+                            i18n::fmt(StrKey::Gen1DropsBody, heldMulti_[i].displayName(), std::to_string(dropped), std::to_string(dg0))))
                         return; // B: cancel, everything stays in hand, untouched
                     break; // A once: convert the whole batch below
                 }
@@ -1561,14 +1765,15 @@ void UI::actionSelect() {
         lgpeHeldPartyIdx_ = (cursor_.panel == Panel::Game)
             ? save_.lgpePartyIndexOf(box, slot) : -1;
         heldFromLGPEParty_ = (lgpeHeldPartyIdx_ >= 0);
+        // Debug: presa libera anche dell'ultimo membro (exit-hook copre).
         lgpePartyBackup_ = save_.lgpePartyIndices();
         swapHistory_.clear();
         swapHistory_.push_back({pkm, cursor_.panel, box, slot});
 
         clearPokemonAt(box, slot, cursor_.panel);
-        // LGPE: se la cella era un membro del party, il pointer ora penzola su
-        // dati azzerati (strip stale + membro perso al reload). Invalidalo subito;
-        // il posaggio nel box lo ripunterà alla nuova cella.
+        // LGPE: clearPartySlot invalida pointer E azzera la cella insieme.
+        // Niente restore: LGPE e esente dal guard anti-svuotamento, quindi
+        // qui si libera sempre tutto (una sola copia in mano).
         if (lgpeHeldPartyIdx_ >= 0)
             save_.clearPartySlot(lgpeHeldPartyIdx_);
     } else {
@@ -1585,21 +1790,29 @@ void UI::actionSelect() {
         // format before it is written. Covers both the place-on-empty and the
         // swap branch below, since both place heldPkm_ into this same panel.
         {
-            // Same Gen1-dest move-drop check as the multi drop above, on the
-            // single held mon. B cancels with the mon untouched in hand.
+            // Dex-cut PRIMA del warning mosse (Koraidon 2026-09-09: prima
+            // diceva "mosse non entrano", solo dopo "non c'e nel pokedex").
+            // Stesso messaggio che darebbe prepareForPlacement, ma subito.
             const int dg0 = ohTargetGenFor(destGameFor(cursor_.panel));
-            if (useOpenHome() && dg0 == 1) {
+            if (useOpenHome() && dg0 >= 1 && dg0 <= 6) {
                 const int sg0 = ohSourceGenFor(heldPkm_.gameType_);
                 const int sz0 = ohRecordBytesFor(sg0);
                 if (sg0 != 0 && sz0 > 0 && sz0 <= (int)heldPkm_.data.size()) {
                     std::vector<uint8_t> src0(heldPkm_.data.begin(), heldPkm_.data.begin() + sz0);
                     PkmHandle* ih = OpenHomeNX::loadPkmFromGen(src0, static_cast<uint32_t>(sg0));
                     if (ih) {
+                        uint32_t legal = OpenHomeNX::speciesLegalInGen(ih, static_cast<uint32_t>(dg0));
                         uint32_t dropped = OpenHomeNX::countMovesNotInGen(ih, static_cast<uint32_t>(dg0));
                         OpenHomeNX::freePkm(ih);
+                        if (legal == 0) {
+                            showMessageAndWait(i18n::get(StrKey::TransferTitle),
+                                i18n::fmt(StrKey::TransferNotInDex, heldPkm_.displayName(),
+                                          gameDisplayNameOf(destGameFor(cursor_.panel))));
+                            return; // mon untouched in hand
+                        }
                         if (dropped != UINT32_MAX && dropped > 0 &&
                             !showConfirmDialog(i18n::get(StrKey::Gen1DropsTitle),
-                                i18n::fmt(StrKey::Gen1DropsBody, heldPkm_.displayName(), std::to_string(dropped), "1"))) {
+                                i18n::fmt(StrKey::Gen1DropsBody, heldPkm_.displayName(), std::to_string(dropped), std::to_string(dg0)))) {
                             return; // B: cancel, mon untouched in hand
                         }
                     }
@@ -1615,12 +1828,32 @@ void UI::actionSelect() {
         if (target.isEmpty()) {
             // Place on empty — commit, clear history
             setPokemonAt(box, slot, cursor_.panel, heldPkm_);
-            // Update party pointer to follow the Pokemon
-            if (lgpeHeldPartyIdx_ >= 0 && cursor_.panel == Panel::Game) {
+            // Update party pointer to follow the Pokemon — but ONLY for
+            // box-origin holds. A strip-origin hold (heldPartyOrig_ >= 0, set
+            // solely by strip pick) leaving to a box LEAVES the party: the
+            // pointer was already emptied at pick, re-pointing would silently
+            // re-add it (proven: LGPE party->box kept the mini).
+            if (lgpeHeldPartyIdx_ >= 0 && heldPartyOrig_ < 0 && cursor_.panel == Panel::Game) {
                 uint16_t newFlat = static_cast<uint16_t>(
                     box * save_.slotsPerBox() + slot);
                 save_.setLGPEPartyPointer(lgpeHeldPartyIdx_, newFlat);
                 save_.refreshPartyEntryFromPointer(lgpeHeldPartyIdx_);
+            }
+            // Strip-origin sync (anti-dupe LGPE): il mon ha lasciato la strip
+            // per una NUOVA cella — rilascia subito l'origine (pointer EMPTY +
+            // cella zeroata), altrimenti disco ha 2 copie (pointer intatto +
+            // nuova cella) e al reload resuscita all'infinito. Se torna sulla
+            // propria cella gialla, ricongiungi la strip (refresh).
+            if (isLGPE(selectedGame_) && heldPartyOrig_ >= 0 && cursor_.panel == Panel::Game) {
+                int of = save_.lgpeFlatOfParty(heldPartyOrig_);
+                int nf = box * save_.slotsPerBox() + slot;
+                if (of >= 0 && of != nf) {
+                    save_.setLGPEPartyPointer(heldPartyOrig_, SaveFile::LGPE_SLOT_EMPTY);
+                    save_.lgpeZeroFlatSlot(of);
+                    DebugLog::line("lgpe: origine strip %d rilasciata (cella %d)", heldPartyOrig_, of);
+                } else if (of == nf && of >= 0) {
+                    save_.refreshPartyEntryFromPointer(heldPartyOrig_);
+                }
             }
             holding_ = false;
             heldPkm_ = Pokemon{};
@@ -1636,33 +1869,118 @@ void UI::actionSelect() {
             swapHistory_.push_back({target, cursor_.panel, box, slot});
             setPokemonAt(box, slot, cursor_.panel, heldPkm_);
 
-            // Update party pointer for the placed Pokemon
-            if (lgpeHeldPartyIdx_ >= 0 && cursor_.panel == Panel::Game) {
+            // Update party pointer for the placed Pokemon (box-origin holds
+            // only — strip-origin holds leave the party, see above).
+            if (lgpeHeldPartyIdx_ >= 0 && heldPartyOrig_ < 0 && cursor_.panel == Panel::Game) {
                 uint16_t newFlat = static_cast<uint16_t>(
                     box * save_.slotsPerBox() + slot);
                 save_.setLGPEPartyPointer(lgpeHeldPartyIdx_, newFlat);
                 save_.refreshPartyEntryFromPointer(lgpeHeldPartyIdx_);
             }
+            // Stesso sync anti-dupe del place (vedi sopra): anche allo swap
+            // l'origine strip va rilasciata, A vive ormai nella cella target
+            // (il cancel la rilegge da history[0]).
+            if (isLGPE(selectedGame_) && heldPartyOrig_ >= 0 && cursor_.panel == Panel::Game) {
+                int of = save_.lgpeFlatOfParty(heldPartyOrig_);
+                int nf = box * save_.slotsPerBox() + slot;
+                if (of >= 0 && of != nf) {
+                    save_.setLGPEPartyPointer(heldPartyOrig_, SaveFile::LGPE_SLOT_EMPTY);
+                    save_.lgpeZeroFlatSlot(of);
+                    DebugLog::line("lgpe: origine strip %d rilasciata (cella %d)", heldPartyOrig_, of);
+                } else if (of == nf && of >= 0) {
+                    save_.refreshPartyEntryFromPointer(heldPartyOrig_);
+                }
+            }
             // Target was a party member but held Pokemon was not (cross-panel swap):
             // the party Pokemon is now held, so invalidate its pointer until placed.
+            // Strip-origin hold swapping with a party cell: that pointer now
+            // legitimately covers the placed mon, so refresh (don't invalidate).
             if (targetPartyIdx >= 0 && lgpeHeldPartyIdx_ < 0) {
                 save_.setLGPEPartyPointer(targetPartyIdx, SaveFile::LGPE_SLOT_EMPTY);
+                save_.refreshPartyEntryFromPointer(targetPartyIdx);
+            } else if (targetPartyIdx >= 0 && heldPartyOrig_ >= 0) {
                 save_.refreshPartyEntryFromPointer(targetPartyIdx);
             }
 
             heldPkm_ = target;
             lgpeHeldPartyIdx_ = targetPartyIdx;
             heldFromLGPEParty_ = (targetPartyIdx >= 0);
-            // Generic party: target was from box, not party, so clear party hold
-            heldFromParty_=false; heldPartyIdx_=-1; heldPartyOrig_=-1;
+            // Generic party: target was from box, not party, so the hand is
+            // now box-side. MA la strip-origin (heldPartyOrig_ >= 0) va
+            // preservata per il cancel: A sta in history[0] e l'origine serve
+            // a rimettercela (Smeraldo: swap strip->box + B perdeva A per
+            // sempre, il replay sovrascriveva A con B). Per box-origin orig
+            // e gia -1: niente cambia.
+            heldFromParty_=false; heldPartyIdx_=-1;
         }
     }
+}
+
+bool UI::ensurePartyOnExit() {
+    if (!save_.isLoaded() || isDualBankMode()) return true;
+    if (save_.hasParty()) return true;
+    // Save vergine (strip vuota gia al load): niente dialogo, niente
+    // segnaposto forzato — vuoto e lo stato iniziale legittimo (Violetto).
+    if (save_.wasPartyEmptyAtLoad()) {
+        DebugLog::line("exit: strip vuota da load, nessun segnaposto (save vergine)");
+        return true;
+    }
+    DebugLog::line("exit: party vuota, chiedo Caterpie/manuale");
+    if (isFRLG(selectedGame_) || isImportedFile(selectedGame_)) {
+        if (showConfirmDialog(i18n::get(StrKey::EmptyPartyTitle),
+                              i18n::get(StrKey::EmptyPartyCaterpie))) {
+            if (!save_.placeCaterpiePlaceholder()) {
+                showMessageAndWait(i18n::get(StrKey::EmptyPartyTitle),
+                                   i18n::get(StrKey::CantEmptyParty));
+                return false;
+            }
+            if (holding_)
+                DebugLog::line("exit: Caterpie piazzato, mon in mano segue il flusso standard");
+            return true;
+        }
+        return false; // B: torno a mettere qualcosa a mano
+    }
+    // Altre famiglie (debug): stesso patto con Magikarp L5 Splash.
+    if (showConfirmDialog(i18n::get(StrKey::EmptyPartyTitle),
+                          i18n::get(StrKey::EmptyPartyMagikarp))) {
+        if (!save_.placePlaceholder()) {
+            showMessageAndWait(i18n::get(StrKey::EmptyPartyTitle),
+                               i18n::get(StrKey::CantEmptyParty));
+            return false;
+        }
+        return true;
+    }
+    return false;
+}
+
+// Quit vero con mano occupata: il mon in mano vive solo in memoria e al quit
+// andrebbe perso (Smeraldo: Pikachu sparito al quit, disco senza traccia).
+// La mano DEVE sopravvivere ai cambi gioco (carry cross-gen: selectGame non
+// la azzera), quindi il warn scatta solo qui, mai in uscita dal gioco.
+bool UI::confirmQuitWithHold() {
+    if (!holding_ && heldMulti_.empty()) return true;
+    DebugLog::line("quit: mano occupata");
+    if (!DebugLog::enabled()) {
+        // Non-debug: NO-OP esplicita — niente quit con perdite, solo B
+        // (indietro). Il popup messaggio ha solo chiusura, nessuna A.
+        showMessageAndWait(i18n::get(StrKey::QuitHoldTitle),
+                           i18n::get(StrKey::QuitHoldBody));
+        return false;
+    }
+    return showConfirmDialog(i18n::get(StrKey::QuitHoldTitle),
+                             i18n::get(StrKey::QuitHoldBody));
 }
 
 void UI::returnToGameSelector() {
     if (!saveBankFiles())
         return;
-    persistGameSaveIfDirty();
+    // Niente guard qui: vive dentro persistGameSaveIfDirty (choke point
+    // unico, evita doppi dialoghi). False (B) = resta nel gioco, niente
+    // save, niente unmount: memoria intatta e si continua da dove si era.
+    if (!persistGameSaveIfDirty())
+        return;
+    // Backup all'uscita se modificato (prima dell'unmount: serve il mount).
+    backupOnExitIfNeeded();
     // Unmount regardless — leaving the game, so release the save mount even
     // when nothing was written.
     if (!isDualBankMode() && save_.isLoaded())
@@ -1733,7 +2051,7 @@ void UI::actionCancel() {
         // by game): the single-game rescope hid other-game banks (BD folder empty
         // -> "Nessuna banca"; Sw showed only its own folder). Persist first.
         if (!saveBankFiles()) return;
-        persistGameSaveIfDirty();
+        if (!persistGameSaveIfDirty()) return;
         activeBankName_.clear();
         activeBankPath_.clear();
         leftBankName_.clear();
@@ -1751,11 +2069,11 @@ void UI::actionCancel() {
     }
 
     // Party hold cancel: undo without loss (same branches as the A-on-strip cancel).
+    // VERBATIM come sopra: src.pkm, mai inD convertito (celle blob).
     if (heldFromParty_) {
         if (!swapHistory_.empty()) {
             auto src = swapHistory_.back();
-            Pokemon inD = save_.getPartySlot(heldPartyIdx_);
-            setPokemonAt(src.box, src.slot, src.panel, inD);
+            setPokemonAt(src.box, src.slot, src.panel, src.pkm);
             save_.setPartySlot(heldPartyIdx_, heldPkm_);
         } else if (heldPartyOrig_ >= 0 && heldPartyOrig_ != heldPartyIdx_) {
             Pokemon curD = save_.getPartySlot(heldPartyIdx_);
@@ -1769,7 +2087,36 @@ void UI::actionCancel() {
         swapHistory_.clear();
         return;
     }
-    // Single hold cancel: replay swap history in reverse to restore all slots
+    // Single hold cancel: replay swap history in reverse to restore all slots.
+    // Strip-origin (presa strip + swap in box/banca, mai dual-bank: li non
+    // c'e strip e setPartySlot scriverebbe nel save sbagliato): A sta nella
+    // PRIMA cella toccata (history[0]; lo strip pick non pusha). La si legge
+    // e converte ORA (prima che il replay la sovrascriva con B), ma la si
+    // rimette in strip S DOPO il reset (che ripristina anche i pointer LGPE
+    // dal backup — farlo prima verrebbe annullato). Smeraldo: A persa.
+    // Se non convertibile (dex-cut), la cella si salta nel replay: A resta
+    // li, B in mano, niente perso.
+    int stripOrig = (!isDualBankMode()) ? heldPartyOrig_ : -1;
+    Pokemon stripMon;
+    bool haveStripMon = false;
+    if (stripOrig >= 0 && !swapHistory_.empty()) {
+        const auto& first = swapHistory_.front();
+        Pokemon inCell = getPokemonAt(first.box, first.slot, first.panel);
+        if (!inCell.isEmpty()) {
+            std::string whyNot;
+            if (prepareForPlacement(inCell, Panel::Game, whyNot)) {
+                stripMon = inCell;
+                haveStripMon = true;
+            } else {
+                DebugLog::line("cancel: strip-origin non convertibile (%s), A resta in cella",
+                               whyNot.c_str());
+                swapHistory_.erase(swapHistory_.begin());
+                stripOrig = -1;
+            }
+        } else {
+            stripOrig = -1;
+        }
+    }
     for (int i = (int)swapHistory_.size() - 1; i >= 0; i--) {
         auto& rec = swapHistory_[i];
         setPokemonAt(rec.box, rec.slot, rec.panel, rec.pkm);
@@ -1781,6 +2128,16 @@ void UI::actionCancel() {
     lgpeHeldPartyIdx_ = -1;
     heldFromParty_=false; heldPartyIdx_=-1; heldPartyOrig_=-1;
     save_.setLGPEPartyIndices(lgpePartyBackup_);
+    if (haveStripMon) {
+        DebugLog::line("cancel: %s torna in strip %d",
+                       stripMon.displayName().c_str(), stripOrig);
+        save_.setPartySlot(stripOrig, stripMon);
+        int spb = save_.slotsPerBox();
+        if (spb > 0) {
+            int f = save_.lgpeFlatOfParty(stripOrig);
+            if (f >= 0) invalidateSlotDisplay(Panel::Game, f / spb);
+        }
+    }
 }
 
 void UI::toggleSelect() {
@@ -2809,6 +3166,166 @@ void UI::handlePkImportListInput(const SDL_Event& event) {
     }
 }
 
+std::vector<UI::GenMonDef> UI::genMonTable() {
+    // Segnalini debug on-demand (tutti Sword-origin L50, importati in banca
+    // come OHPKM e poi trasferiti via drop normale). Aggiungere qui quando
+    // servono altri: label, specie, livello, 4 mosse.
+    static const GenMonDef TABLE[] = {
+        { "Pikachu drops (L2)", 25, 50, {800, 801, 802, 803} },
+        { "Pikachu mixed", 25, 50, {85, 800, 129, 801} },
+        { "Greninja new moves", 658, 50, {800, 801, 802, 803} },
+        { "Koraidon dex-cut", 1007, 50, {800, 801, 802, 803} },
+        { "Pikachu Gen1-clean", 25, 50, {85, 98, 86, 87} },
+        // Regressione fix Pb8 (dex Sinnoh, non Galar): in Sinnoh si, a Galar no.
+        { "Pidgey Sinnoh", 16, 5, {33, 16, 0, 0} },
+        { "Chimchar Sinnoh", 390, 5, {10, 52, 0, 0} },
+        { "Starly Sinnoh", 396, 5, {33, 16, 0, 0} },
+    };
+    return std::vector<GenMonDef>(TABLE, TABLE + sizeof(TABLE) / sizeof(TABLE[0]));
+}
+
+void UI::handleGenMonListInput(const SDL_Event& event) {
+    if (event.type == SDL_CONTROLLERAXISMOTION) {
+        if (event.caxis.axis == SDL_CONTROLLER_AXIS_LEFTX ||
+            event.caxis.axis == SDL_CONTROLLER_AXIS_LEFTY) {
+            int16_t lx = SDL_GameControllerGetAxis(pad_, SDL_CONTROLLER_AXIS_LEFTX);
+            int16_t ly = SDL_GameControllerGetAxis(pad_, SDL_CONTROLLER_AXIS_LEFTY);
+            updateStick(lx, ly);
+        }
+    }
+
+    int count = (int)genMonList_.size();
+    if (count == 0) {
+        if (event.type == SDL_CONTROLLERBUTTONDOWN && event.cbutton.button == SDL_CONTROLLER_BUTTON_A)
+            showGenMonList_ = false;
+        return;
+    }
+    auto scrollIntoView = [&]() {
+        constexpr int VISIBLE = 12;
+        if (genMonCursor_ < genMonScroll_)
+            genMonScroll_ = genMonCursor_;
+        else if (genMonCursor_ >= genMonScroll_ + VISIBLE)
+            genMonScroll_ = genMonCursor_ - VISIBLE + 1;
+    };
+    if (event.type == SDL_CONTROLLERBUTTONDOWN) {
+        switch (event.cbutton.button) {
+            case SDL_CONTROLLER_BUTTON_DPAD_UP:
+                if (genMonCursor_ > 0) genMonCursor_--;
+                else genMonCursor_ = count - 1;
+                scrollIntoView();
+                break;
+            case SDL_CONTROLLER_BUTTON_DPAD_DOWN:
+                if (genMonCursor_ < count - 1) genMonCursor_++;
+                else genMonCursor_ = 0;
+                scrollIntoView();
+                break;
+            case SDL_CONTROLLER_BUTTON_LEFTSHOULDER:
+                genMonCursor_ = std::max(0, genMonCursor_ - 10);
+                scrollIntoView();
+                break;
+            case SDL_CONTROLLER_BUTTON_RIGHTSHOULDER:
+                genMonCursor_ = std::min(count - 1, genMonCursor_ + 10);
+                scrollIntoView();
+                break;
+            case SDL_CONTROLLER_BUTTON_B: // Switch A = genera e importa, resta
+                importGeneratedMon(genMonList_[genMonCursor_]);
+                break;
+            case SDL_CONTROLLER_BUTTON_A: // Switch B = chiudi
+            case SDL_CONTROLLER_BUTTON_START:
+                showGenMonList_ = false;
+                break;
+        }
+    }
+}
+
+bool UI::importGeneratedMon(const GenMonDef& def) {
+    if (activeBankPath_.empty()) {
+        showMessageAndWait(i18n::get(StrKey::ImportPkTitle), i18n::get(StrKey::ImportPkNeedBank));
+        return false;
+    }
+    PkmHandle* h = OpenHomeNX::generateTestPkm(def.species, def.level,
+        def.moves[0], def.moves[1], def.moves[2], def.moves[3]);
+    if (!h) {
+        DebugLog::line("generate mon: FFI NULL (%s)", def.label);
+        showMessageAndWait(i18n::get(StrKey::ImportPkTitle), i18n::get(StrKey::CouldNotWrite));
+        return false;
+    }
+    std::vector<uint8_t> blob = OpenHomeNX::getOhpkmBytes(h);
+    uint16_t sp = OpenHomeNX::ohpkmSpecies(h);
+    OpenHomeNX::freePkm(h);
+    if (blob.empty()) {
+        DebugLog::line("generate mon: blob vuoto (%s)", def.label);
+        showMessageAndWait(i18n::get(StrKey::ImportPkTitle), i18n::get(StrKey::CouldNotWrite));
+        return false;
+    }
+    if (bank_.isCrossGen()) {
+        for (int b = 0; b < bank_.boxCount(); b++) {
+            for (int s = 0; s < bank_.slotsPerBox(); s++) {
+                if (bank_.ohpkmAt(b, s).empty()) {
+                    bank_.setOhpkmAt(b, s, blob);
+                    markDirty();
+                    invalidateSlotDisplay(Panel::Bank, b);
+                    DebugLog::line("generate mon: %s -> specie %u in banca %d:%d", def.label, sp, b, s);
+                    showMessageAndWait(i18n::get(StrKey::ImportPkTitle), def.label);
+                    return true;
+                }
+            }
+        }
+    } else {
+        // Banca nativa: converti esplicitamente nel formato della banca.
+        // NON via prepareForPlacement: p ha data azzerati (isEmpty) e
+        // prepare uscirebbe subito senza scrivere niente (Smeraldo: import
+        // "ok" ma slot vuoto). Transfer diretto + record nativo.
+        GameType bkGame = bank_.gameType();
+        const int dg = ohTargetGenFor(bkGame);
+        if (dg == 0) {
+            showMessageAndWait(i18n::get(StrKey::TransferTitle),
+                i18n::fmt(StrKey::TransferCantBuild, gameDisplayNameOf(bkGame)));
+            return false;
+        }
+        PkmHandle* h = OpenHomeNX::loadOhpkm(blob);
+        if (!h) {
+            showMessageAndWait(i18n::get(StrKey::TransferTitle),
+                               i18n::get(StrKey::TransferBadOhpkm));
+            return false;
+        }
+        PkmHandle* out = PokemonFFI::transfer(h, static_cast<uint32_t>(dg));
+        OpenHomeNX::freePkm(h);
+        if (!out) {
+            showMessageAndWait(i18n::get(StrKey::TransferTitle),
+                i18n::fmt(StrKey::TransferNotInDex, def.label, gameDisplayNameOf(bkGame)));
+            return false;
+        }
+        std::vector<uint8_t> bytes = OpenHomeNX::getPkmBoxBytesForGen(out, static_cast<uint32_t>(dg));
+        OpenHomeNX::freePkm(out);
+        Pokemon p;
+        p.gameType_ = bkGame;
+        p.data.fill(0);
+        if (bytes.empty() || bytes.size() > p.data.size()) {
+            showMessageAndWait(i18n::get(StrKey::TransferTitle),
+                               i18n::get(StrKey::TransferNoBytes));
+            return false;
+        }
+        std::memcpy(p.data.data(), bytes.data(), bytes.size());
+        for (int b = 0; b < bank_.boxCount(); b++) {
+            for (int s = 0; s < bank_.slotsPerBox(); s++) {
+                if (bank_.getSlot(b, s).isEmpty()) {
+                    bank_.setSlot(b, s, p);
+                    markDirty();
+                    invalidateSlotDisplay(Panel::Bank, b);
+                    DebugLog::line("generate mon: %s -> specie %u in banca nativa %d:%d",
+                                   def.label, sp, b, s);
+                    showMessageAndWait(i18n::get(StrKey::ImportPkTitle), def.label);
+                    return true;
+                }
+            }
+        }
+    }
+    DebugLog::line("generate mon: banca piena (%s)", def.label);
+    showMessageAndWait(i18n::get(StrKey::ImportPkTitle), i18n::get(StrKey::CouldNotWrite));
+    return false;
+}
+
 std::vector<UI::PkFileInfo> UI::scanPkImportFiles() {
     std::vector<PkFileInfo> out;
     // Radici scansionate: import/ più l'intero albero export/ (un livello di
@@ -3081,10 +3598,17 @@ std::string UI::exportCrossGenBlob(const Pokemon& pkm) {
         return "";
     }
 
-    // Drop warning BEFORE converting (same policy as native drops).
+    // Dex-cut PRIMA del warning mosse + drop warning BEFORE converting
+    // (same policy as native drops).
     uint16_t sp = OpenHomeNX::ohpkmSpecies(h);
     std::string dispName = OpenHomeNX::ohpkmNickname(h);
     if (dispName.empty()) dispName = SpeciesName::get(sp);
+    if (OpenHomeNX::speciesLegalInGen(h, gen) == 0) {
+        showMessageAndWait(i18n::get(StrKey::TransferTitle),
+            i18n::fmt(StrKey::TransferNotInDex, dispName, std::string("Gen ") + genStr));
+        OpenHomeNX::freePkm(h);
+        return "";
+    }
     uint32_t dropped = OpenHomeNX::countMovesNotInGen(h, gen);
     if (dropped != UINT32_MAX && dropped > 0 &&
         !showConfirmDialog(i18n::get(StrKey::Gen1DropsTitle),

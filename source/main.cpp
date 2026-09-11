@@ -52,6 +52,42 @@ int main(int argc, char* argv[]) {
     ledInitWithPath(basePath.c_str());
     DebugLog::init(basePath);
 
+    // Language must be known before any UI that shows translated strings
+    // (e.g. the bounce "Updating..." card). Detect early — same logic as
+    // the original block further below, but before ui.init/tryUpdateBounce.
+    {
+        std::string lang = "en";
+        std::string overridePath = basePath + "language.txt";
+        std::ifstream ifs(overridePath);
+        if (ifs.good()) {
+            std::string line;
+            if (std::getline(ifs, line) && !line.empty())
+                lang = line;
+        } else {
+            setInitialize();
+            u64 langCode;
+            setGetSystemLanguage(&langCode);
+            SetLanguage sysLang;
+            setMakeLanguage(langCode, &sysLang);
+            switch (sysLang) {
+                case SetLanguage_JA:    lang = "ja"; break;
+                case SetLanguage_FR:
+                case SetLanguage_FRCA:  lang = "fr"; break;
+                case SetLanguage_DE:    lang = "de"; break;
+                case SetLanguage_ES:
+                case SetLanguage_ES419: lang = "es"; break;
+                case SetLanguage_IT:    lang = "it"; break;
+                case SetLanguage_NL:    lang = "nl"; break;
+                case SetLanguage_PT:
+                case SetLanguage_PTBR:  lang = "pt"; break;
+                case SetLanguage_RU:    lang = "ru"; break;
+                default:                lang = "en"; break;
+            }
+            setExit();
+        }
+        i18n::init(lang);
+    }
+
     // A pending self-update leaves OpenHomeNX.nro.new next to the NRO. This
     // boot only exists to consolidate it into the real .nro and bounce into
     // that behind the "Updating…" card — so bring up JUST the renderer, do the
@@ -151,46 +187,8 @@ int main(int argc, char* argv[]) {
 
     std::string savePath = basePath + "main";
 
-    // Detect language: check override file first, then system setting
-    {
-        std::string lang = "en";
-        std::string overridePath = basePath + "language.txt";
-        std::ifstream ifs(overridePath);
-        if (ifs.good()) {
-            std::string line;
-            if (std::getline(ifs, line) && !line.empty())
-                lang = line;
-        } else {
-            setInitialize();
-            u64 langCode;
-            setGetSystemLanguage(&langCode);
-            SetLanguage sysLang;
-            setMakeLanguage(langCode, &sysLang);
-            switch (sysLang) {
-                case SetLanguage_JA:    lang = "ja"; break;
-                case SetLanguage_FR:
-                case SetLanguage_FRCA:  lang = "fr"; break;
-                case SetLanguage_DE:    lang = "de"; break;
-                case SetLanguage_ES:
-                case SetLanguage_ES419: lang = "es"; break;
-                case SetLanguage_IT:    lang = "it"; break;
-                case SetLanguage_NL:    lang = "nl"; break;
-                case SetLanguage_PT:
-                case SetLanguage_PTBR:  lang = "pt"; break;
-                case SetLanguage_RU:    lang = "ru"; break;
-                // Korean and Chinese: translation files exist but are disabled
-                // because PlSharedFontType_Standard lacks CJK/Korean glyphs.
-                // case SetLanguage_KO:    lang = "ko"; break;
-                // case SetLanguage_ZHCN:
-                // case SetLanguage_ZHHANS:lang = "zh-Hans"; break;
-                // case SetLanguage_ZHTW:
-                // case SetLanguage_ZHHANT:lang = "zh-Hant"; break;
-                default:                lang = "en"; break;
-            }
-            setExit();
-        }
-        i18n::init(lang);
-    }
+    // Language already initialized early (before tryUpdateBounce) so the
+    // "Updating..." card is correctly translated.
 
     // Load text data
     SpeciesName::load("romfs:/data/species_en.txt");
@@ -214,7 +212,13 @@ int main(int argc, char* argv[]) {
     // Run main loop — game selection, bank selection, and save loading all handled inside
     ui.run(basePath, savePath);
 
-    // Cleanup
+    // Backup all'uscita se il gioco e stato modificato (copre anche i quit
+    // senza passaggio dal selettore; idempotente via sidecar).
+    ui.backupOnExitIfNeeded();
+
+    // Cleanup — prima il worker update (se mai partito): niente socket/stringhe
+    // toccate durante lo smontaggio rete/USB.
+    autoUpdateJoin();
     ui.shutdown();
     ledExit();
 

@@ -27,13 +27,13 @@ enum class AppScreen { ProfileSelector, GameSelector, BankSelector, MainView };
 enum class TextInputPurpose {
     CreateBank, RenameBank, RenameBoxName,
     SearchSpecies, SearchOT, SearchLevelMin, SearchLevelMax,
-    ImportPathEntry
+    ImportPathEntry, EditUpdateUrl
 };
 
 // Rows of the "+" game-selector menu. A single list drives both the popup's
 // draw order and its input handling — the old parallel hardcoded row-count
 // arithmetic (see v0.1.37's alignment bug) drifts every time a row is added.
-enum class GameSelMenuAction { SwitchCore, DebugLog, SendLog, SendSave, ImportSettings, CheckUpdate, Exit };
+enum class GameSelMenuAction { SwitchCore, DebugLog, SendLog, SendSave, ImportSettings, CheckUpdate, OpenSettings, Exit };
 
 // Search filter enums
 enum class GenderFilter { Any, Male, Female, Genderless };
@@ -91,12 +91,14 @@ public:
     // doesn't play over a black gap; call showSplash(0, true) when ready.
     void showSplash(int holdMs = 2500, bool fadeOut = true);
     int  drawBodyText(const std::string& body, int startY, const std::string& footer);
+    std::vector<std::string> wrapText(const std::string& line, TTF_Font* f, int maxW);
     void showMessageAndWait(const std::string& title, const std::string& body);
     bool showConfirmDialog(const std::string& title, const std::string& body);
     void showWorking(const std::string& msg);
     void setAppletMode(bool mode) { appletMode_ = mode; }
     bool isDualBankMode() const { return appletMode_ || allBanksMode_; }
     void run(const std::string& basePath, const std::string& savePath);
+    void backupOnExitIfNeeded(); // backup una tantum se dirty+modificato
 
     // Pending-update fast path (OpenHomeNX.nro.new present). Consolidates it
     // into OpenHomeNX.nro; if a bounce into the fresh .nro is needed, draws the
@@ -112,6 +114,7 @@ private:
     TTF_Font*            font_      = nullptr;
     TTF_Font*            fontSmall_ = nullptr;
     TTF_Font*            fontLarge_ = nullptr;
+    TTF_Font*            fontAbout_ = nullptr; // 20pt, descrizioni popup About
 
     // Sprite cache: (national dex ID | form << 16) -> texture
     std::unordered_map<uint32_t, SDL_Texture*> spriteCache_;
@@ -163,6 +166,15 @@ private:
     SDL_Texture* iconBoxFull_     = nullptr;
     SDL_Texture* iconBoxEmpty_    = nullptr;
     SDL_Texture* iconBoxNonEmpty_ = nullptr;
+    SDL_Texture* iconVault_        = nullptr; // cassaforte rotonda "tutte le banche"
+    SDL_Texture* iconEject_        = nullptr; // espulsione sicura USB
+    SDL_Texture* iconSettings_     = nullptr; // ingranaggio impostazioni
+    SDL_Texture* iconWifi_         = nullptr; // stato rete in alto a dx
+    SDL_Texture* iconLan_          = nullptr; // cavo al posto del wifi
+    SDL_Texture* iconDebug_        = nullptr; // bug accanto al wifi con debug on
+    SDL_Texture* iconArrow_        = nullptr; // frecce pagine (dx ruotata 180)
+    SDL_Texture* iconPack_         = nullptr; // zaino eventi/strumenti (48px 1:1)
+    bool gameSelOnPack_ = false;      // cursore sullo zaino a sx delle banche
 
     // Game-selector logos for imported (titleId-less) games — see init()'s
     // loadLogo(). Keyed by GameType since there are only a handful of these.
@@ -207,6 +219,12 @@ private:
     static constexpr int BV_MINI_PAD     = 2;
     static constexpr int BV_PREVIEW_PAD  = 8;
     static constexpr int BV_PREVIEW_HDR  = 22;
+
+    // Layout selettore giochi (Classico = griglia storica, Galleria = lista
+    // + anteprima grande). Persistito in gallery.cfg, vedi theme.h/.cpp.
+    enum class GameSelectorLayout : int { Classic = 0, Gallery = 1 };
+    GameSelectorLayout gameSelectorLayout_ = GameSelectorLayout::Gallery;
+    float galScrollX_ = 0.0f; // scroll fluido galleria (lerp verso il target)
 
     // Theme
     int themeIndex_ = DEFAULT_THEME_INDEX;
@@ -270,15 +288,63 @@ private:
     // Counts same-type tiles before it (duplicates = same game, other device).
     int importedOccurrence(int cursor) const;
 
-    // Cross-gen transfer selector state (M6a)
-    bool showGenSelector_ = false;
-    int  genSelCursor_    = 0;
-    int  targetGen_       = 9;
-    static constexpr int GEN_LIST[7] = {3,4,5,6,7,8,9};
-
     // Game selector menu state (+ button: Switch Core / Debug log / Exit)
     bool showGameSelMenu_ = false;
     int  gameSelMenuCursor_ = 0;
+
+    // Pagina impostazioni (ingranaggio selettore): 6 sezioni con header.
+    bool showSettings_ = false;
+    bool importFromSettings_ = false; // chiudendo import torna alle impostazioni
+    int  setCat_ = 0; // 0 Utente, 1 Aspetto, 2 Motore, 3 Dati, 4 Update, 5 Debug, 6 Info
+    int zoomGrow_ = 12; // zoom card selezionata (px, step 4: niente aliasing)
+    int zoomCard_ = -2, zoomPrev_ = -2;
+    float zoomT_ = 1.0f;
+    int setRow_ = 0;
+    bool setFocusLeft_ = true; // true = colonna sezioni, false = righe destra
+    void openSettings();
+    int defaultUserIndex() const; // profilo da defaultuser.txt, -1 = chiedi
+    void drawSettingsPopup();
+    void handleSettingsInput(const SDL_Event& event, bool& running);
+    int settingsRowCount(int cat) const;
+    std::string settingsRowLabel(int cat, int row) const;
+    std::string settingsRowValue(int cat, int row);
+    void settingsRowActivate(int cat, int row, int dir, bool& running);
+
+    // Debug save popup (Switch X sul gioco con debug on): Backup save /
+    // Restore latest backup / Send save. Opera sullo stesso occurrence che
+    // aprirebbe A (niente lista separata: semplice, niente UI in piu).
+    bool showSaveMenu_ = false;
+    int  saveMenuCursor_ = 0;
+    GameType saveMenuGame_ = GameType::EMERALD;
+    int  saveMenuOcc_ = 0;
+    void openSaveMenu(GameType g, int occ);
+    void drawSaveMenuPopup();
+    void sendSaveFor(GameType g, int occ);
+    std::string manualBackupDir(GameType g) const;
+    std::string autoBackupDir(GameType g) const;
+    bool backupGameSave(GameType g, std::string& out);
+    struct BackupListEntry { std::string path; std::string label; };
+    std::vector<BackupListEntry> collectBackupEntries(GameType g);
+    bool restoreBackupEntry(GameType g, const std::string& entry);
+    // Voce lista backup: solo unita ripristinabili (file per i save
+    // file-backed, dir con file dentro per i titoli installati) + etichetta
+    // "[AUTO]/[MAN] data-ora" cosi i file sciolti tipo "main" non compaiono.
+    // Lista backup sfogliabile (manual + auto + auto-apertura), newest first.
+    bool showBackupList_ = false;
+    int  backupListCursor_ = 0;
+    int  backupListScroll_ = 0;
+    std::vector<BackupListEntry> backupListEntries_;
+    GameType backupListGame_ = GameType::EMERALD;
+    void openBackupList(GameType g);
+    void drawBackupListPopup();
+    // Auto-backup best-effort all'apertura dei save file-backed (cap 10).
+    void autoBackupFileSave(GameType g, const std::string& path);
+    // Tetto spazio auto-backup per gioco da update.cfg (backup_mb[_sd],
+    // default 256/32; 0 = illimitato). Mai i manuali.
+    long backupCapMb(bool fileBacked) const;
+    std::vector<std::string> autoBackupEntries(GameType g) const;
+    bool autoBackupNeeded(GameType g, const std::string& srcFile, uint64_t srcSize, long srcMt, bool haveSrc);
+    uint64_t pruneBackupsToCap(GameType g, bool fileBacked);
 
     // Wondercard list state
     bool showWondercardList_ = false;
@@ -300,6 +366,23 @@ private:
     int  pkImportCursor_  = 0;
     int  pkImportScroll_  = 0;
     std::vector<PkFileInfo> pkImportList_;
+
+    // Debug test-mon generator (menu Generate, solo debug): segnalini
+    // on-demand per i test HW. Tabella estendibile in genMonTable().
+    struct GenMonDef {
+        const char* label;
+        uint16_t species;
+        uint8_t level;
+        uint16_t moves[4];
+    };
+    bool showGenMonList_ = false;
+    int  genMonCursor_  = 0;
+    int  genMonScroll_  = 0;
+    std::vector<GenMonDef> genMonList_;
+    static std::vector<GenMonDef> genMonTable();
+    void drawGenMonListPopup();
+    void handleGenMonListInput(const SDL_Event& event);
+    bool importGeneratedMon(const GenMonDef& def);
 
     // Party-strip focus (DS saves, DEBUG ONLY): DPad-UP from the top grid
     // row moves focus to the OT strip minis; A opens a READ-ONLY detail
@@ -348,6 +431,11 @@ private:
     int stickDirY_ = 0;
     uint32_t stickMoveTime_ = 0; // last move timestamp
     bool stickMoved_ = false;    // has initial move fired?
+    // Timestamp di quando la direzione CORRENTE della levetta e' iniziata
+    // (azzerato in updateStick() ogni volta che la direzione cambia, incluso
+    // il ritorno a zero): usato per accelerare lo scroll verticale della
+    // lista Galleria quando tenuta ferma a lungo (vedi handleGameSelectorInput).
+    uint32_t stickHoldStart_ = 0;
     void updateStick(int16_t axisX, int16_t axisY);
 
     // L/R shoulder button repeat
@@ -376,16 +464,58 @@ private:
     int gameSelCursor_ = 0;
     int gameSelPage_ = 0;
     bool gameSelOnAllBanks_ = false;  // cursor is on "View All Banks" option
+    bool gameSelOnAvatar_ = false;    // cursore sull'avatar utente in alto a sx
+    float touchStartX_ = 0, touchStartY_ = 0;
+    bool touchDown_ = false, touchMoved_ = false;
+    void selectorTap(float px, float py, bool& running);
     int gameSelOnChevron_ = 0;        // 0=none, -1=left chevron, 1=right chevron
+    bool gameSelOnSettings_ = false;  // cursore sull'ingranaggio in basso a dx
+    bool gameSelOnEject_ = false;     // cursore sull'icona espelli USB
+    // Animazione pulsanti bassi: posizioni/alpha correnti -> target per frame.
+    float ejectBtnX_ = -1.0f;
+    float ejectBtnA_ = 0.0f;
+    int ejectAnimStage_ = 0; // 0 idle, 1 fade eject dopo espulsione, 2 rientro vault
+    int selPageShown_ = 0;   // pagina disegnata (segue gameSelPage_ con slide)
+    float selSlide_ = 0.0f;  // offset slide in unita pagina (-1..1)
+    // Anteprima Galleria: indice disegnato (insegue gameSelCursor_ con
+    // slide verticale), stesso schema di selPageShown_/selSlide_ sopra.
+    int galSelShown_ = -1;   // -1 = non inizializzato (niente animazione al primo frame)
+    float galSlide_ = 0.0f;  // offset slide in unita "altezza pannello" (-1..1)
+    void ejectUsbDevices();
+    void sendLogNow();
+    bool sendAvailable() const; // debug on + override url attivo
+    uint64_t prunePoolToCap(bool fileBacked); // tetto cumulativo, oldest-first
+    static void writeAutoInfo(const std::string& entry, uint64_t bytes, long mt);
+    bool exitBackedUp_ = false; // gioco corrente gia coperto all'uscita
+    bool backupTitleNow(GameType g, const std::string& mountPath, const std::string& saveFile);
+    // update.cfg / update.cfg.off (sorgente update custom on/off)
+    static bool hasCustomUrlFile(const std::string& basePath);
+    static void findUpdateCfgFiles(const std::string& basePath, std::string& cfg, std::string& off);
+    static std::string customUrlAny(const std::string& basePath);
+    static bool writeUpdateCfgUrl(const std::string& basePath, const std::string& url);
+    bool bottomButtonsAnim(); // true mentre lerp banche/eject non a target
     bool allBanksMode_ = false;       // entered bank selector via "View All Banks"
     bool bankRightCrossGen_ = false;  // right-panel bank selector showing ALL games (cross-gen), normal mode
     std::vector<GameType> availableGames_;
     std::unordered_map<GameType, SDL_Texture*> gameIconCache_;
+    // Colore medio della cover (campionato una volta al caricamento in
+    // loadGameIcons()): sfondo "vetro" della vista Galleria.
+    std::unordered_map<GameType, SDL_Color> gameAccentCache_;
+    SDL_Color computeAccentColor(SDL_Surface* surf) const;
     std::unordered_map<GameType, int> gameBankCounts_;
     void refreshBankCounts();
     void loadGameIcons();
     void freeGameIcons();
     void enterAllBanksMode();
+
+    // Preferiti galleria: ZR toggla, stella al posto del pallino, ordine stabile in cima.
+    std::unordered_set<int> favorites_;
+    bool favTriggerHeld_ = false;
+    bool isFavorite(GameType g) const { return favorites_.count(static_cast<int>(g)) != 0; }
+    void loadFavorites();
+    void saveFavorites() const;
+    void toggleFavorite(GameType g);
+    void applyFavoritesOrder();
 
     // Owned save + bank manager (initialized after game selection)
     SaveFile save_;
@@ -515,12 +645,67 @@ private:
     // Game selector
     void drawGameSelectorFrame();
     void handleGameSelectorInput(bool& running);
+    // Icona/box-art di availableGames_[i] dentro il rettangolo
+    // (iconX, iconY, size, size): loghi, colori flat per GameType,
+    // posizionamento custom RSE, badge sorgente import. Condivisa fra la
+    // griglia Classica (size=IS) e l'anteprima Galleria (size=COVER).
+    // Colore flat per-GameType (Bulbapedia color template) usato come
+    // sfondo delle tile senza titleId in drawGameArt() e, quando il gioco
+    // non ha una vera icona in cache (quindi niente gameAccentCache_), come
+    // colore dell'accent "vetro" in Galleria (drawGameList_Gallery).
+    SDL_Color flatBgColorFor(GameType g) const;
+    void drawGameArt(int i, int iconX, int iconY, int size, bool scaleInner = false);
+    // Vista Galleria (source/ui_gallery.cpp): lista + anteprima grande,
+    // alternativa alla griglia Classica scelta in Impostazioni > Aspetto.
+    void drawGameList_Gallery();
+    void selectorTapGallery(float px, float py, bool& running);
+    bool galleryScrollAnim();
+    // Party preview Galleria: cache per gioco (specie/livello/shiny/uovo),
+    // validata via mtime (mount+stat, niente decrypt). Load completo solo
+    // se cambiato, mai eager.
+    struct PartyPreviewMon { uint16_t species = 0; uint8_t level = 0; uint8_t form = 0; bool shiny = false; bool egg = false; bool empty = true; };
+    struct PartyPreview {
+        long mtime = -1; bool loading = false; std::vector<PartyPreviewMon> mons;
+        std::string otName;     // valore mostrato (puo' essere l'override)
+        std::string otNameReal; // valore vero dal save, mai sovrascritto
+        bool dexSupported = false; int dexCaught = 0; int dexTotal = 0;
+    };
+    std::unordered_map<GameType, PartyPreview> galPartyCache_;
+    int galPreviewGame_ = -1;
+    uint32_t galPreviewTick_ = 0;
+    long galSaveMtime(GameType g);
+    void galEnsureParty(GameType g);
+    void galInvalidateParty(GameType g);
+    // Persistenza su disco di galPartyCache_ (party/OT/dex): sopravvive al
+    // riavvio, cosi' al rientro in Galleria si vede subito l'ultimo party
+    // noto invece di "..." finche' non ti fermi di nuovo — galEnsureParty()
+    // ricontrolla comunque l'mtime del save e aggiorna solo se cambiato,
+    // stessa garanzia di correttezza di prima, solo senza dover rileggere
+    // ogni save ad ogni avvio. File in basePath_ (vedi theme.cfg/gallery.cfg).
+    bool galCacheLoadedFromDisk_ = false;
+    void galLoadCacheFromDisk();
+    void galSaveCacheToDisk() const;
+    // true mentre lo slide dell'anteprima Galleria (galSelShown_/
+    // galSlide_) non ha ancora raggiunto il target: stesso schema di
+    // galleryScrollAnim(), interrogato da bottomButtonsAnim() cosi' il
+    // loop principale richiama markDirty() 60fps anche senza input
+    // (altrimenti l'animazione avanza di un solo passo per evento).
+    bool galleryPreviewAnim();
     void selectGame(GameType game, int occurrence = 0);
     std::string buildBackupDir(GameType game) const;
     bool saveBankFiles();
     // Write the game save (+ account commit + "Saving…" mask + LED) only when a
     // mutator actually changed it since load. No-op in dual-bank mode.
-    void persistGameSaveIfDirty();
+    // False SOLO su abort utente (party vuota + B): il chiamante deve
+    // interrompere il suo flusso (restare nel gioco), niente scritto.
+    bool persistGameSaveIfDirty();
+    // Exit-guard party vuota (debug): nessun gioco accetta party 0. GBA offre
+    // il Caterpie segnaposto (A = piazza ed esci, B = torno a sistemare a
+    // mano); altrove blocca con messaggio. true = si puo uscire.
+    bool ensurePartyOnExit();
+    // Quit vero con mano occupata: il mon in mano vive solo in memoria.
+    // true = si puo uscire (mano libera o utente consenziente).
+    bool confirmQuitWithHold();
 
     // Bank selector
     void drawBankSelectorFrame();
@@ -542,7 +727,6 @@ private:
     void drawAboutPopup();
     void drawThemeSelectorPopup();
     void drawLanguageSelectorPopup();
-    void drawGenSelectorPopup();
     void drawGameSelMenuPopup();
     void drawSearchFilterPopup();
     void drawSearchResultsPopup();
@@ -564,6 +748,15 @@ private:
     void drawTextCentered(const std::string& text, int cx, int cy, SDL_Color color, TTF_Font* f);
     void drawRect(int x, int y, int w, int h, SDL_Color color);
     void drawRectOutline(int x, int y, int w, int h, SDL_Color color, int thickness);
+    void drawSpriteFit(int x, int y, int w, int h, SDL_Texture* tex);
+    void drawRoundRect(int x, int y, int w, int h, int r, SDL_Color color);
+    // Come drawRoundRect() ma con un riempimento a gradiente orizzontale
+    // (left -> right), stessa sagoma con angoli arrotondati esatti: una
+    // sola passata opaca colonna per colonna, niente blend mode (quindi
+    // niente rischio del doppio-alpha "pacman" agli angoli).
+    void drawRoundRectGradientH(int x, int y, int w, int h, int r, SDL_Color left, SDL_Color right);
+    void drawRoundRectOutline(int x, int y, int w, int h, int r, SDL_Color color, int thickness);
+    void drawRoundSelect(int cx, int cy, int r, bool focused);
     void drawStatusBar(const std::string& msg);
 
     // Input handling
@@ -638,23 +831,37 @@ private:
 
     // Dynamic grid. Each panel sizes its box grid from its OWN source, so a
     // 30-slot bank (including the universal cross-gen bank) can sit next to a
-    // 25-slot Let's Go save. Always 5 rows; columns = slots-per-box / 5.
+    // 25-slot Let's Go save or a 20-slot GB/GBC box (5x4, see gridRowsFor).
+    int slotsPerBoxFor(Panel p) const {
+        if (p == Panel::Bank)        return bank_.slotsPerBox();
+        if (isDualBankMode())        return bankLeft_.slotsPerBox();
+        return save_.slotsPerBox() > 0 ? save_.slotsPerBox() : 30;
+    }
     int gridColsFor(Panel p) const {
-        int spb;
-        if (p == Panel::Bank)        spb = bank_.slotsPerBox();
-        else if (isDualBankMode())   spb = bankLeft_.slotsPerBox();
-        else                         spb = isLGPE(selectedGame_) ? 25 : 30;
+        int spb = slotsPerBoxFor(p);
         return spb <= 25 ? 5 : 6;
     }
-    int maxSlotsFor(Panel p) const { return gridColsFor(p) * 5; }
+    // Righe per pannello: box GB/GBC da 20 slot in 5x4 (non 4x5, piu
+    // leggibile), gli altri restano 5 righe. Mai celle fantasma oltre spb.
+    int gridRowsFor(Panel p) const {
+        int spb = slotsPerBoxFor(p);
+        int cols = gridColsFor(p);
+        if (spb > 0 && cols > 0 && spb % cols == 0) return spb / cols;
+        return 5;
+    }
+    int maxSlotsFor(Panel p) const { return gridColsFor(p) * gridRowsFor(p); }
     // Legacy call sites: they always operated on the cursor's panel.
     int gridCols() const { return gridColsFor(cursor_.panel); }
-    int maxSlots() const { return gridColsFor(cursor_.panel) * 5; }
+    int maxSlots() const { return maxSlotsFor(cursor_.panel); }
 
     // Get pokemon at cursor from the appropriate source
     Pokemon getPokemonAt(int box, int slot, Panel panel) const;
     void setPokemonAt(int box, int slot, Panel panel, const Pokemon& pkm);
     void clearPokemonAt(int box, int slot, Panel panel);
+    // True se lo strip party accetta pick/posa: solo con debug attivo, mai su
+    // Gen5 (save read-only: l'edit andrebbe perso al save). Toggle dedicato
+    // in futuro.
+    bool canEditParty() const;
 
     // M6 transfer-on-drop.
     // Game type whose stored PKM layout a placement into `panel` will use.

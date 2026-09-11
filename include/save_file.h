@@ -24,6 +24,16 @@ public:
     // Gen4 layout picked by loadDS4 (DP/Pt/HGSS sizes differ).
     enum class Ds4Layout { DP, PT, HGSS };
     Ds4Layout dsLayout() const { return ds4Layout_; }
+    // Partizione attiva scelta da loadDS4 (0/1): serve per localizzare il
+    // blocco Generale da fuori (es. Pokedex::getDexStatus() read-only).
+    int dsPartition() const { return dsPart_; }
+    // Dimensione di una partizione Gen4 (DS_PARTITION e' privato): esposta
+    // per non duplicare il numero altrove (es. pokedex.cpp).
+    static constexpr size_t dsPartitionBytes() { return DS_PARTITION; }
+    // Offset assoluto del bitfield "caught" del Pokedex Gen2 (G/S vs
+    // Crystal): unica fonte di verita', GbcLayout resta privato a
+    // save_file.cpp. 0 se il gameType_ corrente non e' Gen2.
+    size_t gen2DexCaughtOffset() const;
     // HGSS ROMCode (Trainer1+0x1C: 7 = HeartGold, 8 = SoulSilver), 0 if N/A.
     uint8_t dsRomCode() const { return dsRomCode_; }
     // Gen5 PlayerData.Game byte (20 = White, 21 = Black), 0 if N/A.
@@ -40,6 +50,15 @@ public:
     Pokemon getPartySlot(int idx) const;
     void setPartySlot(int idx, const Pokemon& pkm);
     void clearPartySlot(int idx);
+    // Debug: piazza un Caterpie segnaposto (L5, PK3 valido) in slot 0 quando
+    // la squadra e vuota — nessun gioco accetta party 0 (Smeraldo spawnava
+    // glitch). Solo GBA (FRLG + R/S/E importati); altrove torna false e la UI
+    // rimanda a sistemare a mano. Identita OT copiata dal primo mon dei box.
+    bool placeCaterpiePlaceholder();
+    // Segnaposto universale (debug) per le altre famiglie: Magikarp L5
+    // Splash via generatore FFI + transfer, costruito come un drop normale
+    // (stessi byte che produrrebbe prepareForPlacement). GBA usa Caterpie.
+    bool placePlaceholder();
     // LGPE: il party sono 6 pointer nella lista piatta dei box — il mon vive in
     // UNA sola cella box. Servono per tenere pointer/cella in sync (senza: la
     // cella resta sporca -> cloni nei box; o il pointer penzola -> mon perso).
@@ -47,6 +66,14 @@ public:
     void lgpeZeroFlatSlot(int flat);        // azzera i dati della cella (pointer invariato)
     void refreshPartyEntryFromPointer(int idx); // rileggi dsParty_[idx] dalla sua cella
     bool hasParty() const { for (auto &p: dsParty_) if (!p.isEmpty()) return true; return false; }
+    // Vera se la strip era gia vuota al load (save vergine inizio gioco):
+    // l'exit-hook salta il segnaposto, vuoto e legittimo e non forzato.
+    bool wasPartyEmptyAtLoad() const { return partyEmptyAtLoad_; }
+    // Normalizza un save Delta/iPhone (+16B metadata) a raw 128K permanente
+    // (mGBA & co. vogliono 131072B esatti). Rileva la finestra valida (testa
+    // o coda) e riscrive solo quella, byte-identica. Mai silenzioso: info
+    // descrive l'esito. True = file riscritto.
+    static bool normalizeDeltaSave(const std::string& path, std::string& info);
 
     Pokemon getBoxSlot(int box, int slot) const;
     void setBoxSlot(int box, int slot, Pokemon pkm);
@@ -114,6 +141,8 @@ private:
     bool loaded_ = false;
     // Set by any content mutator, cleared by load() and a successful save().
     bool dirty_ = false;
+    // Strip vuota al load (save vergine): vedi load().
+    bool partyEmptyAtLoad_ = true;
 
     // Game-specific parameters
     GameType gameType_  = GameType::ZA;
@@ -180,6 +209,13 @@ private:
     // GBA assembled storage buffer (sectors 5-13 concatenated)
     std::vector<uint8_t> gbaStorage_;
     int gbaActiveSlot_ = 0;
+    // GBA party location from the loadGBA brute scan (count at large+off,
+    // 6x100B slots at large+off+pad). -1 = not found (party read-only then).
+    int gbaPartyLargeOff_ = -1;
+    int gbaPartyPad_ = 4;
+    // Map a Large offset (sectors 1-3 concatenated) to an absolute rawData_
+    // offset in the given save slot (default active). -1 if unmappable.
+    long gbaLargeToRaw(size_t largeOff, int slot = -1) const;
     // 16B extra di alcuni emulatori (conservati e riattaccati in scrittura).
     std::vector<uint8_t> gbaXtra_;
     bool gbaXtraAtEnd_ = true;
@@ -232,6 +268,9 @@ private:
     // byte-wise on save (never zeroed): we don't write what we didn't read.
     bool gbBoxTrusted_[12] = {false};
     std::vector<uint8_t> gbStoredOrig_;
+    // Gen1 party snapshot (404B @0x2F2C: count+species+FF+6x44B+OT+nick) for
+    // tail-preserving write-back. Empty when party wasn't found at load.
+    std::vector<uint8_t> gbPartySnap_;
     // Gen 2 (G/S/C SRAM, G2c): same model, 14 boxes x 20 x 54B stride
     // (32B record + 11B OT + 11B nick). No current-box mirror in Gen2
     // (Stadium desyncs it): only stored regions are truth.
@@ -240,6 +279,10 @@ private:
     std::vector<uint8_t> gbcStorage_;
     bool gbcBoxTrusted_[14] = {false};
     std::vector<uint8_t> gbcStoredOrig_;
+    // Gen2 party base offset (pbase from layout) + 428B snapshot for
+    // tail-preserving write-back. pbase < 0 when not found at load.
+    int gbcPartyBase_ = -1;
+    std::vector<uint8_t> gbcPartySnap_;
     bool gbcIsCrystal_ = false;
     int gbcBoxNamesBase_ = -1; // 9B box-name stride base in rawData_ (-1 none)
 
@@ -252,13 +295,17 @@ private:
     static constexpr int DS_BOX_SLOTS   = 30;
     static constexpr int DS_SLOT_SIZE   = 136;       // PK4/PK5 box record
     bool loadDS4(const std::string& path);
+    bool saveDS4(const std::string& path);
     bool loadDS5(const std::string& path);
     // Gen 6/7 (decrypted 3DS dumps, Citra/Checkpoint style; cartridge-encrypted
-    // dumps are rejected explicitly). Same read-only v1 model as DS.
+    // dumps are rejected explicitly). Flat images without checksums: writable.
     bool loadDXY(const std::string& path);
+    bool saveDXY(const std::string& path);
     bool loadDSM(const std::string& path);
+    bool saveDSM(const std::string& path);
     std::vector<uint8_t> dsStorage_;
     Ds4Layout ds4Layout_ = Ds4Layout::DP;
+    int dsPart_ = 0; // active Gen4 partition picked by loadDS4
     uint8_t dsRomCode_ = 0;
     uint8_t dsGameByte_ = 0;
     std::vector<Pokemon> dsParty_;

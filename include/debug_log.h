@@ -50,6 +50,9 @@ inline void init(const std::string&) {}
 inline bool enabled() { return false; }
 inline void setEnabled(bool) {}
 inline void line(const char*, ...) {}
+inline bool flushAndReopenForUpload(std::string&) { return false; }
+inline void reopenAfterUpload() {}
+inline std::string logPath() { return ""; }
 
 } // namespace DebugLog
 

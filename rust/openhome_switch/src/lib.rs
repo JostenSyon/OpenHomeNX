@@ -311,14 +311,37 @@ pub extern "C" fn openhome_load_pkm_from_gen(
             Err(_) => return core::ptr::null_mut(),
         },
         3 => match pkm_rs::gen3::Pk3::from_bytes(slice) {
-            Ok(pk) => match pkm_rs::ohpkm::OhpkmV2::convert_with_backup(
-                &pk,
-                &pkm_rs::traits::PkmBytes::to_party_bytes(&pk),
-            ) {
-                Ok(o) => o,
-                Err(_) => return core::ptr::null_mut(),
-            },
-            Err(_) => return core::ptr::null_mut(),
+            // Raw parse must ALSO pass the checksum gate: C++-side buffers
+            // arrive decrypted, but real save bytes are encrypted — and a
+            // raw parse of encrypted bytes can yield a phantom record
+            // (Smeraldo lesson: species-only gates accept garbage).
+            Ok(pk) if pk.checksum == pk.calculate_checksum() => {
+                match pkm_rs::ohpkm::OhpkmV2::convert_with_backup(
+                    &pk,
+                    &pkm_rs::traits::PkmBytes::to_party_bytes(&pk),
+                ) {
+                    Ok(o) => o,
+                    Err(_) => return core::ptr::null_mut(),
+                }
+            }
+            _ => {
+                // from_encrypted_bytes asserts 80/100B (non-unwinding panic
+                // = abort on Switch): gate the length BEFORE calling it.
+                if slice.len() != 80 && slice.len() != 100 {
+                    return core::ptr::null_mut();
+                }
+                let mut owned = slice.to_vec();
+                match pkm_rs::gen3::Pk3::from_encrypted_bytes(&mut owned) {
+                    Ok(pk) => match pkm_rs::ohpkm::OhpkmV2::convert_with_backup(
+                        &pk,
+                        &pkm_rs::traits::PkmBytes::to_party_bytes(&pk),
+                    ) {
+                        Ok(o) => o,
+                        Err(_) => return core::ptr::null_mut(),
+                    },
+                    Err(_) => return core::ptr::null_mut(),
+                }
+            }
         },
         // 4 = PK4 (Gen 4 DPPt/HGSS). 136-byte box record (236-byte party):
         // from_bytes decrypts when the unused ribbon block is nonzero.
@@ -362,7 +385,20 @@ pub extern "C" fn openhome_load_pkm_from_gen(
                 Ok(o) => o,
                 Err(_) => return core::ptr::null_mut(),
             },
-            Err(_) => return core::ptr::null_mut(),
+            // Real save bytes are ENCRYPTED (PKHeX .pk7 exports too):
+            // fall back to the decrypting parser instead of failing.
+            Err(_) => match pkm_rs::gen7_alola::Pk7::from_encrypted_bytes(
+                slice.to_vec().into_boxed_slice(),
+            ) {
+                Ok(pk) => match pkm_rs::ohpkm::OhpkmV2::convert_with_backup(
+                    &pk,
+                    &pkm_rs::traits::PkmBytes::to_party_bytes(&pk),
+                ) {
+                    Ok(o) => o,
+                    Err(_) => return core::ptr::null_mut(),
+                },
+                Err(_) => return core::ptr::null_mut(),
+            },
         },
         8 => match pkm_rs::gen8_swsh::Pk8::from_bytes(slice) {
             Ok(pk) => match pkm_rs::ohpkm::OhpkmV2::convert_with_backup(
@@ -434,6 +470,79 @@ pub extern "C" fn openhome_load_pkm_from_gen(
     };
 
     Box::into_raw(Box::new(PkmHandle { ohpkm }))
+}
+
+/// Debug test-mon generator (voce banca "Generate", solo HW-debug):
+/// costruisce un OHPKM Sword-origin con specie/livello/mosse arbitrari.
+/// Riusa setter + exp minima per livello dei fixture (mai exp incoerente),
+/// PID fisso (deterministico). NULL su specie invalida. Il chiamante
+/// trasferisce via openhome_transfer_pkm come per ogni altro mon.
+#[cfg(not(any(feature = "alloc", feature = "std")))]
+#[no_mangle]
+pub extern "C" fn openhome_generate_test_pkm(
+    _species: u16,
+    _level: u8,
+    _m1: u16,
+    _m2: u16,
+    _m3: u16,
+    _m4: u16,
+) -> *mut PkmHandle {
+    core::ptr::null_mut()
+}
+#[cfg(any(feature = "alloc", feature = "std"))]
+#[no_mangle]
+pub extern "C" fn openhome_generate_test_pkm(
+    species: u16,
+    level: u8,
+    m1: u16,
+    m2: u16,
+    m3: u16,
+    m4: u16,
+) -> *mut PkmHandle {
+    if species == 0 {
+        return core::ptr::null_mut();
+    }
+    let nd = match pkm_rs_types::NationalDex::new(species) {
+        Ok(v) => v,
+        Err(_) => return core::ptr::null_mut(),
+    };
+    let mut o = match pkm_rs::ohpkm::OhpkmV2::new(species, 0) {
+        Ok(v) => v,
+        Err(_) => return core::ptr::null_mut(),
+    };
+    let level = level.clamp(1, 100);
+    o.set_personality_value(0x87654321);
+    o.set_trainer_id(0x1234);
+    o.set_secret_id(0x5678);
+    let exp = pkm_rs_resources::species::SpeciesForm::base_form(nd)
+        .get_species_metadata()
+        .level_up_type
+        .get_min_exp_for_level(level);
+    o.set_exp(exp);
+    o.set_met_level(level);
+    let pp_of = |id: u16| {
+        if id == 0 {
+            0
+        } else {
+            pkm_rs_resources::moves::MoveIndex::from_u16(id)
+                .get_metadata()
+                .map(|md| md.pp)
+                .unwrap_or(10)
+        }
+    };
+    o.set_moves(pkm_rs_resources::moves::MoveSlots::from_arrays(
+        [
+            pkm_rs_resources::moves::MoveIndex::from_u16(m1),
+            pkm_rs_resources::moves::MoveIndex::from_u16(m2),
+            pkm_rs_resources::moves::MoveIndex::from_u16(m3),
+            pkm_rs_resources::moves::MoveIndex::from_u16(m4),
+        ],
+        [pp_of(m1), pp_of(m2), pp_of(m3), pp_of(m4)],
+        [0, 0, 0, 0],
+    ));
+    o.set_game_of_origin(pkm_rs_types::OriginGame::Sword);
+    o.set_language(pkm_rs_types::Language::English);
+    Box::into_raw(Box::new(PkmHandle { ohpkm: o }))
 }
 
 #[no_mangle]
@@ -806,8 +915,54 @@ fn convert_to_pk3(
 
     let existing_backup = ohpkm.original_data_bytes();
     let strategy = pkm_rs::convert_strategy::ConvertStrategy::default();
-    let pk3 = Pk3::from_ohpkm(ohpkm, strategy)?;
+    // Dex-cut (same data PKHeX/HOME enforce): Gen 3 holds 1-386 only.
+    let ndex = ohpkm.species_and_form().get_ndex() as u16;
+    if !pkm_rs::gen3::species_legal_in_gen3(ndex) {
+        return Err(pkm_rs::result::Error::FormIndex {
+            national_dex: ohpkm.species_and_form().get_ndex(),
+            form_index: 0,
+        });
+    }
+    let mut pk3 = Pk3::from_ohpkm(ohpkm, strategy)?;
+
+    // Move drop + refill through the MoveSlots setters. Operates on the
+    // CONVERTED slots (not source positions): upstream from_ohpkm compacts
+    // left via PP-adjust-collect, so source indices would misalign and wipe
+    // legal moves (proven: [85,500,129,503] -> [85,0,0,0] instead of
+    // [85,129,0,0]). Gen 3 only has moves introduced in Gen 3 or earlier.
+    let had_move = ohpkm.moves().indices().iter().any(|&m| m != 0);
+    let mut indices = pk3.moves.indices();
+    let mut pp = pk3.moves.pp();
+    let mut pp_ups = pk3.moves.pp_ups();
+    for slot in 0..4 {
+        if !pkm_rs::gen3::move_legal_in_gen3(indices[slot]) {
+            indices[slot] = 0;
+            pp[slot] = 0;
+            pp_ups[slot] = 0;
+        }
+    }
+    if had_move && indices == [0, 0, 0, 0] {
+        let (base, base_pp) = pkm_rs::gen3::base_moves_for_species(
+            ohpkm.species_and_form().get_ndex() as u16,
+        );
+        indices = base.to_vec();
+        pp = base_pp.to_vec();
+    }
+    pk3.moves.set_indices(&indices);
+    pk3.moves.set_pp(&pp);
+    pk3.moves.set_pp_ups(&pp_ups);
+    pk3.refresh_checksum();
+
     let mut new_ohpkm = OhpkmV2::convert_without_backup(&pk3);
+
+    // Remember pre-drop moves (upstream #924 pattern), same as Gen 1.
+    new_ohpkm.set_learned_moves(
+        ohpkm
+            .get_learned_moves()
+            .into_iter()
+            .chain(ohpkm.moves().into_iter().map(|m| m.move_index))
+            .collect(),
+    );
 
     // Propagate fields that Pk3 cannot represent, so they survive the
     // downgrade and are available when the mon returns to a later gen.
@@ -1130,18 +1285,14 @@ fn convert_to_pk6(
     }
     let mut pk6 = Pk6::from_ohpkm(ohpkm, strategy)?;
 
-    // Move drop + refill through the MoveSlots setters. Mirrors convert_to_pk4.
-    let src_moves = ohpkm.moves().indices();
+    // Move drop + refill through the MoveSlots setters. Converted slots, not
+    // source positions (same upstream-compact reason as convert_to_pk3).
+    let had_move = ohpkm.moves().indices().iter().any(|&m| m != 0);
     let mut indices = pk6.moves.indices();
     let mut pp = pk6.moves.pp();
     let mut pp_ups = pk6.moves.pp_ups();
-    let mut had_move = false;
     for slot in 0..4 {
-        let src = src_moves.get(slot).copied().unwrap_or(0);
-        if src != 0 {
-            had_move = true;
-        }
-        if !pkm_rs::gen6::move_legal_in_gen6(src) {
+        if !pkm_rs::gen6::move_legal_in_gen6(indices[slot]) {
             indices[slot] = 0;
             pp[slot] = 0;
             pp_ups[slot] = 0;
@@ -1205,6 +1356,7 @@ pub extern "C" fn openhome_count_moves_not_in_gen(
     let legal: fn(u16) -> bool = match gen {
         1 => pkm_rs::gen1::move_legal_in_gen1,
         2 => pkm_rs::gen2::move_legal_in_gen2,
+        3 => pkm_rs::gen3::move_legal_in_gen3,
         4 => pkm_rs::gen4::move_legal_in_gen4,
         5 => pkm_rs::gen5::move_legal_in_gen5,
         6 => pkm_rs::gen6::move_legal_in_gen6,
@@ -1219,7 +1371,40 @@ pub extern "C" fn openhome_count_moves_not_in_gen(
 }
 
 
-/// Level-up learnset tables live in pkm_rs::learnset (table ids mirror the
+/// Dex-cut gate per la UI (ordinamento dialoghi): 1 = specie ammessa nel
+/// target, 0 = dex-cut esplicito, u32::MAX = handle nullo. Solo gen 1-6
+/// hanno tabelle specie; per 7+ torna 1 (decide il transfer, che rifiuta
+/// via try_new) — mai un rifiuto inventato qui.
+#[cfg(not(any(feature = "alloc", feature = "std")))]
+#[no_mangle]
+pub extern "C" fn openhome_species_legal_in_gen(
+    _pkm_handle: *const PkmHandle,
+    _gen: u32,
+) -> u32 {
+    u32::MAX
+}
+#[cfg(any(feature = "alloc", feature = "std"))]
+#[no_mangle]
+pub extern "C" fn openhome_species_legal_in_gen(
+    pkm_handle: *const PkmHandle,
+    gen: u32,
+) -> u32 {
+    if pkm_handle.is_null() {
+        return u32::MAX;
+    }
+    let pkm = unsafe { &*pkm_handle };
+    let ndex = pkm.ohpkm.species_and_form().get_ndex() as u16;
+    let legal: fn(u16) -> bool = match gen {
+        1 => pkm_rs::gen1::species_legal_in_gen1,
+        2 => pkm_rs::gen2::species_legal_in_gen2,
+        3 => pkm_rs::gen3::species_legal_in_gen3,
+        4 => pkm_rs::gen4::species_legal_in_gen4,
+        5 => pkm_rs::gen5::species_legal_in_gen5,
+        6 => pkm_rs::gen6::species_legal_in_gen6,
+        _ => return 1,
+    };
+    if legal(ndex) { 1 } else { 0 }
+}
 /// C++ learnsetTableFor()); this FFI only encodes them for the UI.
 #[cfg(not(any(feature = "alloc", feature = "std")))]
 #[no_mangle]
@@ -1272,12 +1457,219 @@ pub extern "C" fn openhome_level_for_exp(_gen: u32, _ndex: u32, _exp: u32) -> u8
 pub extern "C" fn openhome_level_for_exp(gen: u32, ndex: u32, exp: u32) -> u8 {
     let ndex = ndex as u16;
     match gen {
+        1 => pkm_rs::gen1::level_for_exp(ndex, exp),
+        2 => pkm_rs::gen2::level_for_exp(ndex, exp),
         4 => pkm_rs::gen4::level_for_exp(ndex, exp),
         5 => pkm_rs::gen5::level_for_exp(ndex, exp),
         6 => pkm_rs::gen6::level_for_exp(ndex, exp),
         7 => pkm_rs::gen7_alola::level_for_exp(ndex, exp),
         _ => 0,
     }
+}
+
+// --- Party battle-tail builders (GB/GBA write-back) ---
+//
+// C++ owns the save-file layout; Rust owns data + formulas (same split as
+// openhome_level_for_exp). Untouched party members keep their stored tails
+// byte-exact (snapshot-match in C++); moved mons get fresh tails here, which
+// is exactly the in-game withdraw behavior (full HP, level/stats from data).
+// False on null/out-of-range (never partial writes). Integer math only
+// (no libm in no_std).
+fn gen12_ceil_sqrt4(exp: u32) -> u32 {
+    // floor(ceil(sqrt(exp)) / 4)
+    if exp == 0 {
+        return 0;
+    }
+    let mut r = exp;
+    let mut y = (r + 1) / 2;
+    while y < r {
+        r = y;
+        y = (r + exp / r) / 2;
+    }
+    if r * r < exp {
+        r += 1;
+    }
+    r / 4
+}
+
+fn gen12_stat(base: u16, dv: u16, exp: u32, level: u32) -> u16 {
+    // PKHeX pre-split formula, verified vs real Rosso/Oro save bytes.
+    gen12_stat_part(base, dv, exp, level) + 5
+}
+
+fn gen12_stat_part(base: u16, dv: u16, exp: u32, level: u32) -> u16 {
+    // Same without the +5 (HP uses +Level+10 instead).
+    (((base as u32 + dv as u32) * 2 + gen12_ceil_sqrt4(exp)) * level / 100) as u16
+}
+
+#[cfg(not(any(feature = "alloc", feature = "std")))]
+#[no_mangle]
+pub extern "C" fn openhome_gen1_party_tail(
+    _ndex: u16,
+    _record: *const u8,
+    _out: *mut u8,
+) -> bool {
+    false
+}
+#[cfg(any(feature = "alloc", feature = "std"))]
+#[no_mangle]
+pub extern "C" fn openhome_gen1_party_tail(ndex: u16, record: *const u8, out: *mut u8) -> bool {
+    // record: 33B box. out: 11B [level][maxHP BE][atk BE][def BE][spd BE][spc BE].
+    if record.is_null() || out.is_null() {
+        return false;
+    }
+    let rec = unsafe { core::slice::from_raw_parts(record, 33) };
+    let ob = unsafe { core::slice::from_raw_parts_mut(out, 11) };
+    let nd = match pkm_rs_types::NationalDex::new(ndex) {
+        Ok(v) => v,
+        Err(_) => return false,
+    };
+    let (b_hp, b_atk, b_def, b_spd, b_spc) =
+        match pkm_rs_resources::species::form_metadata::base_stats_lookup(
+            nd,
+            0,
+            pkm_rs_resources::metadata_source::MetadataSource::RedBlue,
+        ) {
+            Some(pkm_rs_resources::species::form_metadata::BaseStats::PreSplit(s)) => {
+                (s.hp, s.atk, s.def, s.spe, s.spc)
+            }
+            _ => return false,
+        };
+    let exp = u32::from_be_bytes([0, rec[0x0E], rec[0x0F], rec[0x10]]);
+    let level = pkm_rs::gen1::level_for_exp(ndex, exp) as u32;
+    if level == 0 || level > 100 {
+        return false;
+    }
+    let dv_atk = ((rec[0x1B] >> 4) & 0xF) as u16;
+    let dv_def = (rec[0x1B] & 0xF) as u16;
+    let dv_spd = ((rec[0x1C] >> 4) & 0xF) as u16;
+    let dv_spc = (rec[0x1C] & 0xF) as u16;
+    let dv_hp = ((dv_atk & 1) << 3) | ((dv_def & 1) << 2) | ((dv_spd & 1) << 1) | (dv_spc & 1);
+    let be = u16::from_be_bytes;
+    let e_hp = be([rec[0x11], rec[0x12]]) as u32;
+    let e_atk = be([rec[0x13], rec[0x14]]) as u32;
+    let e_def = be([rec[0x15], rec[0x16]]) as u32;
+    let e_spd = be([rec[0x17], rec[0x18]]) as u32;
+    let e_spc = be([rec[0x19], rec[0x1A]]) as u32;
+    let hp = gen12_stat_part(b_hp, dv_hp, e_hp, level) + level as u16 + 10;
+    let atk = gen12_stat(b_atk, dv_atk, e_atk, level);
+    let def = gen12_stat(b_def, dv_def, e_def, level);
+    let spd = gen12_stat(b_spd, dv_spd, e_spd, level);
+    let spc = gen12_stat(b_spc, dv_spc, e_spc, level);
+    ob[0] = level as u8;
+    ob[1..3].copy_from_slice(&hp.to_be_bytes());
+    ob[3..5].copy_from_slice(&atk.to_be_bytes());
+    ob[5..7].copy_from_slice(&def.to_be_bytes());
+    ob[7..9].copy_from_slice(&spd.to_be_bytes());
+    ob[9..11].copy_from_slice(&spc.to_be_bytes());
+    true
+}
+
+#[cfg(not(any(feature = "alloc", feature = "std")))]
+#[no_mangle]
+pub extern "C" fn openhome_gen2_party_tail(
+    _ndex: u16,
+    _record: *const u8,
+    _out: *mut u8,
+) -> bool {
+    false
+}
+#[cfg(any(feature = "alloc", feature = "std"))]
+#[no_mangle]
+pub extern "C" fn openhome_gen2_party_tail(ndex: u16, record: *const u8, out: *mut u8) -> bool {
+    // record: 32B box. out: 16B
+    // [status=0][unused=0][hp BE][maxhp BE][atk][def][spd][satk][sdef], hp=max.
+    if record.is_null() || out.is_null() {
+        return false;
+    }
+    let rec = unsafe { core::slice::from_raw_parts(record, 32) };
+    let ob = unsafe { core::slice::from_raw_parts_mut(out, 16) };
+    let nd = match pkm_rs_types::NationalDex::new(ndex) {
+        Ok(v) => v,
+        Err(_) => return false,
+    };
+    let (b_hp, b_atk, b_def, b_spd, b_satk, b_sdef) =
+        match pkm_rs_resources::species::form_metadata::base_stats_lookup(
+            nd,
+            0,
+            pkm_rs_resources::metadata_source::MetadataSource::GoldSilver,
+        ) {
+            Some(pkm_rs_resources::species::form_metadata::BaseStats::PreSplit(s)) => {
+                (s.hp, s.atk, s.def, s.spe, s.spc, s.spc)
+            }
+            // GS table stores Modern split, and Gen2 battles already use it:
+            // Oro.sav Chikorita has SAtk=10 (base 49) but SDef=12 (base 65)
+            // with a single Spc DV/exp. Same DV/exp feed both halves.
+            Some(pkm_rs_resources::species::form_metadata::BaseStats::Modern(s)) => {
+                (
+                    s.hp as u16,
+                    s.atk as u16,
+                    s.def as u16,
+                    s.spe as u16,
+                    s.spa as u16,
+                    s.spd as u16,
+                )
+            }
+            _ => return false,
+        };
+    let exp =
+        (rec[0x08] as u32) * 65536 + (rec[0x09] as u32) * 256 + rec[0x0A] as u32;
+    let level = pkm_rs::gen2::level_for_exp(ndex, exp) as u32;
+    if level == 0 || level > 100 {
+        return false;
+    }
+    let be = u16::from_be_bytes;
+    let dv = be([rec[0x15], rec[0x16]]);
+    let dv_atk = (dv >> 12) & 0xF;
+    let dv_def = (dv >> 8) & 0xF;
+    let dv_spd = (dv >> 4) & 0xF;
+    let dv_spc = dv & 0xF;
+    let dv_hp = ((dv_atk & 1) << 3) | ((dv_def & 1) << 2) | ((dv_spd & 1) << 1) | (dv_spc & 1);
+    let e_hp = be([rec[0x0B], rec[0x0C]]) as u32;
+    let e_atk = be([rec[0x0D], rec[0x0E]]) as u32;
+    let e_def = be([rec[0x0F], rec[0x10]]) as u32;
+    let e_spd = be([rec[0x11], rec[0x12]]) as u32;
+    let e_spc = be([rec[0x13], rec[0x14]]) as u32;
+    let hp = gen12_stat_part(b_hp, dv_hp, e_hp, level) + level as u16 + 10;
+    let atk = gen12_stat(b_atk, dv_atk, e_atk, level);
+    let def = gen12_stat(b_def, dv_def, e_def, level);
+    let spd = gen12_stat(b_spd, dv_spd, e_spd, level);
+    let satk = gen12_stat(b_satk, dv_spc, e_spc, level);
+    let sdef = gen12_stat(b_sdef, dv_spc, e_spc, level);
+    ob[0] = 0;
+    ob[1] = 0;
+    ob[2..4].copy_from_slice(&hp.to_be_bytes());
+    ob[4..6].copy_from_slice(&hp.to_be_bytes());
+    ob[6..8].copy_from_slice(&atk.to_be_bytes());
+    ob[8..10].copy_from_slice(&def.to_be_bytes());
+    ob[10..12].copy_from_slice(&spd.to_be_bytes());
+    ob[12..14].copy_from_slice(&satk.to_be_bytes());
+    ob[14..16].copy_from_slice(&sdef.to_be_bytes());
+    true
+}
+
+#[cfg(not(any(feature = "alloc", feature = "std")))]
+#[no_mangle]
+pub extern "C" fn openhome_pk3_party_tail(_record: *const u8, _out: *mut u8) -> bool {
+    false
+}
+#[cfg(any(feature = "alloc", feature = "std"))]
+#[no_mangle]
+pub extern "C" fn openhome_pk3_party_tail(record: *const u8, out: *mut u8) -> bool {
+    // record: 80B DECRYPTED box. out: 20B battle section (level/stats/HP),
+    // computed by upstream Pk3 (level from EXP, full HP).
+    if record.is_null() || out.is_null() {
+        return false;
+    }
+    let bytes = unsafe { core::slice::from_raw_parts(record, 80) };
+    let ob = unsafe { core::slice::from_raw_parts_mut(out, 20) };
+    let pk = match pkm_rs::gen3::Pk3::try_from_bytes(bytes) {
+        Ok(p) => p,
+        Err(_) => return false,
+    };
+    let full = pk.to_party_bytes();
+    ob.copy_from_slice(&full[80..100]);
+    true
 }
 
 /// Gen4 charset decode for the C++ detail view (reuses the verified
@@ -1680,6 +2072,30 @@ pub extern "C" fn openhome_load_ohpkm(data: *const u8, len: usize) -> *mut PkmHa
 pub extern "C" fn openhome_ohpkm_species(_handle: *mut PkmHandle) -> u16 {
     0
 }
+// Legge i 4 id mossa dell'OHPKM (diagnostica drop Gen1: quali mosse entrano
+// davvero nel transfer). Riempie out[4], false se handle nullo.
+#[cfg(not(any(feature = "alloc", feature = "std")))]
+#[no_mangle]
+pub extern "C" fn openhome_ohpkm_moves(
+    _handle: *const PkmHandle,
+    _out: *mut u16,
+) -> bool {
+    false
+}
+#[cfg(any(feature = "alloc", feature = "std"))]
+#[no_mangle]
+pub extern "C" fn openhome_ohpkm_moves(handle: *const PkmHandle, out: *mut u16) -> bool {
+    if handle.is_null() || out.is_null() {
+        return false;
+    }
+    let pkm = unsafe { &*handle };
+    let idx = pkm.ohpkm.moves().indices();
+    let dst = unsafe { core::slice::from_raw_parts_mut(out, 4) };
+    for (i, d) in dst.iter_mut().enumerate() {
+        *d = idx.get(i).copied().unwrap_or(0);
+    }
+    true
+}
 #[cfg(any(feature = "alloc", feature = "std"))]
 #[no_mangle]
 pub extern "C" fn openhome_ohpkm_species(handle: *mut PkmHandle) -> u16 {
@@ -1880,6 +2296,10 @@ mod tests {
     use super::*;
     use pkm_rs::gen1::Pk1;
     use pkm_rs::gen2::Pk2;
+    use pkm_rs::gen3::Pk3;
+    use pkm_rs::gen4::Pk4;
+    use pkm_rs::gen5::Pk5;
+    use pkm_rs::gen6::Pk6;
     use pkm_rs::gen7_alola::Pk7;
     use pkm_rs::gen8_swsh::Pk8;
     use pkm_rs::gen8_la::Pa8;
@@ -2897,8 +3317,7 @@ mod tests {
 
     // Mixed moves: legal ones survive, others become empty slots, no refill.
     #[test]
-    fn transfer_gen2_keeps_mixed_moves_without_refill() {
-        let mixed = MoveSlots::from_arrays(
+    fn transfer_gen2_keeps_mixed_moves_without_refill() {        let mixed = MoveSlots::from_arrays(
             [
                 MoveIndex::from_u16(85),
                 MoveIndex::from_u16(500),
@@ -2918,6 +3337,624 @@ mod tests {
         let converted = unsafe { &*out };
         assert_eq!(move_indices(&converted.ohpkm), [85, 0, 98, 0]);
         openhome_free_pkm(out);
+    }
+
+    // Gen3 (R/S/E) move drop + refill through the public FFI: Sword Pikachu
+    // with Gen5+ moves (500-503) -> target_gen == 3 -> count reports 4,
+    // transfer succeeds, record refilled with Emerald base moves (all
+    // Gen3-legal, PP>0), pre-drop moves remembered in LearnedMoves.
+    #[test]
+    fn transfer_gen3_drops_modern_moves_and_refills_base() {
+        let mut handle = PkmHandle {
+            ohpkm: make_test_ohpkm(OriginGame::Sword, modern_moves()),
+        };
+        handle.ohpkm.set_learned_moves(vec![MoveIndex::from_u16(100)]);
+        let ptr = &mut handle as *mut PkmHandle;
+        assert_eq!(
+            openhome_count_moves_not_in_gen(ptr, 3),
+            4,
+            "all four modern moves must be reported as dropped for Gen 3"
+        );
+        let out = openhome_transfer_pkm(ptr, 3);
+        assert!(
+            !out.is_null(),
+            "transfer to gen 3 must succeed with refilled moves"
+        );
+        let converted = unsafe { &*out };
+        let got = move_indices(&converted.ohpkm);
+        assert_ne!(got, [0, 0, 0, 0], "refill must leave usable moves");
+        assert!(
+            got.iter().all(|&m| pkm_rs::gen3::move_legal_in_gen3(m)),
+            "refilled moves must all be Gen3-legal, got {:?}",
+            got
+        );
+        let remembered: Vec<u16> = converted
+            .ohpkm
+            .get_learned_moves()
+            .iter()
+            .filter_map(|m| m.to_raw())
+            .collect();
+        assert_eq!(
+            remembered,
+            [100, 500, 501, 502, 503],
+            "pre-drop moves (plus prior memory) must survive in LearnedMoves"
+        );
+        // Materialize Pk3 box bytes through the FFI and re-parse them.
+        let mut buf = [0u8; 128];
+        let n = openhome_get_pkm_box_bytes_for_gen(out, 3, buf.as_mut_ptr(), buf.len());
+        assert_eq!(n, 80, "Pk3 box record must be 80 bytes");
+        let pk3 = Pk3::from_bytes(&buf[..n as usize]).expect("Pk3 bytes must re-parse");
+        assert_eq!(pk3.moves.indices(), got);
+        assert!(
+            pk3.moves.pp().iter().all(|&pp| pp > 0),
+            "refilled moves must carry base PP"
+        );
+        openhome_free_pkm(out);
+    }
+
+    // Gen3 keeps Gen1-era moves: Sword Pikachu test moves are all
+    // Gen3-legal, so nothing is reported and everything survives.
+    #[test]
+    fn transfer_gen3_keeps_legal_moves_without_refill() {
+        let mut handle = PkmHandle {
+            ohpkm: make_test_ohpkm(OriginGame::Sword, test_moves()),
+        };
+        let ptr = &mut handle as *mut PkmHandle;
+        assert_eq!(openhome_count_moves_not_in_gen(ptr, 3), 0);
+        let out = openhome_transfer_pkm(ptr, 3);
+        assert!(!out.is_null());
+        let converted = unsafe { &*out };
+        assert_eq!(move_indices(&converted.ohpkm), [85, 98, 86, 87]);
+        openhome_free_pkm(out);
+    }
+
+    // L2-code (scenario test HW L2): mosse miste moderne/storiche verso Gen3
+    // (Thunderbolt 85 e Swift 129 restano, 500/503 cadono, niente refill).
+    // Il dialogo UI scatta su count>0; qui si verifica il drop effettivo.
+    #[test]
+    fn transfer_gen3_keeps_mixed_moves_without_refill() {
+        let mixed = MoveSlots::from_arrays(
+            [
+                MoveIndex::from_u16(85),
+                MoveIndex::from_u16(500),
+                MoveIndex::from_u16(129),
+                MoveIndex::from_u16(503),
+            ],
+            // PP tutti legali (Swift max 20): oltre il max l'upstream azzera
+            // lo slot in PP-adjust, ed e corretto (input illegale).
+            [15, 10, 20, 10],
+            [0, 0, 0, 0],
+        );
+        let mut handle = PkmHandle {
+            ohpkm: make_test_ohpkm(OriginGame::Sword, mixed),
+        };
+        let ptr = &mut handle as *mut PkmHandle;
+        assert_eq!(openhome_count_moves_not_in_gen(ptr, 3), 2);
+        let out = openhome_transfer_pkm(ptr, 3);
+        assert!(!out.is_null());
+        let converted = unsafe { &*out };
+        // Upstream compatta a sinistra (come PKHeX DeleteMove): le due
+        // legali avanzano, niente refill (non e tutto zero).
+        assert_eq!(move_indices(&converted.ohpkm), [85, 129, 0, 0]);
+        openhome_free_pkm(out);
+    }
+
+    // L2-code gemello Gen6 (stesso bug di disallineamento, ora fixato):
+    // [85,800,129,801] -> upstream compatta [85,129,0,0], il nostro drop
+    // non deve toccare le legali.
+    #[test]
+    fn transfer_gen6_keeps_mixed_moves_without_refill() {
+        let mixed = MoveSlots::from_arrays(
+            [
+                MoveIndex::from_u16(85),
+                MoveIndex::from_u16(800),
+                MoveIndex::from_u16(129),
+                MoveIndex::from_u16(801),
+            ],
+            [15, 10, 20, 10],
+            [0, 0, 0, 0],
+        );
+        let mut handle = PkmHandle {
+            ohpkm: make_test_ohpkm(OriginGame::Sword, mixed),
+        };
+        let ptr = &mut handle as *mut PkmHandle;
+        assert_eq!(openhome_count_moves_not_in_gen(ptr, 6), 2);
+        let out = openhome_transfer_pkm(ptr, 6);
+        assert!(!out.is_null());
+        let converted = unsafe { &*out };
+        assert_eq!(move_indices(&converted.ohpkm), [85, 129, 0, 0]);
+        openhome_free_pkm(out);
+    }
+
+    // Debug generator: Pikachu L50 modern moves -> valido, exp coerente,
+    // specie conservata; Koraidon passa il gate specie; specie 0 -> NULL.
+    #[test]
+    fn generate_test_pkm_builds_valid_handle() {
+        let h = openhome_generate_test_pkm(25, 50, 800, 801, 802, 803);
+        assert!(!h.is_null(), "generator must return a handle");
+        assert_eq!(openhome_ohpkm_species(h), 25);
+        assert_eq!(move_indices(&unsafe { &*h }.ohpkm), [800, 801, 802, 803]);
+        // E trasferisce davvero (drop Gen3 + refill base, come L2):
+        let out = openhome_transfer_pkm(h, 3);
+        assert!(!out.is_null());
+        let got = move_indices(&unsafe { &*out }.ohpkm);
+        assert_ne!(got, [0, 0, 0, 0]);
+        assert!(got.iter().all(|&m| pkm_rs::gen3::move_legal_in_gen3(m)));
+        openhome_free_pkm(out);
+        openhome_free_pkm(h);
+        assert!(openhome_generate_test_pkm(0, 50, 1, 2, 3, 4).is_null());
+        assert!(openhome_generate_test_pkm(9999, 50, 1, 2, 3, 4).is_null());
+    }
+
+    // Dex-cut gate per la UI: Koraidon (1007) fuori dex 1-6, Pikachu dentro;
+    // gen senza tabelle (8) presume legale; null -> MAX.
+    #[test]
+    fn species_legal_in_gen_for_ui_ordering() {
+        let mut kora = PkmHandle {
+            ohpkm: make_test_ohpkm_gen(1007),
+        };
+        let kp = &mut kora as *mut PkmHandle;
+        for gen in [1u32, 2, 3, 4, 5, 6] {
+            assert_eq!(
+                openhome_species_legal_in_gen(kp, gen),
+                0,
+                "Koraidon must be dex-cut for gen{}",
+                gen
+            );
+        }
+        assert_eq!(openhome_species_legal_in_gen(kp, 8), 1);
+        assert_eq!(
+            openhome_species_legal_in_gen(core::ptr::null(), 1),
+            u32::MAX
+        );
+        let mut pika = PkmHandle {
+            ohpkm: make_test_ohpkm(OriginGame::Sword, test_moves()),
+        };
+        let pp = &mut pika as *mut PkmHandle;
+        for gen in [1u32, 2, 3, 4, 5, 6] {
+            assert_eq!(
+                openhome_species_legal_in_gen(pp, gen),
+                1,
+                "Pikachu must be legal for gen{}",
+                gen
+            );
+        }
+    }
+
+    // Dex-cut Pb8 (BDSP = dex Sinnoh via DiamondPearl, non Galar):
+    // Greninja (658) rifiutato, Pidgey (16) accettato. Regressione fix Pb8.
+    #[test]
+    fn transfer_gen12_sinnoh_dex_gate() {
+        let mut gren = PkmHandle {
+            ohpkm: make_test_ohpkm_gen(658),
+        };
+        let gp = &mut gren as *mut PkmHandle;
+        assert!(
+            openhome_transfer_pkm(gp, 12).is_null(),
+            "Greninja must be dex-cut for BDSP"
+        );
+        let mut pidg = PkmHandle {
+            ohpkm: make_test_ohpkm_gen(16),
+        };
+        let pp = &mut pidg as *mut PkmHandle;
+        let out = openhome_transfer_pkm(pp, 12);
+        assert!(
+            !out.is_null(),
+            "Pidgey must convert for BDSP (Sinnoh dex)"
+        );
+        assert_eq!(openhome_ohpkm_species(out), 16);
+        openhome_free_pkm(out);
+    }
+
+    // Regressione R3 Rosso: Pikachu con TUTTE le mosse fuori Gen1 non deve
+    // sparire — entra con refill learnset RB + count 4.
+    #[test]
+    fn transfer_gen1_all_moves_dropped_refills() {
+        let mut m = make_test_ohpkm(
+            OriginGame::Sword,
+            MoveSlots::from_arrays(
+                [
+                    MoveIndex::from_u16(800),
+                    MoveIndex::from_u16(801),
+                    MoveIndex::from_u16(802),
+                    MoveIndex::from_u16(803),
+                ],
+                [10, 10, 10, 10],
+                [0, 0, 0, 0],
+            ),
+        );
+        let mut handle = PkmHandle { ohpkm: m };
+        let ptr = &mut handle as *mut PkmHandle;
+        assert_eq!(openhome_count_moves_not_in_gen(ptr, 1), 4);
+        let out = openhome_transfer_pkm(ptr, 1);
+        assert!(
+            !out.is_null(),
+            "Pikachu all-modern-moves must still convert for Gen1 (refill)"
+        );
+        assert_eq!(openhome_ohpkm_species(out), 25);
+        openhome_free_pkm(out);
+        // Stesso caso ma dal percorso generate (blob serializzato come in banca).
+        let gen = openhome_generate_test_pkm(25, 50, 800, 801, 802, 803);
+        assert!(!gen.is_null(), "generate drops Pikachu");
+        let mut buf = alloc::vec![0u8; 2048];
+        let nbytes = openhome_get_ohpkm_bytes(gen, buf.as_mut_ptr(), buf.len());
+        assert!(nbytes > 0 && (nbytes as usize) < buf.len());
+        buf.truncate(nbytes as usize);
+        let back = openhome_load_ohpkm(buf.as_ptr(), buf.len());
+        assert!(!back.is_null(), "generated blob must reload");
+        let out2 = openhome_transfer_pkm(back, 1);
+        assert!(
+            !out2.is_null(),
+            "generated drops Pikachu must convert for Gen1 (refill)"
+        );
+        assert_eq!(openhome_ohpkm_species(out2), 25);
+        openhome_free_pkm(out2);
+        openhome_free_pkm(back);
+        openhome_free_pkm(gen);
+    }
+
+    // Diagnostica R3: stampa le mosse risultanti per i tre input Pikachu.
+    #[test]
+    fn debug_gen1_pikachu_moves() {
+        for (name, mv) in [
+            ("mixed", [85u16, 800, 129, 801]),
+            ("drops", [800u16, 801, 802, 803]),
+            ("clean", [85u16, 98, 86, 87]),
+        ] {
+            let m = make_test_ohpkm(
+                OriginGame::Sword,
+                MoveSlots::from_arrays(
+                    [
+                        MoveIndex::from_u16(mv[0]),
+                        MoveIndex::from_u16(mv[1]),
+                        MoveIndex::from_u16(mv[2]),
+                        MoveIndex::from_u16(mv[3]),
+                    ],
+                    [10, 10, 10, 10],
+                    [0, 0, 0, 0],
+                ),
+            );
+            let mut handle = PkmHandle { ohpkm: m };
+            let ptr = &mut handle as *mut PkmHandle;
+            let out = openhome_transfer_pkm(ptr, 1);
+            assert!(!out.is_null(), "{name} must convert");
+            let om = unsafe { &*out }.ohpkm.moves().indices();
+            std::println!("{name}: in={mv:?} out_moves={om:?}");
+            openhome_free_pkm(out);
+        }
+    }
+
+    // BLANKET fixture matrix: ogni record reale in tools/test save/upstream
+    // parte dalla sua gen e viene trasferito verso tutti i 13 target.
+    // Politica verificata per ogni cella:
+    // - dex-cut (specie fuori dex target 1/2/4/5/6) -> NULL esplicito;
+    // - successo verso 1-6 -> tutte le 4 mosse legali nel target (drop+refill
+    //   nostri), specie conservata, box-bytes di lunghezza esatta e re-parse;
+    // - successo verso 7+ -> handle valido + box-bytes non vuoti (preserve
+    //   upstream: niente drop, solo legalizzazione identita);
+    // - count_moves_not_in_gen coerente con le mosse sorgente (target 1-6).
+    // I file .pkm party-sized (220B) o illeggibili vengono saltati con nota
+    // (eprintln), mai fatti passare in silenzio: lo skip e conteggiato e
+    // l'asserzione finale lo rende visibile.
+    #[cfg(feature = "std")]
+    #[test]
+    fn blanket_fixture_transfer_matrix() {
+        use std::fs;
+        let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tools/test save/upstream");
+        let mut entries: Vec<_> = fs::read_dir(&dir)
+            .expect("upstream fixture dir must exist")
+            .filter_map(|e| e.ok())
+            .collect();
+        entries.sort_by_key(|e| e.file_name());
+        assert!(!entries.is_empty(), "no fixtures found");
+
+        fn infer_gen(name: &str, len: usize) -> Option<u32> {
+            if name.ends_with(".pk2") {
+                Some(2)
+            } else if name.ends_with(".pk7") {
+                Some(7)
+            } else if name.ends_with(".pk4") {
+                Some(4)
+            } else if name.ends_with(".pk5") {
+                Some(5)
+            } else if name.ends_with(".pkm") {
+                match len {
+                    136 => Some(4),
+                    220 => Some(5),
+                    _ => None,
+                }
+            } else {
+                None
+            }
+        }
+        fn species_gate(target: u32, ndex: u16) -> Option<bool> {
+            match target {
+                1 => Some(pkm_rs::gen1::species_legal_in_gen1(ndex)),
+                2 => Some(pkm_rs::gen2::species_legal_in_gen2(ndex)),
+                3 => Some(pkm_rs::gen3::species_legal_in_gen3(ndex)),
+                4 => Some(pkm_rs::gen4::species_legal_in_gen4(ndex)),
+                5 => Some(pkm_rs::gen5::species_legal_in_gen5(ndex)),
+                6 => Some(pkm_rs::gen6::species_legal_in_gen6(ndex)),
+                _ => None,
+            }
+        }
+        fn move_gate(target: u32, id: u16) -> Option<bool> {
+            match target {
+                1 => Some(pkm_rs::gen1::move_legal_in_gen1(id)),
+                2 => Some(pkm_rs::gen2::move_legal_in_gen2(id)),
+                3 => Some(pkm_rs::gen3::move_legal_in_gen3(id)),
+                4 => Some(pkm_rs::gen4::move_legal_in_gen4(id)),
+                5 => Some(pkm_rs::gen5::move_legal_in_gen5(id)),
+                6 => Some(pkm_rs::gen6::move_legal_in_gen6(id)),
+                _ => None,
+            }
+        }
+        fn box_len(target: u32) -> Option<usize> {
+            match target {
+                1 => Some(33),
+                2 => Some(32),
+                3 => Some(80),
+                4 => Some(136),
+                5 => Some(136),
+                6 => Some(232),
+                _ => None,
+            }
+        }
+
+        let mut loaded = 0;
+        let mut skipped = 0;
+        let mut cells_ok = 0;
+        let mut cells_dexcut = 0;
+        for e in entries {
+            let name = e.file_name().to_string_lossy().into_owned();
+            let bytes = fs::read(e.path()).expect("fixture must be readable");
+            let src = match infer_gen(&name, bytes.len()) {
+                Some(g) => g,
+                None => {
+                    eprintln!("SKIP (no gen): {}", name);
+                    skipped += 1;
+                    continue;
+                }
+            };
+            let h = openhome_load_pkm_from_gen(
+                bytes.as_ptr(),
+                bytes.len(),
+                src,
+            );
+            if h.is_null() {
+                eprintln!("SKIP (parse gen{}): {} ({}B)", src, name, bytes.len());
+                skipped += 1;
+                continue;
+            }
+            loaded += 1;
+            let ndex = openhome_ohpkm_species(h);
+            assert_ne!(ndex, 0, "{}: parsed species must be nonzero", name);
+            let src_moves = move_indices(&unsafe { &*h }.ohpkm);
+            // count coerente per i target 1-6
+            for t in [1u32, 2, 3, 4, 5, 6] {
+                let expect = src_moves
+                    .iter()
+                    .filter(|&&id| id != 0 && !move_gate(t, id).unwrap())
+                    .count() as u32;
+                let got = openhome_count_moves_not_in_gen(h, t);
+                assert_eq!(
+                    got, expect,
+                    "{}: count gen{} must be {} (moves {:?})",
+                    name, t, expect, src_moves
+                );
+            }
+            for target in 1u32..=13 {
+                let out = openhome_transfer_pkm(h, target);
+                match species_gate(target, ndex) {
+                    Some(false) => {
+                        assert!(
+                            out.is_null(),
+                            "{} (ndex {}): dex-cut to gen{} must be NULL",
+                            name, ndex, target
+                        );
+                        cells_dexcut += 1;
+                        continue;
+                    }
+                    _ => {}
+                }
+                if out.is_null() {
+                    // Target senza gate specie (3/7+): NULL ammesso solo per
+                    // motivi documentati (forme/indici fuori range) — mai
+                    // crash, e il conteggio resta visibile nel summary.
+                    eprintln!(
+                        "NULL (no gate): {} ndex {} -> gen{}",
+                        name, ndex, target
+                    );
+                    continue;
+                }
+                let conv = unsafe { &*out };
+                assert_eq!(
+                    openhome_ohpkm_species(out),
+                    ndex,
+                    "{}: species must survive transfer to gen{}",
+                    name,
+                    target
+                );
+                if let Some(want_len) = box_len(target) {
+                    // Target 1-6: mosse tutte legali + box-bytes esatti.
+                    let got_moves = move_indices(&conv.ohpkm);
+                    assert!(
+                        got_moves.iter().all(|&m| move_gate(target, m).unwrap()),
+                        "{} -> gen{}: moves {:?} must all be legal",
+                        name,
+                        target,
+                        got_moves
+                    );
+                    let mut buf = [0u8; 512];
+                    let n = openhome_get_pkm_box_bytes_for_gen(
+                        out,
+                        target,
+                        buf.as_mut_ptr(),
+                        buf.len(),
+                    );
+                    assert_eq!(
+                        n as usize, want_len,
+                        "{} -> gen{}: box bytes must be {}B",
+                        name, target, want_len
+                    );
+                    // Re-parse: il record materializzato deve rileggersi.
+                    let re = match target {
+                        1 => Pk1::from_bytes(&buf[..n as usize]).map(|_| ()),
+                        2 => Pk2::from_bytes(&buf[..n as usize]).map(|_| ()),
+                        3 => Pk3::from_bytes(&buf[..n as usize]).map(|_| ()),
+                        4 => Pk4::from_bytes(&buf[..n as usize]).map(|_| ()),
+                        5 => Pk5::from_bytes(&buf[..n as usize]).map(|_| ()),
+                        6 => Pk6::from_bytes(&buf[..n as usize]).map(|_| ()),
+                        _ => unreachable!(),
+                    };
+                    assert!(
+                        re.is_ok(),
+                        "{} -> gen{}: materialized bytes must re-parse",
+                        name,
+                        target
+                    );
+                } else {
+                    // Target 7+: handle valido + box-bytes non vuoti.
+                    let mut buf = [0u8; 512];
+                    let n = openhome_get_pkm_box_bytes_for_gen(
+                        out,
+                        target,
+                        buf.as_mut_ptr(),
+                        buf.len(),
+                    );
+                    assert!(
+                        n > 0,
+                        "{} -> gen{}: box bytes must be non-empty",
+                        name,
+                        target
+                    );
+                }
+                cells_ok += 1;
+                openhome_free_pkm(out);
+            }
+            openhome_free_pkm(h);
+        }
+        eprintln!(
+            "BLANKET: fixtures loaded={} skipped={} cells_ok={} cells_dexcut={}",
+            loaded, skipped, cells_ok, cells_dexcut
+        );
+        assert!(loaded > 0, "blanket must load at least one fixture");
+    }
+
+    // Real Gen3 record (Seedot, ndex 255: internal index 280 — 80B box
+    // bytes from Zaffiro.sav party, nickname/OT scrubbed + checksum
+    // recomputed): load -> species 255 -> transfer to Gen 8 preserves
+    // species (Gen3-start coverage to mirror the embedded Gen1 record).
+    #[test]
+    fn load_real_zaffiro_seedot_and_transfer() {
+        let rec: [u8; 80] = [
+            0xa9, 0xe3, 0x3e, 0x87, 0x69, 0x55, 0x83, 0x1a, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff, 0x04, 0x02, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0xff, 0x00, 0x08, 0x0c, 0x00, 0x00, 0xc0,
+            0xb5, 0xbd, 0x9c, 0xc0, 0xb6, 0xbd, 0x9d, 0xc0, 0xb6, 0xbd, 0x9d,
+            0xc0, 0xa6, 0x38, 0xbd, 0x4c, 0x9c, 0x53, 0xad, 0xc0, 0xb6, 0xbd,
+            0x9d, 0xca, 0xb6, 0x90, 0x9d, 0xb4, 0xb6, 0xbd, 0x9d, 0xe3, 0x9e,
+            0xa3, 0x9d, 0xd8, 0xb7, 0xbd, 0x9d, 0xc5, 0xb7, 0xbd, 0x9d, 0xc0,
+            0xe7, 0xbd, 0x9d,
+        ];
+        assert!(pkm_rs::gen3::species_legal_in_gen3(255));
+        let h = openhome_load_pkm_from_gen(rec.as_ptr(), rec.len(), 3);
+        assert!(!h.is_null(), "real Seedot bytes must load as gen 3");
+        assert_eq!(openhome_ohpkm_species(h), 255);
+        let out = openhome_transfer_pkm(h, 8);
+        assert!(!out.is_null(), "Seedot Gen3 -> Gen8 must succeed");
+        assert_eq!(openhome_ohpkm_species(out), 255);
+        openhome_free_pkm(out);
+        openhome_free_pkm(h);
+    }
+
+    // Gen1 party tail from real Rosso.sav bytes (Charmander 33B record):
+    // box-trick behavior — level from EXP, fresh full-HP stats. The stored
+    // tail (L7) is preserved verbatim by the C++ snapshot-match; this covers
+    // moved mons. Null safety included.
+    #[test]
+    fn gen1_party_tail_rosso_charmander() {
+        let rec: [u8; 33] = [
+            0xb0, 0x00, 0x16, 0x00, 0x00, 0x14, 0x14, 0x2d, 0x0a, 0x2d, 0x00,
+            0x00, 0x37, 0x20, 0x00, 0x01, 0x03, 0x00, 0x9a, 0x00, 0xc2, 0x00,
+            0xb4, 0x00, 0xe3, 0x00, 0x91, 0x08, 0xd2, 0x23, 0x28, 0x00, 0x00,
+        ];
+        assert_eq!(pkm_rs::gen1::level_for_exp(4, 0x103), 7);
+        let mut out = [0u8; 11];
+        assert!(openhome_gen1_party_tail(4, rec.as_ptr(), out.as_mut_ptr()));
+        // L7 Charmander (RB bases 39/52/43/65/50): HP 22, 12/12/16/12.
+        assert_eq!(
+            out,
+            [0x07, 0x00, 0x16, 0x00, 0x0c, 0x00, 0x0c, 0x00, 0x10, 0x00, 0x0c]
+        );
+        assert!(!openhome_gen1_party_tail(4, core::ptr::null(), out.as_mut_ptr()));
+        assert!(!openhome_gen1_party_tail(4, rec.as_ptr(), core::ptr::null_mut()));
+        assert!(!openhome_gen1_party_tail(999, rec.as_ptr(), out.as_mut_ptr()));
+    }
+
+    // Gen2 party tail from real Oro.sav bytes (Chikorita 32B record).
+    #[test]
+    fn gen2_party_tail_oro_chikorita() {
+        let rec: [u8; 32] = [
+            0x98, 0xad, 0x21, 0x2d, 0x00, 0x00, 0x6c, 0xca, 0x00, 0x00, 0xa6,
+            0x00, 0x4b, 0x00, 0x5b, 0x00, 0x4a, 0x00, 0x4c, 0x00, 0x46, 0x4f,
+            0x77, 0x23, 0x28, 0x00, 0x00, 0x46, 0x00, 0x00, 0x00, 0x05,
+        ];
+        assert_eq!(pkm_rs::gen2::level_for_exp(152, 0xa6), 5);
+        let mut out = [0u8; 16];
+        assert!(openhome_gen2_party_tail(152, rec.as_ptr(), out.as_mut_ptr()));
+        // L5 Chikorita (GS bases 45/49/65/45/49/65): HP 20, 10/13/10/10/12.
+        assert_eq!(
+            out,
+            [
+                0x00, 0x00, 0x00, 0x14, 0x00, 0x14, 0x00, 0x0a, 0x00, 0x0d,
+                0x00, 0x0a, 0x00, 0x0a, 0x00, 0x0c
+            ]
+        );
+        assert!(!openhome_gen2_party_tail(152, core::ptr::null(), out.as_mut_ptr()));
+    }
+
+    // Egg flag must survive PK4 -> OHPKM -> PK3 untouched (a real non-egg
+    // Typhlosion must never gain the egg bit in a cross-gen trip, and a real
+    // egg flag must not be dropped — either way the hand/box would lie).
+    #[test]
+    fn is_egg_survives_pk4_to_pk3_trip() {
+        use pkm_rs::gen3::Pk3;
+        use pkm_rs::gen4::Pk4;
+        use pkm_rs::ohpkm::OhpkmConvert;
+        let raw = include_bytes!("../../../tools/test save/upstream/typhlosion.pkm");
+        let pk4 = Pk4::from_bytes(raw).expect("real Typhlosion must parse");
+        let ohpkm = OhpkmV2::convert_without_backup(&pk4);
+        assert!(!ohpkm.is_egg(), "real non-egg Typhlosion must stay non-egg");
+        let strategy = pkm_rs::convert_strategy::ConvertStrategy::default();
+        let pk3 = Pk3::from_ohpkm(&ohpkm, strategy).expect("Typhlosion converts to PK3");
+        assert!(!pk3.is_egg, "PK3 converted from non-egg must stay non-egg");
+        let back = OhpkmV2::convert_without_backup(&pk3);
+        assert!(!back.is_egg(), "round trip must not invent an egg flag");
+    }
+
+    // Pk3 party tail: upstream serializer on a synthesised mon (no GBA save
+    // fixture with boxed mons exists). Structural: level from EXP, HP full,
+    // deterministic, null-safe.
+    #[test]
+    fn pk3_party_tail_synthesised() {
+        use pkm_rs::gen3::Pk3;
+        let mon = Pk3 {
+            exp: 10000,
+            ..Default::default()
+        };
+        let boxy = mon.to_box_bytes();
+        assert_eq!(boxy.len(), 80);
+        let mut tail = [0u8; 20];
+        assert!(openhome_pk3_party_tail(boxy.as_ptr(), tail.as_mut_ptr()));
+        let mut tail2 = [0u8; 20];
+        assert!(openhome_pk3_party_tail(boxy.as_ptr(), tail2.as_mut_ptr()));
+        assert_eq!(tail, tail2, "tail must be deterministic");
+        assert_eq!(tail[0x54 - 80], mon.calculate_level());
+        let hp = u16::from_le_bytes([tail[0x56 - 80], tail[0x57 - 80]]);
+        assert_eq!(hp, mon.calculate_stats().hp, "current HP must equal max");
+        assert!(!openhome_pk3_party_tail(core::ptr::null(), tail.as_mut_ptr()));
     }
 
     // Real-cart regression (Yellow "Versione Gialla" starter Pikachu, party
@@ -4318,7 +5355,7 @@ mod tests {
         //  - 0x8a..0x8c: currentHP — a party field the box serializer drops.
         //  - 0xd6..0xf7: LZA "plus move" mastery block C. Not modeled by the Pk9
         //    wrapper; an LZA->LZA move keeps it only via the OriginalBackup
-        //    (see GenPorting.md, PA9 v1 caveat).
+        //    (PA9 v1 caveat: upstream reads 0x60, writes 0x94).
         //  - 0x148..0x156: level + party stats, recomputed by the game on load.
         let excluded = |i: usize| {
             (0x04..0x08).contains(&i)
