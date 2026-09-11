@@ -17,6 +17,33 @@ transfer. Failures are always explicit, never silent.
 - Wondercard injection, automatic save backups, LED, network indicator
 - Self-update from SD/GitHub releases
 
+## Supported games
+
+| Family | Games | Via |
+|---|---|---|
+| Switch | Scarlet / Violet (4.0.0), Sword / Shield (1.3.2), BDSP (1.3.0), Legends Arceus (1.1.1), Legends Z-A (2.0.2), Let's Go Pikachu/Eevee (1.0.2), FireRed/LeafGreen (incl. ES/DE/IT/FR/JA) | Installed save (`AccountManager`) |
+| GBA (import) | Ruby / Sapphire / Emerald | SD/USB file |
+| GB (import) | Red / Blue / Yellow, Gold / Silver / Crystal | SD/USB file |
+| DS (import) | Diamond / Pearl / Platinum / HGSS, Black / White / B2W2, X / Y, Sun / Moon (decrypted) | SD/USB file |
+
+Cross-gen bank covers all 13 stored formats (PK1/PK2/PK3/PK4/PK5/PK6/PK7/PK8/PK9/PA8/PA9/PB8/PB7).
+
+## Import (emulators) — already scanned
+
+* `sdmc:/switch/OpenHomeNX/import/` is always scanned (created if missing).
+* Extra folders: **Settings → Data → Cartelle import** → `+ Add path…` (any `sdmc:/…` or `usb:/…`), enable/disable per path.
+* USB autocheck (optional): **Settings → Data → Autocheck save su USB** scans every mounted drive's `/roms/saves` and `/roms` on hotplug — Ruby/Sapphire/Emerald, GB/GBC/GBA/DS saves are picked up without manual path.
+* Rescan: **Settings → Data → Scansiona import** or replug drive.
+
+## USB peripherals
+
+USB drives via `libusbhsfs` (FAT-only, ISC build in `libusbhsfs/lib`). Hotplug detected, safe eject via trash icon or `Y` in game selector, LED + `debug.log` hints (`physical>0 mounted==0` → MBR/FS issue). Backups and import both work from USB; update can also be fetched from `usb:/switch/OpenHomeNX/update/` or network.
+
+## Screenshots
+
+![Gallery — list + preview](docs/screenshot/gallery_view.jpg)
+![Classic — remodernized pkHouse grid](docs/screenshot/classic_view.jpg)
+
 ## Install (Switch)
 
 1. Download `OpenHomeNX.nro` from the latest [release](../../releases) and copy it to
@@ -111,6 +138,33 @@ cross-gen reale. I fallimenti sono sempre espliciti, mai silenziosi.
 - Save nativi GB/GBC/GBA/DS/3DS-decifrati + import da SD/USB
 - Wondercard injection, backup automatici dei save, LED, indicatore rete
 - Self-update da SD/release GitHub
+
+## Giochi supportati
+
+| Famiglia | Giochi | Via |
+|---|---|---|
+| Switch | Scarlatto / Violetto (4.0.0), Spada / Scudo (1.3.2), Diamante Lucente / Perla Splendente (1.3.0), Leggende Arceus (1.1.1), Leggende Z-A (2.0.2), Let's Go Pikachu/Eevee (1.0.2), Rosso Fuoco / Verde Foglia (incl. ES/DE/IT/FR/JA) | Save installato (`AccountManager`) |
+| GBA (import) | Rubino / Zaffiro / Smeraldo | File SD/USB |
+| GB (import) | Rosso / Blu / Giallo, Oro / Argento / Cristallo | File SD/USB |
+| DS (import) | Diamante / Perla / Platino / HGSS, Nero / Bianco / B2W2, X / Y, Sole / Luna (decifrati) | File SD/USB |
+
+Banca cross-gen: tutti i 13 formati (PK1/PK2/PK3/PK4/PK5/PK6/PK7/PK8/PK9/PA8/PA9/PB8/PB7).
+
+## Import (emulatori) — già scansionato
+
+* `sdmc:/switch/OpenHomeNX/import/` è sempre scansionato (creato se manca).
+* Altre cartelle: **Impostazioni → Dati → Cartelle import** → `+ Aggiungi percorso…` (qualsiasi `sdmc:/…` o `usb:/…`), attivazione per percorso.
+* Autocheck USB (opzionale): **Impostazioni → Dati → Autocheck save su USB** scansiona ogni drive montato in `/roms/saves` e `/roms` all'hotplug — save Ruby/GB/GBA/DS rilevati senza percorso manuale.
+* Riscansione: **Impostazioni → Dati → Scansiona import** o ricollegando la chiavetta.
+
+## Periferiche USB
+
+Chiavette USB via `libusbhsfs` (solo FAT, build ISC in `libusbhsfs/lib`). Hotplug rilevato, espulsione sicura via icona cestino o `Y` nel selettore giochi, LED + hint `debug.log` (`physical>0 mounted==0` → MBR/FS). Backup e import funzionano da USB; update anche da `usb:/switch/OpenHomeNX/update/` o rete.
+
+## Screenshot
+
+![Galleria — lista + anteprima](docs/screenshot/gallery_view.jpg)
+![Classica — griglia pkHouse rimodernizzata](docs/screenshot/classic_view.jpg)
 
 ## Installazione (Switch)
 
