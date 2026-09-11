@@ -4,9 +4,7 @@
 
 Box manager and cross-generation transfer for Nintendo Switch (homebrew `.nro`).
 
-Combines the **pkHouse** UI (C++/SDL2) with the **OpenHome** backend
-(Rust via FFI): box management across all generations with real cross-gen
-transfer. Failures are always explicit, never silent.
+Built on the **pkHouse** UI framework (C++/SDL2) — graphics and layouts adapted and extended — combined with the **OpenHome** backend (Rust via FFI): box management across all generations with real cross-gen transfer. Failures are always explicit, never silent.
 
 ## Screenshots
 
@@ -148,9 +146,7 @@ owned game copies; always back up your saves.
 
 Box manager e trasferimento cross-generazione per Nintendo Switch (homebrew `.nro`).
 
-Unisce l'interfaccia di **pkHouse** (C++/SDL2) con il backend di **OpenHome**
-(Rust via FFI): gestione box su tutte le generazioni con trasferimento
-cross-gen reale. I fallimenti sono sempre espliciti, mai silenziosi.
+Costruito sul framework UI di **pkHouse** (C++/SDL2) — grafica e layout adattati ed estesi — unito al backend di **OpenHome** (Rust via FFI): gestione box su tutte le generazioni con trasferimento cross-gen reale. I fallimenti sono sempre espliciti, mai silenziosi.
 
 ## Screenshot
 
