@@ -42,6 +42,18 @@ ls -lh dist/OpenHomeNX.nro dist/latest.json
 cat dist/latest.json
 echo ""
 if [ "$1" = "serve" ]; then
+  OLD=$(lsof -tiTCP:8000 -sTCP:LISTEN 2>/dev/null | head -1)
+  if [ -n "$OLD" ]; then
+    echo "serve gia attivo (PID $OLD). Killarlo? [y/N]"
+    read -r ANS
+    if [ "$ANS" = "y" ] || [ "$ANS" = "Y" ]; then
+      kill "$OLD" 2>/dev/null
+      sleep 1
+    else
+      echo "ok, tengo quello vecchio."
+      exit 0
+    fi
+  fi
   IP=$(ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/null || echo "localhost")
   echo "==> http://$IP:8000  (update.cfg: url=http://$IP:8000 )"
   echo "    POST /upload -> dist/uploads/ (per Send log)"

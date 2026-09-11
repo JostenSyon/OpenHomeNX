@@ -98,6 +98,7 @@ public:
     void setAppletMode(bool mode) { appletMode_ = mode; }
     bool isDualBankMode() const { return appletMode_ || allBanksMode_; }
     void run(const std::string& basePath, const std::string& savePath);
+    void backupOnExitIfNeeded(); // backup una tantum se dirty+modificato
 
     // Pending-update fast path (OpenHomeNX.nro.new present). Consolidates it
     // into OpenHomeNX.nro; if a bounce into the fresh .nro is needed, draws the
@@ -223,6 +224,7 @@ private:
     // + anteprima grande). Persistito in gallery.cfg, vedi theme.h/.cpp.
     enum class GameSelectorLayout : int { Classic = 0, Gallery = 1 };
     GameSelectorLayout gameSelectorLayout_ = GameSelectorLayout::Classic;
+    float galScrollX_ = 0.0f; // scroll fluido galleria (lerp verso il target)
 
     // Theme
     int themeIndex_ = DEFAULT_THEME_INDEX;
@@ -341,7 +343,7 @@ private:
     // default 256/32; 0 = illimitato). Mai i manuali.
     long backupCapMb(bool fileBacked) const;
     std::vector<std::string> autoBackupEntries(GameType g) const;
-    bool autoBackupNeeded(GameType g, bool fileBacked, const std::string& src, uint64_t srcSize);
+    bool autoBackupNeeded(GameType g, const std::string& srcFile, uint64_t srcSize, long srcMt, bool haveSrc);
     uint64_t pruneBackupsToCap(GameType g, bool fileBacked);
 
     // Wondercard list state
@@ -429,6 +431,11 @@ private:
     int stickDirY_ = 0;
     uint32_t stickMoveTime_ = 0; // last move timestamp
     bool stickMoved_ = false;    // has initial move fired?
+    // Timestamp di quando la direzione CORRENTE della levetta e' iniziata
+    // (azzerato in updateStick() ogni volta che la direzione cambia, incluso
+    // il ritorno a zero): usato per accelerare lo scroll verticale della
+    // lista Galleria quando tenuta ferma a lungo (vedi handleGameSelectorInput).
+    uint32_t stickHoldStart_ = 0;
     void updateStick(int16_t axisX, int16_t axisY);
 
     // L/R shoulder button repeat
@@ -470,10 +477,17 @@ private:
     int ejectAnimStage_ = 0; // 0 idle, 1 fade eject dopo espulsione, 2 rientro vault
     int selPageShown_ = 0;   // pagina disegnata (segue gameSelPage_ con slide)
     float selSlide_ = 0.0f;  // offset slide in unita pagina (-1..1)
+    // Anteprima Galleria: indice disegnato (insegue gameSelCursor_ con
+    // slide verticale), stesso schema di selPageShown_/selSlide_ sopra.
+    int galSelShown_ = -1;   // -1 = non inizializzato (niente animazione al primo frame)
+    float galSlide_ = 0.0f;  // offset slide in unita "altezza pannello" (-1..1)
     void ejectUsbDevices();
     void sendLogNow();
     bool sendAvailable() const; // debug on + override url attivo
     uint64_t prunePoolToCap(bool fileBacked); // tetto cumulativo, oldest-first
+    static void writeAutoInfo(const std::string& entry, uint64_t bytes, long mt);
+    bool exitBackedUp_ = false; // gioco corrente gia coperto all'uscita
+    bool backupTitleNow(GameType g, const std::string& mountPath, const std::string& saveFile);
     // update.cfg / update.cfg.off (sorgente update custom on/off)
     static bool hasCustomUrlFile(const std::string& basePath);
     static void findUpdateCfgFiles(const std::string& basePath, std::string& cfg, std::string& off);
@@ -622,10 +636,38 @@ private:
     // Game selector
     void drawGameSelectorFrame();
     void handleGameSelectorInput(bool& running);
+    // Icona/box-art di availableGames_[i] dentro il rettangolo
+    // (iconX, iconY, size, size): loghi, colori flat per GameType,
+    // posizionamento custom RSE, badge sorgente import. Condivisa fra la
+    // griglia Classica (size=IS) e l'anteprima Galleria (size=COVER).
+    // Colore flat per-GameType (Bulbapedia color template) usato come
+    // sfondo delle tile senza titleId in drawGameArt() e, quando il gioco
+    // non ha una vera icona in cache (quindi niente gameAccentCache_), come
+    // colore dell'accent "vetro" in Galleria (drawGameList_Gallery).
+    SDL_Color flatBgColorFor(GameType g) const;
+    void drawGameArt(int i, int iconX, int iconY, int size, bool scaleInner = false);
     // Vista Galleria (source/ui_gallery.cpp): lista + anteprima grande,
     // alternativa alla griglia Classica scelta in Impostazioni > Aspetto.
     void drawGameList_Gallery();
     void selectorTapGallery(float px, float py, bool& running);
+    bool galleryScrollAnim();
+    // Party preview Galleria: cache per gioco (specie/livello/shiny/uovo),
+    // validata via mtime (mount+stat, niente decrypt). Load completo solo
+    // se cambiato, mai eager.
+    struct PartyPreviewMon { uint16_t species = 0; uint8_t level = 0; uint8_t form = 0; bool shiny = false; bool egg = false; bool empty = true; };
+    struct PartyPreview { long mtime = -1; bool loading = false; std::vector<PartyPreviewMon> mons; };
+    std::unordered_map<GameType, PartyPreview> galPartyCache_;
+    int galPreviewGame_ = -1;
+    uint32_t galPreviewTick_ = 0;
+    long galSaveMtime(GameType g);
+    void galEnsureParty(GameType g);
+    void galInvalidateParty(GameType g);
+    // true mentre lo slide dell'anteprima Galleria (galSelShown_/
+    // galSlide_) non ha ancora raggiunto il target: stesso schema di
+    // galleryScrollAnim(), interrogato da bottomButtonsAnim() cosi' il
+    // loop principale richiama markDirty() 60fps anche senza input
+    // (altrimenti l'animazione avanza di un solo passo per evento).
+    bool galleryPreviewAnim();
     void selectGame(GameType game, int occurrence = 0);
     std::string buildBackupDir(GameType game) const;
     bool saveBankFiles();
@@ -683,7 +725,13 @@ private:
     void drawTextCentered(const std::string& text, int cx, int cy, SDL_Color color, TTF_Font* f);
     void drawRect(int x, int y, int w, int h, SDL_Color color);
     void drawRectOutline(int x, int y, int w, int h, SDL_Color color, int thickness);
+    void drawSpriteFit(int x, int y, int w, int h, SDL_Texture* tex);
     void drawRoundRect(int x, int y, int w, int h, int r, SDL_Color color);
+    // Come drawRoundRect() ma con un riempimento a gradiente orizzontale
+    // (left -> right), stessa sagoma con angoli arrotondati esatti: una
+    // sola passata opaca colonna per colonna, niente blend mode (quindi
+    // niente rischio del doppio-alpha "pacman" agli angoli).
+    void drawRoundRectGradientH(int x, int y, int w, int h, int r, SDL_Color left, SDL_Color right);
     void drawRoundRectOutline(int x, int y, int w, int h, int r, SDL_Color color, int thickness);
     void drawRoundSelect(int cx, int cy, int r, bool focused);
     void drawStatusBar(const std::string& msg);

@@ -67,6 +67,7 @@ void UI::updateStick(int16_t axisX, int16_t axisY) {
         stickDirY_ = newDirY;
         stickMoved_ = false;
         stickMoveTime_ = 0;
+        stickHoldStart_ = SDL_GetTicks();
     }
 }
 
@@ -1978,6 +1979,8 @@ void UI::returnToGameSelector() {
     // save, niente unmount: memoria intatta e si continua da dove si era.
     if (!persistGameSaveIfDirty())
         return;
+    // Backup all'uscita se modificato (prima dell'unmount: serve il mount).
+    backupOnExitIfNeeded();
     // Unmount regardless — leaving the game, so release the save mount even
     // when nothing was written.
     if (!isDualBankMode() && save_.isLoaded())

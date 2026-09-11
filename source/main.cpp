@@ -214,6 +214,10 @@ int main(int argc, char* argv[]) {
     // Run main loop — game selection, bank selection, and save loading all handled inside
     ui.run(basePath, savePath);
 
+    // Backup all'uscita se il gioco e stato modificato (copre anche i quit
+    // senza passaggio dal selettore; idempotente via sidecar).
+    ui.backupOnExitIfNeeded();
+
     // Cleanup — prima il worker update (se mai partito): niente socket/stringhe
     // toccate durante lo smontaggio rete/USB.
     autoUpdateJoin();

@@ -802,8 +802,12 @@ void UI::commitTextInput(const std::string& text) {
             std::string u = text;
             while (!u.empty() && (u.front() == ' ' || u.front() == '\t')) u.erase(u.begin());
             while (!u.empty() && (u.back() == ' ' || u.back() == '\t' || u.back() == '/')) u.pop_back();
-            if (!u.empty() && writeUpdateCfgUrl(basePath_, u))
+            if (!u.empty() && writeUpdateCfgUrl(basePath_, u)) {
                 DebugLog::line("settings: url -> %s", u.c_str());
+                showMessageAndWait(i18n::get(StrKey::SetTitle), u);
+            } else {
+                showMessageAndWait(i18n::get(StrKey::SetTitle), "SCRITTURA FALLITA:\n" + basePath_ + "update.cfg");
+            }
         }
     }
 }

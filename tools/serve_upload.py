@@ -65,10 +65,52 @@ class Handler(SimpleHTTPRequestHandler):
         # log anche su stdout con timestamp
         print(f"{self.client_address[0]} - - [{self.log_date_time_string()}] {fmt%args}")
 
+    def handle_error(self, request, client_address):
+        # Client che si disconnette a meta download (Switch): niente traceback.
+        import socket
+        _, exc, _ = sys.exc_info()
+        if isinstance(exc, (ConnectionResetError, BrokenPipeError, socket.timeout)):
+            print(f"[{client_address[0]}] disconnesso")
+            return
+        super().handle_error(request, client_address)
+
 if __name__ == "__main__":
     import sys
+    import threading
+    import time
     port = int(sys.argv[1]) if len(sys.argv)>1 else 8000
     addr = ("0.0.0.0", port)
     print(f"Serving {DIST} su http://<ip>:{port}/  — POST /upload -> {LOG_DIR}/, /upload-save -> {SAVE_DIR}/")
     print(f"  update.cfg: url=http://<ip>:8000")
-    ThreadingHTTPServer(addr, Handler).serve_forever()
+    # Watcher dist/: annuncia quando NRO/latest.json cambiano (niente restart,
+    # i file sono letti da disco a ogni richiesta).
+    def watch():
+        seen = {}
+        for name in ("OpenHomeNX.nro", "latest.json"):
+            try:
+                seen[name] = (DIST / name).stat().st_mtime
+            except OSError:
+                seen[name] = 0
+        while True:
+            time.sleep(2)
+            for name in ("OpenHomeNX.nro", "latest.json"):
+                try:
+                    mt = (DIST / name).stat().st_mtime
+                except OSError:
+                    mt = 0
+                if mt != seen[name]:
+                    seen[name] = mt
+                    ver, sha = "?", "?"
+                    try:
+                        import json
+                        info = json.loads((DIST / "latest.json").read_text())
+                        ver = info.get("version", "?")
+                        sha = info.get("sha256", "?")[:12]
+                    except OSError:
+                        pass
+                    print(f"[watch] {name} aggiornato -> v{ver} ({sha}) (gia servito, niente restart)")
+    threading.Thread(target=watch, daemon=True).start()
+    try:
+        ThreadingHTTPServer(addr, Handler).serve_forever()
+    except KeyboardInterrupt:
+        print("\nserver fermato.")

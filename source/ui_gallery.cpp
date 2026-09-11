@@ -14,8 +14,10 @@
 
 #include "ui.h"
 #include "i18n.h"
+#include "debug_log.h"
 #include <algorithm>
 #include <cmath>
+#include <sys/stat.h>
 
 // Colore medio della cover (campionamento rado, angoli trasparenti esclusi),
 // con una spinta di saturazione leggera perche' la media grezza di una
@@ -84,6 +86,24 @@ int galScrollFor(int sel, int numGames) {
     if (scroll > maxScroll) scroll = maxScroll;
     return scroll;
 }
+
+// Pallini della lista un po' piu' accesi dell'accent "vero" (quello del
+// pannello vetro, che va bene com'e' e non va toccato): stesso trucco gia'
+// usato in computeAccentColor(), applicato qui a parte per non alterare
+// nient'altro. Espande i canali attorno alla media, poi clampa.
+SDL_Color boostSaturation(SDL_Color c, float amount) {
+    float r = c.r, g = c.g, b = c.b;
+    float avg = (r + g + b) / 3.0f;
+    r = avg + (r - avg) * amount;
+    g = avg + (g - avg) * amount;
+    b = avg + (b - avg) * amount;
+    auto clamp8 = [](float v) -> Uint8 {
+        if (v < 0.0f) v = 0.0f;
+        if (v > 255.0f) v = 255.0f;
+        return (Uint8)v;
+    };
+    return SDL_Color{ clamp8(r), clamp8(g), clamp8(b), c.a };
+}
 } // namespace
 
 void UI::drawGameList_Gallery() {
@@ -93,8 +113,19 @@ void UI::drawGameList_Gallery() {
     const int previewW = SCREEN_W - GAL_PREVIEW_X - 70;
 
     int sel = galClampSel(gameSelCursor_, numGames);
-    int scroll = galScrollFor(sel, numGames);
-    int rowEnd = std::min(scroll + GAL_VISIBLE_ROWS, numGames);
+    int scrollT = galScrollFor(sel, numGames);
+    // Scroll fluido: insegue il target a frazioni di riga (come le pagine).
+    if (galScrollX_ < 0) galScrollX_ = (float)scrollT;
+    float d = (float)scrollT - galScrollX_;
+    if (d > -0.05f && d < 0.05f) {
+        galScrollX_ = (float)scrollT;
+    } else {
+        galScrollX_ += d * 0.3f;
+        markDirty();
+    }
+    int scroll = (int)galScrollX_;
+    int pixOff = (int)((galScrollX_ - scroll) * GAL_ROW_H);
+    int rowEnd = std::min(scroll + GAL_VISIBLE_ROWS + 1, numGames);
 
     bool cursorOnList = !gameSelOnAllBanks_ && !gameSelOnSettings_ && !gameSelOnEject_ &&
                          !gameSelOnAvatar_ && !gameSelOnPack_ && gameSelOnChevron_ == 0;
@@ -108,7 +139,7 @@ void UI::drawGameList_Gallery() {
     };
 
     for (int i = scroll; i < rowEnd; i++) {
-        int rowY = GAL_LIST_Y + (i - scroll) * GAL_ROW_H;
+        int rowY = GAL_LIST_Y + (i - scroll) * GAL_ROW_H - pixOff;
         int rowH = GAL_ROW_H - 6;
         bool isSel = cursorOnList && (i == sel);
         if (isSel) {
@@ -118,8 +149,8 @@ void UI::drawGameList_Gallery() {
 
         GameType g = availableGames_[i];
         auto acIt = gameAccentCache_.find(g);
-        SDL_Color accent = (acIt != gameAccentCache_.end()) ? acIt->second : T().cursor;
-        dot(GAL_LIST_X + 18, rowY + rowH / 2, 5, accent);
+        SDL_Color accent = (acIt != gameAccentCache_.end()) ? acIt->second : flatBgColorFor(g);
+        dot(GAL_LIST_X + 18, rowY + rowH / 2, 5, boostSaturation(accent, 1.5f));
 
         std::string name = gameDisplayNameOf(g);
         if (name.substr(0, 8) == "Pokemon ") name = name.substr(8);
@@ -136,64 +167,142 @@ void UI::drawGameList_Gallery() {
     if (scroll > 0)
         drawTextCentered("...", GAL_LIST_X + GAL_LIST_W / 2, GAL_LIST_Y - 14, T().textDim, fontSmall_);
     if (rowEnd < numGames)
+        // Fisso nello slot sotto la 9a riga (posizione di riposo, quella
+        // che si vede a scroll fermo): NON deve seguire rowEnd/pixOff, che
+        // includono la riga extra e l'offset dello scroll fluido -- quella
+        // versione faceva ballare i puntini su e giu' di 46px mentre si
+        // scorre, invece di stare fermi dove finira' la lista. Abbassato
+        // di un rigo intero (GAL_ROW_H) su richiesta.
         drawTextCentered("...", GAL_LIST_X + GAL_LIST_W / 2,
-                         GAL_LIST_Y + GAL_VISIBLE_ROWS * GAL_ROW_H + 6, T().textDim, fontSmall_);
+                         GAL_LIST_Y + (GAL_VISIBLE_ROWS + 1) * GAL_ROW_H + 6, T().textDim, fontSmall_);
 
-    // Pannello anteprima: sfondo tema (panelBg, come le card della griglia)
-    // + un velo semitrasparente col colore della cover selezionata sopra.
-    // Non e' un vero blur (costoso, niente pipeline shader qui): un tint
-    // "vetro colorato" sopra panelBg legge comunque bene e costa pochissimo.
-    GameType selGame = availableGames_[sel];
+    // Animazione anteprima: l'indice mostrato (galSelShown_) insegue il
+    // cursore (sel) con uno slide verticale, stesso schema esatto di
+    // selPageShown_/selSlide_ nella griglia Classica (drawGameSelectorFrame):
+    // fase 1 esce verso il bordo opposto alla direzione di marcia, allo swap
+    // l'indice scatta e il nuovo contenuto rientra dal lato opposto.
+    if (galSelShown_ < 0) galSelShown_ = sel; // primo frame: niente animazione
+    if (galSelShown_ != sel) {
+        float dir = (sel > galSelShown_) ? -1.0f : 1.0f;
+        float mag = std::fabs(galSlide_) + (1.0f - std::fabs(galSlide_)) * 0.3f + 0.02f;
+        if (mag >= 1.0f) {
+            galSelShown_ = sel;
+            galSlide_ = -dir;
+        } else {
+            galSlide_ = mag * dir;
+        }
+        markDirty();
+    } else if (galSlide_ != 0.0f) {
+        float s = galSlide_ * 0.7f;
+        galSlide_ = (std::fabs(s) < 0.02f) ? 0.0f : s;
+        markDirty();
+    }
+    int shown = galClampSel(galSelShown_, numGames);
+    // L'intero pannello (vetro + contorno + copertina + testo) si sposta in
+    // blocco, non solo il contenuto dentro un riquadro fisso: e' un unico
+    // rettangolo "carta" che scorre verticalmente, non una finestra con
+    // dentro un contenuto che scivola.
+    int panelY = GAL_PREVIEW_Y + (int)(galSlide_ * GAL_PREVIEW_H);
+
+    // Pannello anteprima: gradiente orizzontale con drawRoundRectGradientH()
+    // (una sola passata opaca, stessa sagoma di drawRoundRect() ma colorata
+    // colonna per colonna: niente blend mode, quindi niente rischio del
+    // doppio-alpha "pacman" agli angoli visto con le due passate originali).
+    // Accent pieno vicino alla copertina (a sinistra), sfuma verso il nero
+    // andando a destra: piu' "vetro colorato" e meno tinta piatta uniforme.
+    GameType selGame = availableGames_[shown];
     auto acIt = gameAccentCache_.find(selGame);
-    SDL_Color accent = (acIt != gameAccentCache_.end()) ? acIt->second : T().cursor;
+    // I giochi senza titleId (importati/Gen1/Gen2/RSE senza NS control data)
+    // non passano mai da gameIconCache_ (vedi loadGameIcons()), quindi non
+    // hanno mai un campione reale in gameAccentCache_: senza questo
+    // fallback la copertina non "prendeva" nessun colore proprio, solo il
+    // cursore del tema. flatBgColorFor() e' lo stesso colore usato come
+    // sfondo della loro tile in drawGameArt(), quindi resta coerente.
+    SDL_Color accent = (acIt != gameAccentCache_.end()) ? acIt->second : flatBgColorFor(selGame);
+    SDL_Color glassLeft = accent;
+    SDL_Color glassRight = SDL_Color{0, 0, 0, 255};
+    drawRoundRectGradientH(GAL_PREVIEW_X, panelY, previewW, GAL_PREVIEW_H, 18, glassLeft, glassRight);
+    drawRoundRectOutline(GAL_PREVIEW_X, panelY, previewW, GAL_PREVIEW_H, 18, T().cursor, 2);
 
-    drawRoundRect(GAL_PREVIEW_X, GAL_PREVIEW_Y, previewW, GAL_PREVIEW_H, 18, T().panelBg);
-    SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_BLEND);
-    drawRoundRect(GAL_PREVIEW_X, GAL_PREVIEW_Y, previewW, GAL_PREVIEW_H, 18,
-                  SDL_Color{accent.r, accent.g, accent.b, 70});
-    SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_NONE);
-    drawRoundRectOutline(GAL_PREVIEW_X, GAL_PREVIEW_Y, previewW, GAL_PREVIEW_H, 18, T().cursor, 2);
-
+    // Stessa logica della griglia Classica (copertina reale se in cache,
+    // altrimenti loghi/colori flat/posizionamento RSE custom): drawGameArt()
+    // fa gia' al suo interno il lookup su gameIconCache_, quindi le formule
+    // (gia' espresse come percentuali di IS) scalano da sole a COVER senza
+    // bisogno di duplicare qui il ramo "copertina trovata".
     constexpr int COVER = 260;
     int coverX = GAL_PREVIEW_X + 46;
-    int coverY = GAL_PREVIEW_Y + (GAL_PREVIEW_H - COVER) / 2;
-    auto icIt = gameIconCache_.find(selGame);
-    if (icIt != gameIconCache_.end() && icIt->second) {
-        SDL_Rect dst = {coverX, coverY, COVER, COVER};
-        SDL_RenderCopy(renderer_, icIt->second, nullptr, &dst);
-    } else {
-        // Placeholder semplice: i giochi importati/Gen1/Gen2/RSE senza
-        // titleId hanno in griglia un trattamento box-art dedicato molto
-        // elaborato (vedi drawGameSelectorFrame) che qui non e' replicato
-        // in questa prima versione della Galleria -- solo tag colorato.
-        drawRoundRect(coverX, coverY, COVER, COVER, 14, T().iconPlaceholder);
-        const char* tag = gameInfo(selGame).gameTag;
-        drawTextCentered(tag, coverX + COVER / 2, coverY + COVER / 2, T().text, font_);
-    }
+    int coverY = panelY + (GAL_PREVIEW_H - COVER) / 2;
+    drawGameArt(shown, coverX, coverY, COVER, true);
 
     int textX = coverX + COVER + 40;
-    int textY = GAL_PREVIEW_Y + GAL_PREVIEW_H / 2 - 40;
+    int textY = panelY + GAL_PREVIEW_H / 2 - 46;
     std::string name = gameDisplayNameOf(selGame);
     if (name.substr(0, 8) == "Pokemon ") name = name.substr(8);
-    drawText(name, textX, textY, T().text, font_);
+    // Titolo in fontLarge_ (28pt, gia' usato per i titoli About/errore) reso
+    // in grassetto qui sul momento: piu' vicino allo stile "da copertina"
+    // del mockup del font di sistema normale usato ovunque nell'app. Lo
+    // stile e' globale sul font_ pointer (SDL_ttf), quindi va ripristinato
+    // subito dopo per non sporcare gli altri usi di fontLarge_ nello stesso
+    // frame (es. il popup About sopra questa stessa schermata).
+    TTF_SetFontStyle(fontLarge_, TTF_STYLE_BOLD);
+    drawText(name, textX, textY, T().text, fontLarge_);
+    TTF_SetFontStyle(fontLarge_, TTF_STYLE_NORMAL);
 
     auto bc = gameBankCounts_.find(selGame);
     int bankCount = (bc != gameBankCounts_.end()) ? bc->second : 0;
     std::string bankStr = "(" + std::to_string(bankCount) + ")";
-    drawText(bankStr, textX, textY + 40, T().textDim, fontSmall_);
+    drawText(bankStr, textX, textY + 46, T().textDim, fontSmall_);
+
+    // Party preview accanto al conteggio: lazy sul gioco fermo da 400ms.
+    uint32_t nowT = SDL_GetTicks();
+    if (sel != galPreviewGame_) {
+        galPreviewGame_ = sel;
+        galPreviewTick_ = nowT;
+        DebugLog::line("gal preview: settled %s cache=%d", gameInfo(selGame).gameTag,
+                       galPartyCache_.count(selGame));
+    } else if (nowT - galPreviewTick_ > 400) {
+        galEnsureParty(selGame);
+    }
+    {
+        const auto& be = getTextEntry(bankStr, fontSmall_, T().textDim);
+        int partyX = textX + (int)be.w + 28;
+        int partyY = textY + 46;
+        auto pit = galPartyCache_.find(selGame);
+        if (pit == galPartyCache_.end()) {
+            drawText("…", partyX, partyY, T().textDim, fontSmall_);
+        } else {
+            for (int k = 0; k < 6; k++) {
+                const PartyPreviewMon& m = pit->second.mons[k];
+                if (m.empty) continue;
+                SDL_Texture* spr = nullptr;
+                if (m.egg) {
+                    spr = getSprite(0);
+                } else if (m.shiny) {
+                    spr = getShinySprite(m.species, m.form);
+                    if (!spr) spr = getSprite(m.species, m.form);
+                } else {
+                    spr = getSprite(m.species, m.form);
+                }
+            if (!spr) continue;
+            drawSpriteFit(partyX + k * 36, partyY - 4, 32, 32, spr);
+            }
+        }
+    }
 }
 
-void UI::selectorTapGallery(float px, float py, bool& running) {
-    int numGames = (int)availableGames_.size();
+void UI::selectorTapGallery(float px, float py, bool& running) {    int numGames = (int)availableGames_.size();
     if (numGames == 0) return;
 
     int sel = galClampSel(gameSelCursor_, numGames);
-    int scroll = galScrollFor(sel, numGames);
-    int rowEnd = std::min(scroll + GAL_VISIBLE_ROWS, numGames);
+    // Stesso offset fluido del draw (senza avanzare l'animazione qui).
+    float fx = galScrollX_ < 0 ? (float)galScrollFor(sel, numGames) : galScrollX_;
+    int scroll = (int)fx;
+    int pixOff = (int)((fx - scroll) * GAL_ROW_H);
+    int rowEnd = std::min(scroll + GAL_VISIBLE_ROWS + 1, numGames);
 
     if (px < GAL_LIST_X || px > GAL_LIST_X + GAL_LIST_W) { (void)running; return; }
     for (int i = scroll; i < rowEnd; i++) {
-        int rowY = GAL_LIST_Y + (i - scroll) * GAL_ROW_H;
+        int rowY = GAL_LIST_Y + (i - scroll) * GAL_ROW_H - pixOff;
         int rowH = GAL_ROW_H - 6;
         if (py >= rowY && py <= rowY + rowH) {
             gameSelCursor_ = i;
@@ -206,4 +315,107 @@ void UI::selectorTapGallery(float px, float py, bool& running) {
         }
     }
     (void)running;
+}
+
+bool UI::galleryScrollAnim() {
+    if (gameSelectorLayout_ != GameSelectorLayout::Gallery) return false;
+    int numGames = (int)availableGames_.size();
+    if (numGames == 0 || galScrollX_ < 0) return false;
+    int sel = galClampSel(gameSelCursor_, numGames);
+    float d = (float)galScrollFor(sel, numGames) - galScrollX_;
+    return d < -0.05f || d > 0.05f;
+}
+
+bool UI::galleryPreviewAnim() {
+    if (gameSelectorLayout_ != GameSelectorLayout::Gallery) return false;
+    int numGames = (int)availableGames_.size();
+    if (numGames == 0) return false;
+    int sel = galClampSel(gameSelCursor_, numGames);
+    // Settle party preview qui (non nel draw: da fermo non parte mai).
+    if (sel != galPreviewGame_) {
+        galPreviewGame_ = sel;
+        galPreviewTick_ = SDL_GetTicks();
+        return true;
+    }
+    if (galSelShown_ != sel || galSlide_ != 0.0f) return true;
+    if (galPartyCache_.find(availableGames_[sel]) == galPartyCache_.end()) return true;
+    return false;
+}
+
+long UI::galSaveMtime(GameType g) {
+    // Titoli: mount + stat singolo (niente decrypt). File: stat diretto.
+    if (selectedProfile_ >= 0 && selectedProfile_ < account_.profileCount() &&
+        titleIdOf(g) >= 0x0100000000010000ULL && saveFileNameOf(g)[0] != '\0') {
+        std::string mnt = account_.mountSave(selectedProfile_, g);
+        if (mnt.empty()) return -1;
+        struct stat st;
+        long mt = (stat((mnt + saveFileNameOf(g)).c_str(), &st) == 0) ? (long)st.st_mtime : -1;
+        account_.unmountSave();
+        return mt;
+    }
+    std::string p = importedSavePath(g, 0);
+    if (p.empty()) return -1;
+    struct stat st;
+    return (stat(p.c_str(), &st) == 0) ? (long)st.st_mtime : -1;
+}
+
+void UI::galEnsureParty(GameType g) {
+    long mt = galSaveMtime(g);
+    auto it = galPartyCache_.find(g);
+    // Cache valida: esci (niente mount a ogni frame). Ricontrolla al max
+    // ogni 10s per i save cambiati fuori dall'app.
+    if (it != galPartyCache_.end()) {
+        if (it->second.mtime == mt) return;
+        if (SDL_GetTicks() - galPreviewTick_ < 10000) return;
+    }
+    DebugLog::line("gal party: load %s (mt=%ld)", gameInfo(g).gameTag, mt);
+    PartyPreview pv;
+    pv.mtime = mt;
+    pv.mons.assign(6, PartyPreviewMon{});
+    // Load scratch (non tocca save_ corrente). Costo solo al cambio save.
+    {
+        SaveFile sf;
+        sf.setGameType(g);
+        std::string path;
+        std::string mnt;
+        bool isTitle = selectedProfile_ >= 0 && titleIdOf(g) >= 0x0100000000010000ULL && saveFileNameOf(g)[0] != '\0';
+        if (isTitle) {
+            mnt = account_.mountSave(selectedProfile_, g);
+            if (!mnt.empty()) path = mnt + saveFileNameOf(g);
+        } else {
+            path = importedSavePath(g, 0);
+        }
+        if (!path.empty()) {
+            sf.load(path);
+            int filled = 0;
+            if (sf.isLoaded()) {
+                for (int s = 0; s < 6; s++) {
+                    Pokemon pkm = sf.getPartySlot(s);
+                    if (pkm.isEmpty()) continue;
+                    PartyPreviewMon m;
+                    m.empty = false;
+                    m.species = pkm.species();
+                    m.level = pkm.level();
+                    m.form = pkm.form();
+                    m.shiny = pkm.isShiny();
+                    m.egg = pkm.isEgg();
+                    pv.mons[s] = m;
+                    filled++;
+                }
+            } else {
+                DebugLog::line("gal party: %s load FALLITO path=%s", gameInfo(g).gameTag, path.c_str());
+            }
+            DebugLog::line("gal party: %s cached %d/6", gameInfo(g).gameTag, filled);
+        } else {
+            DebugLog::line("gal party: %s nessun path (profilo? import?)", gameInfo(g).gameTag);
+            DebugLog::line("gal party: %s cached 0/6", gameInfo(g).gameTag);
+        }
+        if (!mnt.empty()) account_.unmountSave();
+    }
+    galPartyCache_[g] = pv;
+    markDirty();
+}
+
+void UI::galInvalidateParty(GameType g) {
+    galPartyCache_.erase(g);
 }

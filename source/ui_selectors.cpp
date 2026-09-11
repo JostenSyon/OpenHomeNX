@@ -141,10 +141,10 @@ void UI::drawProfileSelectorFrame() {
         int cardY = startY;
 
         if (i == profileSelCursor_) {
-            drawRect(cardX, cardY, CARD_W, CARD_H, T().menuHighlight);
-            drawRectOutline(cardX, cardY, CARD_W, CARD_H, T().cursor, 3);
+            drawRoundRect(cardX, cardY, CARD_W, CARD_H, 12, T().menuHighlight);
+            drawRoundRectOutline(cardX, cardY, CARD_W, CARD_H, 12, T().cursor, 3);
         } else {
-            drawRect(cardX, cardY, CARD_W, CARD_H, T().panelBg);
+            drawRoundRect(cardX, cardY, CARD_W, CARD_H, 12, T().panelBg);
         }
 
         int iconX = cardX + (CARD_W - ICON_SIZE) / 2;
@@ -268,6 +268,8 @@ void UI::selectProfile(int index) {
     gameSelPage_ = 0;
     selPageShown_ = 0;
     selSlide_ = 0.0f;
+    galSelShown_ = -1;
+    galSlide_ = 0.0f;
     gameSelOnAllBanks_ = false;
     gameSelOnSettings_ = false;
     gameSelOnEject_ = false;
@@ -688,6 +690,218 @@ void UI::freeGameIcons() {
 
 // --- Game Selector ---
 
+// Icona/box-art di availableGames_[i] dentro il rettangolo (iconX, iconY,
+// size, size): copertina reale se disponibile, altrimenti loghi/colori
+// flat per GameType, posizionamento custom RSE, badge sorgente import.
+// Estratta da drawGameSelectorFrame() cosi' la stessa logica si riusa
+// identica per la griglia Classica (size=IS) e l'anteprima Galleria
+// (size=COVER): tutte le formule qui dentro sono gia' espresse come
+// percentuali di IS, quindi scalano automaticamente.
+// Colore di sfondo flat per i GameType senza titleId (Bulbapedia color
+// templates, stessi valori di pkm_rs_types::OriginGame::color()). Estratto
+// da drawGameArt() cosi' lo stesso colore alimenta anche l'accent del
+// pannello "vetro" in Galleria per questi giochi (vedi drawGameList_Gallery
+// in ui_gallery.cpp): non avendo un titleId non hanno mai una texture in
+// gameIconCache_, quindi gameAccentCache_ (popolata solo li') non li copre.
+SDL_Color UI::flatBgColorFor(GameType g) const {
+    switch (g) {
+        case GameType::RUBY:     return {0xCD, 0x22, 0x36, 255};
+        case GameType::SAPPHIRE: return {0x3D, 0x51, 0xA7, 255};
+        case GameType::DIAMOND:  return {0x7E, 0xC8, 0xE8, 255};
+        case GameType::PEARL:    return {0xE8, 0xA0, 0xC0, 255};
+        case GameType::PLATINUM: return {0x90, 0x90, 0x98, 255};
+        case GameType::HEARTGOLD: return {0xE8, 0xB8, 0x28, 255};
+        case GameType::SOULSILVER: return {0x98, 0xB8, 0xD8, 255};
+        case GameType::BLACK:    return {0x28, 0x28, 0x30, 255};
+        case GameType::WHITE:    return {0xE8, 0xE8, 0xE8, 255};
+        case GameType::BLACK2:   return {0x18, 0x18, 0x20, 255};
+        case GameType::WHITE2:   return {0xF8, 0xF8, 0xF8, 255};
+        case GameType::X:        return {0x20, 0x60, 0xC0, 255};
+        case GameType::Y:        return {0xC0, 0x30, 0x30, 255};
+        case GameType::SUN:      return {0xE8, 0x70, 0x20, 255};
+        case GameType::MOON:     return {0x30, 0x30, 0x60, 255};
+        case GameType::RED:      return {0xE0, 0x20, 0x20, 255};
+        case GameType::BLUE:     return {0x20, 0x60, 0xE0, 255};
+        case GameType::YELLOW:   return {0xE8, 0xC8, 0x10, 255};
+        case GameType::GOLD:     return {0xD8, 0xA8, 0x20, 255};
+        case GameType::SILVER:   return {0xA0, 0xB0, 0xC0, 255};
+        case GameType::CRYSTAL:  return {0x40, 0xC0, 0xE0, 255};
+        case GameType::EMERALD: default: return {0x50, 0xC8, 0x78, 255};
+    }
+}
+
+void UI::drawGameArt(int i, int iconX, int iconY, int size, bool scaleInner) {
+    const int IS = size;
+    // Unita di riferimento interna: 128 fisso (Classico invariato), oppure
+    // size se scaleInner (Galleria: tutto in proporzione).
+    const int UU = scaleInner ? size : 128;
+    auto it = gameIconCache_.find(availableGames_[i]);
+    if (it != gameIconCache_.end() && it->second) {
+        SDL_Rect dst = {iconX, iconY, IS, IS};
+        SDL_RenderCopy(renderer_, it->second, nullptr, &dst);
+    } else if (isImportedFile(availableGames_[i]) || isGen1File(availableGames_[i]) || isGen2File(availableGames_[i])) {
+        // No NS control data (no titleId) — a fixed per-game background
+        // (Bulbapedia color templates, same values pkm_rs_types uses for
+        // OriginGame::color()) plus the OpenHome logo PNG, letterboxed to
+        // fit without stretching.
+        SDL_Color bg = flatBgColorFor(availableGames_[i]);
+        drawRoundRect(iconX, iconY, IS, IS, (10 * UU) / 128, bg);
+        // Tile background image (e.g. Emerald artwork): center-cropped
+        // square stretched over the icon rect, on top of the flat color
+        // (which stays as fallback when the file is missing).
+        auto bgIt = tileBgCache_.find(availableGames_[i]);
+        if (bgIt != tileBgCache_.end() && bgIt->second) {
+            int texW = 0, texH = 0;
+            SDL_QueryTexture(bgIt->second, nullptr, nullptr, &texW, &texH);
+            if (texW > 0 && texH > 0) {
+                int side = std::min(texW, texH);
+                SDL_Rect src = {(texW - side) / 2, (texH - side) / 2, side, side};
+                SDL_Rect dst = {iconX, iconY, IS, IS};
+                SDL_RenderCopy(renderer_, bgIt->second, &src, &dst);
+            }
+        }
+        if (availableGames_[i] == GameType::RUBY ||
+            availableGames_[i] == GameType::SAPPHIRE ||
+            availableGames_[i] == GameType::EMERALD ||
+            availableGames_[i] == GameType::RED ||
+            availableGames_[i] == GameType::BLUE ||
+            availableGames_[i] == GameType::YELLOW) {
+            // RSE tile: box art grande quasi tutto il riquadro (box 120px
+            // dentro 128, non esce mai), logo sopra come titolo. Entrambi
+            // con sfondo trasparente verificato, quindi sovrapponibili.
+            auto artIt = boxArtCache_.find(availableGames_[i]);
+            if (artIt != boxArtCache_.end() && artIt->second) {
+                int texW = 0, texH = 0;
+                SDL_QueryTexture(artIt->second, nullptr, nullptr, &texW, &texH);
+                if (texW > 0 && texH > 0) {
+                    if (availableGames_[i] == GameType::RED ||
+                        availableGames_[i] == GameType::BLUE ||
+                        availableGames_[i] == GameType::YELLOW) {
+                        // RBY: artwork full-bleed su tutto il riquadro
+                        // (center-crop quadrato, nessun valore custom).
+                        int side = std::min(texW, texH);
+                        SDL_Rect src = {(texW - side) / 2, (texH - side) / 2, side, side};
+                        SDL_Rect dst = {iconX, iconY, IS, IS};
+                        SDL_RenderCopy(renderer_, artIt->second, &src, &dst);
+                    } else {
+                        // Base +15% di dimensione, a destra del 15% e in basso
+                        // del 5% (coordinate tunate a mano per ogni gioco:
+                        // NON scalarle col grow, si rompe il framing).
+                        // Ruby: Groudon centrato orizzontalmente.
+                        // Sapphire: Kyogre centrato, +10% dimensione e +5pp in
+                        // basso rispetto alla base. Logo identico per tutti.
+                        const int SPR = (117 * UU) / 128;
+                        const int SHIFT_X = (UU * 15) / 100;
+                        const int SHIFT_Y = (UU * 5) / 100;
+                    int shiftX = SHIFT_X;
+                    int spr = SPR;
+                    int shiftY = SHIFT_Y;
+                    if (availableGames_[i] == GameType::RUBY) {
+                        // Come all'inizio: nessuno shift custom.
+                        shiftX = 0;
+                    }
+                    if (availableGames_[i] == GameType::SAPPHIRE) {
+                        shiftX = (UU * 5) / 100;
+                        spr = (SPR * 110) / 100;
+                        shiftY = (UU * 15) / 100;
+                    }
+                    // Scala sulle dimensioni della texture (intera per RSE).
+                    float scale = std::min((float)spr / texW, (float)spr / texH);
+                    int dstW = (int)(texW * scale);
+                    int dstH = (int)(texH * scale);
+                    // Overlay RSE fisso come tunato (non segue il grow):
+                    // box 128 originale centrato nell'icona ingrandita.
+                    int oX = iconX + (IS - UU) / 2;
+                    int oY = iconY + (IS - UU) / 2;
+                    SDL_Rect dst = {oX + (UU - dstW) / 2 + shiftX,
+                                    oY + UU - dstH + shiftY, dstW, dstH};
+                    SDL_Rect clip = {oX, oY, UU, UU};
+                    SDL_RenderSetClipRect(renderer_, &clip);
+                    SDL_RenderCopy(renderer_, artIt->second, nullptr, &dst);
+                    SDL_RenderSetClipRect(renderer_, nullptr);
+                    } // else (RSE con valori custom)
+                }
+            }
+            auto logoIt = gameLogoCache_.find(availableGames_[i]);
+            if (logoIt != gameLogoCache_.end() && logoIt->second) {
+                int texW = 0, texH = 0;
+                SDL_QueryTexture(logoIt->second, nullptr, nullptr, &texW, &texH);
+                    if (texW > 0 && texH > 0) {
+                        const int LOGO_H = (54 * UU) / 128;
+                        int dstW = (int)(texW * ((float)LOGO_H / texH));
+                        if (dstW > UU) dstW = UU;
+                        int oX = iconX + (IS - UU) / 2;
+                        int oY = iconY + (IS - UU) / 2;
+                        SDL_Rect dst = {oX + (UU - dstW) / 2, oY, dstW, LOGO_H};
+                    SDL_RenderCopy(renderer_, logoIt->second, nullptr, &dst);
+                }
+            }
+        } else {
+            auto logoIt = gameLogoCache_.find(availableGames_[i]);
+            bool drewLogo = false;
+            if (logoIt != gameLogoCache_.end() && logoIt->second) {
+                int texW = 0, texH = 0;
+                SDL_QueryTexture(logoIt->second, nullptr, nullptr, &texW, &texH);
+                if (texW > 0 && texH > 0) {
+                    float scale = std::min((float)IS / texW, (float)IS / texH);
+                    int dstW = (int)(texW * scale);
+                    int dstH = (int)(texH * scale);
+                    SDL_Rect dst = {iconX + (IS - dstW) / 2, iconY + (IS - dstH) / 2, dstW, dstH};
+                    SDL_RenderCopy(renderer_, logoIt->second, nullptr, &dst);
+                    drewLogo = true;
+                }
+            }
+            if (!drewLogo) {
+                // No logo asset (Gen1 file games): centered game tag.
+                const char* tag = gameInfo(availableGames_[i]).gameTag;
+                const auto& te = getTextEntry(tag, font_, T().text);
+                drawText(tag, iconX + (IS - te.w) / 2, iconY + (IS - te.h) / 2,
+                         T().text, font_);
+            }
+        }
+        // Small source-folder badge (bottom-left corner of the icon) —
+        // only useful when more than one plausible source could hold the
+        // same game (e.g. a "roms/saves" copy AND a "roms" companion
+        // file); harmless/redundant otherwise, so always shown rather
+        // than only-on-ambiguity, which would need an extra pass to
+        // detect and would still surprise the user the first time a
+        // second source shows up.
+        std::string tag = importedSourceTag(availableGames_[i], importedOccurrence(i));
+        if (!tag.empty()) {
+            if (tag.length() > 10) tag = tag.substr(0, 9) + ".";
+            const auto& te = getTextEntry(tag, fontSmall_, T().text);
+            int badgeW = te.w + 8, badgeH = te.h + 4;
+            int badgeX = iconX + 2, badgeY = iconY + IS - badgeH - 2;
+            SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_BLEND);
+            SDL_SetRenderDrawColor(renderer_, 0, 0, 0, 160);
+            SDL_Rect badgeRect = {badgeX, badgeY, badgeW, badgeH};
+            SDL_RenderFillRect(renderer_, &badgeRect);
+            drawText(tag, badgeX + 4, badgeY + 2, T().text, fontSmall_);
+        }
+    } else {
+        // Colored placeholder with game abbreviation
+        drawRoundRect(iconX, iconY, IS, IS, 10, T().iconPlaceholder);
+        const char* abbr = "";
+        switch (availableGames_[i]) {
+            case GameType::Sw: abbr = "Sw"; break;
+            case GameType::Sh: abbr = "Sh"; break;
+            case GameType::BD: abbr = "BD"; break;
+            case GameType::SP: abbr = "SP"; break;
+            case GameType::LA: abbr = "LA"; break;
+            case GameType::S:  abbr = "S";  break;
+            case GameType::V:  abbr = "V";  break;
+            case GameType::ZA: abbr = "ZA"; break;
+            case GameType::GP: abbr = "GP"; break;
+            case GameType::GE: abbr = "GE"; break;
+            case GameType::FR: case GameType::FR_ES: case GameType::FR_DE: case GameType::FR_IT: case GameType::FR_FR: case GameType::FR_JA: abbr = "FR"; break;
+            case GameType::LG: case GameType::LG_ES: case GameType::LG_DE: case GameType::LG_IT: case GameType::LG_FR: case GameType::LG_JA: abbr = "LG"; break;
+            default: break;
+        }
+        drawTextCentered(abbr, iconX + IS / 2, iconY + IS / 2,
+                         T().text, font_);
+    }
+}
+
 void UI::drawGameSelectorFrame() {
     SDL_SetRenderDrawColor(renderer_, T().bg.r, T().bg.g, T().bg.b, 255);
     SDL_RenderClear(renderer_);
@@ -833,190 +1047,7 @@ void UI::drawGameSelectorFrame() {
         int iconX = cx0 + (cw - IS) / 2;
         int iconY = cy0 + 10;
 
-        auto it = gameIconCache_.find(availableGames_[i]);
-        if (it != gameIconCache_.end() && it->second) {
-            SDL_Rect dst = {iconX, iconY, IS, IS};
-            SDL_RenderCopy(renderer_, it->second, nullptr, &dst);
-        } else if (isImportedFile(availableGames_[i]) || isGen1File(availableGames_[i]) || isGen2File(availableGames_[i])) {
-            // No NS control data (no titleId) — a fixed per-game background
-            // (Bulbapedia color templates, same values pkm_rs_types uses for
-            // OriginGame::color()) plus the OpenHome logo PNG, letterboxed to
-            // fit without stretching.
-            SDL_Color bg;
-            switch (availableGames_[i]) {
-                case GameType::RUBY:     bg = {0xCD, 0x22, 0x36, 255}; break;
-                case GameType::SAPPHIRE: bg = {0x3D, 0x51, 0xA7, 255}; break;
-                case GameType::DIAMOND:  bg = {0x7E, 0xC8, 0xE8, 255}; break;
-                case GameType::PEARL:    bg = {0xE8, 0xA0, 0xC0, 255}; break;
-                case GameType::PLATINUM: bg = {0x90, 0x90, 0x98, 255}; break;
-                case GameType::HEARTGOLD: bg = {0xE8, 0xB8, 0x28, 255}; break;
-                case GameType::SOULSILVER: bg = {0x98, 0xB8, 0xD8, 255}; break;
-                case GameType::BLACK:    bg = {0x28, 0x28, 0x30, 255}; break;
-                case GameType::WHITE:    bg = {0xE8, 0xE8, 0xE8, 255}; break;
-                case GameType::BLACK2:   bg = {0x18, 0x18, 0x20, 255}; break;
-                case GameType::WHITE2:   bg = {0xF8, 0xF8, 0xF8, 255}; break;
-                case GameType::X:        bg = {0x20, 0x60, 0xC0, 255}; break;
-                case GameType::Y:        bg = {0xC0, 0x30, 0x30, 255}; break;
-                case GameType::SUN:      bg = {0xE8, 0x70, 0x20, 255}; break;
-                case GameType::MOON:     bg = {0x30, 0x30, 0x60, 255}; break;
-                case GameType::RED:      bg = {0xE0, 0x20, 0x20, 255}; break;
-                case GameType::BLUE:     bg = {0x20, 0x60, 0xE0, 255}; break;
-                case GameType::YELLOW:   bg = {0xE8, 0xC8, 0x10, 255}; break;
-                case GameType::GOLD:     bg = {0xD8, 0xA8, 0x20, 255}; break;
-                case GameType::SILVER:   bg = {0xA0, 0xB0, 0xC0, 255}; break;
-                case GameType::CRYSTAL:  bg = {0x40, 0xC0, 0xE0, 255}; break;
-                case GameType::EMERALD: default: bg = {0x50, 0xC8, 0x78, 255}; break;
-            }
-            drawRoundRect(iconX, iconY, IS, IS, 10, bg);
-            // Tile background image (e.g. Emerald artwork): center-cropped
-            // square stretched over the icon rect, on top of the flat color
-            // (which stays as fallback when the file is missing).
-            auto bgIt = tileBgCache_.find(availableGames_[i]);
-            if (bgIt != tileBgCache_.end() && bgIt->second) {
-                int texW = 0, texH = 0;
-                SDL_QueryTexture(bgIt->second, nullptr, nullptr, &texW, &texH);
-                if (texW > 0 && texH > 0) {
-                    int side = std::min(texW, texH);
-                    SDL_Rect src = {(texW - side) / 2, (texH - side) / 2, side, side};
-                    SDL_Rect dst = {iconX, iconY, IS, IS};
-                    SDL_RenderCopy(renderer_, bgIt->second, &src, &dst);
-                }
-            }
-            if (availableGames_[i] == GameType::RUBY ||
-                availableGames_[i] == GameType::SAPPHIRE ||
-                availableGames_[i] == GameType::EMERALD ||
-                availableGames_[i] == GameType::RED ||
-                availableGames_[i] == GameType::BLUE ||
-                availableGames_[i] == GameType::YELLOW) {
-                // RSE tile: box art grande quasi tutto il riquadro (box 120px
-                // dentro 128, non esce mai), logo sopra come titolo. Entrambi
-                // con sfondo trasparente verificato, quindi sovrapponibili.
-                auto artIt = boxArtCache_.find(availableGames_[i]);
-                if (artIt != boxArtCache_.end() && artIt->second) {
-                    int texW = 0, texH = 0;
-                    SDL_QueryTexture(artIt->second, nullptr, nullptr, &texW, &texH);
-                    if (texW > 0 && texH > 0) {
-                        if (availableGames_[i] == GameType::RED ||
-                            availableGames_[i] == GameType::BLUE ||
-                            availableGames_[i] == GameType::YELLOW) {
-                            // RBY: artwork full-bleed su tutto il riquadro
-                            // (center-crop quadrato, nessun valore custom).
-                            int side = std::min(texW, texH);
-                            SDL_Rect src = {(texW - side) / 2, (texH - side) / 2, side, side};
-                            SDL_Rect dst = {iconX, iconY, IS, IS};
-                            SDL_RenderCopy(renderer_, artIt->second, &src, &dst);
-                        } else {
-                        // Base +15% di dimensione, a destra del 15% e in basso
-                        // del 5% (percentuali su IS: scala col grow, stessa
-                        // velocita dell'outline). L'eccesso viene
-                        // tagliato netto sul bordo riquadro via clip.
-                        // Ruby: Groudon centrato orizzontalmente.
-                        // Sapphire: Kyogre centrato, +10% dimensione e +5pp in
-                        // basso rispetto alla base. Logo identico per tutti.
-                        const int SPR = (117 * IS) / 128;
-                        const int SHIFT_X = (IS * 15) / 100;
-                        const int SHIFT_Y = (IS * 5) / 100;
-                        int shiftX = SHIFT_X;
-                        int spr = SPR;
-                        int shiftY = SHIFT_Y;
-                        if (availableGames_[i] == GameType::RUBY)
-                            shiftX = 0;
-                        if (availableGames_[i] == GameType::SAPPHIRE) {
-                            shiftX = (IS * 5) / 100;
-                            spr = (SPR * 110) / 100;
-                            shiftY = (IS * 15) / 100;
-                        }
-                        float scale = std::min((float)spr / texW, (float)spr / texH);
-                        int dstW = (int)(texW * scale);
-                        int dstH = (int)(texH * scale);
-                        SDL_Rect dst = {iconX + (IS - dstW) / 2 + shiftX,
-                                        iconY + IS - dstH + shiftY, dstW, dstH};
-                        // Clip rientrata del raggio: la foto non sbava fuori
-                        // dagli angoli arrotondati del tile.
-                        constexpr int CCR = 10;
-                        SDL_Rect clip = {iconX + CCR, iconY + CCR, IS - 2 * CCR, IS - 2 * CCR};
-                        SDL_RenderSetClipRect(renderer_, &clip);
-                        SDL_RenderCopy(renderer_, artIt->second, nullptr, &dst);
-                        SDL_RenderSetClipRect(renderer_, nullptr);
-                        } // else (RSE con valori custom)
-                    }
-                }
-                auto logoIt = gameLogoCache_.find(availableGames_[i]);
-                if (logoIt != gameLogoCache_.end() && logoIt->second) {
-                    int texW = 0, texH = 0;
-                    SDL_QueryTexture(logoIt->second, nullptr, nullptr, &texW, &texH);
-                    if (texW > 0 && texH > 0) {
-                        int logoH = (54 * IS) / 128;
-                        int dstW = (int)(texW * ((float)logoH / texH));
-                        if (dstW > IS) dstW = IS;
-                        SDL_Rect dst = {iconX + (IS - dstW) / 2, iconY, dstW, logoH};
-                        SDL_RenderCopy(renderer_, logoIt->second, nullptr, &dst);
-                    }
-                }
-            } else {
-                auto logoIt = gameLogoCache_.find(availableGames_[i]);
-                bool drewLogo = false;
-                if (logoIt != gameLogoCache_.end() && logoIt->second) {
-                    int texW = 0, texH = 0;
-                    SDL_QueryTexture(logoIt->second, nullptr, nullptr, &texW, &texH);
-                    if (texW > 0 && texH > 0) {
-                        float scale = std::min((float)IS / texW, (float)IS / texH);
-                        int dstW = (int)(texW * scale);
-                        int dstH = (int)(texH * scale);
-                        SDL_Rect dst = {iconX + (IS - dstW) / 2, iconY + (IS - dstH) / 2, dstW, dstH};
-                        SDL_RenderCopy(renderer_, logoIt->second, nullptr, &dst);
-                        drewLogo = true;
-                    }
-                }
-                if (!drewLogo) {
-                    // No logo asset (Gen1 file games): centered game tag.
-                    const char* tag = gameInfo(availableGames_[i]).gameTag;
-                    const auto& te = getTextEntry(tag, font_, T().text);
-                    drawText(tag, iconX + (IS - te.w) / 2, iconY + (IS - te.h) / 2,
-                             T().text, font_);
-                }
-            }
-            // Small source-folder badge (bottom-left corner of the icon) —
-            // only useful when more than one plausible source could hold the
-            // same game (e.g. a "roms/saves" copy AND a "roms" companion
-            // file); harmless/redundant otherwise, so always shown rather
-            // than only-on-ambiguity, which would need an extra pass to
-            // detect and would still surprise the user the first time a
-            // second source shows up.
-            std::string tag = importedSourceTag(availableGames_[i], importedOccurrence(i));
-            if (!tag.empty()) {
-                if (tag.length() > 10) tag = tag.substr(0, 9) + ".";
-                const auto& te = getTextEntry(tag, fontSmall_, T().text);
-                int badgeW = te.w + 8, badgeH = te.h + 4;
-                int badgeX = iconX + 2, badgeY = iconY + IS - badgeH - 2;
-                SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_BLEND);
-                SDL_SetRenderDrawColor(renderer_, 0, 0, 0, 160);
-                SDL_Rect badgeRect = {badgeX, badgeY, badgeW, badgeH};
-                SDL_RenderFillRect(renderer_, &badgeRect);
-                drawText(tag, badgeX + 4, badgeY + 2, T().text, fontSmall_);
-            }
-        } else {
-            // Colored placeholder with game abbreviation
-            drawRoundRect(iconX, iconY, IS, IS, 10, T().iconPlaceholder);
-            const char* abbr = "";
-            switch (availableGames_[i]) {
-                case GameType::Sw: abbr = "Sw"; break;
-                case GameType::Sh: abbr = "Sh"; break;
-                case GameType::BD: abbr = "BD"; break;
-                case GameType::SP: abbr = "SP"; break;
-                case GameType::LA: abbr = "LA"; break;
-                case GameType::S:  abbr = "S";  break;
-                case GameType::V:  abbr = "V";  break;
-                case GameType::ZA: abbr = "ZA"; break;
-                case GameType::GP: abbr = "GP"; break;
-                case GameType::GE: abbr = "GE"; break;
-                case GameType::FR: case GameType::FR_ES: case GameType::FR_DE: case GameType::FR_IT: case GameType::FR_FR: case GameType::FR_JA: abbr = "FR"; break;
-                case GameType::LG: case GameType::LG_ES: case GameType::LG_DE: case GameType::LG_IT: case GameType::LG_FR: case GameType::LG_JA: abbr = "LG"; break;
-                default: break;
-            }
-            drawTextCentered(abbr, iconX + IS / 2, iconY + IS / 2,
-                             T().text, font_);
-        }
+        drawGameArt(i, iconX, iconY, IS);
 
         // Game name below icon (RSE show the logo on top too, but the
         // text label below stays for readability at a glance).
@@ -1325,6 +1356,8 @@ bool UI::bottomButtonsAnim() {
     if (ejectAnimStage_ != 0) return true;
     if (selSlide_ != 0.0f || selPageShown_ != gameSelPage_) return true;
     if (zoomT_ < 1.0f) return true;
+    if (galleryScrollAnim()) return true;
+    if (galleryPreviewAnim()) return true;
     // Link rete cambiato: aggiorna l'icona wifi anche a schermo fermo.
     static std::string lastLink;
     std::string link = updateNetLinkStr();
@@ -1397,18 +1430,28 @@ void UI::handleGameSelectorInput(bool& running) {
         }
 
         if (gameSelOnPack_) {
-            // Sullo zaino: destra torna alle banche, su torna in griglia
+            // Sullo zaino (prima icona a sx della dock): destra torna alle
+            // banche, sinistra torna alla lista/griglia (posizione
+            // invariata), su torna in griglia (ultima riga).
             if (dx > 0) {
                 gameSelOnPack_ = false;
                 gameSelOnAllBanks_ = true;
+            } else if (dx < 0) {
+                gameSelOnPack_ = false;
             } else if (dy < 0) {
                 gameSelOnPack_ = false;
-                int totalRows = (pageCount + COLS - 1) / COLS;
-                int lastRowStart = (totalRows - 1) * COLS;
-                int lastRowItems = pageCount - lastRowStart;
-                int col = (gameSelCursor_ - pageStart) % COLS;
-                if (col >= lastRowItems) col = lastRowItems - 1;
-                gameSelCursor_ = pageStart + lastRowStart + col;
+                if (!gallerySel_) {
+                    // Solo Classica: la griglia ha piu' righe, "su" atterra
+                    // sull'ultima riga mantenendo la colonna. In Galleria e'
+                    // una lista sola: il cursore resta dov'era (il
+                    // "segnalino" non deve saltare all'ultimo gioco).
+                    int totalRows = (pageCount + COLS - 1) / COLS;
+                    int lastRowStart = (totalRows - 1) * COLS;
+                    int lastRowItems = pageCount - lastRowStart;
+                    int col = (gameSelCursor_ - pageStart) % COLS;
+                    if (col >= lastRowItems) col = lastRowItems - 1;
+                    gameSelCursor_ = pageStart + lastRowStart + col;
+                }
             }
             return;
         }
@@ -1434,13 +1477,16 @@ void UI::handleGameSelectorInput(bool& running) {
             }
             if (dy < 0) {
                 gameSelOnAllBanks_ = false;
-                // Place cursor on bottom row of current page
-                int totalRows = (pageCount + COLS - 1) / COLS;
-                int lastRowStart = (totalRows - 1) * COLS;
-                int lastRowItems = pageCount - lastRowStart;
-                int col = (gameSelCursor_ - pageStart) % COLS;
-                if (col >= lastRowItems) col = lastRowItems - 1;
-                gameSelCursor_ = pageStart + lastRowStart + col;
+                if (!gallerySel_) {
+                    // Place cursor on bottom row of current page
+                    // (Galleria: cursore invariato, vedi commento sopra su onPack_)
+                    int totalRows = (pageCount + COLS - 1) / COLS;
+                    int lastRowStart = (totalRows - 1) * COLS;
+                    int lastRowItems = pageCount - lastRowStart;
+                    int col = (gameSelCursor_ - pageStart) % COLS;
+                    if (col >= lastRowItems) col = lastRowItems - 1;
+                    gameSelCursor_ = pageStart + lastRowStart + col;
+                }
             }
             return;
         }
@@ -1456,12 +1502,15 @@ void UI::handleGameSelectorInput(bool& running) {
                 gameSelOnSettings_ = true;
             } else if (dy < 0) {
                 gameSelOnEject_ = false;
-                int totalRows = (pageCount + COLS - 1) / COLS;
-                int lastRowStart = (totalRows - 1) * COLS;
-                int lastRowItems = pageCount - lastRowStart;
-                int col = (gameSelCursor_ - pageStart) % COLS;
-                if (col >= lastRowItems) col = lastRowItems - 1;
-                gameSelCursor_ = pageStart + lastRowStart + col;
+                if (!gallerySel_) {
+                    // (Galleria: cursore invariato, vedi commento sopra su onPack_)
+                    int totalRows = (pageCount + COLS - 1) / COLS;
+                    int lastRowStart = (totalRows - 1) * COLS;
+                    int lastRowItems = pageCount - lastRowStart;
+                    int col = (gameSelCursor_ - pageStart) % COLS;
+                    if (col >= lastRowItems) col = lastRowItems - 1;
+                    gameSelCursor_ = pageStart + lastRowStart + col;
+                }
             }
             return;
         }
@@ -1482,12 +1531,42 @@ void UI::handleGameSelectorInput(bool& running) {
 #endif
             } else if (dy < 0) {
                 gameSelOnSettings_ = false;
-                int totalRows = (pageCount + COLS - 1) / COLS;
-                int lastRowStart = (totalRows - 1) * COLS;
-                int lastRowItems = pageCount - lastRowStart;
-                int col = (gameSelCursor_ - pageStart) % COLS;
-                if (col >= lastRowItems) col = lastRowItems - 1;
-                gameSelCursor_ = pageStart + lastRowStart + col;
+                if (!gallerySel_) {
+                    // (Galleria: cursore invariato, vedi commento sopra su onPack_)
+                    int totalRows = (pageCount + COLS - 1) / COLS;
+                    int lastRowStart = (totalRows - 1) * COLS;
+                    int lastRowItems = pageCount - lastRowStart;
+                    int col = (gameSelCursor_ - pageStart) % COLS;
+                    if (col >= lastRowItems) col = lastRowItems - 1;
+                    gameSelCursor_ = pageStart + lastRowStart + col;
+                }
+            }
+            return;
+        }
+
+        // Galleria: sinistra/destra scavalcano subito in cima (avatar) o
+        // in fondo (riga banche/zaino/eject/gear), cosi' non serve
+        // scorrere tutta la lista dei giochi per raggiungerli. Solo
+        // quando il cursore e' nella lista stessa: l'avatar (unico
+        // elemento periferico non gia' filtrato dai return sopra) ha
+        // la sua gestione dx piu' sotto (nessun effetto), invariata.
+        if (gallerySel_ && dx != 0 && !gameSelOnAvatar_) {
+            if (dx < 0) {
+                if (selectedProfile_ >= 0) {
+                    gameSelOnAvatar_ = true;
+                } else {
+                    gameSelOnSettings_ = false;
+                    gameSelOnEject_ = false;
+                    gameSelOnAllBanks_ = true;
+                    gameSelOnPack_ = false;
+                }
+            } else {
+                // Destra: prima icona della dock (zaino/pack), non banche.
+                gameSelOnSettings_ = false;
+                gameSelOnEject_ = false;
+                gameSelOnAvatar_ = false;
+                gameSelOnAllBanks_ = false;
+                gameSelOnPack_ = true;
             }
             return;
         }
@@ -1500,13 +1579,20 @@ void UI::handleGameSelectorInput(bool& running) {
         col += dx;
         row += dy;
 
-        // Moving down past the last row goes to "All Banks"
+        // Moving down past the last row goes to "All Banks" in Classica;
+        // in Galleria va invece alla prima icona della dock (lo zaino),
+        // coerente con "destra" dalla lista (vedi blocco piu' sotto).
         if (row >= totalRows) {
             gameSelOnSettings_ = false;
             gameSelOnEject_ = false;
             gameSelOnAvatar_ = false;
-            gameSelOnAllBanks_ = true;
+            if (gallerySel_) {
+                gameSelOnAllBanks_ = false;
+                gameSelOnPack_ = true;
+            } else {
+                gameSelOnAllBanks_ = true;
                 gameSelOnPack_ = false;
+            }
             return;
         }
 
@@ -1531,7 +1617,8 @@ void UI::handleGameSelectorInput(bool& running) {
 
         // Wrap rows (up from top goes to avatar, down from avatar to grid)
         if (gameSelOnAvatar_) {
-            if (dy > 0) gameSelOnAvatar_ = false;
+            // Giu' o destra tornano alla lista/griglia (posizione invariata).
+            if (dy > 0 || dx > 0) gameSelOnAvatar_ = false;
             return;
         }
         if (row < 0) {
@@ -2001,6 +2088,16 @@ void UI::handleGameSelectorInput(bool& running) {
     } else if (!showGameSelMenu_ && !showSaveMenu_ && !showBackupList_ && !showSettings_ && (stickDirX_ != 0 || stickDirY_ != 0)) {
         uint32_t now = SDL_GetTicks();
         uint32_t delay = stickMoved_ ? STICK_REPEAT_DELAY : STICK_INITIAL_DELAY;
+        // Galleria: lista verticale una voce alla volta. Con lo stesso passo
+        // fisso della griglia Classica (che avanza per colonne/pagine molto
+        // piu' in fretta) scendere fino in fondo a tanti giochi e' lentissimo.
+        // Levetta ferma su/giu': dopo un po' accelera progressivamente.
+        if (gameSelectorLayout_ == GameSelectorLayout::Gallery && stickDirY_ != 0 && stickMoved_) {
+            uint32_t held = now - stickHoldStart_;
+            if (held > 1500) delay = 40;
+            else if (held > 800) delay = 80;
+            else if (held > 400) delay = 130;
+        }
         if (now - stickMoveTime_ >= delay) {
             if (stickDirX_ != 0) moveGrid(stickDirX_, 0);
             if (stickDirY_ != 0) moveGrid(0, stickDirY_);
@@ -2142,6 +2239,8 @@ bool UI::finalizePendingUpdate() {
 // continues a normal boot. Needs init() (renderer) already done.
 bool UI::tryUpdateBounce(const std::string& basePath) {
     basePath_ = basePath;
+    // Card PRIMA della copia finalize (18MB a schermo nero sembravano un hang).
+    showWorking(i18n::get(StrKey::UpdateUpdating));
     if (!finalizePendingUpdate())
         return false;
     // finalizePendingUpdate() armed envSetNextLoad(the real .nro). Draw one
@@ -2627,9 +2726,13 @@ void UI::drawBackupListPopup() {
 
 void UI::autoBackupFileSave(GameType g, const std::string& path) {
     struct stat sst;
-    uint64_t sz = 0;
-    if (stat(path.c_str(), &sst) == 0) sz = (uint64_t)sst.st_size;
-    if (!autoBackupNeeded(g, true, path, sz)) return;
+    bool haveSrc = stat(path.c_str(), &sst) == 0;
+    uint64_t sz = haveSrc ? (uint64_t)sst.st_size : 0;
+    long mt = haveSrc ? (long)sst.st_mtime : 0;
+    if (!autoBackupNeeded(g, path, sz, mt, haveSrc)) {
+        DebugLog::line("save: auto backup saltato (invariato)");
+        return;
+    }
     std::string dir = autoBackupDir(g);
     ensureDirRecursive(dir);
     std::string base = path.substr(path.find_last_of("/\\") + 1);
@@ -2639,7 +2742,49 @@ void UI::autoBackupFileSave(GameType g, const std::string& path) {
         return;
     }
     DebugLog::line("auto backup: %s -> %s", path.c_str(), dst.c_str());
+    writeAutoInfo(dst, sz, mt);
     prunePoolToCap(true);
+}
+
+// Backup titoli all'apertura (solo first-ever) e all'uscita (se dirty):
+// check via sidecar, mai walk. Ritorna true se ha copiato.
+bool UI::backupTitleNow(GameType g, const std::string& mountPath, const std::string& saveFile) {
+    struct stat sst;
+    bool haveSrc = stat(saveFile.c_str(), &sst) == 0;
+    uint64_t sz = haveSrc ? (uint64_t)sst.st_size : 0;
+    long mt = haveSrc ? (long)sst.st_mtime : 0;
+    if (!autoBackupNeeded(g, saveFile, sz, mt, haveSrc)) {
+        DebugLog::line("save: auto backup saltato (invariato)");
+        return false;
+    }
+    std::string backupDir = buildBackupDir(g);
+    bool ok = AccountManager::backupSaveDir(mountPath, backupDir);
+    if (!ok) return false;
+    writeAutoInfo(backupDir, sz, mt);
+    prunePoolToCap(false);
+    return true;
+}
+
+// Choke point uscita: backup una tantum se il save e stato modificato.
+// Idempotente (sidecar): chiamabile da piu punti senza doppie copie.
+void UI::backupOnExitIfNeeded() {
+    if (!save_.isLoaded() || exitBackedUp_) return;
+    if (!save_.isDirty()) { exitBackedUp_ = true; return; }
+    if (isDualBankMode()) { exitBackedUp_ = true; return; }
+    uint32_t t0 = SDL_GetTicks();
+    // Titoli = savePath_ dentro "save:/" (mount); resto = file su SD.
+    bool fileBacked = savePath_.rfind("save:/", 0) != 0;
+    if (fileBacked) {
+        autoBackupFileSave(selectedGame_, savePath_);
+    } else if (selectedProfile_ >= 0) {
+        std::string mnt = account_.mountSave(selectedProfile_, selectedGame_);
+        if (!mnt.empty()) {
+            backupTitleNow(selectedGame_, mnt, mnt + saveFileNameOf(selectedGame_));
+            account_.unmountSave();
+        }
+    }
+    exitBackedUp_ = true;
+    DebugLog::line("exit backup: %ums", SDL_GetTicks() - t0);
 }
 
 long UI::backupCapMb(bool fileBacked) const {
@@ -2676,27 +2821,47 @@ std::vector<std::string> UI::autoBackupEntries(GameType g) const {
 }
 
 // Throttle 30 min + skip se invariato. Solo auto (i manuali sempre).
-bool UI::autoBackupNeeded(GameType g, bool fileBacked, const std::string& src, uint64_t srcSize) {
+// Sidecar .info accanto a ogni auto-backup (byte+mtime della sorgente al
+// momento della copia): i check diventano stat singoli, mai walk ricorsivi.
+static std::string autoInfoPath(const std::string& entry) {
+    struct stat st;
+    if (stat(entry.c_str(), &st) == 0 && S_ISDIR(st.st_mode)) return entry + "/.info";
+    return entry + ".info";
+}
+
+static bool readAutoInfo(const std::string& entry, uint64_t& bytes, long& mt) {
+    std::ifstream f(autoInfoPath(entry));
+    if (!f.good()) return false;
+    std::string line;
+    bytes = 0;
+    mt = 0;
+    while (std::getline(f, line)) {
+        if (line.rfind("bytes=", 0) == 0) bytes = std::strtoull(line.c_str() + 6, nullptr, 10);
+        else if (line.rfind("mt=", 0) == 0) mt = std::atol(line.c_str() + 3);
+    }
+    return true;
+}
+
+void UI::writeAutoInfo(const std::string& entry, uint64_t bytes, long mt) {
+    std::ofstream o(autoInfoPath(entry), std::ios::trunc);
+    if (!o.good()) return;
+    o << "bytes=" << bytes << "\nmt=" << mt << "\n";
+}
+
+bool UI::autoBackupNeeded(GameType g, const std::string& srcFile, uint64_t srcSize, long srcMt, bool haveSrc) {
     auto entries = autoBackupEntries(g);
     if (entries.empty()) return true;
-    struct stat bst;
-    if (stat(entries[0].c_str(), &bst) != 0) return true;
-    time_t now = time(nullptr);
-    constexpr long THROTTLE_SEC = 30 * 60;
-    if (now - bst.st_mtime < THROTTLE_SEC) {
-        DebugLog::line("auto backup throttled: %s (ultimo %lds fa)",
-                       gameInfo(g).gameTag, (long)(now - bst.st_mtime));
-        return false;
+    if (!haveSrc) return true;
+    uint64_t b = 0;
+    long mt = 0;
+    if (!readAutoInfo(entries[0], b, mt)) {
+        // Backup legacy senza .info: un walk una tantum, poi sidecar con lo
+        // stato corrente (vale per i confronti futuri).
+        b = entryDiskSize(entries[0]);
+        writeAutoInfo(entries[0], b, srcMt);
+        mt = srcMt;
     }
-    if (fileBacked) {
-        struct stat sst;
-        if (stat(src.c_str(), &sst) == 0 &&
-            (uint64_t)sst.st_size == entryDiskSize(entries[0]) &&
-            sst.st_mtime <= bst.st_mtime) {
-            DebugLog::line("auto backup skipped (invariato): %s", src.c_str());
-            return false;
-        }
-    } else if (srcSize == entryDiskSize(entries[0])) {
+    if (srcSize == b && srcMt == mt) {
         DebugLog::line("auto backup skipped (invariato): %s", gameInfo(g).gameTag);
         return false;
     }
@@ -3083,8 +3248,8 @@ std::string UI::settingsRowLabel(int cat, int row) const {
     if (cat == 1) {
         if (row == 0) return i18n::get(StrKey::SetTheme);
         if (row == 1) return i18n::get(StrKey::SetLanguage);
-        if (row == 2) return i18n::get(StrKey::SetZoom);
-        return i18n::get(StrKey::SetGalleryLayout);
+        if (row == 2) return i18n::get(StrKey::SetGalleryLayout);
+        return i18n::get(StrKey::SetZoom);
     }
     if (cat == 2) return i18n::get(StrKey::SetCore);
     if (cat == 3) {
@@ -3115,9 +3280,10 @@ std::string UI::settingsRowValue(int cat, int row) {
     if (cat == 1) {
         if (row == 0) return getThemeName(themeIndex_);
         if (row == 1) return langDisplayName(i18n::currentLang());
-        if (row == 2) return std::to_string(zoomGrow_) + "px";
-        return (gameSelectorLayout_ == GameSelectorLayout::Gallery)
-             ? i18n::get(StrKey::LayoutGallery) : i18n::get(StrKey::LayoutClassic);
+        if (row == 2)
+            return (gameSelectorLayout_ == GameSelectorLayout::Gallery)
+                 ? i18n::get(StrKey::LayoutGallery) : i18n::get(StrKey::LayoutClassic);
+        return std::to_string(zoomGrow_) + "px";
     }
     if (cat == 2)
         return useOpenHome() ? i18n::get(StrKey::SetCoreOh) : i18n::get(StrKey::SetCorePk);
@@ -3138,12 +3304,19 @@ std::string UI::settingsRowValue(int cat, int row) {
     if (cat == 4) {
         if (row == 0) return "";
         if (row == 1) {
-            // Solo GitHub/Custom, mai l'IP (quello sta nel prefill dell'edit).
+            // Solo GitHub/Custom, mai l'IP (quello sta sotto).
             UpdateCfg cfg;
             readUpdateCfg(basePath_, cfg);
             return cfg.url.empty() ? "GitHub" : "Custom";
         }
-        return "";
+        // Modifica: mostra l'indirizzo custom a destra (come un tempo).
+        std::string cu = customUrlAny(basePath_);
+        if (cu.empty()) return "";
+        auto proto = cu.find("://");
+        std::string h = (proto == std::string::npos) ? cu : cu.substr(proto + 3);
+        auto slash = h.find('/');
+        if (slash != std::string::npos) h = h.substr(0, slash);
+        return h;
     }
     if (cat == 5) {
         if (row == 0)
@@ -3189,8 +3362,7 @@ static void writeQuickMenu(const std::string& basePath, bool on) {
     if (f) { std::fputs("1", f); std::fclose(f); }
 }
 
-static bool writeBackupMb(const std::string& basePath, long mb) {
-    std::string path = basePath + "update.cfg";
+static bool writeBackupMb(const std::string& basePath, long mb) {    std::string path = basePath + "update.cfg";
     std::ifstream f(path);
     std::vector<std::string> lines;
     std::string line;
@@ -3251,17 +3423,6 @@ void UI::settingsRowActivate(int cat, int row, int dir, bool& running) {
                 if (f) { std::fputs(nl.c_str(), f); std::fclose(f); }
             }
         } else if (row == 2) {
-            static const int STEPS[] = {0, 4, 8, 12, 16};
-            int i = 0;
-            for (; i < 5; i++)
-                if (STEPS[i] >= zoomGrow_) break;
-            if (i > 4) i = 4;
-            int ni = i + dir;
-            if (ni < 0) ni = 0;
-            if (ni > 4) ni = 4;
-            zoomGrow_ = STEPS[ni];
-            saveZoomGrow(basePath_, zoomGrow_);
-        } else {
             // Layout selettore giochi: solo 2 valori, qualunque dir alterna.
             gameSelectorLayout_ = (gameSelectorLayout_ == GameSelectorLayout::Classic)
                 ? GameSelectorLayout::Gallery : GameSelectorLayout::Classic;
@@ -3272,6 +3433,23 @@ void UI::settingsRowActivate(int cat, int row, int dir, bool& running) {
             selPageShown_ = 0;
             selSlide_ = 0.0f;
             gameSelOnChevron_ = 0;
+            // Stessa ragione per l'anteprima Galleria: senza reset, al
+            // prossimo ingresso in Galleria galSelShown_ punterebbe a un
+            // indice della sessione precedente e farebbe partire uno slide
+            // enorme dal nulla verso la selezione corrente.
+            galSelShown_ = -1;
+            galSlide_ = 0.0f;
+        } else {
+            static const int STEPS[] = {0, 4, 8, 12, 16};
+            int i = 0;
+            for (; i < 5; i++)
+                if (STEPS[i] >= zoomGrow_) break;
+            if (i > 4) i = 4;
+            int ni = i + dir;
+            if (ni < 0) ni = 0;
+            if (ni > 4) ni = 4;
+            zoomGrow_ = STEPS[ni];
+            saveZoomGrow(basePath_, zoomGrow_);
         }
     } else if (cat == 2) {
         setCryptoEngine(useOpenHome() ? CryptoEngine::PK : CryptoEngine::OH);
@@ -3404,13 +3582,14 @@ void UI::drawSettingsPopup() {
             const auto& e = getTextEntry(v, font_, T().selected);
             drawText(v, popX + POP_W - 36 - e.w, rowY + 8, T().selected, font_);
         }
-        if (setCat_ == 1 && r == 2) {
-            // Slider zoom 0..16px con pallino.
-            int bw = 120, bh = 8;
-            int bx = popX + POP_W - 36 - bw;
-            int by = rowY + ROW_H - 12;
+        if (setCat_ == 1 && r == 3) {
+            // Slider zoom 0..16px con pallino, accanto al valore (stessa riga).
+            const auto& ev = getTextEntry(settingsRowValue(setCat_, r), font_, T().selected);
+            int bw = 100, bh = 8;
+            int bx = popX + POP_W - 36 - ev.w - 14 - bw;
+            int by = rowY + (ROW_H - 4) / 2 - bh / 2;
             drawRect(bx, by, bw, bh, T().textDim);
-            int dx = bx + (int)(bw * zoomGrow_ / 16.0) ;
+            int dx = bx + (int)(bw * zoomGrow_ / 16.0);
             if (dx < bx) dx = bx;
             if (dx > bx + bw) dx = bx + bw;
             auto dot = [&](int cx, int cy, int rr, SDL_Color c) {

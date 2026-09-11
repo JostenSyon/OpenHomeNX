@@ -155,6 +155,21 @@ void UI::drawRect(int x, int y, int w, int h, SDL_Color color) {
     SDL_RenderFillRect(renderer_, &r);
 }
 
+// Sprite inscritto nel box mantenendo le proporzioni (niente schiacciati).
+void UI::drawSpriteFit(int x, int y, int w, int h, SDL_Texture* tex) {
+    if (!tex) return;
+    int tw = 0, th = 0;
+    SDL_QueryTexture(tex, nullptr, nullptr, &tw, &th);
+    int dw = w, dh = h;
+    if (tw > 0 && th > 0) {
+        float s = std::min((float)w / tw, (float)h / th);
+        dw = (int)(tw * s);
+        dh = (int)(th * s);
+    }
+    SDL_Rect dst = {x + (w - dw) / 2, y + (h - dh) / 2, dw, dh};
+    SDL_RenderCopy(renderer_, tex, nullptr, &dst);
+}
+
 // Base rotonda stile card giochi (stessi colori T(): panelBg sempre,
 // menuHighlight + anello cursor quando focused) — cosi i pulsanti tondi
 // seguono tutti i temi come le card.
@@ -197,6 +212,37 @@ void UI::drawRoundRect(int x, int y, int w, int h, int r, SDL_Color color) {
         SDL_RenderDrawLine(renderer_, x + w - r - dx, y + r + dy, x + w - r + dx, y + r + dy);
         SDL_RenderDrawLine(renderer_, x + r - dx, y + h - r + dy, x + r + dx, y + h - r + dy);
         SDL_RenderDrawLine(renderer_, x + w - r - dx, y + h - r + dy, x + w - r + dx, y + h - r + dy);
+    }
+}
+
+// Come drawRoundRect() ma con un gradiente orizzontale invece di un colore
+// piatto: per ogni colonna calcola l'estensione verticale piena (0..h-1 nel
+// corpo, ristretta dal cerchio negli angoli, stessa geometria esatta di
+// drawRoundRect) e la disegna con il colore interpolato per quella colonna.
+// Un solo giro, un solo draw call per colonna, sempre opaco.
+void UI::drawRoundRectGradientH(int x, int y, int w, int h, int r, SDL_Color left, SDL_Color right) {
+    if (r < 0) r = 0;
+    if (r * 2 > w) r = w / 2;
+    if (r * 2 > h) r = h / 2;
+    for (int cx = 0; cx < w; cx++) {
+        int insetX = std::min(cx, w - 1 - cx);
+        int yStart, yEnd;
+        if (insetX >= r) {
+            yStart = 0;
+            yEnd = h - 1;
+        } else {
+            int dxFromCenter = r - insetX;
+            int dyTrim = r - static_cast<int>(std::sqrt((double)(r * r - dxFromCenter * dxFromCenter)));
+            yStart = dyTrim;
+            yEnd = h - 1 - dyTrim;
+        }
+        if (yStart > yEnd) continue;
+        float t = (w > 1) ? (float)cx / (float)(w - 1) : 0.0f;
+        Uint8 cr = static_cast<Uint8>(left.r + (right.r - left.r) * t);
+        Uint8 cg = static_cast<Uint8>(left.g + (right.g - left.g) * t);
+        Uint8 cb = static_cast<Uint8>(left.b + (right.b - left.b) * t);
+        SDL_SetRenderDrawColor(renderer_, cr, cg, cb, 255);
+        SDL_RenderDrawLine(renderer_, x + cx, y + yStart, x + cx, y + yEnd);
     }
 }
 
@@ -529,21 +575,21 @@ void UI::drawPanel(int panelX, const std::string& boxName, int boxIdx,
                     if (!tex) tex = emptyFallback;
                 }
                 if (tex && mx + 24 <= panelX + PANEL_W - 20) {
-                    SDL_Rect dst = {mx, BOX_HDR_Y + (BOX_HDR_H - 24) / 2, 24, 24};
+                    SDL_Rect cell = {mx, BOX_HDR_Y + (BOX_HDR_H - 24) / 2, 24, 24};
                     if (isEmpty) {
                         SDL_SetTextureColorMod(tex, 110, 110, 110);
                         SDL_SetTextureAlphaMod(tex, 110);
                     }
-                    SDL_RenderCopy(renderer_, tex, nullptr, &dst);
+                    drawSpriteFit(cell.x, cell.y, cell.w, cell.h, tex);
                     if (isEmpty) {
                         SDL_SetTextureColorMod(tex, 255, 255, 255);
                         SDL_SetTextureAlphaMod(tex, 255);
                         SDL_SetRenderDrawColor(renderer_, 110, 110, 110, 90);
-                        SDL_RenderDrawRect(renderer_, &dst);
+                        SDL_RenderDrawRect(renderer_, &cell);
                     }
                     if (pi == partyCursor_) {
                         SDL_SetRenderDrawColor(renderer_, T().cursor.r, T().cursor.g, T().cursor.b, 255);
-                        SDL_RenderDrawRect(renderer_, &dst);
+                        SDL_RenderDrawRect(renderer_, &cell);
                     }
                 } else if (!tex) {
                     SDL_SetRenderDrawColor(renderer_, T().textDim.r, T().textDim.g, T().textDim.b, 80);

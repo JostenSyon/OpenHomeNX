@@ -135,33 +135,35 @@ bool UI::init() {
 
     // HD box art for the tiles (user-provided PNGs, aspect-preserved).
     // Tries .png first, then .jpg (RBY art ships as optimized jpg).
-    // Pre-ritagliate quadrate + angoli arrotondati: il draw ricampiona lo
-    // stesso quadrato centrale, cosi gli angoli restano tondi.
     {
-        auto prepSquare = [&](SDL_Surface* s) -> SDL_Surface* {
-            if (!s) return nullptr;
-            int side = std::min(s->w, s->h);
-            SDL_Surface* sq = SDL_CreateRGBSurfaceWithFormat(0, side, side, 32, SDL_PIXELFORMAT_RGBA32);
-            if (sq) {
-                SDL_Rect src = {(s->w - side) / 2, (s->h - side) / 2, side, side};
-                if (SDL_BlitSurface(s, &src, sq, nullptr) != 0) {
-                    SDL_FreeSurface(sq);
-                    sq = nullptr;
-                }
-            }
-            SDL_FreeSurface(s);
-            if (!sq) return nullptr;
-            if (SDL_Surface* rr = roundCornersSurface(sq, side / 12)) {
-                SDL_FreeSurface(sq);
-                sq = rr;
-            }
-            return sq;
-        };
-        auto loadArt = [&](const char* name) -> SDL_Texture* {
+        auto loadArt = [&](GameType g, const char* name) -> SDL_Texture* {
             for (const char* ext : {".png", ".jpg"}) {
                 std::string path = std::string("romfs:/boxart/") + name + ext;
-                SDL_Surface* s = prepSquare(IMG_Load(path.c_str()));
+                SDL_Surface* raw = IMG_Load(path.c_str());
+                if (!raw) continue;
+                // Solo RBY (full-bleed): pre-crop quadrato + maschera, il draw
+                // ricampiona lo stesso quadrato. RSE (overlay SPR): texture
+                // intera + maschera, la scala e tunata sulle dims originali.
+                SDL_Surface* s = raw;
+                bool fullBleed = (g == GameType::RED || g == GameType::BLUE || g == GameType::YELLOW);
+                if (fullBleed) {
+                    int side = std::min(raw->w, raw->h);
+                    SDL_Surface* sq = SDL_CreateRGBSurfaceWithFormat(0, side, side, 32, SDL_PIXELFORMAT_RGBA32);
+                    if (sq) {
+                        SDL_Rect src = {(raw->w - side) / 2, (raw->h - side) / 2, side, side};
+                        if (SDL_BlitSurface(raw, &src, sq, nullptr) != 0) {
+                            SDL_FreeSurface(sq);
+                            sq = nullptr;
+                        }
+                    }
+                    SDL_FreeSurface(raw);
+                    s = sq;
+                }
                 if (!s) continue;
+                if (SDL_Surface* rr = roundCornersSurface(s, std::min(s->w, s->h) / 12)) {
+                    SDL_FreeSurface(s);
+                    s = rr;
+                }
                 SDL_Texture* t = SDL_CreateTextureFromSurface(renderer_, s);
                 SDL_FreeSurface(s);
                 if (t) SDL_SetTextureBlendMode(t, SDL_BLENDMODE_BLEND);
@@ -169,12 +171,12 @@ bool UI::init() {
             }
             return nullptr;
         };
-        boxArtCache_[GameType::RUBY]     = loadArt("ruby");
-        boxArtCache_[GameType::SAPPHIRE] = loadArt("sapphire");
-        boxArtCache_[GameType::EMERALD]  = loadArt("emerald");
-        boxArtCache_[GameType::RED]      = loadArt("red");
-        boxArtCache_[GameType::BLUE]     = loadArt("blue");
-        boxArtCache_[GameType::YELLOW]   = loadArt("yellow");
+        boxArtCache_[GameType::RUBY]     = loadArt(GameType::RUBY, "ruby");
+        boxArtCache_[GameType::SAPPHIRE] = loadArt(GameType::SAPPHIRE, "sapphire");
+        boxArtCache_[GameType::EMERALD]  = loadArt(GameType::EMERALD, "emerald");
+        boxArtCache_[GameType::RED]      = loadArt(GameType::RED, "red");
+        boxArtCache_[GameType::BLUE]     = loadArt(GameType::BLUE, "blue");
+        boxArtCache_[GameType::YELLOW]   = loadArt(GameType::YELLOW, "yellow");
     }
 
     // Tile backgrounds (user-provided). Missing file = flat color stays.
@@ -564,6 +566,7 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
     // Load persisted theme
     themeIndex_ = loadThemeIndex(basePath_);
     zoomGrow_ = loadZoomGrow(basePath_);
+    gameSelectorLayout_ = (GameSelectorLayout)loadGameSelectorLayout(basePath_);
     theme_ = &getTheme(themeIndex_);
 
     // Load persisted crypto engine (PK/OH)
@@ -678,6 +681,7 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
             }
             if (!showAbout_) continue; // dismissed — let main draw section handle it
             if (dirty_) {
+                dirty_ = false; // prima del draw: i markDirty durante il draw restano
                 if (theme_ != lastTheme_) { clearTextCache(); lastTheme_ = theme_; }
                 // Draw the underlying screen, then about popup on top
                 if (screen_ == AppScreen::ProfileSelector) drawProfileSelectorFrame();
@@ -692,7 +696,6 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
                 else drawFrame();
                 drawAboutPopup();
                 SDL_RenderPresent(renderer_);
-                dirty_ = false;
             }
             SDL_Delay(16);
             continue;
@@ -752,6 +755,7 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
             }
             if (!showThemeSelector_) continue; // dismissed — let main draw section handle it
             if (dirty_) {
+                dirty_ = false; // prima del draw: i markDirty durante il draw restano
                 if (theme_ != lastTheme_) { clearTextCache(); lastTheme_ = theme_; }
                 // Draw the underlying screen, then theme popup on top
                 if (screen_ == AppScreen::ProfileSelector) drawProfileSelectorFrame();
@@ -766,7 +770,6 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
                 else drawFrame();
                 drawThemeSelectorPopup();
                 SDL_RenderPresent(renderer_);
-                dirty_ = false;
             }
             SDL_Delay(16);
             continue;
@@ -831,7 +834,6 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
             drawImportSettingsPopup();
             drawFolderBrowserPopup();
             SDL_RenderPresent(renderer_);
-            dirty_ = false;
             SDL_Delay(16);
             continue;
         }
@@ -917,6 +919,7 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
             }
             if (!showImportSettings_) continue; // dismissed — let main draw section handle it
             if (dirty_) {
+                dirty_ = false; // prima del draw: i markDirty durante il draw restano
                 if (theme_ != lastTheme_) { clearTextCache(); lastTheme_ = theme_; }
                 if (screen_ == AppScreen::ProfileSelector) drawProfileSelectorFrame();
                 else if (screen_ == AppScreen::GameSelector) {
@@ -930,7 +933,6 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
                 else drawFrame();
                 drawImportSettingsPopup();
                 SDL_RenderPresent(renderer_);
-                dirty_ = false;
             }
             SDL_Delay(16);
             continue;
@@ -992,6 +994,7 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
             }
             if (!showLanguageSelector_) continue;
             if (dirty_) {
+                dirty_ = false; // prima del draw: i markDirty durante il draw restano
                 if (theme_ != lastTheme_) { clearTextCache(); lastTheme_ = theme_; }
                 if (screen_ == AppScreen::ProfileSelector) drawProfileSelectorFrame();
                 else if (screen_ == AppScreen::GameSelector) {
@@ -1005,7 +1008,6 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
                 else drawFrame();
                 drawLanguageSelectorPopup();
                 SDL_RenderPresent(renderer_);
-                dirty_ = false;
             }
             SDL_Delay(16);
             continue;
@@ -1103,6 +1105,7 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
         // If a popup just activated, skip drawing here — the popup branch
         // will handle it next iteration with dirty_ still set.
         if (dirty_ && !showAbout_ && !showThemeSelector_ && !showLanguageSelector_ && !showImportSettings_) {
+            dirty_ = false; // prima del draw: i markDirty durante il draw restano
             if (theme_ != lastTheme_) {
                 clearTextCache();
                 lastTheme_ = theme_;
@@ -1118,7 +1121,6 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
             else if (screen_ == AppScreen::BankSelector) drawBankSelectorFrame();
             else drawFrame();
             SDL_RenderPresent(renderer_);
-            dirty_ = false;
         }
         SDL_Delay(16);
     }
@@ -1129,6 +1131,10 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
 }
 
 void UI::selectGame(GameType game, int occurrence) {
+    // Backup del gioco precedente se modificato (prima di cambiare).
+    backupOnExitIfNeeded();
+    exitBackedUp_ = false;
+    uint32_t openT0 = SDL_GetTicks();
     selectedGame_ = game;
     partyCursor_ = -1; // save changes: drop any OT-strip focus
     detailParty_ = -1;
@@ -1171,7 +1177,10 @@ void UI::selectGame(GameType game, int occurrence) {
             // file-backed meritano un auto-backup all'apertura: finora non ne
             // esisteva nessuno (da qui "non trova save"). Best-effort, mai
             // dialoghi: cap 10, solo log.
-            autoBackupFileSave(game, savePath_);
+            if (autoBackupEntries(game).empty())
+                autoBackupFileSave(game, savePath_);
+            else
+                DebugLog::line("save: open senza backup (non first-ever)");
         } else if (selectedProfile_ >= 0) {
             std::string mountPath = account_.mountSave(selectedProfile_, game);
             if (mountPath.empty()) {
@@ -1180,12 +1189,15 @@ void UI::selectGame(GameType game, int occurrence) {
             }
             savePath_ = mountPath + saveFileNameOf(game);
 
-            // Check space and backup save files
-            size_t saveSize = AccountManager::calculateDirSize(mountPath);
+            // Spazio: stat del singolo file (mai walk della dir).
+            struct stat saveSt;
+            size_t saveSize = 0;
+            if (stat(savePath_.c_str(), &saveSt) == 0)
+                saveSize = (size_t)saveSt.st_size;
             bool doBackup = true;
 
             struct statvfs vfs;
-            if (statvfs("sdmc:/", &vfs) == 0) {
+            if (saveSize > 0 && statvfs("sdmc:/", &vfs) == 0) {
                 size_t freeSpace = (size_t)vfs.f_bavail * vfs.f_bsize;
                 if (freeSpace < saveSize * 2) {
                     std::string msg = i18n::fmt(StrKey::LowStorageBody, formatSize(freeSpace), formatSize(saveSize));
@@ -1198,11 +1210,9 @@ void UI::selectGame(GameType game, int occurrence) {
             }
 
             if (doBackup) {
-                // Throttle 30 min + skip invariato + tetto a spazio: senza,
-                // ogni apertura copiava tutto all'infinito.
-                if (!autoBackupNeeded(game, false, mountPath, saveSize)) {
-                    DebugLog::line("save: auto backup saltato (throttle/invariato)");
-                } else {
+                // All'apertura SOLO first-ever (niente backup a ogni open:
+                // da ora li fa l'uscita se modificato). Check = readdir.
+                if (autoBackupEntries(game).empty()) {
                     std::string backupDir = buildBackupDir(game);
                     ledBlink();
                     bool ok = AccountManager::backupSaveDir(mountPath, backupDir);
@@ -1214,8 +1224,12 @@ void UI::selectGame(GameType game, int occurrence) {
                             return;
                         }
                     } else {
+                        writeAutoInfo(backupDir, saveSize,
+                            saveSize > 0 ? (long)saveSt.st_mtime : 0);
                         prunePoolToCap(false);
                     }
+                } else {
+                    DebugLog::line("save: open senza backup (non first-ever)");
                 }
             }
         } else {
@@ -1276,6 +1290,7 @@ void UI::selectGame(GameType game, int occurrence) {
     bankSelScroll_ = 0;
 
     screen_ = AppScreen::BankSelector;
+    DebugLog::line("open %s: %ums", gameInfo(game).gameTag, SDL_GetTicks() - openT0);
 }
 
 std::string UI::buildBackupDir(GameType game) const {
@@ -1334,6 +1349,7 @@ bool UI::persistGameSaveIfDirty() {
     ledBlink();
     bool ok = save_.save(savePath_);
     account_.commitSave();
+    if (ok) galInvalidateParty(selectedGame_); // preview galleria da ricaricare
     ledOff();
     // Mai fallimento silenzioso: i save read-only v1 (DS/3DS) e gli errori IO
     // tornano false — l'utente deve saperlo, i dati in memoria restano intatti.

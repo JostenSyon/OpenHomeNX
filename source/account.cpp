@@ -1,6 +1,8 @@
 #include "account.h"
 #include "debug_log.h"
+#include "ui_util.h"
 #include <SDL2/SDL_image.h>
+#include <algorithm>
 #include <cstring>
 #include <ctime>
 #include <dirent.h>
@@ -60,8 +62,14 @@ bool AccountManager::loadProfile(AccountUid uid, SDL_Renderer* renderer, UserPro
             if (rw) {
                 SDL_Surface* surf = IMG_Load_RW(rw, 1); // 1 = auto-close rw
                 if (surf) {
-                    // Quadrata originale per il menu profili.
+                    // Quadrata con angoli arrotondati (come le icone giochi).
+                    if (SDL_Surface* rr = roundCornersSurface(surf, std::min(surf->w, surf->h) / 12)) {
+                        SDL_FreeSurface(surf);
+                        surf = rr;
+                    }
                     out.iconTexture = SDL_CreateTextureFromSurface(renderer, surf);
+                    if (out.iconTexture)
+                        SDL_SetTextureBlendMode(out.iconTexture, SDL_BLENDMODE_BLEND);
                     // Copia con maschera circolare (raggio 46%) per la home.
                     SDL_Surface* rgba = SDL_ConvertSurfaceFormat(surf, SDL_PIXELFORMAT_RGBA32, 0);
                     SDL_FreeSurface(surf);
