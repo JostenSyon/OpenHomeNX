@@ -13,7 +13,7 @@ transfer. Failures are always explicit, never silent.
 ![Gallery — list + preview](docs/screenshot/gallery_view.jpg)
 ![Classic — remodernized pkHouse grid](docs/screenshot/classic_view.jpg)
 ![Two-panel box view — banks side by side](docs/screenshot/box-site-2-side-bank.jpg)
-![Box view — full box vs. cross-gen bank](docs/screenshot/box-full-vs-bank.jpg)
+![Box view with the banks selector — pick which bank to open](docs/screenshot/box-full-vs-bank.jpg)
 
 ## Features
 
@@ -157,7 +157,7 @@ cross-gen reale. I fallimenti sono sempre espliciti, mai silenziosi.
 ![Galleria — lista + anteprima](docs/screenshot/gallery_view.jpg)
 ![Classica — griglia pkHouse rimodernizzata](docs/screenshot/classic_view.jpg)
 ![Vista a due pannelli — banche affiancate](docs/screenshot/box-site-2-side-bank.jpg)
-![Vista box — box pieno vs banca cross-gen](docs/screenshot/box-full-vs-bank.jpg)
+![Vista box con il selettore di tutte le banche](docs/screenshot/box-full-vs-bank.jpg)
 
 ## Funzioni
 
