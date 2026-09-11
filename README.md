@@ -4,9 +4,7 @@
 
 Box manager and cross-generation transfer for Nintendo Switch (homebrew `.nro`).
 
-Combines the **pkHouse** UI (C++/SDL2) with the **OpenHome** backend
-(Rust via FFI): box management across all generations with real cross-gen
-transfer. Failures are always explicit, never silent.
+Built on the **pkHouse** UI framework (C++/SDL2) — graphics and layouts adapted and extended — combined with the **OpenHome** backend (Rust via FFI): box management across all generations with real cross-gen transfer. Failures are always explicit, never silent.
 
 ## Screenshots
 
@@ -121,7 +119,7 @@ OpenHomeNX would not exist without these projects — thanks to the authors and
 communities maintaining them:
 
 - **[pkHouse](https://github.com/Insektaure/pkHouse)** by Insektaure —
-  user interface, graphics and Switch homebrew base (SDL2/libnx)
+  original UI framework and visual design that served as the foundation for OpenHomeNX; graphics and layouts have been adapted and extended for the new features (SDL2/libnx)
 - **[OpenHome](https://github.com/andrewbenington/OpenHome)** by andrewbenington —
   Rust backend (cross-gen conversions, formats, crypto)
 - **[PKHeX](https://github.com/kwsch/PKHeX)** by kwsch — reference for
@@ -148,9 +146,7 @@ owned game copies; always back up your saves.
 
 Box manager e trasferimento cross-generazione per Nintendo Switch (homebrew `.nro`).
 
-Unisce l'interfaccia di **pkHouse** (C++/SDL2) con il backend di **OpenHome**
-(Rust via FFI): gestione box su tutte le generazioni con trasferimento
-cross-gen reale. I fallimenti sono sempre espliciti, mai silenziosi.
+Costruito sul framework UI di **pkHouse** (C++/SDL2) — grafica e layout adattati ed estesi — unito al backend di **OpenHome** (Rust via FFI): gestione box su tutte le generazioni con trasferimento cross-gen reale. I fallimenti sono sempre espliciti, mai silenziosi.
 
 ## Screenshot
 
@@ -265,7 +261,7 @@ Senza questi progetti OpenHomeNX non esisterebbe — grazie agli autori e alle
 community che li mantengono:
 
 - **[pkHouse](https://github.com/Insektaure/pkHouse)** di Insektaure —
-  interfaccia utente, grafica e base homebrew Switch (SDL2/libnx)
+  framework UI e design grafico originale che hanno servito da base per l'interfaccia di OpenHomeNX; grafica e layout sono stati adattati ed estesi per le nuove funzioni (SDL2/libnx)
 - **[OpenHome](https://github.com/andrewbenington/OpenHome)** di andrewbenington —
   backend Rust (conversioni cross-gen, formati, crittografia)
 - **[PKHeX](https://github.com/kwsch/PKHeX)** di kwsch — riferimento per le
