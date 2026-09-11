@@ -1,10 +1,19 @@
 # OpenHomeNX
 
+**English** · [Italiano](#openhomenx-italiano)
+
 Box manager and cross-generation transfer for Nintendo Switch (homebrew `.nro`).
 
 Combines the **pkHouse** UI (C++/SDL2) with the **OpenHome** backend
 (Rust via FFI): box management across all generations with real cross-gen
 transfer. Failures are always explicit, never silent.
+
+## Screenshots
+
+![Gallery — list + preview](docs/screenshot/gallery_view.jpg)
+![Classic — remodernized pkHouse grid](docs/screenshot/classic_view.jpg)
+![Two-panel box view — banks side by side](docs/screenshot/box-site-2-side-bank.jpg)
+![Box view with the banks selector — pick which bank to open](docs/screenshot/box-full-vs-bank.jpg)
 
 ## Features
 
@@ -17,12 +26,28 @@ transfer. Failures are always explicit, never silent.
 - Wondercard injection, automatic save backups, LED, network indicator
 - Self-update from SD/GitHub releases
 
+## Cross-gen bank (flagship)
+
+Any Pokémon can be moved between any supported save via the cross-gen bank (`banks/All/` or per-family with `banks/<Family>/`). Conversion goes through OHPKM in Rust: PID re-rolled to keep nature/ability/gender/shininess, dex-cut and 4-move drop are shown explicitly (`A: proceed / B: cancel`), and `OriginalBackup` keeps the initial bytes for a lossless return. No silent failures — `transfer_cant_read_src` etc.
+
+## Supported games
+
+| Family | Games | Via |
+|---|---|---|
+| Switch | Scarlet / Violet (4.0.0), Sword / Shield (1.3.2), BDSP (1.3.0), Legends Arceus (1.1.1), Legends Z-A (2.0.2), Let's Go Pikachu/Eevee (1.0.2), FireRed/LeafGreen (incl. ES/DE/IT/FR/JA) | Installed save (`AccountManager`) |
+| GBA (import) | Ruby / Sapphire / Emerald | SD/USB file |
+| GB (import) | Red / Blue / Yellow, Gold / Silver / Crystal | SD/USB file |
+| DS (import) | Diamond / Pearl / Platinum / HGSS, Black / White / B2W2, X / Y, Sun / Moon (decrypted) | SD/USB file |
+
+Cross-gen bank covers all 13 stored formats (PK1/PK2/PK3/PK4/PK5/PK6/PK7/PK8/PK9/PA8/PA9/PB8/PB7).
+
 ## Install (Switch)
 
-1. Download `OpenHomeNX.nro` from the latest [release](../../releases) and copy it to
+1. Requires a Switch running a homebrew environment (e.g. Atmosphère + hbmenu) — same as any `.nro`.
+2. Download `OpenHomeNX.nro` from the latest [release](../../releases) and copy it to
    `sdmc:/switch/OpenHomeNX/OpenHomeNX.nro` (or launch from hbmenu).
-2. Start a Pokémon game at least once (creates the save), then open the app.
-3. Later updates: `+` menu → *Check for update* (SD or network).
+3. Start a Pokémon game at least once (creates the save), then open the app.
+4. Later updates: `+` menu → *Check for update* (SD or network).
 
 ## Main controls
 
@@ -37,6 +62,30 @@ transfer. Failures are always explicit, never silent.
 | L/R | Previous/next box |
 | ZL/ZR | Box overview |
 | Stick/D-Pad up | Reach the header party |
+
+## Import (emulators) — already scanned
+
+* `sdmc:/switch/OpenHomeNX/import/` is always scanned (created if missing).
+* Extra folders: **Settings → Data → Cartelle import** → `+ Add path…` (any `sdmc:/…` or `usb:/…`), enable/disable per path.
+* USB autocheck (optional): **Settings → Data → Autocheck save su USB** scans every mounted drive's `/roms/saves` and `/roms` on hotplug — Ruby/Sapphire/Emerald, GB/GBC/GBA/DS saves are picked up without manual path.
+* Rescan: **Settings → Data → Scansiona import** or replug drive.
+
+## USB peripherals
+
+USB drives via `libusbhsfs` (FAT-only, ISC build in `libusbhsfs/lib`). Hotplug detected, safe eject via trash icon or `Y` in game selector, LED + `debug.log` hints (`physical>0 mounted==0` → MBR/FS issue). Backups and import both work from USB; update can also be fetched from `usb:/switch/OpenHomeNX/update/` or network.
+
+## Backups — 1-click restore
+
+* **Auto**: once per game load, full copy under `backups/<profile>/<game>/<profile>_YYYY-MM-DD_HH-MM-SS/` (2× free-space check, soft-cancel). Pruned by cap (`Settings → Data → Max backup auto`, default 256 MB SD / 32 MB).
+* **Manual**: `X` on a game (debug off: `Y` → `Backup save` / `Browse backups` / `Clean old backups`). Any entry (`[AUTO]`/`[MAN]`) restores with one `A` → `Restore backup` → `A: Confirm`, overwriting the current save.
+
+## Self-update (integrated)
+
+No manual copy needed. `+` → *Check for update* looks for a newer `OpenHomeNX.nro` in `sdmc:/switch/OpenHomeNX/update/`, on any mounted USB (`usb:/switch/OpenHomeNX/update/`), and on the network if `update.cfg` (`url=…/latest.json`) is set. Network fetch shows `latest.json { version, nro, sha256 }`, downloads to `OpenHomeNX.nro.new` and chainloads via `envSetNextLoad` on next exit. Also checked silently on boot.
+
+## Debug extras — party
+
+With **Settings → Debug → Funzioni Debug ON**, the header party strip becomes movable: `D-Pad Up` reaches the 6 party slots, `A` pick/place/swap, `Y` duplicate check, empty party auto-fills Caterpie/Magikarp placeholder (prompt). Otherwise party is read-only and compacted on save.
 
 ## Build from source
 
@@ -95,11 +144,20 @@ owned game copies; always back up your saves.
 
 # OpenHomeNX (Italiano)
 
+[English](#openhomenx) · **Italiano**
+
 Box manager e trasferimento cross-generazione per Nintendo Switch (homebrew `.nro`).
 
 Unisce l'interfaccia di **pkHouse** (C++/SDL2) con il backend di **OpenHome**
 (Rust via FFI): gestione box su tutte le generazioni con trasferimento
 cross-gen reale. I fallimenti sono sempre espliciti, mai silenziosi.
+
+## Screenshot
+
+![Galleria — lista + anteprima](docs/screenshot/gallery_view.jpg)
+![Classica — griglia pkHouse rimodernizzata](docs/screenshot/classic_view.jpg)
+![Vista a due pannelli — banche affiancate](docs/screenshot/box-site-2-side-bank.jpg)
+![Vista box con il selettore di tutte le banche](docs/screenshot/box-full-vs-bank.jpg)
 
 ## Funzioni
 
@@ -112,12 +170,28 @@ cross-gen reale. I fallimenti sono sempre espliciti, mai silenziosi.
 - Wondercard injection, backup automatici dei save, LED, indicatore rete
 - Self-update da SD/release GitHub
 
+## Banca cross-gen (punto forte)
+
+Qualsiasi Pokémon può passare tra tutti i save supportati via banca cross-gen (`banks/All/` o per famiglia `banks/<Famiglia>/`). La conversione passa dall'OHPKM Rust: PID ricalcolato per mantenere natura/abilità/sesso/cromaticità, dex-cut e taglio a 4 mosse mostrati espliciti (`A: procedi / B: annulla`), `OriginalBackup` conserva i byte iniziali per il ritorno lossless. Mai silenzioso — errori `transfer_cant_read_src` ecc.
+
+## Giochi supportati
+
+| Famiglia | Giochi | Via |
+|---|---|---|
+| Switch | Scarlatto / Violetto (4.0.0), Spada / Scudo (1.3.2), Diamante Lucente / Perla Splendente (1.3.0), Leggende Arceus (1.1.1), Leggende Z-A (2.0.2), Let's Go Pikachu/Eevee (1.0.2), Rosso Fuoco / Verde Foglia (incl. ES/DE/IT/FR/JA) | Save installato (`AccountManager`) |
+| GBA (import) | Rubino / Zaffiro / Smeraldo | File SD/USB |
+| GB (import) | Rosso / Blu / Giallo, Oro / Argento / Cristallo | File SD/USB |
+| DS (import) | Diamante / Perla / Platino / HGSS, Nero / Bianco / B2W2, X / Y, Sole / Luna (decifrati) | File SD/USB |
+
+Banca cross-gen: tutti i 13 formati (PK1/PK2/PK3/PK4/PK5/PK6/PK7/PK8/PK9/PA8/PA9/PB8/PB7).
+
 ## Installazione (Switch)
 
-1. Scarica `OpenHomeNX.nro` dall'ultima [release](../../releases) e copialo in
+1. Richiede una Switch con un ambiente homebrew attivo (es. Atmosphère + hbmenu) — come per qualsiasi `.nro`.
+2. Scarica `OpenHomeNX.nro` dall'ultima [release](../../releases) e copialo in
    `sdmc:/switch/OpenHomeNX/OpenHomeNX.nro` (o avvialo da hbmenu).
-2. Avvia un gioco Pokémon almeno una volta (crea il save), poi apri l'app.
-3. Aggiornamenti successivi: menu `+` → *Check for update* (SD o rete).
+3. Avvia un gioco Pokémon almeno una volta (crea il save), poi apri l'app.
+4. Aggiornamenti successivi: menu `+` → *Check for update* (SD o rete).
 
 ## Comandi principali
 
@@ -132,6 +206,30 @@ cross-gen reale. I fallimenti sono sempre espliciti, mai silenziosi.
 | L/R | Box precedente/successivo |
 | ZL/ZR | Panoramica box |
 | Stick/D-Pad su | Raggiunge il party in testata |
+
+## Import (emulatori) — già scansionato
+
+* `sdmc:/switch/OpenHomeNX/import/` è sempre scansionato (creato se manca).
+* Altre cartelle: **Impostazioni → Dati → Cartelle import** → `+ Aggiungi percorso…` (qualsiasi `sdmc:/…` o `usb:/…`), attivazione per percorso.
+* Autocheck USB (opzionale): **Impostazioni → Dati → Autocheck save su USB** scansiona ogni drive montato in `/roms/saves` e `/roms` all'hotplug — save Ruby/GB/GBA/DS rilevati senza percorso manuale.
+* Riscansione: **Impostazioni → Dati → Scansiona import** o ricollegando la chiavetta.
+
+## Periferiche USB
+
+Chiavette USB via `libusbhsfs` (solo FAT, build ISC in `libusbhsfs/lib`). Hotplug rilevato, espulsione sicura via icona cestino o `Y` nel selettore giochi, LED + hint `debug.log` (`physical>0 mounted==0` → MBR/FS). Backup e import funzionano da USB; update anche da `usb:/switch/OpenHomeNX/update/` o rete.
+
+## Backup — ripristino in 1 click
+
+* **Auto**: una volta per caricamento gioco, copia completa in `backups/<profilo>/<gioco>/<profilo>_YYYY-MM-DD_HH-MM-SS/` (check 2× spazio, annullabile). Potati da tetto (`Impostazioni → Dati → Max backup auto`, default 256 MB SD / 32 MB).
+* **Manuali**: `X` sul gioco (debug off: `Y` → `Backup save` / `Browse backups` / `Clean old backups`). Ogni voce (`[AUTO]`/`[MAN]`) si ripristina con `A` → `Restore backup` → `A: Conferma`, sovrascrivendo il save.
+
+## Autoupdater (integrato)
+
+Nessuna copia manuale. `+` → *Check for update* cerca un `OpenHomeNX.nro` più nuovo in `sdmc:/switch/OpenHomeNX/update/`, su qualsiasi USB (`usb:/switch/OpenHomeNX/update/`) e in rete se `update.cfg` (`url=…/latest.json`) è impostato. Fetch di `latest.json { version, nro, sha256 }`, download su `OpenHomeNX.nro.new` e chainload via `envSetNextLoad` all'uscita. Controllo anche silenzioso al boot.
+
+## Extra debug — party
+
+Con **Impostazioni → Debug → Funzioni Debug ON**, lo strip party in testata diventa spostabile: `D-Pad Su` raggiunge i 6 slot party, `A` prendi/posa/swap, `Y` duplicate check, party vuoto auto-riempito con Caterpie/Magikarp segnaposto (prompt). Altrimenti party sola lettura e compattato al salvataggio.
 
 ## Build da sorgente
 
