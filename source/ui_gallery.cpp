@@ -17,6 +17,7 @@
 #include "debug_log.h"
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <sys/stat.h>
 
 // Colore medio della cover (campionamento rado, angoli trasparenti esclusi),
@@ -248,12 +249,9 @@ void UI::drawGameList_Gallery() {
     drawText(name, textX, textY, T().text, fontLarge_);
     TTF_SetFontStyle(fontLarge_, TTF_STYLE_NORMAL);
 
-    auto bc = gameBankCounts_.find(selGame);
-    int bankCount = (bc != gameBankCounts_.end()) ? bc->second : 0;
-    std::string bankStr = "(" + std::to_string(bankCount) + ")";
-    drawText(bankStr, textX, textY + 46, T().textDim, fontSmall_);
+    drawText(i18n::get(StrKey::PartyPokemon), textX, textY + 46, T().textDim, fontSmall_);
 
-    // Party preview accanto al conteggio: lazy sul gioco fermo da 400ms.
+    // Party preview: lazy sul gioco fermo da 400ms.
     uint32_t nowT = SDL_GetTicks();
     if (sel != galPreviewGame_) {
         galPreviewGame_ = sel;
@@ -264,18 +262,23 @@ void UI::drawGameList_Gallery() {
         galEnsureParty(selGame);
     }
     {
-        const auto& be = getTextEntry(bankStr, fontSmall_, T().textDim);
-        int partyX = textX + (int)be.w + 28;
         int partyY = textY + 46;
+        int rightEdge = GAL_PREVIEW_X + previewW - 40;
+        int partyW = 5 * 36 + 32;
+        int partyXFixed = rightEdge - partyW;
+        if (partyXFixed < textX) partyXFixed = textX;
         auto pit = galPartyCache_.find(selGame);
         if (pit == galPartyCache_.end()) {
-            drawText("…", partyX, partyY, T().textDim, fontSmall_);
+            drawText("…", partyXFixed, partyY, T().textDim, fontSmall_);
         } else {
             for (int k = 0; k < 6; k++) {
                 const PartyPreviewMon& m = pit->second.mons[k];
-                if (m.empty) continue;
+                bool isEmpty = m.empty;
                 SDL_Texture* spr = nullptr;
-                if (m.egg) {
+                if (isEmpty) {
+                    spr = getBallSprite(4);
+                    if (!spr) spr = iconBoxEmpty_;
+                } else if (m.egg) {
                     spr = getSprite(0);
                 } else if (m.shiny) {
                     spr = getShinySprite(m.species, m.form);
@@ -283,8 +286,32 @@ void UI::drawGameList_Gallery() {
                 } else {
                     spr = getSprite(m.species, m.form);
                 }
-            if (!spr) continue;
-            drawSpriteFit(partyX + k * 36, partyY - 4, 32, 32, spr);
+                if (!spr) continue;
+                if (isEmpty) {
+                    SDL_SetTextureColorMod(spr, 110, 110, 110);
+                    SDL_SetTextureAlphaMod(spr, 110);
+                }
+                drawSpriteFit(partyXFixed + k * 36, partyY - 4, 32, 32, spr);
+                if (isEmpty) {
+                    SDL_SetTextureColorMod(spr, 255, 255, 255);
+                    SDL_SetTextureAlphaMod(spr, 255);
+                }
+            }
+            if (!pit->second.otName.empty()) {
+                std::string lbl = i18n::get(StrKey::FilterOT);
+                int rowY = partyY + 40;
+                drawText(lbl, textX, rowY, T().textDim, fontSmall_);
+                // OT troncato se supera l'ultima ball
+                std::string ot = pit->second.otName;
+                int maxOtW = rightEdge - (textX + (int)getTextEntry(lbl, fontSmall_, T().textDim).w + 12);
+                if (maxOtW < 40) maxOtW = 40;
+                int otw = getTextEntry(ot, fontSmall_, T().text).w;
+                while (ot.size() > 5 && otw > maxOtW) {
+                    ot = ot.substr(0, ot.size() - 5) + "(..)";
+                    otw = getTextEntry(ot, fontSmall_, T().text).w;
+                }
+                const auto& ve = getTextEntry(ot, fontSmall_, T().text);
+                drawText(ot, rightEdge - (int)ve.w, rowY, T().text, fontSmall_);
             }
         }
     }
@@ -338,7 +365,15 @@ bool UI::galleryPreviewAnim() {
         return true;
     }
     if (galSelShown_ != sel || galSlide_ != 0.0f) return true;
-    if (galPartyCache_.find(availableGames_[sel]) == galPartyCache_.end()) return true;
+    if (galPartyCache_.find(availableGames_[sel]) == galPartyCache_.end()) {
+        // Il commento sopra diceva "settle qui" ma il caricamento vero e
+        // proprio avveniva solo dentro drawGameList_Gallery(), quindi senza
+        // ulteriori markDirty() a valle (es. muovendo il cursore su
+        // avatar/zaino/banca) il draw non veniva mai richiamato e la
+        // party restava vuota a schermo fermo. Carica direttamente qui.
+        if (SDL_GetTicks() - galPreviewTick_ > 400) galEnsureParty(availableGames_[sel]);
+        return true;
+    }
     return false;
 }
 
@@ -402,6 +437,7 @@ void UI::galEnsureParty(GameType g) {
                     pv.mons[s] = m;
                     filled++;
                 }
+                pv.otName = sf.dsOtName();
             } else {
                 DebugLog::line("gal party: %s load FALLITO path=%s", gameInfo(g).gameTag, path.c_str());
             }
@@ -411,6 +447,24 @@ void UI::galEnsureParty(GameType g) {
             DebugLog::line("gal party: %s cached 0/6", gameInfo(g).gameTag);
         }
         if (!mnt.empty()) account_.unmountSave();
+    }
+    // Per screenshot/registrazioni: se sdmc:/.../overrideOT.cfg esiste (accanto
+    // all'nro, stessa basePath_ di theme.cfg/gallery.cfg), il suo contenuto
+    // sostituisce l'OT reale ovunque in Galleria — niente nome vero in giro.
+    {
+        FILE* f = std::fopen((basePath_ + "overrideOT.cfg").c_str(), "rb");
+        if (f) {
+            char buf[64] = {0};
+            size_t n = std::fread(buf, 1, sizeof(buf) - 1, f);
+            std::fclose(f);
+            std::string ov(buf, n);
+            while (!ov.empty() && (ov.back() == '\n' || ov.back() == '\r' || ov.back() == ' '))
+                ov.pop_back();
+            if (!ov.empty()) {
+                DebugLog::line("gal party: overrideOT.cfg attivo, OT mostrato come '%s'", ov.c_str());
+                pv.otName = ov;
+            }
+        }
     }
     galPartyCache_[g] = pv;
     markDirty();

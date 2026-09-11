@@ -655,7 +655,7 @@ private:
     // validata via mtime (mount+stat, niente decrypt). Load completo solo
     // se cambiato, mai eager.
     struct PartyPreviewMon { uint16_t species = 0; uint8_t level = 0; uint8_t form = 0; bool shiny = false; bool egg = false; bool empty = true; };
-    struct PartyPreview { long mtime = -1; bool loading = false; std::vector<PartyPreviewMon> mons; };
+    struct PartyPreview { long mtime = -1; bool loading = false; std::vector<PartyPreviewMon> mons; std::string otName; };
     std::unordered_map<GameType, PartyPreview> galPartyCache_;
     int galPreviewGame_ = -1;
     uint32_t galPreviewTick_ = 0;
