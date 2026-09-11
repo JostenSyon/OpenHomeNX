@@ -121,7 +121,7 @@ OpenHomeNX would not exist without these projects — thanks to the authors and
 communities maintaining them:
 
 - **[pkHouse](https://github.com/Insektaure/pkHouse)** by Insektaure —
-  user interface, graphics and Switch homebrew base (SDL2/libnx)
+  original UI framework and visual design that served as the foundation for OpenHomeNX; graphics and layouts have been adapted and extended for the new features (SDL2/libnx)
 - **[OpenHome](https://github.com/andrewbenington/OpenHome)** by andrewbenington —
   Rust backend (cross-gen conversions, formats, crypto)
 - **[PKHeX](https://github.com/kwsch/PKHeX)** by kwsch — reference for
@@ -265,7 +265,7 @@ Senza questi progetti OpenHomeNX non esisterebbe — grazie agli autori e alle
 community che li mantengono:
 
 - **[pkHouse](https://github.com/Insektaure/pkHouse)** di Insektaure —
-  interfaccia utente, grafica e base homebrew Switch (SDL2/libnx)
+  framework UI e design grafico originale che hanno servito da base per l'interfaccia di OpenHomeNX; grafica e layout sono stati adattati ed estesi per le nuove funzioni (SDL2/libnx)
 - **[OpenHome](https://github.com/andrewbenington/OpenHome)** di andrewbenington —
   backend Rust (conversioni cross-gen, formati, crittografia)
 - **[PKHeX](https://github.com/kwsch/PKHeX)** di kwsch — riferimento per le
