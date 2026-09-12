@@ -251,6 +251,10 @@ namespace StrKey {
     constexpr const char* SetCleanConfirm = "set_clean_confirm";
     constexpr const char* SetCleanDone    = "set_clean_done";
     constexpr const char* SetCheckUpdate  = "set_checkupdate";
+    constexpr const char* SetChannel      = "set_channel";
+    constexpr const char* ChannelStable   = "channel_stable";
+    constexpr const char* ChannelBeta     = "channel_beta";
+    constexpr const char* UpdateBetaNone  = "update_beta_none";
     // Popup di scoperta "Installa launcher" (mostrato una sola volta,
     // vedi hasSeenLauncherPrompt()/markLauncherPromptSeen() in ui.h).
     constexpr const char* LauncherPromptTitle = "launcher_prompt_title";
@@ -261,7 +265,6 @@ namespace StrKey {
     constexpr const char* LauncherInstallConfirm  = "launcher_install_confirm";
     constexpr const char* LauncherInstallOk       = "launcher_install_ok";
     constexpr const char* LauncherInstallUnavail  = "launcher_install_unavail";
-    constexpr const char* LauncherInstallApplet   = "launcher_install_applet";
     constexpr const char* SetSource       = "set_source";
     constexpr const char* SetEditUrl      = "set_editurl";
     constexpr const char* SetEditUrlHdr   = "set_editurl_hdr";
@@ -356,6 +359,7 @@ namespace StrKey {
     constexpr const char* AboutBasedOn         = "about_based_on";
     constexpr const char* AboutBasedPKHouse    = "about_based_pkhouse";
     constexpr const char* AboutBasedOpenHome   = "about_based_openhome";
+    constexpr const char* AboutBasedSphaira    = "about_based_sphaira";
     constexpr const char* AboutBasedPKHeX      = "about_based_pkhex";
     constexpr const char* AboutBasedLibnx      = "about_based_libnx";
     constexpr const char* AboutBasedDevkitPro  = "about_based_devkitpro";

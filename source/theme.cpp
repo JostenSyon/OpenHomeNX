@@ -1,4 +1,5 @@
 #include "theme.h"
+#include "settings_cfg.h"
 #include <cstdio>
 
 static const Theme themes[THEME_COUNT] = {
@@ -359,59 +360,40 @@ const char* getThemeName(int index) {
 }
 
 int loadThemeIndex(const std::string& basePath) {
-    std::string path = basePath + "theme.cfg";
-    FILE* f = std::fopen(path.c_str(), "rb");
-    if (!f) return DEFAULT_THEME_INDEX;
-    uint8_t idx = 0;
-    std::fread(&idx, 1, 1, f);
-    std::fclose(f);
-    if (idx >= THEME_COUNT) idx = DEFAULT_THEME_INDEX;
+    (void)basePath;
+    int idx = Settings::themeIndex();
+    if (idx < 0 || idx >= THEME_COUNT) idx = DEFAULT_THEME_INDEX;
     return idx;
 }
 
 void saveThemeIndex(const std::string& basePath, int index) {
-    std::string path = basePath + "theme.cfg";
-    FILE* f = std::fopen(path.c_str(), "wb");
-    if (!f) return;
-    uint8_t idx = static_cast<uint8_t>(index);
-    std::fwrite(&idx, 1, 1, f);
-    std::fclose(f);
+    (void)basePath;
+    Settings::setThemeIndex(index);
 }
 
 int loadZoomGrow(const std::string& basePath) {
-    FILE* f = std::fopen((basePath + "zoom.cfg").c_str(), "rb");
-    if (!f) return 12;
-    uint8_t v = 12;
-    if (std::fread(&v, 1, 1, f) != 1) v = 12;
-    std::fclose(f);
+    (void)basePath;
+    int v = Settings::zoomGrow();
+    if (v < 0) v = 12;
     if (v > 16) v = 16;
     return (v / 4) * 4; // step interi da 4px: niente aliasing frazionario
 }
 
 void saveZoomGrow(const std::string& basePath, int grow) {
+    (void)basePath;
     if (grow < 0) grow = 0;
     if (grow > 16) grow = 16;
-    FILE* f = std::fopen((basePath + "zoom.cfg").c_str(), "wb");
-    if (!f) return;
-    uint8_t v = static_cast<uint8_t>(grow);
-    std::fwrite(&v, 1, 1, f);
-    std::fclose(f);
+    Settings::setZoomGrow(grow);
 }
 
 int loadGameSelectorLayout(const std::string& basePath) {
-    FILE* f = std::fopen((basePath + "gallery.cfg").c_str(), "rb");
-    if (!f) return 1; // 1 = Galleria di default
-    uint8_t v = 0;
-    if (std::fread(&v, 1, 1, f) != 1) v = 0;
-    std::fclose(f);
-    return (v > 1) ? 0 : v;
+    (void)basePath;
+    int v = Settings::galleryLayout();
+    return (v > 1) ? 0 : v; // 1 = Galleria di default
 }
 
 void saveGameSelectorLayout(const std::string& basePath, int layout) {
+    (void)basePath;
     if (layout < 0 || layout > 1) layout = 0;
-    FILE* f = std::fopen((basePath + "gallery.cfg").c_str(), "wb");
-    if (!f) return;
-    uint8_t v = static_cast<uint8_t>(layout);
-    std::fwrite(&v, 1, 1, f);
-    std::fclose(f);
+    Settings::setGalleryLayout(layout);
 }

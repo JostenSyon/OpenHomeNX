@@ -7,6 +7,7 @@
 #include "update_net.h"
 #include "autoupdate.h"
 #include "app_version.h"
+#include "settings_cfg.h"
 
 #include <switch.h>
 #include <string>
@@ -21,8 +22,8 @@
 int main(int argc, char* argv[]) {
     romfsInit();
 
-    // Determine base path — everything (banks/, save mount "main", crypto.cfg,
-    // debug.enable, themes, language.txt, update/) lives next to the NRO, so it
+    // Determine base path — everything (banks/, save mount "main",
+    // settings.cfg, debug.enable, update/) lives next to the NRO, so it
     // follows wherever OpenHomeNX.nro is placed (e.g. sdmc:/switch/OpenHomeNX/).
     constexpr const char* kDefaultBasePath = "sdmc:/switch/OpenHomeNX/";
     std::string basePath;
@@ -49,6 +50,7 @@ int main(int argc, char* argv[]) {
             AccountManager::backupSaveDir(legacy, basePath);
     }
 
+    Settings::init(basePath); // settings.cfg (+ migrate legacy) prima di led/lingua
     ledInitWithPath(basePath.c_str());
     DebugLog::init(basePath);
 
@@ -56,14 +58,9 @@ int main(int argc, char* argv[]) {
     // (e.g. the bounce "Updating..." card). Detect early — same logic as
     // the original block further below, but before ui.init/tryUpdateBounce.
     {
-        std::string lang = "en";
-        std::string overridePath = basePath + "language.txt";
-        std::ifstream ifs(overridePath);
-        if (ifs.good()) {
-            std::string line;
-            if (std::getline(ifs, line) && !line.empty())
-                lang = line;
-        } else {
+        std::string lang = Settings::language();
+        if (lang.empty()) {
+            // Nessuna scelta salvata: usa la lingua di sistema.
             setInitialize();
             u64 langCode;
             setGetSystemLanguage(&langCode);
@@ -140,12 +137,13 @@ int main(int argc, char* argv[]) {
     // boot-bounce): il thread fa fetch+confronto, il boot continua subito.
     // Il prompt appare in home giochi/utenti quando il risultato è pronto.
     {
-        std::string url, token;
-        if (!pendingUpdate && netReady && readUpdateAutoCfg(basePath, url, token)) {
-            if (url.empty())
+        std::string url, token, channel;
+        if (!pendingUpdate && netReady && readUpdateAutoCfg(basePath, url, token, channel)) {
+            bool beta = (channel == "beta") && url.empty();
+            if (url.empty() && !beta)
                 url = githubReleasesUrl("JostenSyon", "OpenHomeNX");
-            DebugLog::line("autoupdate: background check -> %s", url.c_str());
-            autoUpdateStart(url, token, APP_VERSION);
+            DebugLog::line("autoupdate: background check -> %s", beta ? "beta" : url.c_str());
+            autoUpdateStart(url, token, APP_VERSION, beta);
         }
     }
 

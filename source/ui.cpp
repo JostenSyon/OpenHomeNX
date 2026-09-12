@@ -6,6 +6,7 @@
 #include "i18n.h"
 #include "debug_log.h"
 #include "autoupdate.h"
+#include "settings_cfg.h"
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -613,6 +614,7 @@ void UI::showWorking(const std::string& msg) {
 void UI::run(const std::string& basePath, const std::string& savePath) {
     basePath_ = basePath;
     savePath_ = savePath;
+    Settings::init(basePath_); // settings.cfg (+ migrate legacy una tantum)
     uint32_t runT0 = SDL_GetTicks();
     auto runMark = [&](const char* what) {
         DebugLog::line("boot: +%ums %s", SDL_GetTicks() - runT0, what);
@@ -1058,9 +1060,7 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
                             i18n::init(newLang);
                             clearTextCache();
                             // Persist choice
-                            std::string path = basePath_ + "language.txt";
-                            FILE* f = std::fopen(path.c_str(), "w");
-                            if (f) { std::fputs(newLang.c_str(), f); std::fclose(f); }
+                            Settings::setLanguage(newLang);
                             showLanguageSelector_ = false;
                             showMenu_ = false;
                             break;

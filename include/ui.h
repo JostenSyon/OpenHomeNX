@@ -498,6 +498,8 @@ private:
     static void findUpdateCfgFiles(const std::string& basePath, std::string& cfg, std::string& off);
     static std::string customUrlAny(const std::string& basePath);
     static bool writeUpdateCfgUrl(const std::string& basePath, const std::string& url);
+    static bool writeUpdateCfgKey(const std::string& basePath, const std::string& key,
+                                  const std::string& value);
     bool bottomButtonsAnim(); // true mentre lerp banche/eject non a target
     bool allBanksMode_ = false;       // entered bank selector via "View All Banks"
     bool bankRightCrossGen_ = false;  // right-panel bank selector showing ALL games (cross-gen), normal mode
@@ -698,6 +700,24 @@ private:
     std::unordered_map<GameType, PartyPreview> galPartyCache_;
     int galPreviewGame_ = -1;
     uint32_t galPreviewTick_ = 0;
+    // Un solo probe (mount+stat) per atterraggio sulla selezione: il save
+    // di un gioco puo' cambiare solo per mano di OpenHomeNX stessa (allora
+    // invalida esplicitamente via galInvalidateParty), quindi ricontrollare
+    // a ripetizione mentre resti fermo non serve -- serviva solo a
+    // rimontare/smontare a ogni frame (causa di un flicker gia' fixato).
+    // Resettato a false ad ogni nuovo "settle" (sel != galPreviewGame_) dai
+    // due call site in ui_gallery.cpp; messo a true dentro galEnsureParty()
+    // stessa dopo il primo probe per quell'atterraggio.
+    bool galSettleChecked_ = false;
+    // overrideOT.cfg (nome allenatore forzato per screenshot): letto da
+    // file ad ogni chiamata di galEnsureParty() per restare "live" mentre
+    // resti fermi su un gioco -- ma senza throttle sarebbe comunque un
+    // fopen/fread reale a 60Hz, inutile per un file che nessuno riscrive
+    // decine di volte al secondo. Diradato a un letture ogni 500ms: resta
+    // percettivamente istantaneo per chi sta preparando uno screenshot,
+    // ma taglia la spesa di ~30x.
+    uint32_t galOverrideOtTick_ = 0;
+    std::string galOverrideOtCached_;
     long galSaveMtime(GameType g);
     void galEnsureParty(GameType g);
     void galInvalidateParty(GameType g);

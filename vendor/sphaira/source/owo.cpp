@@ -48,7 +48,9 @@ constexpr const u8 HBL_NPDM_DATA[]{
     #embed "exefs/main.npdm"
 };
 
+#if SPHAIRA_ENABLE_CORE_LAUNCH
 bool g_core_launch_pending{};
+#endif
 
 // stdio-like wrapper for std::vector
 struct BufHelper {

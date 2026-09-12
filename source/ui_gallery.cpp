@@ -298,8 +298,9 @@ void UI::drawGameList_Gallery() {
     if (sel != galPreviewGame_) {
         galPreviewGame_ = sel;
         galPreviewTick_ = nowT;
+        galSettleChecked_ = false;
         DebugLog::line("gal preview: settled %s cache=%d", gameInfo(selGame).gameTag,
-                       galPartyCache_.count(selGame));
+                       (int)galPartyCache_.count(selGame));
     } else if (nowT - galPreviewTick_ > 400) {
         galEnsureParty(selGame);
     }
@@ -418,6 +419,7 @@ bool UI::galleryPreviewAnim() {
     if (sel != galPreviewGame_) {
         galPreviewGame_ = sel;
         galPreviewTick_ = SDL_GetTicks();
+        galSettleChecked_ = false;
         return true;
     }
     if (galSelShown_ != sel || galSlide_ != 0.0f) return true;
@@ -456,41 +458,67 @@ void UI::galEnsureParty(GameType g) {
         galLoadCacheFromDisk();
     }
     // Override OT (per screenshot/registrazioni): sdmc:/.../overrideOT.cfg
-    // accanto all'nro, stessa basePath_ di theme.cfg/gallery.cfg. Letto ad
-    // OGNI chiamata, PRIMA del controllo cache sotto -- se fosse dentro il
-    // ramo "carica da zero" soltanto, creare/rimuovere il file non avrebbe
-    // mai effetto su un gioco gia' in cache finche' il suo save non cambia
-    // davvero (l'mtime combacerebbe e la funzione uscirebbe subito, bug
-    // segnalato 2026-09-11). Pura lettura: non tocca mai il save reale.
-    std::string overrideOt;
-    {
+    // accanto all'nro, stessa basePath_ di theme.cfg/gallery.cfg. Riletto
+    // al massimo ogni 500ms (galOverrideOtTick_/galOverrideOtCached_),
+    // PRIMA del controllo cache sotto -- se fosse dentro il ramo "carica da
+    // zero" soltanto, creare/rimuovere il file non avrebbe mai effetto su
+    // un gioco gia' in cache finche' il suo save non cambia davvero
+    // (l'mtime combacerebbe e la funzione uscirebbe subito, bug segnalato
+    // 2026-09-11). 500ms resta percettivamente istantaneo per chi prepara
+    // uno screenshot, senza un fopen/fread reale a 60Hz. Pura lettura: non
+    // tocca mai il save reale.
+    uint32_t nowOt = SDL_GetTicks();
+    if (nowOt - galOverrideOtTick_ > 500) {
+        galOverrideOtTick_ = nowOt;
+        std::string fresh;
         FILE* f = std::fopen((basePath_ + "overrideOT.cfg").c_str(), "rb");
         if (f) {
             char buf[64] = {0};
             size_t n = std::fread(buf, 1, sizeof(buf) - 1, f);
             std::fclose(f);
-            overrideOt.assign(buf, n);
-            while (!overrideOt.empty() && (overrideOt.back() == '\n' || overrideOt.back() == '\r' || overrideOt.back() == ' '))
-                overrideOt.pop_back();
+            fresh.assign(buf, n);
+            while (!fresh.empty() && (fresh.back() == '\n' || fresh.back() == '\r' || fresh.back() == ' '))
+                fresh.pop_back();
         }
+        galOverrideOtCached_ = fresh;
     }
-    long mt = galSaveMtime(g);
+    std::string overrideOt = galOverrideOtCached_;
     auto it = galPartyCache_.find(g);
-    // Cache valida: esci (niente mount a ogni frame). Ricontrolla al max
-    // ogni 10s per i save cambiati fuori dall'app.
     if (it != galPartyCache_.end()) {
-        // Applica/rimuovi l'override sull'entry gia' in cache -- indipendente
-        // da quanto sotto, cosi' funziona anche restando fermi sullo stesso
-        // gioco con save invariato (il caso comune per gli screenshot).
+        // Applica/rimuovi l'override sull'entry gia' in cache SEMPRE, ad
+        // ogni chiamata: e' una lettura di file locale (nessun mount),
+        // costa nulla, e permette di vedere l'effetto dell'override in
+        // tempo reale restando fermi sullo stesso gioco (serve per
+        // screenshot/registrazioni, vedi commento sopra).
         std::string wanted = overrideOt.empty() ? it->second.otNameReal : overrideOt;
         if (it->second.otName != wanted) {
             it->second.otName = wanted;
             galSaveCacheToDisk();
             markDirty();
         }
-        if (it->second.mtime == mt) return;
-        if (SDL_GetTicks() - galPreviewTick_ < 10000) return;
     }
+    // Il probe vero e proprio (mount+stat) invece avviene al massimo una
+    // volta per atterraggio sulla selezione: nessun'altra app puo' scrivere
+    // questo save mentre restiamo fermi qui (solo OpenHomeNX puo' farlo, e
+    // allora invalida esplicitamente via galInvalidateParty), quindi
+    // ripeterlo di continuo serviva solo a rimontare/smontare a ogni frame
+    // (causa di un flicker gia' fixato). galSettleChecked_ e' resettato ad
+    // ogni nuovo atterraggio dai due call site in drawGameList_Gallery()/
+    // galleryPreviewAnim().
+    if (galSettleChecked_) return;
+    galSettleChecked_ = true;
+    // Se il probe fallisce (mt<0) NON ricaricare: una probe flaky non deve
+    // mai sovrascrivere una cache buona col vuoto (flicker party/OT/dex).
+    long mt = galSaveMtime(g);
+    if (mt < 0) {
+        if (it == galPartyCache_.end())
+            DebugLog::line("gal party: %s probe fallita, niente cache", gameInfo(g).gameTag);
+        return;
+    }
+    // Cache ancora valida (save non cambiato da quando l'abbiamo vista
+    // l'ultima volta, es. all'atterraggio precedente o al boot): esci
+    // senza ricaricare.
+    if (it != galPartyCache_.end() && it->second.mtime == mt) return;
     DebugLog::line("gal party: load %s (mt=%ld)", gameInfo(g).gameTag, mt);
     PartyPreview pv;
     pv.mtime = mt;
@@ -511,30 +539,38 @@ void UI::galEnsureParty(GameType g) {
         if (!path.empty()) {
             sf.load(path);
             int filled = 0;
-            if (sf.isLoaded()) {
-                for (int s = 0; s < 6; s++) {
-                    Pokemon pkm = sf.getPartySlot(s);
-                    if (pkm.isEmpty()) continue;
-                    PartyPreviewMon m;
-                    m.empty = false;
-                    m.species = pkm.species();
-                    m.level = pkm.level();
-                    m.form = pkm.form();
-                    m.shiny = pkm.isShiny();
-                    m.egg = pkm.isEgg();
-                    pv.mons[s] = m;
-                    filled++;
-                }
-                pv.otNameReal = sf.dsOtName();
-                Pokedex::DexStatus dex = Pokedex::getDexStatus(sf);
-                pv.dexSupported = dex.supported;
-                pv.dexCaught = dex.caught;
-                pv.dexTotal = dex.total;
-            } else {
-                DebugLog::line("gal party: %s load FALLITO path=%s", gameInfo(g).gameTag, path.c_str());
+            if (!sf.isLoaded()) {
+                // Load fallito (save illeggibile): tieni la cache vecchia,
+                // mai avvelenare col vuoto. Solo log, niente store.
+                DebugLog::line("gal party: %s load FALLITO path=%s (tengo cache)", gameInfo(g).gameTag, path.c_str());
+                return;
             }
+            for (int s = 0; s < 6; s++) {
+                Pokemon pkm = sf.getPartySlot(s);
+                if (pkm.isEmpty()) continue;
+                PartyPreviewMon m;
+                m.empty = false;
+                m.species = pkm.species();
+                m.level = pkm.level();
+                m.form = pkm.form();
+                m.shiny = pkm.isShiny();
+                m.egg = pkm.isEgg();
+                pv.mons[s] = m;
+                filled++;
+            }
+            pv.otNameReal = sf.dsOtName();
+            Pokedex::DexStatus dex = Pokedex::getDexStatus(sf);
+            pv.dexSupported = dex.supported;
+            pv.dexCaught = dex.caught;
+            pv.dexTotal = dex.total;
             DebugLog::line("gal party: %s cached %d/6", gameInfo(g).gameTag, filled);
         } else {
+            // Nessun path: scrivi il vuoto solo se non c'è già una cache
+            // (primo giro), altrimenti tienila (stesso anti-flicker sopra).
+            if (it != galPartyCache_.end()) {
+                DebugLog::line("gal party: %s nessun path (tengo cache)", gameInfo(g).gameTag);
+                return;
+            }
             DebugLog::line("gal party: %s nessun path (profilo? import?)", gameInfo(g).gameTag);
             DebugLog::line("gal party: %s cached 0/6", gameInfo(g).gameTag);
         }

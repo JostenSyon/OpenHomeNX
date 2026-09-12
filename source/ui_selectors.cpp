@@ -7,6 +7,7 @@
 #include "app_version.h"
 #include "update_net.h"
 #include "forwarder.h"
+#include "settings_cfg.h"
 
 #include <algorithm>
 #include <cerrno>
@@ -21,9 +22,13 @@ namespace {
 //   url=http://192.168.1.50:8000            (radice con latest.json + il .nro)
 //   token=<PAT>                             (solo repo privati, header Bearer)
 //   auto=1                                  (check update in parallelo al boot)
+//   channel=stable|beta                     (canale update, default stable)
 // Senza `url=` il check update usa le GitHub releases pubbliche
 // (githubReleasesUrl sotto); Send log/save richiedono comunque `url=`
 // (GitHub non riceve upload).
+// REGOLA HOME (bug 2026-09-12): url+channel+backup vivono in UN solo file,
+// quello con url= (attivo o .off che sia). Scrivere altrove crea un'esca
+// che lo switch GitHub/Custom sovrascrive perdendo l'url per sempre.
 // Etichetta corta per la sorgente update nei popup: l'URL intero sborda
 // dalle card (github.../download = 60+ caratteri). Il fetch usa sempre
 // l'URL completo, qui solo display.
@@ -50,36 +55,93 @@ static std::string updateSourceLabel(const std::string& url) {    auto gh = url.
 }
 struct UpdateCfg {
     std::string url, token;
+    std::string channel;   // "" o "stable" = release stabili, "beta" = pre-release
     long backupMb = 256;   // tetto CUMULATIVO auto-backup titoli installati
     long backupMbSd = 32;  // tetto cumulativo save file-backed (SD, piccoli)
 };
 
-bool readUpdateCfg(const std::string& basePath, UpdateCfg& out) {
-    const std::string paths[] = { basePath + "update.cfg",
-                                  "sdmc:/switch/OpenHomeNX/update.cfg" };
-    for (const auto& p : paths) {
-        std::ifstream f(p);
-        if (!f.good()) continue;
-        std::string line;
-        while (std::getline(f, line)) {
-            if (!line.empty() && line.back() == '\r') line.pop_back();
-            if (line.empty() || line[0] == '#') continue;
-            auto eq = line.find('=');
-            if (eq == std::string::npos) continue;
-            std::string k = line.substr(0, eq), v = line.substr(eq + 1);
-            auto trim = [](std::string& s) {
-                while (!s.empty() && (s.front() == ' ' || s.front() == '\t')) s.erase(s.begin());
-                while (!s.empty() && (s.back()  == ' ' || s.back()  == '\t')) s.pop_back();
-            };
-            trim(k); trim(v);
-            if (k == "url") out.url = v;
-            else if (k == "token") out.token = v;
-            else if (k == "backup_mb") out.backupMb = std::atol(v.c_str());
-            else if (k == "backup_mb_sd") out.backupMbSd = std::atol(v.c_str());
-        }
-        if (!out.url.empty()) return true;
+// Cerca update.cfg/.off nelle due dir note (duplica findUpdateCfgFiles,
+// che è membro UI definito più sotto e qui non visibile come free).
+static void updateCfgPaths(const std::string& basePath, std::string& cfg, std::string& off) {
+    cfg.clear();
+    off.clear();
+    const std::string dirs[] = { basePath, "sdmc:/switch/OpenHomeNX/" };
+    for (const auto& d : dirs) {
+        struct stat st;
+        if (cfg.empty() && stat((d + "update.cfg").c_str(), &st) == 0) cfg = d + "update.cfg";
+        if (off.empty() && stat((d + "update.cfg.off").c_str(), &st) == 0) off = d + "update.cfg.off";
+    }
+}
+
+// true se il file contiene una riga url= (anche vuota? no: chiave presente).
+static bool fileHasKey(const std::string& path, const std::string& want) {
+    std::ifstream f(path);
+    if (!f.good()) return false;
+    std::string line;
+    while (std::getline(f, line)) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        auto eq = line.find('=');
+        std::string k = (eq == std::string::npos) ? line : line.substr(0, eq);
+        while (!k.empty() && (k.front() == ' ' || k.front() == '\t')) k.erase(k.begin());
+        while (!k.empty() && (k.back() == ' ' || k.back() == '\t')) k.pop_back();
+        if (k == want) return true;
     }
     return false;
+}
+
+// Il file home della config (vedi REGOLA HOME sopra): quello con url=,
+// attivo o spento che sia; altrimenti l'attivo; altrimenti path da creare.
+static std::string updateCfgHome(const std::string& basePath) {
+    std::string cfg, off;
+    updateCfgPaths(basePath, cfg, off);
+    if (!off.empty() && fileHasKey(off, "url") && (cfg.empty() || !fileHasKey(cfg, "url")))
+        return off;
+    if (!cfg.empty())
+        return cfg;
+    if (!off.empty())
+        return off;
+    return basePath + "update.cfg";
+}
+
+// Parsa un file cfg in out; se keysOnlyChannel, prende solo channel
+// (per l'altro file: non deve mai sovrascrivere la home).
+static void parseUpdateCfgFile(const std::string& path, UpdateCfg& out, bool channelOnly) {
+    std::ifstream f(path);
+    if (!f.good()) return;
+    std::string line;
+    while (std::getline(f, line)) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        if (line.empty() || line[0] == '#') continue;
+        auto eq = line.find('=');
+        if (eq == std::string::npos) continue;
+        std::string k = line.substr(0, eq), v = line.substr(eq + 1);
+        auto trim = [](std::string& s) {
+            while (!s.empty() && (s.front() == ' ' || s.front() == '\t')) s.erase(s.begin());
+            while (!s.empty() && (s.back()  == ' ' || s.back()  == '\t')) s.pop_back();
+        };
+        trim(k); trim(v);
+        if (channelOnly) {
+            if (k == "channel" && out.channel.empty()) out.channel = v;
+            continue;
+        }
+        if (k == "url") out.url = v;
+        else if (k == "token") out.token = v;
+        else if (k == "channel") out.channel = v;
+        else if (k == "backup_mb") out.backupMb = std::atol(v.c_str());
+        else if (k == "backup_mb_sd") out.backupMbSd = std::atol(v.c_str());
+    }
+}
+
+bool readUpdateCfg(const std::string& basePath, UpdateCfg& out) {
+    // Precedenza: prima il file ATTIVO per intero (solo lui decide url e
+    // modalità GitHub/custom: l'url di un .off non deve mai riattivarsi da
+    // solo), poi l'altro file SOLO per il channel mancante. Un'esca senza
+    // url non sovrascrive mai nulla (bug 2026-09-12).
+    std::string cfg, off;
+    updateCfgPaths(basePath, cfg, off);
+    if (!cfg.empty()) parseUpdateCfgFile(cfg, out, false);
+    if (!off.empty()) parseUpdateCfgFile(off, out, true);
+    return !out.url.empty();
 }
 } // namespace
 
@@ -2127,14 +2189,10 @@ void UI::handleGameSelectorInput(bool& running) {
 // niente contenuto da leggere/scrivere (a differenza di favorites.cfg qui
 // sotto, che invece serializza una lista).
 bool UI::hasSeenLauncherPrompt() const {
-    std::string p = basePath_ + "launcher_prompt_seen.cfg";
-    struct stat st;
-    return stat(p.c_str(), &st) == 0;
+    return Settings::launcherSeen();
 }
 void UI::markLauncherPromptSeen() const {
-    std::string p = basePath_ + "launcher_prompt_seen.cfg";
-    FILE* f = std::fopen(p.c_str(), "wb");
-    if (f) std::fclose(f);
+    Settings::setLauncherSeen();
 }
 
 // --- Riga "Installa launcher" (categoria Sistema) -----------------------
@@ -2512,9 +2570,35 @@ bool UI::checkForUpdate(bool usbOnly) {
     if (!usbOnly && foundCmp <= 0) {
         UpdateCfg cfg;
         readUpdateCfg(basePath_, cfg);
-        const std::string netUrl = cfg.url.empty()
-            ? githubReleasesUrl("JostenSyon", "OpenHomeNX")
-            : cfg.url;
+        std::string netUrl;
+        if (!cfg.url.empty()) {
+            netUrl = cfg.url; // custom vince sempre (anche in beta)
+        } else if (cfg.channel == "beta") {
+            // Canale beta: prima risolvi la pre-release corrente via API.
+            // Mai fallback silenzioso sullo stabile: se fallisce lo dici.
+            std::string betaBase, betaTag, betaErr;
+            if (!updateNetEnsureReady()) {
+                showMessageAndWait(i18n::get(StrKey::UpdateTitle),
+                    i18n::fmt(StrKey::UpdateNetOff, "GitHub beta"));
+                return false;
+            }
+            showWorking(i18n::fmt(StrKey::UpdateContacting, "GitHub beta"));
+            if (!updateNetFetchBetaBase("JostenSyon", "OpenHomeNX", cfg.token,
+                                        betaBase, betaTag, betaErr)) {
+                if (betaErr == "none") {
+                    showMessageAndWait(i18n::get(StrKey::UpdateTitle),
+                        i18n::fmt(StrKey::UpdateBetaNone, curVer));
+                } else {
+                    DebugLog::line("update: beta resolve fallito: %s", betaErr.c_str());
+                    showMessageAndWait(i18n::get(StrKey::UpdateTitle),
+                        i18n::fmt(StrKey::UpdateUnreachable, betaErr, "GitHub beta"));
+                }
+                return false;
+            }
+            netUrl = betaBase;
+        } else {
+            netUrl = githubReleasesUrl("JostenSyon", "OpenHomeNX");
+        }
         {
             DebugLog::line("update: net url=%s token=%s", netUrl.c_str(),
                            cfg.token.empty() ? "no" : "yes");
@@ -3317,14 +3401,7 @@ bool UI::hasCustomUrlFile(const std::string& basePath) {
 
 // Trova update.cfg attivo (suo path) ed eventuale .off. "" se assenti.
 void UI::findUpdateCfgFiles(const std::string& basePath, std::string& cfg, std::string& off) {
-    cfg.clear();
-    off.clear();
-    const std::string dirs[] = { basePath, "sdmc:/switch/OpenHomeNX/" };
-    for (auto& d : dirs) {
-        struct stat st;
-        if (cfg.empty() && stat((d + "update.cfg").c_str(), &st) == 0) cfg = d + "update.cfg";
-        if (off.empty() && stat((d + "update.cfg.off").c_str(), &st) == 0) off = d + "update.cfg.off";
-    }
+    updateCfgPaths(basePath, cfg, off); // unica implementazione (vedi sopra)
 }
 
 // URL custom da update.cfg o .off (per precompilare l'edit).
@@ -3341,6 +3418,60 @@ std::string UI::customUrlAny(const std::string& basePath) {
         }
     }
     return "";
+}
+
+// Scrive key= a path esplicito preservando le altre righe.
+static bool setKeyInFile(const std::string& dst, const std::string& key,
+                         const std::string& value) {
+    std::ifstream f(dst);
+    std::vector<std::string> lines;
+    std::string line;
+    bool found = false;
+    if (f.good()) {
+        while (std::getline(f, line)) {
+            if (!line.empty() && line.back() == '\r') line.pop_back();
+            auto eq = line.find('=');
+            std::string k = (eq == std::string::npos) ? line : line.substr(0, eq);
+            if (k == key) { line = key + "=" + value; found = true; }
+            lines.push_back(line);
+        }
+    }
+    if (!found) lines.push_back(key + "=" + value);
+    std::ofstream o(dst, std::ios::trunc);
+    if (!o.good()) {
+        DebugLog::line("updatecfg: scrittura %s fallita", dst.c_str());
+        return false;
+    }
+    for (auto& l : lines) o << l << "\n";
+    return true;
+}
+
+// Dopo ogni scrittura: se esiste un secondo file senza url, è un'esca
+// di un write passato — ripiega il channel nella home (se manca) e
+// rimuovila, così lo split-brain si autoripara al primo toggle.
+static void updateCfgFoldDecoys(const std::string& basePath, const std::string& home) {
+    std::string cfg, off;
+    updateCfgPaths(basePath, cfg, off);
+    for (const auto& other : {cfg, off}) {
+        if (other.empty() || other == home) continue;
+        if (fileHasKey(other, "url")) continue; // vero config, non esca
+        if (!fileHasKey(home, "channel")) {
+            UpdateCfg tmp;
+            parseUpdateCfgFile(other, tmp, true);
+            if (!tmp.channel.empty()) setKeyInFile(home, "channel", tmp.channel);
+        }
+        std::remove(other.c_str());
+        DebugLog::line("updatecfg: esca %s ripiegata", other.c_str());
+    }
+}
+
+// Scrive una chiave key= nel file home (mai esche, vedi REGOLA HOME).
+bool UI::writeUpdateCfgKey(const std::string& basePath, const std::string& key,
+                            const std::string& value) {
+    std::string home = updateCfgHome(basePath);
+    if (!setKeyInFile(home, key, value)) return false;
+    updateCfgFoldDecoys(basePath, home);
+    return true;
 }
 
 // Scrive url= in update.cfg preservando le altre chiavi; attiva (toglie .off).
@@ -3377,9 +3508,9 @@ int UI::settingsRowCount(int cat) const {
         case 3: return 4; // Cartelle, Scansiona, Max, Pulisci
         case 4: {
             // Sorgente/edit custom solo con debug: l'utente normale resta su GitHub.
-            int n = 2;
-            if (DebugLog::enabled() && hasCustomUrlFile(basePath_)) n = 3;
-            return n; // Update, Sorgente [, Modifica]
+            int n = 3;
+            if (DebugLog::enabled() && hasCustomUrlFile(basePath_)) n = 4;
+            return n; // Update, Sorgente, Canale [, Modifica]
         }
         case 5: return sendAvailable() ? 3 : 2; // Debug, Menu + [, Invia log]
         default: return 2; // Versione, Crediti
@@ -3408,6 +3539,7 @@ std::string UI::settingsRowLabel(int cat, int row) const {
     if (cat == 4) {
         if (row == 0) return i18n::get(StrKey::SetCheckUpdate);
         if (row == 1) return i18n::get(StrKey::SetSource);
+        if (row == 2) return i18n::get(StrKey::SetChannel);
         return i18n::get(StrKey::SetEditUrl);
     }
     if (cat == 5) {
@@ -3459,6 +3591,12 @@ std::string UI::settingsRowValue(int cat, int row) {
             readUpdateCfg(basePath_, cfg);
             return cfg.url.empty() ? "GitHub" : "Custom";
         }
+        if (row == 2) {
+            UpdateCfg cfg;
+            readUpdateCfg(basePath_, cfg);
+            return cfg.channel == "beta" ? i18n::get(StrKey::ChannelBeta)
+                                         : i18n::get(StrKey::ChannelStable);
+        }
         // Modifica: mostra l'indirizzo custom a destra (come un tempo).
         std::string cu = customUrlAny(basePath_);
         if (cu.empty()) return "";
@@ -3486,33 +3624,22 @@ std::string UI::settingsRowValue(int cat, int row) {
 }
 
 static std::string readDefaultUser(const std::string& basePath) {
-    std::ifstream f(basePath + "defaultuser.txt");
-    std::string nick;
-    if (f.good() && std::getline(f, nick)) {
-        if (!nick.empty() && nick.back() == '\r') nick.pop_back();
-        return nick;
-    }
-    return "";
+    (void)basePath;
+    return Settings::defaultUser();
 }
 
 // Menu debug rapido: ON = il gear apre il menu + classico, OFF = le impostazioni.
 static bool readQuickMenu(const std::string& basePath) {
-    std::ifstream f(basePath + "quickmenu.txt");
-    std::string v;
-    if (f.good() && std::getline(f, v)) return v == "1";
-    return false;
+    (void)basePath;
+    return Settings::quickMenu();
 }
 
 static void writeQuickMenu(const std::string& basePath, bool on) {
-    if (!on) {
-        std::remove((basePath + "quickmenu.txt").c_str());
-        return;
-    }
-    FILE* f = std::fopen((basePath + "quickmenu.txt").c_str(), "w");
-    if (f) { std::fputs("1", f); std::fclose(f); }
+    (void)basePath;
+    Settings::setQuickMenu(on);
 }
 
-static bool writeBackupMb(const std::string& basePath, long mb) {    std::string path = basePath + "update.cfg";
+static bool writeBackupMb(const std::string& basePath, long mb) {    std::string path = updateCfgHome(basePath);
     std::ifstream f(path);
     std::vector<std::string> lines;
     std::string line;
@@ -3528,8 +3655,12 @@ static bool writeBackupMb(const std::string& basePath, long mb) {    std::string
     }
     if (!found) lines.push_back("backup_mb=" + std::to_string(mb));
     std::ofstream o(path, std::ios::trunc);
-    if (!o.good()) return false;
+    if (!o.good()) {
+        DebugLog::line("updatecfg: scrittura %s fallita", path.c_str());
+        return false;
+    }
     for (auto& l : lines) o << l << "\n";
+    updateCfgFoldDecoys(basePath, path);
     return true;
 }
 
@@ -3548,12 +3679,7 @@ void UI::settingsRowActivate(int cat, int row, int dir, bool& running) {
             if (opts[i] == cur) break;
         if (i >= (int)opts.size()) i = 0;
         std::string next = opts[(i + dir + (int)opts.size()) % (int)opts.size()];
-        if (next.empty()) {
-            std::remove((basePath_ + "defaultuser.txt").c_str());
-        } else {
-            FILE* f = std::fopen((basePath_ + "defaultuser.txt").c_str(), "w");
-            if (f) { std::fputs(next.c_str(), f); std::fclose(f); }
-        }
+        Settings::setDefaultUser(next); // "" = chiedi
     } else if (cat == 1) {
         if (row == 0) {
             themeIndex_ = (themeIndex_ + dir + THEME_COUNT) % THEME_COUNT;
@@ -3569,8 +3695,7 @@ void UI::settingsRowActivate(int cat, int row, int dir, bool& running) {
                 std::string nl = langList_[(cur + dir + n) % n];
                 i18n::init(nl);
                 clearTextCache();
-                FILE* f = std::fopen((basePath_ + "language.txt").c_str(), "w");
-                if (f) { std::fputs(nl.c_str(), f); std::fclose(f); }
+                Settings::setLanguage(nl);
             }
         } else if (row == 2) {
             // Layout selettore giochi: solo 2 valori, qualunque dir alterna.
@@ -3653,11 +3778,23 @@ void UI::settingsRowActivate(int cat, int row, int dir, bool& running) {
             if (cfg.empty() && off.empty()) {
                 beginTextInput(TextInputPurpose::EditUpdateUrl);
             } else if (!cfg.empty()) {
-                std::string dst = cfg + ".off";
-                if (std::rename(cfg.c_str(), dst.c_str()) == 0)
-                    DebugLog::line("settings: sorgente -> GitHub (%s disattivato)", cfg.c_str());
-                else
-                    showMessageAndWait(i18n::get(StrKey::SetTitle), std::string("rename FAIL:\n") + cfg);
+                // Se l'attivo non ha url ma l'off sì, cfg è un'esca di un
+                // write passato: ripiega channel/backup nell'off e rimuovila
+                // invece di sovrascrivere l'off perdendo l'url (bug 2026-09-12).
+                if (!off.empty() && !fileHasKey(cfg, "url") && fileHasKey(off, "url")) {
+                    UpdateCfg decoy;
+                    readUpdateCfg(basePath_, decoy); // mergia già entrambi
+                    if (!decoy.channel.empty() && !fileHasKey(off, "channel"))
+                        setKeyInFile(off, "channel", decoy.channel);
+                    std::remove(cfg.c_str());
+                    DebugLog::line("settings: sorgente -> GitHub (esca %s ripiegata)", cfg.c_str());
+                } else {
+                    std::string dst = cfg + ".off";
+                    if (std::rename(cfg.c_str(), dst.c_str()) == 0)
+                        DebugLog::line("settings: sorgente -> GitHub (%s disattivato)", cfg.c_str());
+                    else
+                        showMessageAndWait(i18n::get(StrKey::SetTitle), std::string("rename FAIL:\n") + cfg);
+                }
             } else {
                 std::string dst = off.substr(0, off.size() - 4);
                 if (std::rename(off.c_str(), dst.c_str()) == 0)
@@ -3665,6 +3802,13 @@ void UI::settingsRowActivate(int cat, int row, int dir, bool& running) {
                 else
                     showMessageAndWait(i18n::get(StrKey::SetTitle), std::string("rename FAIL:\n") + off);
             }
+        } else if (row == 2) {
+            // Canale stabile/beta: solo 2 valori, qualunque dir alterna.
+            UpdateCfg cfg;
+            readUpdateCfg(basePath_, cfg);
+            std::string next = (cfg.channel == "beta") ? "stable" : "beta";
+            if (writeUpdateCfgKey(basePath_, "channel", next))
+                DebugLog::line("settings: channel=%s", next.c_str());
         } else {
             beginTextInput(TextInputPurpose::EditUpdateUrl);
         }

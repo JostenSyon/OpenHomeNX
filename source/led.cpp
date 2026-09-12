@@ -1,4 +1,5 @@
 #include "led.h"
+#include "settings_cfg.h"
 
 #include <switch.h>
 #include <cstring>
@@ -15,13 +16,11 @@ static bool sIsLite      = false;
 static bool sGpioReady   = false;
 static GpioPadSession sGpioSession;
 
-// Check basePath for noled.cfg; called before NRO path is known,
-// so we use argv[0] from ledInitWithPath, or fall back to the
-// default app directory.
+// LED spento da settings.cfg (migrato da noled.cfg). Richiede
+// Settings::init() già chiamato (main lo fa prima di ledInitWithPath).
 static bool hasNoLedFile(const char* basePath) {
-    std::string path = std::string(basePath) + "noled.cfg";
-    struct stat st;
-    return stat(path.c_str(), &st) == 0;
+    (void)basePath;
+    return Settings::noLed();
 }
 
 void ledInit() { ledInitWithPath("sdmc:/switch/OpenHomeNX/"); }

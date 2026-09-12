@@ -2311,12 +2311,14 @@ void UI::drawAboutPopup() {
     SDL_RenderDrawLine(renderer_, px + 30, y, px + POP_W - 30, y);
     y += 14;
 
-    // Basato su / Based on - ordered: pkHouse grafica/UI, OpenHome cross-gen, PKHeX, libnx, devkitPro
+    // Basato su / Based on - ordered: pkHouse grafica/UI, OpenHome cross-gen, Sphaira forwarder, PKHeX, libnx, devkitPro
     drawTextCentered(i18n::get(StrKey::AboutBasedOn), cx, y, T().selected, font_);
     y += 20;
     drawTextCentered(i18n::get(StrKey::AboutBasedPKHouse), cx, y, T().textDim, fontSmall_);
     y += 18;
     drawTextCentered(i18n::get(StrKey::AboutBasedOpenHome), cx, y, T().textDim, fontSmall_);
+    y += 18;
+    drawTextCentered(i18n::get(StrKey::AboutBasedSphaira), cx, y, T().textDim, fontSmall_);
     y += 18;
     drawTextCentered(i18n::get(StrKey::AboutBasedPKHeX), cx, y, T().textDim, fontSmall_);
     y += 18;

@@ -40,6 +40,16 @@ inline std::string githubReleasesUrl(const std::string& owner, const std::string
 bool updateNetFetchInfo(const std::string& baseUrl, const std::string& token,
                         RemoteUpdateInfo& out, std::string& err);
 
+// Canale beta: interroga la GitHub API releases, prende la prima
+// pre-release (la più recente) e ne restituisce la base download
+// (".../releases/download/<tag>") + tag. Da lì updateNetFetchInfo()
+// legge il latest.json allegato alla pre-release. Nessuna pre-release
+// → false con err "none" (non un errore di rete: il chiamante lo dice
+// esplicito invece di ricadere silenzioso sullo stabile).
+bool updateNetFetchBetaBase(const std::string& owner, const std::string& repo,
+                            const std::string& token, std::string& outBase,
+                            std::string& outTag, std::string& err);
+
 // SHA256 hex di un file (streaming, per NRO grandi). "" se illeggibile.
 std::string sha256HexFile(const std::string& path);
 
