@@ -251,6 +251,17 @@ namespace StrKey {
     constexpr const char* SetCleanConfirm = "set_clean_confirm";
     constexpr const char* SetCleanDone    = "set_clean_done";
     constexpr const char* SetCheckUpdate  = "set_checkupdate";
+    // Popup di scoperta "Installa launcher" (mostrato una sola volta,
+    // vedi hasSeenLauncherPrompt()/markLauncherPromptSeen() in ui.h).
+    constexpr const char* LauncherPromptTitle = "launcher_prompt_title";
+    constexpr const char* LauncherPromptBody  = "launcher_prompt_body";
+    constexpr const char* LauncherPromptFooter = "launcher_prompt_footer";
+    // Riga "Installa launcher" dentro Sistema (ex Core) + suo dialogo/esiti.
+    constexpr const char* SetInstallLauncher      = "set_install_launcher";
+    constexpr const char* LauncherInstallConfirm  = "launcher_install_confirm";
+    constexpr const char* LauncherInstallOk       = "launcher_install_ok";
+    constexpr const char* LauncherInstallUnavail  = "launcher_install_unavail";
+    constexpr const char* LauncherInstallApplet   = "launcher_install_applet";
     constexpr const char* SetSource       = "set_source";
     constexpr const char* SetEditUrl      = "set_editurl";
     constexpr const char* SetEditUrlHdr   = "set_editurl_hdr";

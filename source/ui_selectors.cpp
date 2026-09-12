@@ -6,6 +6,7 @@
 #include "nro_version.h"
 #include "app_version.h"
 #include "update_net.h"
+#include "forwarder.h"
 
 #include <algorithm>
 #include <cerrno>
@@ -789,37 +790,34 @@ void UI::drawGameArt(int i, int iconX, int iconY, int size, bool scaleInner) {
                         SDL_RenderCopy(renderer_, artIt->second, &src, &dst);
                     } else {
                         // Base +15% di dimensione, a destra del 15% e in basso
-                        // del 5% (coordinate tunate a mano per ogni gioco:
-                        // NON scalarle col grow, si rompe il framing).
-                        // Ruby: Groudon centrato orizzontalmente.
-                        // Sapphire: Kyogre centrato, +10% dimensione e +5pp in
-                        // basso rispetto alla base. Logo identico per tutti.
-                        const int SPR = (117 * UU) / 128;
-                        const int SHIFT_X = (UU * 15) / 100;
-                        const int SHIFT_Y = (UU * 5) / 100;
+                        // del 5% (coordinate tunate a mano per ogni gioco).
+                        // Ruby: Groudon centrato, Sapphire: Kyogre +10% e +5pp.
+                        // Prima era fisso su 128 (non seguiva lo zoom) → ora
+                        // scala con IS così sfondo + scritta + pokemon
+                        // ingrandiscono insieme della stessa quantità (zoomGrow).
+                        float z = (float)IS / 128.0f;
+                        const int SPR = (int)(117 * z);
+                        const int SHIFT_X = (int)(15 * z);
+                        const int SHIFT_Y = (int)(5 * z);
                     int shiftX = SHIFT_X;
                     int spr = SPR;
                     int shiftY = SHIFT_Y;
                     if (availableGames_[i] == GameType::RUBY) {
-                        // Come all'inizio: nessuno shift custom.
                         shiftX = 0;
                     }
                     if (availableGames_[i] == GameType::SAPPHIRE) {
-                        shiftX = (UU * 5) / 100;
+                        shiftX = (int)(5 * z);
                         spr = (SPR * 110) / 100;
-                        shiftY = (UU * 15) / 100;
+                        shiftY = (int)(15 * z);
                     }
-                    // Scala sulle dimensioni della texture (intera per RSE).
                     float scale = std::min((float)spr / texW, (float)spr / texH);
                     int dstW = (int)(texW * scale);
                     int dstH = (int)(texH * scale);
-                    // Overlay RSE fisso come tunato (non segue il grow):
-                    // box 128 originale centrato nell'icona ingrandita.
-                    int oX = iconX + (IS - UU) / 2;
-                    int oY = iconY + (IS - UU) / 2;
-                    SDL_Rect dst = {oX + (UU - dstW) / 2 + shiftX,
-                                    oY + UU - dstH + shiftY, dstW, dstH};
-                    SDL_Rect clip = {oX, oY, UU, UU};
+                    int oX = iconX;
+                    int oY = iconY;
+                    SDL_Rect dst = {oX + (IS - dstW) / 2 + shiftX,
+                                    oY + IS - dstH + shiftY, dstW, dstH};
+                    SDL_Rect clip = {oX, oY, IS, IS};
                     SDL_RenderSetClipRect(renderer_, &clip);
                     SDL_RenderCopy(renderer_, artIt->second, nullptr, &dst);
                     SDL_RenderSetClipRect(renderer_, nullptr);
@@ -831,12 +829,13 @@ void UI::drawGameArt(int i, int iconX, int iconY, int size, bool scaleInner) {
                 int texW = 0, texH = 0;
                 SDL_QueryTexture(logoIt->second, nullptr, nullptr, &texW, &texH);
                     if (texW > 0 && texH > 0) {
-                        const int LOGO_H = (54 * UU) / 128;
+                        float zLogo = (float)IS / 128.0f;
+                        const int LOGO_H = (int)(54 * zLogo);
                         int dstW = (int)(texW * ((float)LOGO_H / texH));
-                        if (dstW > UU) dstW = UU;
-                        int oX = iconX + (IS - UU) / 2;
-                        int oY = iconY + (IS - UU) / 2;
-                        SDL_Rect dst = {oX + (UU - dstW) / 2, oY, dstW, LOGO_H};
+                        if (dstW > IS) dstW = IS;
+                        int oX = iconX;
+                        int oY = iconY;
+                        SDL_Rect dst = {oX + (IS - dstW) / 2, oY, dstW, LOGO_H};
                     SDL_RenderCopy(renderer_, logoIt->second, nullptr, &dst);
                 }
             }
@@ -1055,21 +1054,22 @@ void UI::drawGameSelectorFrame() {
 
         // Game name below icon (RSE show the logo on top too, but the
         // text label below stays for readability at a glance).
+        // Con lo zoom la card cresce (cx0/cw/cy0/IS): anche scritta e
+        // conteggio banche devono scalare/centrarsi sulla card ingrandita,
+        // non restare fissi sull'impronta originale.
         {
             std::string name = gameDisplayNameOf(availableGames_[i]);
-            // Strip "Pokemon " prefix for brevity
             if (name.substr(0, 8) == "Pokemon ")
                 name = name.substr(8);
             if (name.length() > 20) name = name.substr(0, 19) + ".";
-            drawTextCentered(name, cardX + CARD_W / 2, cardY + ICON_SIZE + 30,
+            drawTextCentered(name, cx0 + cw / 2, cy0 + IS + 30,
                              T().text, fontSmall_);
         }
 
-        // Bank count under game name
         auto bc = gameBankCounts_.find(availableGames_[i]);
         int bankCount = (bc != gameBankCounts_.end()) ? bc->second : 0;
         std::string bankStr = "(" + std::to_string(bankCount) + ")";
-        drawTextCentered(bankStr, cardX + CARD_W / 2, cardY + ICON_SIZE + 50,
+        drawTextCentered(bankStr, cx0 + cw / 2, cy0 + IS + 50,
                          T().textDim, fontSmall_);
     }
 
@@ -2119,6 +2119,73 @@ void UI::handleGameSelectorInput(bool& running) {
             stickMoved_ = true;
             markDirty();
         }
+    }
+}
+
+// --- Popup di scoperta "Installa launcher" (categoria Sistema): mostrato
+// una sola volta. Stesso schema di noled.cfg -- esistenza file = flag true,
+// niente contenuto da leggere/scrivere (a differenza di favorites.cfg qui
+// sotto, che invece serializza una lista).
+bool UI::hasSeenLauncherPrompt() const {
+    std::string p = basePath_ + "launcher_prompt_seen.cfg";
+    struct stat st;
+    return stat(p.c_str(), &st) == 0;
+}
+void UI::markLauncherPromptSeen() const {
+    std::string p = basePath_ + "launcher_prompt_seen.cfg";
+    FILE* f = std::fopen(p.c_str(), "wb");
+    if (f) std::fclose(f);
+}
+
+// --- Riga "Installa launcher" (categoria Sistema) -----------------------
+// Crea davvero il forwarder sul Menu Home (vendor/sphaira/owo.cpp, vedi
+// source/forwarder.cpp per il collante). Nessun controllo su appletMode_:
+// Sphaira stessa lo crea anche avviata da Album (R su un gioco), quindi
+// non e' un prerequisito reale -- coerente con showLauncherPromptPopup(),
+// che infatti non lo controlla piu' nemmeno lei (vedi ui.cpp).
+void UI::installLauncherForwarder() {
+    if (!showConfirmDialog(i18n::get(StrKey::SetInstallLauncher),
+                            i18n::get(StrKey::LauncherInstallConfirm))) {
+        return;
+    }
+    attemptLauncherForwarderInstall();
+}
+
+// Tentativo vero e proprio: chi chiama ha gia' ottenuto un si (conferma
+// esplicita in Impostazioni, oppure A premuto direttamente nel popup di
+// scoperta -- li' la domanda e' gia' nel testo del popup stesso, niente
+// doppia conferma).
+//
+void UI::attemptLauncherForwarderInstall() {
+    std::string nroPath = basePath_ + "OpenHomeNX.nro";
+    struct stat st;
+    if (stat(nroPath.c_str(), &st) != 0)
+        nroPath = "sdmc:/switch/OpenHomeNX/OpenHomeNX.nro";
+
+    // Chiamata sincrona e potenzialmente lunga (costruzione NCA/RomFS +
+    // scrittura su ncm) -- senza showWorking() lo schermo resterebbe fermo
+    // come se fosse bloccato, a differenza di ogni altra operazione lunga
+    // del programma. Il callback di owo.cpp (via lo shim ProgressBox) puo'
+    // aggiornare il messaggio durante l'operazione; se non chiama nulla,
+    // resta visibile la label iniziale.
+    const std::string title = i18n::get(StrKey::SetInstallLauncher);
+    showWorking(title);
+    std::string err;
+    bool ok = forwarderInstall(nroPath, err,
+        [this, &title](const std::string& msg) {
+            showWorking(msg.empty() ? title : msg);
+        });
+
+    if (ok) {
+        showMessageAndWait(i18n::get(StrKey::SetInstallLauncher),
+            i18n::get(StrKey::LauncherInstallOk));
+    } else {
+        // `err` resta un promemoria tecnico minimo: il dettaglio vero
+        // (rc/desc/mod) e' gia' nel debug.log, scritto da forwarderInstall()
+        // stesso -- niente da ripetere qui. All'utente va sempre e solo il
+        // testo gentile.
+        showMessageAndWait(i18n::get(StrKey::SetInstallLauncher),
+            i18n::get(StrKey::LauncherInstallUnavail));
     }
 }
 
@@ -3306,7 +3373,7 @@ int UI::settingsRowCount(int cat) const {
     switch (cat) {
         case 0: return 1; // Utente predefinito
         case 1: return 4; // Tema, Lingua, Zoom, Layout selettore
-        case 2: return 1; // Core
+        case 2: return 2; // Sistema: Core + Installa launcher
         case 3: return 4; // Cartelle, Scansiona, Max, Pulisci
         case 4: {
             // Sorgente/edit custom solo con debug: l'utente normale resta su GitHub.
@@ -3328,7 +3395,10 @@ std::string UI::settingsRowLabel(int cat, int row) const {
         if (row == 2) return i18n::get(StrKey::SetGalleryLayout);
         return i18n::get(StrKey::SetZoom);
     }
-    if (cat == 2) return i18n::get(StrKey::SetCore);
+    if (cat == 2) {
+        if (row == 0) return i18n::get(StrKey::SetCore);
+        return i18n::get(StrKey::SetInstallLauncher);
+    }
     if (cat == 3) {
         if (row == 0) return i18n::get(StrKey::SetSavePaths);
         if (row == 1) return i18n::get(StrKey::SetScan);
@@ -3362,8 +3432,11 @@ std::string UI::settingsRowValue(int cat, int row) {
                  ? i18n::get(StrKey::LayoutGallery) : i18n::get(StrKey::LayoutClassic);
         return std::to_string(zoomGrow_) + "px";
     }
-    if (cat == 2)
-        return useOpenHome() ? i18n::get(StrKey::SetCoreOh) : i18n::get(StrKey::SetCorePk);
+    if (cat == 2) {
+        if (row == 0)
+            return useOpenHome() ? i18n::get(StrKey::SetCoreOh) : i18n::get(StrKey::SetCorePk);
+        return ""; // riga azione, come "Scansiona": niente valore a destra
+    }
     if (cat == 3) {
         if (row == 0) {
             int on = 0;
@@ -3529,7 +3602,11 @@ void UI::settingsRowActivate(int cat, int row, int dir, bool& running) {
             saveZoomGrow(basePath_, zoomGrow_);
         }
     } else if (cat == 2) {
-        setCryptoEngine(useOpenHome() ? CryptoEngine::PK : CryptoEngine::OH);
+        if (row == 0) {
+            setCryptoEngine(useOpenHome() ? CryptoEngine::PK : CryptoEngine::OH);
+        } else {
+            installLauncherForwarder();
+        }
     } else if (cat == 3) {
         if (row == 0) {
             // Stessa lista del menu + (Import): toggle/rimuovi percorsi.

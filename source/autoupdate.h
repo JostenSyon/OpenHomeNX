@@ -13,6 +13,14 @@ void autoUpdateStart(const std::string& url, const std::string& token,
 // di nuovo, o già ritirato).
 bool autoUpdateTakeResult(std::string& outVersion);
 
+// Sola lettura, NON consuma lo stato (a differenza di takeResult qui sopra,
+// che lo resetta appena legge s_state==2, trovi o no qualcosa). True solo
+// quando il worker ha finito e non ha trovato una versione piu' recente.
+// Serve ad agganciare eventi "boot pulito, autocheck concluso senza
+// aggiornamenti" -- va letta PRIMA che takeResult() giri nello stesso
+// frame, altrimenti trova gia' lo stato consumato a 0.
+bool autoUpdateFinishedWithoutUpdate();
+
 // Logga una sola volta l'esito del worker appena è done (qualsiasi screen):
 // serve a distinguere "fetch in corso" da "morto prima della fetch".
 void autoUpdateLogOnceDone();

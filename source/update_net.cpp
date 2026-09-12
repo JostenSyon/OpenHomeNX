@@ -353,6 +353,21 @@ bool updateNetDownload(const std::string& url, const std::string& token,
                        mem.data.size() / (1024.0 * 1024.0),
                        dlNanos / 1.0e6, dlAvg / (1024.0 * 1024.0));
 
+    // L'ultima chiamata di curl con dlnow==dltotal (il vero 100%) quasi
+    // sempre cade dentro la finestra di throttle di dlXferInfoUI (0.1s) e
+    // viene scartata: curl_easy_perform torna subito dopo senza un'altra
+    // occasione di emetterla, quindi la barra restava ferma all'ultimo
+    // valore visto (98-99%) mentre sotto il download era gia' completo.
+    // Emissione esplicita del 100%, fuori dal throttle, prima di passare
+    // a verifica/scrittura.
+    if (progress) {
+        double mb = mem.data.size() / (1024.0 * 1024.0);
+        char line[160];
+        std::snprintf(line, sizeof(line), "Downloading\n  100%%  (%.1f / %.1f MB)  -  %.1f MB/s",
+                      mb, mb, dlAvg / (1024.0 * 1024.0));
+        progress(line);
+    }
+
     if (!expectSha256.empty()) {
         std::string got = sha256HexBuf(mem.data.data(), mem.data.size());
         if (got != toLower(expectSha256)) {

@@ -11,14 +11,15 @@ include $(DEVKITPRO)/libnx/switch_rules
 
 #---------------------------------------------------------------------------------
 APP_TITLE	:=	OpenHomeNX
-APP_VERSION :=	0.3.0
+APP_VERSION :=	0.3.1
 APP_AUTHOR	:=	JostenSyon
 
 TARGET		:=	OpenHomeNX
 BUILD		:=	build
-SOURCES		:=	source
+# vendor/sphaira: owo.cpp + yati (forwarder 1:1 Sphaira, GPLv3)
+SOURCES		:=	source vendor/sphaira/source vendor/sphaira/source/yati/nx
 DATA		:=	data
-INCLUDES	:=	include
+INCLUDES	:=	include vendor/sphaira/include vendor/sphaira
 ROMFS		:=	romfs
 
 RUST_LIB   := $(TOPDIR)/rust/target/aarch64-unknown-none/release/libopenhome_switch.a
@@ -60,6 +61,10 @@ endif
 endif
 
 CXXFLAGS	:= $(CFLAGS) -fno-exceptions -ffunction-sections -fdata-sections -std=c++20
+# Vendor Sphaira in C++23 (std::byteswap in keys.cpp) + sys/endian.h
+# (__bswap64 in crypto.hpp, che upstream riceve transitivamente);
+# il resto resta C++20. L'ultimo -std vince sulla riga di comando.
+owo.o keys.o ns.o shim.o: CXXFLAGS += -std=c++23 -include sys/endian.h
 
 ASFLAGS	:=	-g $(ARCH)
 LDFLAGS	=	-specs=$(DEVKITPRO)/libnx/switch.specs -g $(ARCH) -Wl,-Map,$(notdir $*.map)

@@ -94,6 +94,11 @@ public:
     std::vector<std::string> wrapText(const std::string& line, TTF_Font* f, int maxW);
     void showMessageAndWait(const std::string& title, const std::string& body);
     bool showConfirmDialog(const std::string& title, const std::string& body);
+    // Popup di scoperta "Installa launcher" (icona app + testo), mostrato
+    // una sola volta in vita: solo informativo (il pulsante vero sta in
+    // Impostazioni > Sistema, non ancora costruito), quindi niente scelta
+    // Si/No qui -- stesso schema single-dismiss di showMessageAndWait.
+    void showLauncherPromptPopup();
     void showWorking(const std::string& msg);
     void setAppletMode(bool mode) { appletMode_ = mode; }
     bool isDualBankMode() const { return appletMode_ || allBanksMode_; }
@@ -514,6 +519,19 @@ private:
     bool isFavorite(GameType g) const { return favorites_.count(static_cast<int>(g)) != 0; }
     void loadFavorites();
     void saveFavorites() const;
+    // Popup di scoperta "Installa launcher" (categoria Sistema): mostrato
+    // una sola volta. Stesso schema di noled.cfg (source/led.cpp) --
+    // esistenza del file = flag true, nessun contenuto da leggere/scrivere.
+    bool hasSeenLauncherPrompt() const;
+    void markLauncherPromptSeen() const;
+    // Azione della riga "Installa launcher" in Sistema: vedi il commento
+    // sopra la definizione (source/ui_selectors.cpp) per lo stato attuale
+    // (solo permessi/conferma, install NSP vera e propria non ancora fatta).
+    void installLauncherForwarder();
+    // Tentativo vero e proprio (permessi gia' assunti ok da chi chiama):
+    // condiviso tra il flusso Impostazioni (dopo conferma) e la pressione
+    // diretta di A nel popup di scoperta showLauncherPromptPopup().
+    void attemptLauncherForwarderInstall();
     void toggleFavorite(GameType g);
     void applyFavoritesOrder();
 
@@ -585,6 +603,13 @@ private:
     int    bankBox_ = 0;
     bool   showDetail_ = false;
     bool   autoPrompted_ = false; // auto-update boot: prompt mostrato una sola volta
+    // Gancio popup "Installa launcher": one-shot per boot come autoPrompted_
+    // qui sopra, ma vive SOLO in RAM (mai su file) -- si valuta una volta a
+    // boot quando l'autocheck update ha finito senza trovare nulla; se
+    // questo boot trova un update invece, semplicemente salta il turno e
+    // si riprova dal boot pulito successivo. Il "gia' mostrato per sempre"
+    // vero sta su file (hasSeenLauncherPrompt()/markLauncherPromptSeen()).
+    bool   launcherPromptChecked_ = false;
     bool   showMenu_   = false;
     int    menuSelection_ = 0;
     bool   saveNow_    = false;

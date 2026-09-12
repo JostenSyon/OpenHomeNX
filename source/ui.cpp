@@ -440,6 +440,75 @@ bool UI::showConfirmDialog(const std::string& title, const std::string& body) {
     return result == 1;
 }
 
+void UI::showLauncherPromptPopup() {
+    if (!renderer_) return;
+    markDirty();
+
+    // Icona: romfs:/splash.png e' l'intero schermo di boot (1280x720,
+    // logo + titolo + sottotitolo) -- schiacciarlo per intero in un'icona
+    // lo rende illeggibile/deformato. Ritagliamo invece solo il marchio
+    // "H" quadrato al centro (crop fisso, l'immagine di boot non cambia).
+    SDL_Surface* surf = IMG_Load("romfs:/splash.png");
+    SDL_Texture* icon = surf ? SDL_CreateTextureFromSurface(renderer_, surf) : nullptr;
+    if (surf) SDL_FreeSurface(surf);
+    SDL_Rect iconSrc = {520, 180, 240, 240};
+
+    // Popup vero e proprio (riquadro centrato, come quello Impostazioni),
+    // non piu' testo a piena pagina: tiene icona/titolo/corpo raccolti e
+    // forza il wrap del testo alla larghezza del riquadro invece che
+    // all'intero schermo.
+    constexpr int POP_W = 680;
+    constexpr int POP_H = 380;
+    constexpr int ICON_SZ = 72;
+    int popX = (SCREEN_W - POP_W) / 2;
+    int popY = (SCREEN_H - POP_H) / 2;
+    int maxTextW = POP_W - 80;
+
+    int result = -1; // -1 = in attesa, 1 = installa (A), 0 = chiudi (B)
+    while (result < 0) {
+        SDL_Event event;
+        while (SDL_PollEvent(&event)) {
+            if (event.type == SDL_QUIT) result = 0;
+            if (event.type == SDL_CONTROLLERBUTTONDOWN) {
+                if (event.cbutton.button == SDL_CONTROLLER_BUTTON_B) // Switch A = installa
+                    result = 1;
+                if (event.cbutton.button == SDL_CONTROLLER_BUTTON_A) // Switch B = chiudi
+                    result = 0;
+            }
+        }
+
+        SDL_SetRenderDrawColor(renderer_, T().bg.r, T().bg.g, T().bg.b, 255);
+        SDL_RenderClear(renderer_);
+
+        drawRect(popX, popY, POP_W, POP_H, T().panelBg);
+        drawRectOutline(popX, popY, POP_W, POP_H, T().cursor, 2);
+
+        // Piu' respiro attorno al logo (era troppo a ridosso del bordo
+        // superiore) e piu' distacco prima di titolo/corpo.
+        int y = popY + 42;
+        if (icon) {
+            SDL_Rect dst = {popX + POP_W / 2 - ICON_SZ / 2, y, ICON_SZ, ICON_SZ};
+            SDL_RenderCopy(renderer_, icon, &iconSrc, &dst);
+            y += ICON_SZ + 30;
+        }
+
+        drawTextCentered(i18n::get(StrKey::LauncherPromptTitle), popX + POP_W / 2, y, T().text, fontLarge_);
+        y += 44;
+
+        for (auto& wl : wrapText(i18n::get(StrKey::LauncherPromptBody), font_, maxTextW)) {
+            drawTextCentered(wl, popX + POP_W / 2, y, T().textDim, font_);
+            y += 24;
+        }
+
+        drawTextCentered(i18n::get(StrKey::LauncherPromptFooter), popX + POP_W / 2, popY + POP_H - 26, T().textDim, fontSmall_);
+
+        SDL_RenderPresent(renderer_);
+        SDL_Delay(16);
+    }
+    if (icon) SDL_DestroyTexture(icon);
+    if (result == 1) attemptLauncherForwarderInstall();
+}
+
 void UI::showWorking(const std::string& msg) {
     if (!renderer_) return;
     markDirty(); // Force redraw after modal returns
@@ -657,6 +726,27 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
         // Auto-update al boot: se il thread in parallelo ha trovato una build
         // più recente, lancia il flusso update normale una sola volta quando
         // siamo nella home giochi o utenti (mai durante il boot, mai due volte).
+        // Popup di scoperta "Installa launcher": valutato PRIMA del blocco
+        // autoupdate qui sotto apposta, perche' autoUpdateTakeResult() (nel
+        // blocco successivo) consuma subito lo stato non appena lo vede a
+        // "done" -- se controllassimo autoUpdateFinishedWithoutUpdate() dopo,
+        // lo troveremmo gia' azzerato nello stesso frame. One-shot per boot
+        // (launcherPromptChecked_, solo RAM); se questo boot trova un
+        // update invece, salta il turno e si ririprova al prossimo boot
+        // pulito -- il "visto per sempre" vero resta su file.
+        if (!launcherPromptChecked_ && (screen_ == AppScreen::GameSelector ||
+                                        screen_ == AppScreen::ProfileSelector) &&
+            autoUpdateFinishedWithoutUpdate()) {
+            launcherPromptChecked_ = true;
+            // Niente controllo su appletMode_: Sphaira crea il forwarder
+            // anche avviato da Album (R su un gioco), quindi non e' un
+            // prerequisito reale -- coerente con la voce Impostazioni,
+            // che infatti non lo controlla piu' nemmeno lei.
+            if (!hasSeenLauncherPrompt()) {
+                showLauncherPromptPopup();
+                markLauncherPromptSeen();
+            }
+        }
         if (!autoPrompted_ && (screen_ == AppScreen::GameSelector ||
                                screen_ == AppScreen::ProfileSelector)) {
             std::string newVer;
