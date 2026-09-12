@@ -3423,17 +3423,23 @@ std::string UI::customUrlAny(const std::string& basePath) {
 // Scrive key= a path esplicito preservando le altre righe.
 static bool setKeyInFile(const std::string& dst, const std::string& key,
                          const std::string& value) {
-    std::ifstream f(dst);
     std::vector<std::string> lines;
     std::string line;
     bool found = false;
-    if (f.good()) {
-        while (std::getline(f, line)) {
-            if (!line.empty() && line.back() == '\r') line.pop_back();
-            auto eq = line.find('=');
-            std::string k = (eq == std::string::npos) ? line : line.substr(0, eq);
-            if (k == key) { line = key + "=" + value; found = true; }
-            lines.push_back(line);
+    {
+        // Lo stream di lettura va CHIUSO prima di aprire in scrittura:
+        // su FatFs tenere entrambi aperti sullo stesso file esistente
+        // fa fallire l'open in truncate (bug 2026-09-12: 46 scritture
+        // .off fallite, solo creazioni riuscite).
+        std::ifstream f(dst);
+        if (f.good()) {
+            while (std::getline(f, line)) {
+                if (!line.empty() && line.back() == '\r') line.pop_back();
+                auto eq = line.find('=');
+                std::string k = (eq == std::string::npos) ? line : line.substr(0, eq);
+                if (k == key) { line = key + "=" + value; found = true; }
+                lines.push_back(line);
+            }
         }
     }
     if (!found) lines.push_back(key + "=" + value);
@@ -3479,15 +3485,19 @@ bool UI::writeUpdateCfgUrl(const std::string& basePath, const std::string& url) 
     std::string cfg, off;
     findUpdateCfgFiles(basePath, cfg, off);
     std::string dst = cfg.empty() ? basePath + "update.cfg" : cfg;
-    std::ifstream f(dst);
     std::vector<std::string> lines;
     std::string line;
     bool found = false;
-    if (f.good()) {
-        while (std::getline(f, line)) {
-            if (!line.empty() && line.back() == '\r') line.pop_back();
-            if (line.rfind("url=", 0) == 0) { line = "url=" + url; found = true; }
-            lines.push_back(line);
+    {
+        // Vedi setKeyInFile: chiudere la lettura prima del truncate,
+        // altrimenti su FatFs l'open fallisce a file esistente.
+        std::ifstream f(dst);
+        if (f.good()) {
+            while (std::getline(f, line)) {
+                if (!line.empty() && line.back() == '\r') line.pop_back();
+                if (line.rfind("url=", 0) == 0) { line = "url=" + url; found = true; }
+                lines.push_back(line);
+            }
         }
     }
     if (!found) lines.push_back("url=" + url);
@@ -3640,17 +3650,20 @@ static void writeQuickMenu(const std::string& basePath, bool on) {
 }
 
 static bool writeBackupMb(const std::string& basePath, long mb) {    std::string path = updateCfgHome(basePath);
-    std::ifstream f(path);
     std::vector<std::string> lines;
     std::string line;
     bool found = false;
-    if (f.good()) {
-        while (std::getline(f, line)) {
-            if (!line.empty() && line.back() == '\r') line.pop_back();
-            auto eq = line.find('=');
-            std::string k = (eq == std::string::npos) ? line : line.substr(0, eq);
-            if (k == "backup_mb") { line = "backup_mb=" + std::to_string(mb); found = true; }
-            lines.push_back(line);
+    {
+        // Vedi setKeyInFile: chiudere la lettura prima del truncate.
+        std::ifstream f(path);
+        if (f.good()) {
+            while (std::getline(f, line)) {
+                if (!line.empty() && line.back() == '\r') line.pop_back();
+                auto eq = line.find('=');
+                std::string k = (eq == std::string::npos) ? line : line.substr(0, eq);
+                if (k == "backup_mb") { line = "backup_mb=" + std::to_string(mb); found = true; }
+                lines.push_back(line);
+            }
         }
     }
     if (!found) lines.push_back("backup_mb=" + std::to_string(mb));

@@ -640,6 +640,7 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
     gameSelectorLayout_ = (GameSelectorLayout)loadGameSelectorLayout(basePath_);
     theme_ = &getTheme(themeIndex_);
     loadFavorites();
+    galPreloadCacheFromDisk(); // party/OT/dex subito al primo draw, niente "..."
 
     // Load persisted crypto engine (PK/OH)
     int cryptoVal = loadCryptoEngine(basePath_);

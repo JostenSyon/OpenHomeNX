@@ -729,6 +729,11 @@ private:
     // ogni save ad ogni avvio. File in basePath_ (vedi theme.cfg/gallery.cfg).
     bool galCacheLoadedFromDisk_ = false;
     void galLoadCacheFromDisk();
+    // Precarica la cache disco a boot: senza, a ogni apertura la galleria
+    // mostra "..." per 400ms sul gioco fermo (cache memoria vuota + load
+    // pigro al primo settle). Con i preferiti il gioco in cima è sempre
+    // visibile, quindi il pop-in si vedeva a ogni avvio.
+    void galPreloadCacheFromDisk();
     void galSaveCacheToDisk() const;
     // true mentre lo slide dell'anteprima Galleria (galSelShown_/
     // galSlide_) non ha ancora raggiunto il target: stesso schema di

@@ -590,6 +590,14 @@ void UI::galInvalidateParty(GameType g) {
     galSaveCacheToDisk();
 }
 
+void UI::galPreloadCacheFromDisk() {
+    if (galCacheLoadedFromDisk_) return;
+    galCacheLoadedFromDisk_ = true;
+    galLoadCacheFromDisk();
+    if (!galPartyCache_.empty())
+        DebugLog::line("gal cache: preload %zu voci a boot", galPartyCache_.size());
+}
+
 namespace {
 constexpr uint32_t GAL_CACHE_MAGIC = 0x47414331; // "GAC1"
 }
