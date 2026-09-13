@@ -747,8 +747,11 @@ void UI::handleNormalInput(const SDL_Event& event) {
                 break;
             case SDL_CONTROLLER_BUTTON_DPAD_LEFT:
                 if (partyCursor_ >= 0) {
-                    int n = (int)save_.dsParty().size();
-                    if (n > 0) partyCursor_ = (partyCursor_ + n - 1) % n;
+                    // Party sempre 6 slot, anche se alcuni vuoti (Smeraldo 5/6
+                    // bloccava lo slot 6: dsParty().size()==5 → modulo 5 non
+                    // raggiunge mai l'indice 5).
+                    int n = 6;
+                    partyCursor_ = (partyCursor_ + n - 1) % n;
                     markDirty();
                 } else {
                     moveCursor(-1, 0);
@@ -756,8 +759,8 @@ void UI::handleNormalInput(const SDL_Event& event) {
                 break;
             case SDL_CONTROLLER_BUTTON_DPAD_RIGHT:
                 if (partyCursor_ >= 0) {
-                    int n = (int)save_.dsParty().size();
-                    if (n > 0) partyCursor_ = (partyCursor_ + 1) % n;
+                    int n = 6;
+                    partyCursor_ = (partyCursor_ + 1) % n;
                     markDirty();
                 } else {
                     moveCursor(+1, 0);
@@ -927,10 +930,10 @@ void UI::handleStickRepeat() {
             menuSelection_ = (menuSelection_ + (stickDirY_ > 0 ? 1 : menuCount - 1)) % menuCount;
         }
     } else if (partyCursor_ >= 0) {
-        // Party row focused: stick mirrors dpad
+        // Party row focused: stick mirrors dpad (sempre 6 slot)
         if (stickDirX_ != 0) {
-            int n = (int)save_.dsParty().size();
-            if (n > 0) partyCursor_ = (partyCursor_ + (stickDirX_ > 0 ? 1 : n - 1)) % n;
+            int n = 6;
+            partyCursor_ = (partyCursor_ + (stickDirX_ > 0 ? 1 : n - 1)) % n;
         }
         if (stickDirY_ != 0) {
             partyCursor_ = -1; // any vertical stick -> back to grid

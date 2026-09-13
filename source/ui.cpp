@@ -1455,7 +1455,7 @@ bool UI::persistGameSaveIfDirty() {
     bool ok = save_.save(savePath_);
     if (!ok)
         DebugLog::line("persist: save(%s) FALLITO", savePath_.c_str());
-    if (ok && !account_.commitSave()) {
+    if (ok && savePath_.rfind("save:/", 0) == 0 && !account_.commitSave()) {
         DebugLog::line("persist: commitSave FALLITO dopo save ok (%s)", savePath_.c_str());
         ok = false;
     }
