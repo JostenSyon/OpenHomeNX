@@ -40,6 +40,12 @@ bool flushAndReopenForUpload(std::string& outPath);
 void reopenAfterUpload();
 std::string logPath();
 
+// Pulisce debug.log tenendo solo le ultime keepLastLines righe (per il
+// menu "Pulisci log": libera spazio senza perdere la coda recente utile
+// per diagnosticare). Funziona anche a logger spento, se il file esiste
+// gia' da una sessione precedente. False se non c'e' nulla da pulire.
+bool clearLog(int keepLastLines = 200);
+
 } // namespace DebugLog
 
 #else // OH_DEBUG_LOG
@@ -53,6 +59,7 @@ inline void line(const char*, ...) {}
 inline bool flushAndReopenForUpload(std::string&) { return false; }
 inline void reopenAfterUpload() {}
 inline std::string logPath() { return ""; }
+inline bool clearLog(int) { return false; }
 
 } // namespace DebugLog
 

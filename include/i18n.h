@@ -275,6 +275,24 @@ namespace StrKey {
     constexpr const char* SetCredits      = "set_credits";
     constexpr const char* BagSoon         = "bag_soon";
     constexpr const char* SetFooter       = "set_footer";
+    constexpr const char* BackpackTitle   = "backpack_title";
+    constexpr const char* BackpackFooter  = "backpack_footer";
+    constexpr const char* BackpackFooterGame = "backpack_footer_game";
+    constexpr const char* BackpackAudit   = "backpack_audit";
+    constexpr const char* BackpackAuditFooter = "backpack_audit_footer";
+    constexpr const char* BackpackNoGames = "backpack_no_games";
+    constexpr const char* BackpackPickGame = "backpack_pick_game";
+    constexpr const char* BpItems         = "bp_items";
+    constexpr const char* BpKey           = "bp_key";
+    constexpr const char* BpBalls         = "bp_balls";
+    constexpr const char* BpTm            = "bp_tm";
+    constexpr const char* BpBerries       = "bp_berries";
+    constexpr const char* BpTabBalls      = "bp_tab_balls";
+    constexpr const char* BpTabMt         = "bp_tab_mt";
+    constexpr const char* BpTabMn         = "bp_tab_mn";
+    constexpr const char* BpTabCons       = "bp_tab_cons";
+    constexpr const char* BpTabSpecial    = "bp_tab_special";
+    constexpr const char* BpOwned         = "bp_owned";
     constexpr const char* SetFooterSlider = "set_footer_slider";
     constexpr const char* ImportFoundTitle     = "import_found_title";
     constexpr const char* ImportAutoCheckUsb   = "import_autocheck_usb";
@@ -421,6 +439,13 @@ namespace StrKey {
     constexpr const char* SendLogSent          = "sendlog_sent";
     constexpr const char* SendLogSentBoth      = "sendlog_sent_both";
     constexpr const char* SendLogFailed        = "sendlog_failed";
+    constexpr const char* ClearLogTitle        = "clearlog_title";
+    constexpr const char* ClearBpHistTitle     = "clearbphist_title";
+    constexpr const char* ClearBpHistBody      = "clearbphist_body";
+    constexpr const char* ClearBpHistDone      = "clearbphist_done";
+    constexpr const char* ClearBpHistFailed    = "clearbphist_failed";
+    constexpr const char* ClearLogDone         = "clearlog_done";
+    constexpr const char* ClearLogFailed       = "clearlog_failed";
     constexpr const char* SendSaveTitle        = "sendsave_title";
     constexpr const char* SendSaveNoUrl        = "sendsave_no_url";
     constexpr const char* SendSaveNetOff       = "sendsave_net_off";
@@ -431,6 +456,12 @@ namespace StrKey {
     constexpr const char* SaveFailedBody       = "save_failed_body";
     constexpr const char* SendSaveNoGame       = "sendsave_no_game";
     constexpr const char* SendSaveOnlyImported = "sendsave_only_imported";
+    constexpr const char* CrashReportTitle     = "crashreport_title";
+    constexpr const char* CrashReportNoUrl     = "crashreport_no_url";
+    constexpr const char* CrashReportNetOff    = "crashreport_net_off";
+    constexpr const char* CrashReportUploading = "crashreport_uploading";
+    constexpr const char* CrashReportSent      = "crashreport_sent";
+    constexpr const char* CrashReportFailed    = "crashreport_failed";
 
     // Cross-gen transfer (ui_input.cpp prepareForPlacement + drop dialogs)
     constexpr const char* TransferTitle        = "transfer_title";

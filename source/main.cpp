@@ -19,6 +19,26 @@
 #include <usbhsfs.h>
 #endif
 
+// Se il sistema chiede di terminare l'app (es. si salta a un altro homebrew
+// tramite Album mentre OpenHomeNX gira come Applicazione a pieno titolo, per
+// i permessi fs sui save di sistema) e nessuno intercetta la richiesta, dopo
+// un breve timeout HOS termina il processo con la forza mentre siamo in
+// stato indefinito: e' quello che sembra mandare in crash hbl - che vive nel
+// nostro stesso processo - in uscita (segnalato dall'utente + crash report
+// Atmosphere, 2026-09-13: "User Break" dentro hbl proprio a cavallo del
+// nostro exit(), innescato probabile aprendo Album/R per saltare a DBI con
+// OpenHomeNX ancora aperto). Intercettando OnExitRequest usciamo dal loop in
+// modo normale (SDL_QUIT, la stessa strada di un B/+ premuto dall'utente):
+// backup, salvataggi, unmount e shutdown puliti prima che HOS forzi la mano.
+static AppletHookCookie s_exitHookCookie;
+static void onAppletExitRequest(AppletHookType hook, void* /*param*/) {
+    if (hook == AppletHookType_OnExitRequest) {
+        SDL_Event e{};
+        e.type = SDL_QUIT;
+        SDL_PushEvent(&e);
+    }
+}
+
 int main(int argc, char* argv[]) {
     romfsInit();
 
@@ -106,6 +126,11 @@ int main(int argc, char* argv[]) {
         return 1;
     }
     bootMark("ui.init");
+
+    // SDL e' pronto solo da qui in poi: registrato dopo ui.init() cosi'
+    // SDL_PushEvent() nella callback trova sempre una coda eventi valida
+    // (l'hook puo' scattare da un thread di sistema in qualsiasi momento).
+    appletHook(&s_exitHookCookie, onAppletExitRequest, nullptr);
 
     if (pendingUpdate && ui.tryUpdateBounce(basePath)) {
         ui.shutdown();
@@ -240,6 +265,7 @@ int main(int argc, char* argv[]) {
     if (netReady) socketExit();
     nifmExit(); // no-op se updateNetLinkStr() non ha mai inizializzato nifm:u
 
+    appletUnhook(&s_exitHookCookie);
     romfsExit();
     DebugLog::line("exit: shutdown complete");
     return 0;

@@ -8,6 +8,7 @@
 #include "import_paths.h"
 #include "import_scan.h"
 #include "autocheck_usb.h"
+#include "backpack.h"
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_ttf.h>
 #include <SDL2/SDL_image.h>
@@ -33,7 +34,7 @@ enum class TextInputPurpose {
 // Rows of the "+" game-selector menu. A single list drives both the popup's
 // draw order and its input handling — the old parallel hardcoded row-count
 // arithmetic (see v0.1.37's alignment bug) drifts every time a row is added.
-enum class GameSelMenuAction { SwitchCore, DebugLog, SendLog, SendSave, ImportSettings, CheckUpdate, OpenSettings, Exit };
+enum class GameSelMenuAction { SwitchCore, DebugLog, ClearLog, SendLog, SendSave, CrashReport, ImportSettings, CheckUpdate, OpenSettings, Exit };
 
 // Search filter enums
 enum class GenderFilter { Any, Male, Female, Genderless };
@@ -327,7 +328,13 @@ private:
     void sendSaveFor(GameType g, int occ);
     std::string manualBackupDir(GameType g) const;
     std::string autoBackupDir(GameType g) const;
-    bool backupGameSave(GameType g, std::string& out);
+    // alreadyMounted: se il chiamante ha gia' "save:/" montato per questo
+    // stesso gioco (es. lo zaino con backpackSaveMnt_), passarlo qui evita
+    // di richiamare account_.mountSave(), che smonterebbe quello attivo
+    // (AccountManager ha un solo slot di mount) lasciando il chiamante con
+    // un mount ormai fantasma -> scritture successive fallite in silenzio
+    // (bug 2026-09-13: regalo fossile ok in memoria ma mai salvato).
+    bool backupGameSave(GameType g, std::string& out, const std::string& alreadyMounted = "");
     struct BackupListEntry { std::string path; std::string label; };
     std::vector<BackupListEntry> collectBackupEntries(GameType g);
     bool restoreBackupEntry(GameType g, const std::string& entry);
@@ -342,6 +349,19 @@ private:
     GameType backupListGame_ = GameType::EMERALD;
     void openBackupList(GameType g);
     void drawBackupListPopup();
+    // Lista crash report scritti da Atmosphere (sdmc:/atmosphere/crash_reports/,
+    // fallback fatal_errors/): sfogliabile come i backup, ordinata per data
+    // di modifica (piu recente in cima) cosi' l'ultimo crash e' subito
+    // selezionato senza dover cercare a mano. A invia col solito upload
+    // save (stesso endpoint/URL di update.cfg), B torna indietro.
+    bool showCrashList_ = false;
+    int  crashListCursor_ = 0;
+    int  crashListScroll_ = 0;
+    std::vector<BackupListEntry> crashListEntries_;
+    std::vector<BackupListEntry> collectCrashReportEntries();
+    void openCrashList();
+    void drawCrashListPopup();
+    void sendCrashReportNow(const std::string& path);
     // Auto-backup best-effort all'apertura dei save file-backed (cap 10).
     void autoBackupFileSave(GameType g, const std::string& path);
     // Tetto spazio auto-backup per gioco da update.cfg (backup_mb[_sd],
@@ -356,6 +376,89 @@ private:
     int  wcListCursor_  = 0;
     int  wcListScroll_  = 0;
     std::vector<WCInfo> wcList_;
+
+    // Zaino Gen3: sinistra = catalogo trasferibili (sempre visibile),
+    // destra = lista giochi finche' non ne scegli uno, poi al suo posto
+    // lo zaino VERO del gioco scelto (B torna alla lista giochi, come le
+    // banche). Opera su scratch SaveFile del gioco evidenziato
+    // (load/gift/save con backup), mai sul save_ della main view.
+    // (vista audit: righe = anomalie + voci di giornale, vedi backpackJournal_)
+    bool showBackpack_ = false;
+    bool backpackFocusItems_ = true; // false = pannello giochi/zaino a destra
+    bool backpackAudit_ = false;     // vista verifica invece della lista voci
+    std::vector<GameType> backpackGames_;
+    std::vector<int> backpackOcc_;   // occurrence in availableGames_ per voce
+    int backpackGameCursor_ = 0, backpackGameScroll_ = 0;
+    std::vector<Backpack::ItemDef> backpackDefs_;
+    std::vector<Backpack::ItemDef> backpackItems_; // filtrate per gioco
+    // Righe sinistra: catalogo trasferibili (mai header, sempre voci di
+    // indice idx). La stessa struct e' riusata per backpackBag_ (destra,
+    // zaino VERO), dove i pocket hanno header non selezionabili (cursore
+    // li salta) - vedi backpackLeftStep/backpackBagStep.
+    struct BackpackLeftRow { bool header = false; int idx = 0; int pocket = -1; };
+    std::vector<BackpackLeftRow> backpackLeft_;
+    std::vector<SaveFile::GbaBagSlot> backpackGameBag_; // slot non vuoti dello scratch
+    int backpackLeftCursor_ = 0, backpackLeftScroll_ = 0;
+    // Tab categoria del catalogo (0=Sfere,1=MN,2=MT,3=Consumabili,
+    // 4=Speciali,5=Bacche): con ~300 voci per gioco (es. Emerald)
+    // un'unica lista era impraticabile da scorrere, richiesta esplicita
+    // di dividerla come nel gioco vero. MN prima di MT (nel gioco le
+    // Macchine Nascoste vengono prima). ZL/ZR la cambiano (vedi
+    // handleBackpackInput), sempre attiva a prescindere dal fuoco
+    // visto che il catalogo e' sempre visibile.
+    int backpackCatTab_ = 0;
+    bool backpackZlHeld_ = false, backpackZrHeld_ = false; // edge-detect ZL/ZR
+    // Destra a gioco scelto: righe dello zaino VERO (al posto della
+    // lista giochi), stesso tipo di riga ma cursore/scroll propri.
+    std::vector<BackpackLeftRow> backpackBag_;
+    int backpackBagCursor_ = 0, backpackBagScroll_ = 0;
+    int backpackQty_ = 1;
+    bool backpackBaseMode_ = false;
+    std::vector<Backpack::Anomaly> backpackAnoms_;
+    std::vector<Backpack::JournalRow> backpackJournal_; // regali (audit): una riga per {item, pocket}
+    int backpackAuditCursor_ = 0, backpackAuditScroll_ = 0;
+    SaveFile backpackSave_;          // scratch
+    std::string backpackSavePath_, backpackSaveMnt_;
+    GameType backpackGame_ = GameType::EMERALD;
+    bool backpackLoaded_ = false;
+    bool backpackGameChosen_ = false; // gioco scelto esplicito con A (prima le voci sono solo lista)
+    std::unordered_map<int, int> backpackOwned_; // itemId -> count totale
+    std::unordered_set<int> backpackBackedUp_;   // GameType già backuppati qui
+    void openBackpack();
+    // Come sopra ma, se selIdx punta un gioco borsa valido, lo apre subito
+    // (zaino di destinazione già scelto, focus alle voci).
+    void openBackpackOn(int selIdx);
+    void closeBackpack();
+    void backpackLoadGame(GameType g, int occ);
+    void backpackReloadItems();
+    void backpackRefreshAudit();
+    void drawBackpackPopup();
+    void handleBackpackInput(const SDL_Event& event);
+    void backpackDoGift();
+    void backpackDoTake();
+    void backpackLeftStep(int& cursor, int dir);
+    void backpackBagStep(int& cursor, int dir);
+    // Tiene la quantita' dentro il max della voce sotto cursore: senza
+    // questo, impostata su un oggetto a max 99, spostandoti su uno a max
+    // 5 la barra mostrava "x99 (max 5)" (il dono lo clampava comunque,
+    // ma era ingannevole - bug 2026-09-13). Va chiamato a ogni cambio
+    // di cursore/ricarica del catalogo.
+    void backpackClampQty();
+    // Cambia la tab categoria del catalogo (dir=+-1, wrap) e ricarica
+    // le righe di sinistra filtrate sulla nuova tab.
+    void backpackCatTabStep(int dir);
+    // Passo levetta orizzontale: sposta il fuoco tra catalogo
+    // (sinistra) e zaino vero/lista giochi (destra). Idempotente
+    // (nessun rimbalzo se richiamato piu' volte gia' a destinazione),
+    // quindi e' sicuro chiamarlo anche dal repeat per-frame.
+    void backpackFocusStep(int dir);
+    // Un passo (dir=+-1) su gioco o voce a fuoco: chiamato dal tick
+    // per-frame in ui_selectors.cpp per il repeat levetta (vedi
+    // "Joystick repeat navigation"), mai da dentro handleBackpackInput
+    // (a levetta ferma puo' non arrivare mai un altro evento SDL).
+    void backpackStickStep(int dir);
+    void backpackDoFixSelected();
+    bool backpackPersist(const std::string& why);
 
     // PK file import list state (.pk1/.pk2 picker, mirrors wondercards)
     struct PkFileInfo {

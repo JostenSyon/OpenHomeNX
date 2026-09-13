@@ -98,6 +98,24 @@ public:
     // Returns pointer to the sector's 0x1000-byte region, or nullptr.
     uint8_t* findGbaSectorData(int sectionId);
 
+    // Borsa Gen3 GBA (RSE/FRLG, settore 1 = SaveBlock1). Slot da 4B
+    // {id u16 LE, count u16 LE}. Layout verificato: pret global.h di
+    // pokeruby/pokeemerald/pokefirered + span PKHeX SAV3* + Bulbapedia:
+    // RS(20/20/16/64/46) E(30/30/16/64/46) FRLG(42/30/13/58/43).
+    enum class GbaBagPocket { Items = 0, Key, Balls, TmHm, Berries, Count };
+    struct GbaBagSlot { GbaBagPocket pocket; int slot; uint16_t id; uint16_t count; };
+    bool gbaBagSupported() const;
+    int gbaBagPocketSlots(GbaBagPocket p) const; // 0 se non supportato
+    // Tutti gli slot (anche vuoti id==0) per lettura/scansione.
+    std::vector<GbaBagSlot> readGbaBag() const;
+    // Scrive uno slot (set dirty). False se pocket/slot fuori range.
+    bool writeGbaBagSlot(GbaBagPocket p, int slot, uint16_t id, uint16_t count);
+    // Chiave di sicurezza Gen3 (settore 0, trainer info): RS non la usa
+    // (conteggi in chiaro), Emerald/FRLG la XORano su monete/gettoni/
+    // conteggi zaino (Bulbapedia "Save data structure (Generation III)").
+    // Ritorna solo i 16 bit bassi (quelli usati per gli item), 0 se non serve.
+    uint16_t gbaSecurityKeyLow16() const;
+
     // Get trainer info from save file (SV/ZA only, SCBlock-based)
     TrainerInfo getTrainerInfo() const;
 

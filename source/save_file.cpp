@@ -12,6 +12,7 @@
 #include "debug_log.h"
 #include <cctype>
 #include <fstream>
+#include <cerrno>
 #include <cstdio>
 #include <cstring>
 
@@ -2449,8 +2450,11 @@ bool SaveFile::loadGBA(const std::string& path) {
 }
 
 bool SaveFile::saveGBA(const std::string& path) {
-    if (rawData_.empty() || gbaStorage_.empty())
+    if (rawData_.empty() || gbaStorage_.empty()) {
+        DebugLog::line("saveGBA: dati vuoti (rawData %zu, gbaStorage %zu) per %s",
+                       rawData_.size(), gbaStorage_.size(), path.c_str());
         return false;
+    }
 
     // Write modified storage back to sectors in BOTH save slots
     for (int slot = 0; slot < 2; slot++) {
@@ -2488,8 +2492,11 @@ bool SaveFile::saveGBA(const std::string& path) {
     FILE* f = std::fopen(path.c_str(), "r+b");
     if (!f)
         f = std::fopen(path.c_str(), "wb");
-    if (!f)
+    if (!f) {
+        DebugLog::line("saveGBA: fopen fallito per %s (errno %d: %s)",
+                       path.c_str(), errno, std::strerror(errno));
         return false;
+    }
 
     size_t written;
     if (!gbaXtra_.empty()) {
@@ -2506,10 +2513,16 @@ bool SaveFile::saveGBA(const std::string& path) {
         }
         written = std::fwrite(out.data(), 1, out.size(), f);
         std::fclose(f);
+        if (written != out.size())
+            DebugLog::line("saveGBA: scrittura incompleta %s (%zu/%zu byte)",
+                           path.c_str(), written, out.size());
         return written == out.size();
     }
     written = std::fwrite(rawData_.data(), 1, rawData_.size(), f);
     std::fclose(f);
+    if (written != rawData_.size())
+        DebugLog::line("saveGBA: scrittura incompleta %s (%zu/%zu byte)",
+                       path.c_str(), written, rawData_.size());
     return written == rawData_.size();
 }
 
@@ -2545,6 +2558,103 @@ uint8_t* SaveFile::findGbaSectorData(int sectionId) {
             return rawData_.data() + sectorOfs;
     }
     return nullptr;
+}
+
+// --- Borsa Gen3 GBA ---
+// Offsets relativi all'inizio dati settore 1 (SaveBlock1) + slot count.
+// Fonti: pret include/global.h (pokeruby/pokeemerald/pokefirered) incrociato
+// con gli span PKHeX SaveBlock3Large{RS,E,FRLG}::Inventory e Bulbapedia
+// (items pocket 20/30/42). Totali: 216/236/216 slot = 0x360/0x3B0/0x360.
+namespace {
+struct GbaBagLayout { int base[5]; int slots[5]; };
+bool gbaBagLayoutFor(GameType g, GbaBagLayout& out) {
+    if (g == GameType::RUBY || g == GameType::SAPPHIRE) {
+        out = {{0x560, 0x5B0, 0x600, 0x640, 0x740}, {20, 20, 16, 64, 46}};
+        return true;
+    }
+    if (g == GameType::EMERALD) {
+        out = {{0x560, 0x5D8, 0x650, 0x690, 0x790}, {30, 30, 16, 64, 46}};
+        return true;
+    }
+    if (isFRLG(g)) {
+        out = {{0x310, 0x3B8, 0x430, 0x464, 0x54C}, {42, 30, 13, 58, 43}};
+        return true;
+    }
+    return false;
+}
+} // namespace
+
+// Chiave di sicurezza Gen3: XORata su monete/gettoni/conteggi zaino.
+// RS non la usa (conteggi in chiaro). Emerald/FRLG si': offset dentro il
+// settore 0 (trainer info) da Bulbapedia "Save data structure (Generation
+// III)" sez. Security key (Emerald 0x00AC, FRLG 0x0AF8; esiste anche una
+// copia a 0x01F4/0x0F20 usata li' solo come controllo incrociato futuro).
+// Senza questo XOR i conteggi letti/scritti sono spazzatura (es. x30556
+// invece di x1): mai leggere/scrivere il pocket senza passarci.
+uint16_t SaveFile::gbaSecurityKeyLow16() const {
+    if (gameType_ == GameType::RUBY || gameType_ == GameType::SAPPHIRE) return 0;
+    int off;
+    if (gameType_ == GameType::EMERALD) off = 0x00AC;
+    else if (isFRLG(gameType_)) off = 0x0AF8;
+    else return 0; // non Gen3 GBA: qui non dovrebbe mai arrivarci
+    uint8_t* sec0 = const_cast<SaveFile*>(this)->findGbaSectorData(0);
+    if (!sec0) return 0;
+    return static_cast<uint16_t>(readU32LE(sec0 + off) & 0xFFFF);
+}
+
+bool SaveFile::gbaBagSupported() const {
+    if (!loaded_) return false;
+    GbaBagLayout L;
+    return gbaBagLayoutFor(gameType_, L);
+}
+
+int SaveFile::gbaBagPocketSlots(GbaBagPocket p) const {
+    GbaBagLayout L;
+    if (!gbaBagLayoutFor(gameType_, L)) return 0;
+    int i = static_cast<int>(p);
+    if (i < 0 || i >= 5) return 0;
+    return L.slots[i];
+}
+
+std::vector<SaveFile::GbaBagSlot> SaveFile::readGbaBag() const {
+    std::vector<GbaBagSlot> out;
+    if (!loaded_) return out;
+    GbaBagLayout L;
+    if (!gbaBagLayoutFor(gameType_, L)) return out;
+    uint8_t* sec1 = const_cast<SaveFile*>(this)->findGbaSectorData(1);
+    if (!sec1) return out;
+    const uint16_t key = gbaSecurityKeyLow16(); // RS=0 (chiaro), E/FRLG=vero XOR
+    for (int p = 0; p < 5; p++) {
+        for (int s = 0; s < L.slots[p]; s++) {
+            const uint8_t* d = sec1 + L.base[p] + s * 4;
+            GbaBagSlot e;
+            e.pocket = static_cast<GbaBagPocket>(p);
+            e.slot = s;
+            e.id = readU16LE(d);
+            e.count = static_cast<uint16_t>(readU16LE(d + 2) ^ key);
+            out.push_back(e);
+        }
+    }
+    return out;
+}
+
+bool SaveFile::writeGbaBagSlot(GbaBagPocket p, int slot, uint16_t id, uint16_t count) {
+    if (!loaded_) return false;
+    GbaBagLayout L;
+    if (!gbaBagLayoutFor(gameType_, L)) return false;
+    int i = static_cast<int>(p);
+    if (i < 0 || i >= 5) return false;
+    if (slot < 0 || slot >= L.slots[i]) return false;
+    uint8_t* sec1 = findGbaSectorData(1);
+    if (!sec1) return false;
+    // Bounds dentro il settore dati (0x1000): mai oltre.
+    size_t off = static_cast<size_t>(L.base[i]) + static_cast<size_t>(slot) * 4;
+    if (off + 4 > GBA_SECTOR_USED) return false;
+    const uint16_t key = gbaSecurityKeyLow16(); // stesso XOR della lettura
+    writeU16LE(sec1 + off, id);
+    writeU16LE(sec1 + off + 2, static_cast<uint16_t>(count ^ key));
+    dirty_ = true; // saveGBA specchia gli slot + ricalcola i checksum
+    return true;
 }
 
 // --- Gen 4/5 (DS .sav dumps, PKHeX SAV4*/SAV5BW.cs) — read-only v1 ---

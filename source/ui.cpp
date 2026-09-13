@@ -785,7 +785,9 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
                     if (showGameSelMenu_) drawGameSelMenuPopup();
                     if (showSettings_) drawSettingsPopup();
                 if (showSaveMenu_) drawSaveMenuPopup();
+                if (showBackpack_) drawBackpackPopup();
                 if (showBackupList_) drawBackupListPopup();
+                if (showCrashList_) drawCrashListPopup();
                 }
                 else if (screen_ == AppScreen::BankSelector) drawBankSelectorFrame();
                 else drawFrame();
@@ -859,7 +861,9 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
                     if (showGameSelMenu_) drawGameSelMenuPopup();
                     if (showSettings_) drawSettingsPopup();
                 if (showSaveMenu_) drawSaveMenuPopup();
+                if (showBackpack_) drawBackpackPopup();
                 if (showBackupList_) drawBackupListPopup();
+                if (showCrashList_) drawCrashListPopup();
                 }
                 else if (screen_ == AppScreen::BankSelector) drawBankSelectorFrame();
                 else drawFrame();
@@ -922,7 +926,9 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
                 if (showGameSelMenu_) drawGameSelMenuPopup();
                     if (showSettings_) drawSettingsPopup();
                 if (showSaveMenu_) drawSaveMenuPopup();
+                if (showBackpack_) drawBackpackPopup();
                 if (showBackupList_) drawBackupListPopup();
+                if (showCrashList_) drawCrashListPopup();
             }
             else if (screen_ == AppScreen::BankSelector) drawBankSelectorFrame();
             else drawFrame();
@@ -1022,7 +1028,9 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
                     if (showGameSelMenu_) drawGameSelMenuPopup();
                     if (showSettings_) drawSettingsPopup();
                 if (showSaveMenu_) drawSaveMenuPopup();
+                if (showBackpack_) drawBackpackPopup();
                 if (showBackupList_) drawBackupListPopup();
+                if (showCrashList_) drawCrashListPopup();
                 }
                 else if (screen_ == AppScreen::BankSelector) drawBankSelectorFrame();
                 else drawFrame();
@@ -1095,7 +1103,9 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
                     if (showGameSelMenu_) drawGameSelMenuPopup();
                     if (showSettings_) drawSettingsPopup();
                 if (showSaveMenu_) drawSaveMenuPopup();
+                if (showBackpack_) drawBackpackPopup();
                 if (showBackupList_) drawBackupListPopup();
+                if (showCrashList_) drawCrashListPopup();
                 }
                 else if (screen_ == AppScreen::BankSelector) drawBankSelectorFrame();
                 else drawFrame();
@@ -1209,7 +1219,9 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
                 if (showGameSelMenu_) drawGameSelMenuPopup();
                     if (showSettings_) drawSettingsPopup();
                 if (showSaveMenu_) drawSaveMenuPopup();
+                if (showBackpack_) drawBackpackPopup();
                 if (showBackupList_) drawBackupListPopup();
+                if (showCrashList_) drawCrashListPopup();
             }
             else if (screen_ == AppScreen::BankSelector) drawBankSelectorFrame();
             else drawFrame();
@@ -1441,7 +1453,12 @@ bool UI::persistGameSaveIfDirty() {
     showWorking(i18n::get(StrKey::Saving));
     ledBlink();
     bool ok = save_.save(savePath_);
-    account_.commitSave();
+    if (!ok)
+        DebugLog::line("persist: save(%s) FALLITO", savePath_.c_str());
+    if (ok && !account_.commitSave()) {
+        DebugLog::line("persist: commitSave FALLITO dopo save ok (%s)", savePath_.c_str());
+        ok = false;
+    }
     if (ok) galInvalidateParty(selectedGame_); // preview galleria da ricaricare
     ledOff();
     // Mai fallimento silenzioso: i save read-only v1 (DS/3DS) e gli errori IO

@@ -299,8 +299,11 @@ void UI::drawGameList_Gallery() {
         galPreviewGame_ = sel;
         galPreviewTick_ = nowT;
         galSettleChecked_ = false;
-        DebugLog::line("gal preview: settled %s cache=%d", gameInfo(selGame).gameTag,
-                       (int)galPartyCache_.count(selGame));
+        // Log solo su cache-miss (partirà un load): gli hit sono il 95%
+        // dei settle in scroll veloce e ogni riga è write+flush su SD
+        // nel main thread (micro-scatti). Il load logga già per sé.
+        if (galPartyCache_.find(selGame) == galPartyCache_.end())
+            DebugLog::line("gal preview: settled %s cache=0 (miss)", gameInfo(selGame).gameTag);
     } else if (nowT - galPreviewTick_ > 400) {
         galEnsureParty(selGame);
     }

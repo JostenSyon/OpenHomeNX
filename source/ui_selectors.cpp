@@ -1322,8 +1322,7 @@ void UI::selectorTap(float px, float py, bool& running) {
         gameSelOnAvatar_ = gameSelOnAllBanks_ = false;
         gameSelOnEject_ = gameSelOnSettings_ = false;
         gameSelOnChevron_ = 0;
-        showMessageAndWait(i18n::get(StrKey::SetTitle),
-            i18n::get(StrKey::BagSoon)); // WIP: injector eventi/strumenti
+        openBackpackOn(gameSelCursor_);
         return;
     }
     if (ejectBtnA_ > 128 && dist2(px, py, ejectBtnX_, BTN_Y) < 45 * 45) {
@@ -1731,7 +1730,7 @@ void UI::handleGameSelectorInput(bool& running) {
             float px = event.tfinger.x * SCREEN_W;
             float py = event.tfinger.y * SCREEN_H;
             float dx = px - touchStartX_, dy = py - touchStartY_;
-            if (!showBackupList_ && !showSaveMenu_ && !showGameSelMenu_ && !showSettings_) {
+            if (!showBackupList_ && !showCrashList_ && !showSaveMenu_ && !showGameSelMenu_ && !showSettings_ && !showBackpack_) {
                 if (dx < -120 && std::fabs(dy) < 200) {
                     if (totalPages > 1 && gameSelPage_ < totalPages - 1) {
                         gameSelPage_++;
@@ -1828,6 +1827,68 @@ void UI::handleGameSelectorInput(bool& running) {
             continue;
         }
 
+        // Debug crash-report list intercepts input (stesso livello della
+        // lista backup: aperta dal menu +, sopra save/backpack/settings)
+        if (showCrashList_) {
+            int count = (int)crashListEntries_.size();
+            auto scrollIntoView = [&]() {
+                constexpr int VISIBLE = 12;
+                if (crashListCursor_ < crashListScroll_)
+                    crashListScroll_ = crashListCursor_;
+                else if (crashListCursor_ >= crashListScroll_ + VISIBLE)
+                    crashListScroll_ = crashListCursor_ - VISIBLE + 1;
+            };
+            if (event.type == SDL_CONTROLLERBUTTONDOWN) {
+                markDirty();
+                switch (event.cbutton.button) {
+                    case SDL_CONTROLLER_BUTTON_DPAD_UP:
+                        if (count > 0) {
+                            if (crashListCursor_ > 0) crashListCursor_--;
+                            else crashListCursor_ = count - 1;
+                            scrollIntoView();
+                        }
+                        break;
+                    case SDL_CONTROLLER_BUTTON_DPAD_DOWN:
+                        if (count > 0) {
+                            if (crashListCursor_ < count - 1) crashListCursor_++;
+                            else crashListCursor_ = 0;
+                            scrollIntoView();
+                        }
+                        break;
+                    case SDL_CONTROLLER_BUTTON_LEFTSHOULDER:
+                        if (count > 0) {
+                            crashListCursor_ = std::max(0, crashListCursor_ - 10);
+                            scrollIntoView();
+                        }
+                        break;
+                    case SDL_CONTROLLER_BUTTON_RIGHTSHOULDER:
+                        if (count > 0) {
+                            crashListCursor_ = std::min(count - 1, crashListCursor_ + 10);
+                            scrollIntoView();
+                        }
+                        break;
+                    case SDL_CONTROLLER_BUTTON_B: // Switch A = invia il selezionato
+                        if (count > 0)
+                            sendCrashReportNow(crashListEntries_[crashListCursor_].path);
+                        break;
+                    case SDL_CONTROLLER_BUTTON_A: // Switch B = indietro
+                    case SDL_CONTROLLER_BUTTON_X:
+                    case SDL_CONTROLLER_BUTTON_BACK:
+                    case SDL_CONTROLLER_BUTTON_START:
+                        showCrashList_ = false;
+                        break;
+                }
+            } else if (event.type == SDL_CONTROLLERAXISMOTION) {
+                if (event.caxis.axis == SDL_CONTROLLER_AXIS_LEFTX ||
+                    event.caxis.axis == SDL_CONTROLLER_AXIS_LEFTY) {
+                    int16_t lx = SDL_GameControllerGetAxis(pad_, SDL_CONTROLLER_AXIS_LEFTX);
+                    int16_t ly = SDL_GameControllerGetAxis(pad_, SDL_CONTROLLER_AXIS_LEFTY);
+                    updateStick(lx, ly);
+                }
+            }
+            continue;
+        }
+
         // Debug save popup intercepts input (sotto il menu +)
         if (showSaveMenu_) {
             if (event.type == SDL_CONTROLLERBUTTONDOWN) {
@@ -1899,6 +1960,12 @@ void UI::handleGameSelectorInput(bool& running) {
             continue;
         }
 
+        // Backpack popup intercepts input (above settings/menu)
+        if (showBackpack_) {
+            handleBackpackInput(event);
+            continue;
+        }
+
         // Settings page intercepts input (above game selector menu)
         if (showSettings_) {
             handleSettingsInput(event, running);
@@ -1941,6 +2008,19 @@ void UI::handleGameSelectorInput(bool& running) {
                                 if (gameSelMenuCursor_ >= ms) gameSelMenuCursor_ = ms - 1;
                                 break;
                             }
+                            case GameSelMenuAction::ClearLog: {
+                                // Tiene solo le ultime righe: libera spazio SD e
+                                // sblocca l'invio quando il log accumulato e'
+                                // troppo grande per l'upload (richiesto esplicitamente).
+                                constexpr int KEEP_LINES = 200;
+                                if (DebugLog::clearLog(KEEP_LINES))
+                                    showMessageAndWait(i18n::get(StrKey::ClearLogTitle),
+                                        i18n::fmt(StrKey::ClearLogDone, std::to_string(KEEP_LINES)));
+                                else
+                                    showMessageAndWait(i18n::get(StrKey::ClearLogTitle),
+                                        i18n::get(StrKey::ClearLogFailed));
+                                break;
+                            }
                             case GameSelMenuAction::SendLog:
                                 sendLogNow();
                                 break;
@@ -1951,6 +2031,10 @@ void UI::handleGameSelectorInput(bool& running) {
                                 else
                                     sendSaveFor(availableGames_[gameSelCursor_],
                                                 importedOccurrence(gameSelCursor_));
+                                break;
+                            case GameSelMenuAction::CrashReport:
+                                showGameSelMenu_ = false;
+                                openCrashList();
                                 break;
                             case GameSelMenuAction::ImportSettings:
                                 showGameSelMenu_ = false;
@@ -2000,7 +2084,7 @@ void UI::handleGameSelectorInput(bool& running) {
         if (event.type == SDL_CONTROLLERAXISMOTION) {
             if (event.caxis.axis == SDL_CONTROLLER_AXIS_TRIGGERRIGHT) {
                 bool pressed = event.caxis.value > TRIGGER_DEADZONE;
-                if (pressed && !favTriggerHeld_ && gallerySel_ && !showGameSelMenu_ && !showSaveMenu_ && !showBackupList_ && !showSettings_ && !showAbout_ && !showThemeSelector_ && !showLanguageSelector_ && !gameSelOnAllBanks_ && !gameSelOnAvatar_ && !gameSelOnPack_ && !gameSelOnEject_ && !gameSelOnSettings_ && gameSelOnChevron_ == 0) {
+                if (pressed && !favTriggerHeld_ && gallerySel_ && !showGameSelMenu_ && !showSaveMenu_ && !showBackupList_ && !showCrashList_ && !showSettings_ && !showBackpack_ && !showAbout_ && !showThemeSelector_ && !showLanguageSelector_ && !gameSelOnAllBanks_ && !gameSelOnAvatar_ && !gameSelOnPack_ && !gameSelOnEject_ && !gameSelOnSettings_ && gameSelOnChevron_ == 0) {
                     if (gameSelCursor_ >= 0 && gameSelCursor_ < (int)availableGames_.size()) {
                         GameType g = availableGames_[gameSelCursor_];
                         toggleFavorite(g);
@@ -2042,8 +2126,7 @@ void UI::handleGameSelectorInput(bool& running) {
                     } else if (gameSelOnAllBanks_)
                         enterAllBanksMode();
                     else if (gameSelOnPack_)
-                        showMessageAndWait(i18n::get(StrKey::SetTitle),
-                            i18n::get(StrKey::BagSoon)); // WIP: injector eventi/strumenti
+                        openBackpackOn(gameSelCursor_);
                     else if (gameSelOnAvatar_) {
                         gameSelOnAvatar_ = false;
                         freeGameIcons();
@@ -2141,6 +2224,27 @@ void UI::handleGameSelectorInput(bool& running) {
             stickMoved_ = true;
             markDirty();
         }
+    } else if (showCrashList_ && stickDirY_ != 0 && !crashListEntries_.empty()) {
+        uint32_t now = SDL_GetTicks();
+        uint32_t delay = stickMoved_ ? STICK_REPEAT_DELAY : STICK_INITIAL_DELAY;
+        if (now - stickMoveTime_ >= delay) {
+            int count = (int)crashListEntries_.size();
+            if (stickDirY_ > 0) {
+                if (crashListCursor_ < count - 1) crashListCursor_++;
+                else crashListCursor_ = 0;
+            } else {
+                if (crashListCursor_ > 0) crashListCursor_--;
+                else crashListCursor_ = count - 1;
+            }
+            constexpr int VISIBLE = 12;
+            if (crashListCursor_ < crashListScroll_)
+                crashListScroll_ = crashListCursor_;
+            else if (crashListCursor_ >= crashListScroll_ + VISIBLE)
+                crashListScroll_ = crashListCursor_ - VISIBLE + 1;
+            stickMoveTime_ = now;
+            stickMoved_ = true;
+            markDirty();
+        }
     } else     if (showSaveMenu_ && stickDirY_ != 0) {
         uint32_t now = SDL_GetTicks();
         uint32_t delay = stickMoved_ ? STICK_REPEAT_DELAY : STICK_INITIAL_DELAY;
@@ -2161,7 +2265,31 @@ void UI::handleGameSelectorInput(bool& running) {
             stickMoved_ = true;
             markDirty();
         }
-    } else if (!showGameSelMenu_ && !showSaveMenu_ && !showBackupList_ && !showSettings_ && (stickDirX_ != 0 || stickDirY_ != 0)) {
+    } else if (showBackpack_ && (stickDirX_ != 0 || stickDirY_ != 0)) {
+        // Mancava del tutto: la levetta ferma non genera nuovi eventi SDL,
+        // quindi senza questo tick per-frame lo zaino non scorreva mai a
+        // levetta (il d-pad funzionava perche' ogni pressione e' un evento).
+        // Verticale: accelera tenendola ferma, stesso schema gia' validato
+        // per la lista Galleria (liste lunghe altrimenti lentissime da
+        // scorrere). Orizzontale: cambia fuoco catalogo/zaino tramite
+        // backpackFocusStep, che e' idempotente quindi il repeat non
+        // fa "sbattere" avanti e indietro se la levetta resta inclinata.
+        uint32_t now = SDL_GetTicks();
+        uint32_t delay = stickMoved_ ? STICK_REPEAT_DELAY : STICK_INITIAL_DELAY;
+        if (stickDirY_ != 0 && stickMoved_) {
+            uint32_t held = now - stickHoldStart_;
+            if (held > 1500) delay = 40;
+            else if (held > 800) delay = 80;
+            else if (held > 400) delay = 130;
+        }
+        if (now - stickMoveTime_ >= delay) {
+            if (stickDirY_ != 0) backpackStickStep(stickDirY_ > 0 ? 1 : -1);
+            if (stickDirX_ != 0) backpackFocusStep(stickDirX_);
+            stickMoveTime_ = now;
+            stickMoved_ = true;
+            markDirty();
+        }
+    } else if (!showGameSelMenu_ && !showSaveMenu_ && !showBackupList_ && !showCrashList_ && !showSettings_ && !showBackpack_ && (stickDirX_ != 0 || stickDirY_ != 0)) {
         uint32_t now = SDL_GetTicks();
         uint32_t delay = stickMoved_ ? STICK_REPEAT_DELAY : STICK_INITIAL_DELAY;
         // Galleria: lista verticale una voce alla volta. Con lo stesso passo
@@ -2952,6 +3080,107 @@ void UI::drawBackupListPopup() {
     drawTextCentered("A: restore  B: back", popX + POP_W / 2, popY + POP_H - 18, T().textDim, fontSmall_);
 }
 
+// Legge sdmc:/atmosphere/crash_reports/ (+ il vecchio fatal_errors/ come
+// fallback) e ordina per data di modifica, piu' recente in cima: un crash
+// "brutto" in uscita dal gioco non lascia traccia nel nostro debug.log
+// (finisce dopo "exit: shutdown complete", quando il nostro processo ha
+// gia' fatto return) ma Atmosphere lo scrive li' per conto suo.
+std::vector<UI::BackupListEntry> UI::collectCrashReportEntries() {
+    struct Item { std::string path; std::string label; long mtime; };
+    std::vector<Item> items;
+    static const char* kDirs[] = {
+        "sdmc:/atmosphere/crash_reports/",
+        "sdmc:/atmosphere/fatal_errors/",
+    };
+    for (const char* dir : kDirs) {
+        for (auto& n : listDirNames(dir)) {
+            std::string full = std::string(dir) + n;
+            struct stat st;
+            if (stat(full.c_str(), &st) != 0 || S_ISDIR(st.st_mode)) continue;
+            struct tm tmv;
+            localtime_r(&st.st_mtime, &tmv);
+            char dt[32];
+            std::snprintf(dt, sizeof(dt), "%04d-%02d-%02d %02d:%02d",
+                          tmv.tm_year + 1900, tmv.tm_mon + 1, tmv.tm_mday,
+                          tmv.tm_hour, tmv.tm_min);
+            std::string nm = n;
+            if (nm.size() > 40) nm = nm.substr(0, 39) + "~";
+            char label[160];
+            std::snprintf(label, sizeof(label), "%s  %s", dt, nm.c_str());
+            items.push_back({ full, label, (long)st.st_mtime });
+        }
+    }
+    std::sort(items.begin(), items.end(),
+              [](const Item& a, const Item& b) { return a.mtime > b.mtime; });
+    std::vector<BackupListEntry> out;
+    out.reserve(items.size());
+    for (auto& it : items) out.push_back({ it.path, it.label });
+    return out;
+}
+
+void UI::openCrashList() {
+    crashListEntries_ = collectCrashReportEntries();
+    crashListCursor_ = 0;
+    crashListScroll_ = 0;
+    showCrashList_ = true;
+}
+
+void UI::drawCrashListPopup() {
+    drawRect(0, 0, SCREEN_W, SCREEN_H, T().overlay);
+    std::string title = "Crash report (Atmosphere)";
+    constexpr int POP_W = 560;
+    constexpr int ROW_H = 36;
+    constexpr int VISIBLE = 12;
+    int count = (int)crashListEntries_.size();
+    int rows = count > 0 ? std::min(count, VISIBLE) : 1;
+    int POP_H = 50 + rows * ROW_H + 30;
+    int popX = (SCREEN_W - POP_W) / 2;
+    int popY = (SCREEN_H - POP_H) / 2;
+    drawRect(popX, popY, POP_W, POP_H, T().panelBg);
+    drawRectOutline(popX, popY, POP_W, POP_H, T().cursor, 2);
+    drawTextCentered(title, popX + POP_W / 2, popY + 22, T().text, font_);
+    int startY = popY + 50;
+    if (count == 0) {
+        drawTextCentered("No crash reports found on the SD card.", popX + POP_W / 2,
+                         startY + (ROW_H - 4) / 2, T().textDim, font_);
+    } else {
+        for (int r = 0; r < rows; r++) {
+            int i = crashListScroll_ + r;
+            if (i >= count) break;
+            int rowY = startY + r * ROW_H;
+            if (i == crashListCursor_) {
+                drawRect(popX + 20, rowY, POP_W - 40, ROW_H - 4, T().menuHighlight);
+                drawRectOutline(popX + 20, rowY, POP_W - 40, ROW_H - 4, T().cursor, 2);
+            }
+            std::string base = crashListEntries_[i].label;
+            if (base.size() > 52) base = base.substr(0, 51) + "~";
+            drawText(base, popX + 30, rowY + 6, T().text, fontSmall_);
+        }
+    }
+    drawTextCentered("A: send  B: back", popX + POP_W / 2, popY + POP_H - 18, T().textDim, fontSmall_);
+}
+
+// Riusa lo stesso upload dei save (endpoint /upload-save, tetto 128MB: un
+// .bin di crash report e' comunque minuscolo rispetto a quel limite) con
+// tag "crash" cosi' sul server finisce in dist/uploads/saves/ come
+// crash_<timestamp>_<ip>.sav (estensione del server, il contenuto resta
+// quello originale del file scelto).
+void UI::sendCrashReportNow(const std::string& path) {
+    UpdateCfg cfg;
+    std::string err;
+    if (!readUpdateCfg(basePath_, cfg) || cfg.url.empty()) {
+        showMessageAndWait(i18n::get(StrKey::CrashReportTitle), i18n::get(StrKey::CrashReportNoUrl));
+    } else if (!updateNetEnsureReady()) {
+        showMessageAndWait(i18n::get(StrKey::CrashReportTitle), i18n::get(StrKey::CrashReportNetOff));
+    } else {
+        showWorking(i18n::fmt(StrKey::CrashReportUploading, cfg.url));
+        if (updateNetUploadSave(cfg.url, cfg.token, path, "crash", err))
+            showMessageAndWait(i18n::get(StrKey::CrashReportTitle), i18n::get(StrKey::CrashReportSent));
+        else
+            showMessageAndWait(i18n::get(StrKey::CrashReportTitle), i18n::fmt(StrKey::CrashReportFailed, err));
+    }
+}
+
 void UI::autoBackupFileSave(GameType g, const std::string& path) {
     struct stat sst;
     bool haveSrc = stat(path.c_str(), &sst) == 0;
@@ -3185,7 +3414,7 @@ void UI::sendSaveFor(GameType g, int occ) {
     }
 }
 
-bool UI::backupGameSave(GameType g, std::string& out) {
+bool UI::backupGameSave(GameType g, std::string& out, const std::string& alreadyMounted) {
     std::string dir = manualBackupDir(g);
     ensureDirRecursive(dir);
     std::string path = importedSavePath(g, saveMenuOcc_);
@@ -3201,10 +3430,14 @@ bool UI::backupGameSave(GameType g, std::string& out) {
         && titleIdOf(g) >= 0x0100000000010000ULL && saveFileNameOf(g)[0] != '\0') {
         std::string dst = dir + backupTimestamp() + "/";
         ensureDirRecursive(dst);
-        std::string mnt = account_.mountSave(selectedProfile_, g);
+        // Se il chiamante ha gia' un mount attivo per questo gioco (zaino),
+        // riusalo: mountSave() qui smonterebbe il suo, valido solo finche'
+        // resta montato lui (vedi commento in ui.h).
+        bool ownMount = alreadyMounted.empty();
+        std::string mnt = ownMount ? account_.mountSave(selectedProfile_, g) : alreadyMounted;
         if (mnt.empty()) return false;
         bool ok = AccountManager::backupSaveDir(mnt, dst);
-        account_.unmountSave();
+        if (ownMount) account_.unmountSave();
         if (!ok) return false;
         out = dst;
         DebugLog::line("save backup (account): %s -> %s", gameInfo(g).gameTag, dst.c_str());
@@ -3230,7 +3463,12 @@ bool UI::restoreBackupEntry(GameType g, const std::string& entry) {
         bool ok = AccountManager::backupSaveDir(entry + "/", mnt);
         // Senza commit l'unmount scarta le scritture (Horizon): restore
         // fantasma che dice ok ma non cambia niente (Violetto 2026-09-09).
-        if (ok) account_.commitSave();
+        // Il risultato del commit ora e' controllato davvero (prima veniva
+        // ignorato: poteva dire "ok" anche se il commit falliva).
+        if (ok && !account_.commitSave()) {
+            DebugLog::line("save restore (account): commitSave FALLITO dopo copia ok");
+            ok = false;
+        }
         account_.unmountSave();
         DebugLog::line("save restore (account): %s (%s)", entry.c_str(), ok ? "ok" : "FAIL");
         return ok;
@@ -3264,7 +3502,8 @@ void UI::drawSaveMenuPopup() {
 }
 
 std::vector<GameSelMenuAction> UI::gameSelMenuActions() const {
-    std::vector<GameSelMenuAction> v = { GameSelMenuAction::SwitchCore, GameSelMenuAction::DebugLog };
+    std::vector<GameSelMenuAction> v = { GameSelMenuAction::SwitchCore, GameSelMenuAction::DebugLog,
+                                          GameSelMenuAction::ClearLog };
     // Invio log/save solo con override rete attivo (GitHub non riceve upload).
     if (DebugLog::enabled()) {
         UpdateCfg cfg;
@@ -3272,6 +3511,9 @@ std::vector<GameSelMenuAction> UI::gameSelMenuActions() const {
         if (!cfg.url.empty()) {
             v.push_back(GameSelMenuAction::SendLog);
             v.push_back(GameSelMenuAction::SendSave);
+            // Niente CrashReport nel menu rapido +: resta solo in
+            // Impostazioni -> Sviluppatore (richiesto esplicitamente,
+            // il + doveva restare corto).
         }
     }
     v.push_back(GameSelMenuAction::ImportSettings);
@@ -3313,8 +3555,10 @@ void UI::drawGameSelMenuPopup() {
         switch (actions[i]) {
             case GameSelMenuAction::SwitchCore:      label = std::string("Switch Core") + (useOpenHome() ? " (OH)" : " (PK)"); break;
             case GameSelMenuAction::DebugLog:        label = std::string("Debug log") + (DebugLog::enabled() ? " (on)" : " (off)"); break;
+            case GameSelMenuAction::ClearLog:         label = "Clear log"; break;
             case GameSelMenuAction::SendLog:         label = "Send log"; break;
             case GameSelMenuAction::SendSave:        label = "Send save"; break;
+            case GameSelMenuAction::CrashReport:     label = "Crash report"; break;
             case GameSelMenuAction::ImportSettings:  label = "Import settings"; break;
             case GameSelMenuAction::CheckUpdate:     label = "Check for update"; break;
             case GameSelMenuAction::OpenSettings:     label = i18n::get(StrKey::SetTitle); break;
@@ -3522,7 +3766,13 @@ int UI::settingsRowCount(int cat) const {
             if (DebugLog::enabled() && hasCustomUrlFile(basePath_)) n = 4;
             return n; // Update, Sorgente, Canale [, Modifica]
         }
-        case 5: return sendAvailable() ? 3 : 2; // Debug, Menu + [, Invia log]
+        case 5: {
+            // Debug, Menu + [, Pulisci cronologia zaino] [, Invia log, Crash report]
+            int n = 2;
+            if (DebugLog::enabled()) n += 1;
+            if (sendAvailable()) n += 2;
+            return n;
+        }
         default: return 2; // Versione, Crediti
     }
 }
@@ -3555,7 +3805,9 @@ std::string UI::settingsRowLabel(int cat, int row) const {
     if (cat == 5) {
         if (row == 0) return i18n::get(StrKey::SetDebugToggle);
         if (row == 1) return i18n::get(StrKey::SetDbgMenu);
-        return i18n::get(StrKey::SendLogTitle);
+        if (row == 2) return i18n::get(StrKey::ClearBpHistTitle);
+        if (row == 3) return i18n::get(StrKey::SendLogTitle);
+        return i18n::get(StrKey::CrashReportTitle);
     }
     if (row == 0) return i18n::get(StrKey::SetVersion);
     return i18n::get(StrKey::SetCredits);
@@ -3840,8 +4092,17 @@ void UI::settingsRowActivate(int cat, int row, int dir, bool& running) {
         } else if (row == 1) {
             // Menu debug rapido: ON = gear apre il + classico, OFF = impostazioni.
             writeQuickMenu(basePath_, !readQuickMenu(basePath_));
-        } else {
+        } else if (row == 2) {
+            if (showConfirmDialog(i18n::get(StrKey::ClearBpHistTitle), i18n::get(StrKey::ClearBpHistBody))) {
+                if (Backpack::clearJournal(basePath_))
+                    showMessageAndWait(i18n::get(StrKey::ClearBpHistTitle), i18n::get(StrKey::ClearBpHistDone));
+                else
+                    showMessageAndWait(i18n::get(StrKey::ClearBpHistTitle), i18n::get(StrKey::ClearBpHistFailed));
+            }
+        } else if (row == 3) {
             sendLogNow();
+        } else {
+            openCrashList();
         }
     } else {
         if (row == 1) {
