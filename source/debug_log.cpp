@@ -4,6 +4,7 @@
 #include <cstdarg>
 #include <cstring>
 #include <vector>
+#include <mutex>
 
 #ifdef OH_DEBUG_LOG
 
@@ -13,6 +14,7 @@ namespace {
 bool s_enabled = false;
 FILE* s_file = nullptr;
 std::string s_basePath;
+std::mutex s_mutex;
 
 std::string currentTime() {
     std::time_t now = std::time(nullptr);
@@ -33,6 +35,10 @@ std::string currentDateTime() {
 }
 
 // Apre s_file (una volta) e scrive il banner di RUN. Idempotente.
+// NON blocca s_mutex da sola: i suoi due soli chiamanti (init(),
+// setEnabled()) lo detengono gia' quando la invocano -- rilocking sullo
+// stesso std::mutex non ricorsivo era un autodeadlock garantito al primo
+// avvio con debug.enable presente (schermo nero prima di ogni rendering).
 void openLogFile() {
     if (s_file || s_basePath.empty()) return;
     std::string logPath = s_basePath + "debug.log";
@@ -59,9 +65,37 @@ void openLogFile() {
     std::fputs("\n", s_file);
     std::fflush(s_file);
 }
+
+// Scrive fmt+varargs sul file (assume s_mutex gia' detenuto dal chiamante).
+// Usata da line() dopo aver preso il lock -- NON richiamare line() da dentro
+// una funzione che il lock ce l'ha gia': std::mutex non e' ricorsivo, stesso
+// autodeadlock documentato sopra per openLogFile() (li' al boot, qui invece
+// capitava nei due line(...) dentro setEnabled(), freeze al toggle
+// "Debug log" dal menu, sia accendendolo che spegnendolo).
+void lineUnlocked(const char* fmt, va_list ap) {
+    if (!s_enabled || !s_file) return;
+    char buf[1024];
+    std::snprintf(buf, sizeof(buf), "[%s] ", currentTime().c_str());
+    size_t prefixLen = std::strlen(buf);
+    std::vsnprintf(buf + prefixLen, sizeof(buf) - prefixLen, fmt, ap);
+    std::snprintf(buf + std::strlen(buf), sizeof(buf) - std::strlen(buf), "\n");
+    std::fputs(buf, s_file);
+    std::fflush(s_file);
+}
+
+// Variante senza formattazione, per i due messaggi fissi di setEnabled()
+// (evita di dover costruire un va_list in una funzione non variadica).
+void writeLineUnlocked(const char* msg) {
+    if (!s_enabled || !s_file) return;
+    char buf[1024];
+    std::snprintf(buf, sizeof(buf), "[%s] %s\n", currentTime().c_str(), msg);
+    std::fputs(buf, s_file);
+    std::fflush(s_file);
+}
 } // anonymous namespace
 
 void init(const std::string& basePath) {
+    std::lock_guard<std::mutex> lock(s_mutex);
     s_basePath = basePath;
     std::ifstream f(basePath + "debug.enable");
     if (f.good()) {
@@ -71,17 +105,19 @@ void init(const std::string& basePath) {
 }
 
 bool enabled() {
+    std::lock_guard<std::mutex> lock(s_mutex);
     return s_enabled;
 }
 
 void setEnabled(bool on) {
+    std::lock_guard<std::mutex> lock(s_mutex);
     if (on == s_enabled) return;
     if (on) {
         s_enabled = true;
         openLogFile();
-        line("log ON (dal menu)");
+        writeLineUnlocked("log ON (dal menu)");
     } else {
-        line("log OFF (dal menu)");
+        writeLineUnlocked("log OFF (dal menu)");
         s_enabled = false;
     }
     // Persist across restarts: init() enables the log on startup when this
@@ -98,20 +134,15 @@ void setEnabled(bool on) {
 }
 
 void line(const char* fmt, ...) {
-    if (!s_enabled || !s_file) return;
-    char buf[1024];
-    std::snprintf(buf, sizeof(buf), "[%s] ", currentTime().c_str());
-    size_t prefixLen = std::strlen(buf);
+    std::lock_guard<std::mutex> lock(s_mutex);
     va_list ap;
     va_start(ap, fmt);
-    std::vsnprintf(buf + prefixLen, sizeof(buf) - prefixLen, fmt, ap);
+    lineUnlocked(fmt, ap);
     va_end(ap);
-    std::snprintf(buf + std::strlen(buf), sizeof(buf) - std::strlen(buf), "\n");
-    std::fputs(buf, s_file);
-    std::fflush(s_file);
 }
 
 std::string logPath() {
+    std::lock_guard<std::mutex> lock(s_mutex);
     if (s_basePath.empty()) return "";
     return s_basePath + "debug.log";
 }
@@ -142,6 +173,7 @@ static bool trimFileTailInPlace(const std::string& path, long maxBytes) {
 }
 
 bool flushAndReopenForUpload(std::string& outPath) {
+    std::lock_guard<std::mutex> lock(s_mutex);
     if (s_file) {
         std::fflush(s_file);
         std::fclose(s_file);
@@ -166,6 +198,7 @@ bool flushAndReopenForUpload(std::string& outPath) {
 }
 
 bool clearLog(int keepLastLines) {
+    std::lock_guard<std::mutex> lock(s_mutex);
     if (s_file) {
         std::fflush(s_file);
         std::fclose(s_file);
@@ -214,6 +247,7 @@ bool clearLog(int keepLastLines) {
 }
 
 void reopenAfterUpload() {
+    std::lock_guard<std::mutex> lock(s_mutex);
     if (!s_enabled || s_file) return;
     std::string p = logPath();
     if (!p.empty()) s_file = std::fopen(p.c_str(), "a");

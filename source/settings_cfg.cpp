@@ -153,5 +153,9 @@ void setDefaultUser(const std::string& v) {
 }
 bool quickMenu() { return getInt("quickmenu", 0) != 0; }
 void setQuickMenu(bool v) { setInt("quickmenu", v ? 1 : 0); }
+bool radialMenu() { return getInt("radial_menu", 0) != 0; }
+void setRadialMenu(bool v) { setInt("radial_menu", v ? 1 : 0); }
+bool tradeAnim() { return getInt("trade_anim", 1) != 0; }
+void setTradeAnim(bool v) { setInt("trade_anim", v ? 1 : 0); }
 
 } // namespace Settings

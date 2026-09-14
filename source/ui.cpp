@@ -108,6 +108,9 @@ bool UI::init() {
         iconDebug_       = loadIcon("debug.png");
         iconArrow_       = loadIcon("arrow.png");
         iconPack_        = loadIcon("backpack.png");
+        iconRocket_      = loadIcon("rocket.png");
+        iconFloppy_      = loadIcon("floppy.png");
+        iconTrade_       = loadIcon("trade.png");
     }
 
     // Game-selector logos for imported (titleId-less) games: no NS control
@@ -721,6 +724,10 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
         }
     }
 
+    // Rilevamento mGBA una tantum (v1): fatto qui cosi' e' gia' pronto per
+    // il tasto rapido in Galleria, non solo quando si apre Impostazioni.
+    ensureMgbaChecked();
+
     bool running = true;
 
     while (running) {
@@ -923,12 +930,14 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
             if (screen_ == AppScreen::ProfileSelector) drawProfileSelectorFrame();
             else if (screen_ == AppScreen::GameSelector) {
                 drawGameSelectorFrame();
+                if (showRadialMenu_) drawRadialMenu();
                 if (showGameSelMenu_) drawGameSelMenuPopup();
                     if (showSettings_) drawSettingsPopup();
                 if (showSaveMenu_) drawSaveMenuPopup();
                 if (showBackpack_) drawBackpackPopup();
                 if (showBackupList_) drawBackupListPopup();
                 if (showCrashList_) drawCrashListPopup();
+                if (showTradeList_) drawTradeListPopup();
             }
             else if (screen_ == AppScreen::BankSelector) drawBankSelectorFrame();
             else drawFrame();
@@ -1216,12 +1225,14 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
             if (screen_ == AppScreen::ProfileSelector) drawProfileSelectorFrame();
             else if (screen_ == AppScreen::GameSelector) {
                 drawGameSelectorFrame();
+                if (showRadialMenu_) drawRadialMenu();
                 if (showGameSelMenu_) drawGameSelMenuPopup();
                     if (showSettings_) drawSettingsPopup();
                 if (showSaveMenu_) drawSaveMenuPopup();
                 if (showBackpack_) drawBackpackPopup();
                 if (showBackupList_) drawBackupListPopup();
                 if (showCrashList_) drawCrashListPopup();
+                if (showTradeList_) drawTradeListPopup();
             }
             else if (screen_ == AppScreen::BankSelector) drawBankSelectorFrame();
             else drawFrame();

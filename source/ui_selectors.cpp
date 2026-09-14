@@ -8,6 +8,8 @@
 #include "update_net.h"
 #include "forwarder.h"
 #include "settings_cfg.h"
+#include "emulator.h"
+#include "trade_evo.h"
 
 #include <algorithm>
 #include <cerrno>
@@ -340,6 +342,7 @@ void UI::selectProfile(int index) {
     gameSelOnEject_ = false;
     gameSelOnAvatar_ = false;
     gameSelOnPack_ = false;
+    gameSelOnLaunchBtn_ = false;
     gameSelOnChevron_ = 0;
     showWorking(i18n::get(StrKey::LoadingGameIcons));
     loadGameIcons();
@@ -1083,7 +1086,7 @@ void UI::drawGameSelectorFrame() {
 
         // Card selezionata ingrandita (zoom animato intero): sfondo e icona
         // crescono, i testi restano centrati (il centro non si sposta).
-        bool sel = (i == gameSelCursor_ && !gameSelOnAllBanks_ && !gameSelOnSettings_ && !gameSelOnEject_ && !gameSelOnAvatar_ && !gameSelOnPack_ && gameSelOnChevron_ == 0);
+        bool sel = (i == gameSelCursor_ && !gameSelOnAllBanks_ && !gameSelOnSettings_ && !gameSelOnEject_ && !gameSelOnAvatar_ && !gameSelOnPack_ && !gameSelOnLaunchBtn_ && gameSelOnChevron_ == 0);
         if (gameSelCursor_ != zoomCard_) {
             zoomPrev_ = zoomCard_;
             zoomCard_ = gameSelCursor_;
@@ -1262,9 +1265,18 @@ void UI::drawGameSelectorFrame() {
     std::string saveHint;
     if (DebugLog::enabled())
         saveHint = " | X: save";
+    // "ZL: Avvia" solo in Galleria e solo se il gioco evidenziato e'
+    // davvero lanciabile ora -- titolo Switch nativo, oppure emulato con
+    // mGBA rilevato e rom trovata accanto al save. Stessa filosofia di
+    // ejectHint: compare solo quando il tasto avrebbe un effetto reale.
+    std::string launchHint;
+    if (gameSelectorLayout_ == GameSelectorLayout::Gallery && !appletMode_ &&
+        isGameLaunchableAt(gameSelCursor_)) {
+        launchHint = i18n::get(StrKey::StatusGameLaunch);
+    }
     if (selectedProfile_ >= 0) {
         drawStatusBar((totalPages > 1 ? i18n::get(StrKey::StatusGameBackPage)
-                                      : i18n::get(StrKey::StatusGameBack)) + ejectHint + saveHint);
+                                      : i18n::get(StrKey::StatusGameBack)) + ejectHint + saveHint + launchHint);
         std::string profileLabel = account_.profiles()[selectedProfile_].nickname;
         profileLabel += " | ";
         profileLabel += useOpenHome() ? "OH" : "PK";
@@ -1275,7 +1287,7 @@ void UI::drawGameSelectorFrame() {
         if (e.tex) drawText(profileLabel, SCREEN_W - e.w - 15, SCREEN_H - 26, T().goldLabel, fontSmall_);
     } else {
         drawStatusBar((totalPages > 1 ? i18n::get(StrKey::StatusGameQuitPage)
-                                      : i18n::get(StrKey::StatusGameQuit)) + ejectHint + saveHint);
+                                      : i18n::get(StrKey::StatusGameQuit)) + ejectHint + saveHint + launchHint);
         // Show core even without profile so feedback is always visible
         std::string coreLabel = useOpenHome() ? "OH" : "PK";
         if (DebugLog::enabled())
@@ -1313,6 +1325,7 @@ void UI::selectorTap(float px, float py, bool& running) {
         gameSelOnAllBanks_ = true;
         gameSelOnAvatar_ = gameSelOnPack_ = false;
         gameSelOnEject_ = gameSelOnSettings_ = false;
+        gameSelOnLaunchBtn_ = false;
         gameSelOnChevron_ = 0;
         enterAllBanksMode();
         return;
@@ -1321,6 +1334,7 @@ void UI::selectorTap(float px, float py, bool& running) {
         gameSelOnPack_ = true;
         gameSelOnAvatar_ = gameSelOnAllBanks_ = false;
         gameSelOnEject_ = gameSelOnSettings_ = false;
+        gameSelOnLaunchBtn_ = false;
         gameSelOnChevron_ = 0;
         openBackpackOn(gameSelCursor_);
         return;
@@ -1382,7 +1396,11 @@ void UI::selectorTap(float px, float py, bool& running) {
             gameSelOnAllBanks_ = gameSelOnAvatar_ = false;
             gameSelOnEject_ = gameSelOnSettings_ = false;
             gameSelOnChevron_ = 0;
-            selectGame(availableGames_[i], importedOccurrence(i));
+            if (Settings::radialMenu()) {
+                openRadialMenu(i);
+            } else {
+                selectGame(availableGames_[i], importedOccurrence(i));
+            }
             markDirty();
             return;
         }
@@ -1494,6 +1512,21 @@ void UI::handleGameSelectorInput(bool& running) {
             return;
         }
 
+        if (gameSelOnLaunchBtn_) {
+            // Sul tastino "Avvia" del pannello anteprima: sinistra torna
+            // alla lista (cursore invariato), destra o giu' continuano
+            // verso la prima icona della dock (zaino/pack) -- "giu'" e'
+            // lo stesso gesto che dalla dock riporta su qui (vedi dy < 0
+            // dentro gameSelOnPack_ piu' sotto).
+            if (dx < 0) {
+                gameSelOnLaunchBtn_ = false;
+            } else if (dx > 0 || dy > 0) {
+                gameSelOnLaunchBtn_ = false;
+                gameSelOnPack_ = true;
+            }
+            return;
+        }
+
         if (gameSelOnPack_) {
             // Sullo zaino (prima icona a sx della dock): destra torna alle
             // banche, sinistra torna alla lista/griglia (posizione
@@ -1505,7 +1538,12 @@ void UI::handleGameSelectorInput(bool& running) {
                 gameSelOnPack_ = false;
             } else if (dy < 0) {
                 gameSelOnPack_ = false;
-                if (!gallerySel_) {
+                if (gallerySel_ && isGameLaunchableAt(gameSelCursor_)) {
+                    // Galleria, gioco lanciabile: "su" dalla dock torna al
+                    // tastino "Avvia" del pannello anteprima (stesso gesto
+                    // simmetrico del "giu'" dal tastino qui sopra).
+                    gameSelOnLaunchBtn_ = true;
+                } else if (!gallerySel_) {
                     // Solo Classica: la griglia ha piu' righe, "su" atterra
                     // sull'ultima riga mantenendo la colonna. In Galleria e'
                     // una lista sola: il cursore resta dov'era (il
@@ -1626,12 +1664,19 @@ void UI::handleGameSelectorInput(bool& running) {
                     gameSelOnPack_ = false;
                 }
             } else {
-                // Destra: prima icona della dock (zaino/pack), non banche.
+                // Destra: se il gioco evidenziato e' lanciabile, prima il
+                // tastino "Avvia" del pannello anteprima; altrimenti dritti
+                // alla prima icona della dock (zaino/pack), come prima.
                 gameSelOnSettings_ = false;
                 gameSelOnEject_ = false;
                 gameSelOnAvatar_ = false;
                 gameSelOnAllBanks_ = false;
-                gameSelOnPack_ = true;
+                if (isGameLaunchableAt(gameSelCursor_)) {
+                    gameSelOnPack_ = false;
+                    gameSelOnLaunchBtn_ = true;
+                } else {
+                    gameSelOnPack_ = true;
+                }
             }
             return;
         }
@@ -1730,7 +1775,11 @@ void UI::handleGameSelectorInput(bool& running) {
             float px = event.tfinger.x * SCREEN_W;
             float py = event.tfinger.y * SCREEN_H;
             float dx = px - touchStartX_, dy = py - touchStartY_;
-            if (!showBackupList_ && !showCrashList_ && !showSaveMenu_ && !showGameSelMenu_ && !showSettings_ && !showBackpack_) {
+            if (showTradeList_) {
+                // popup trade sopra il selettore: tap non deve arrivare al selector
+            } else if (showRadialMenu_) {
+                if (!touchMoved_) radialMenuTap(px, py, running);
+            } else if (!showBackupList_ && !showCrashList_ && !showSaveMenu_ && !showGameSelMenu_ && !showSettings_ && !showBackpack_) {
                 if (dx < -120 && std::fabs(dy) < 200) {
                     if (totalPages > 1 && gameSelPage_ < totalPages - 1) {
                         gameSelPage_++;
@@ -1753,6 +1802,12 @@ void UI::handleGameSelectorInput(bool& running) {
                     selectorTap(px, py, running);
                 }
             }
+            continue;
+        }
+
+        // Trade popup sopra il selettore: intercetta tutto prima degli altri
+        if (showTradeList_) {
+            handleTradeListInput(event);
             continue;
         }
 
@@ -1960,6 +2015,12 @@ void UI::handleGameSelectorInput(bool& running) {
             continue;
         }
 
+        // Radial menu (Classica) intercepts input (above backpack/settings)
+        if (showRadialMenu_) {
+            handleRadialMenuInput(event, running);
+            continue;
+        }
+
         // Backpack popup intercepts input (above settings/menu)
         if (showBackpack_) {
             handleBackpackInput(event);
@@ -2084,13 +2145,20 @@ void UI::handleGameSelectorInput(bool& running) {
         if (event.type == SDL_CONTROLLERAXISMOTION) {
             if (event.caxis.axis == SDL_CONTROLLER_AXIS_TRIGGERRIGHT) {
                 bool pressed = event.caxis.value > TRIGGER_DEADZONE;
-                if (pressed && !favTriggerHeld_ && gallerySel_ && !showGameSelMenu_ && !showSaveMenu_ && !showBackupList_ && !showCrashList_ && !showSettings_ && !showBackpack_ && !showAbout_ && !showThemeSelector_ && !showLanguageSelector_ && !gameSelOnAllBanks_ && !gameSelOnAvatar_ && !gameSelOnPack_ && !gameSelOnEject_ && !gameSelOnSettings_ && gameSelOnChevron_ == 0) {
+                if (pressed && !favTriggerHeld_ && gallerySel_ && !showGameSelMenu_ && !showSaveMenu_ && !showBackupList_ && !showCrashList_ && !showSettings_ && !showBackpack_ && !showAbout_ && !showThemeSelector_ && !showLanguageSelector_ && !gameSelOnAllBanks_ && !gameSelOnAvatar_ && !gameSelOnPack_ && !gameSelOnEject_ && !gameSelOnSettings_ && !gameSelOnLaunchBtn_ && gameSelOnChevron_ == 0) {
                     if (gameSelCursor_ >= 0 && gameSelCursor_ < (int)availableGames_.size()) {
                         GameType g = availableGames_[gameSelCursor_];
                         toggleFavorite(g);
                     }
                 }
                 favTriggerHeld_ = pressed;
+            }
+            if (event.caxis.axis == SDL_CONTROLLER_AXIS_TRIGGERLEFT) {
+                bool pressed = event.caxis.value > TRIGGER_DEADZONE;
+                if (pressed && !launchTriggerHeld_ && gallerySel_ && !showGameSelMenu_ && !showSaveMenu_ && !showBackupList_ && !showCrashList_ && !showSettings_ && !showBackpack_ && !showAbout_ && !showThemeSelector_ && !showLanguageSelector_ && !gameSelOnAllBanks_ && !gameSelOnAvatar_ && !gameSelOnPack_ && !gameSelOnEject_ && !gameSelOnSettings_ && !gameSelOnLaunchBtn_ && gameSelOnChevron_ == 0) {
+                    requestLaunchGame(running);
+                }
+                launchTriggerHeld_ = pressed;
             }
             if (event.caxis.axis == SDL_CONTROLLER_AXIS_LEFTX ||
                 event.caxis.axis == SDL_CONTROLLER_AXIS_LEFTY) {
@@ -2127,6 +2195,8 @@ void UI::handleGameSelectorInput(bool& running) {
                         enterAllBanksMode();
                     else if (gameSelOnPack_)
                         openBackpackOn(gameSelCursor_);
+                    else if (gameSelOnLaunchBtn_)
+                        requestLaunchGame(running);
                     else if (gameSelOnAvatar_) {
                         gameSelOnAvatar_ = false;
                         freeGameIcons();
@@ -2138,6 +2208,8 @@ void UI::handleGameSelectorInput(bool& running) {
                     else if (gameSelOnSettings_) {
                         openSettings(); // il gear apre SEMPRE le impostazioni
                     }
+                    else if (!gallerySel_ && Settings::radialMenu())
+                        openRadialMenu(gameSelCursor_);
                     else
                         selectGame(availableGames_[gameSelCursor_], importedOccurrence(gameSelCursor_));
                     break;
@@ -2161,7 +2233,7 @@ void UI::handleGameSelectorInput(bool& running) {
                     themeSelOriginal_ = themeIndex_;
                     break;
                 case SDL_CONTROLLER_BUTTON_Y: // Switch X = save menu (debug) / eject USB
-                    if (DebugLog::enabled() && !gameSelOnAllBanks_ && !gameSelOnSettings_ && !gameSelOnEject_ && !gameSelOnAvatar_ && !gameSelOnPack_ && gameSelOnChevron_ == 0 &&
+                    if (DebugLog::enabled() && !gameSelOnAllBanks_ && !gameSelOnSettings_ && !gameSelOnEject_ && !gameSelOnAvatar_ && !gameSelOnPack_ && !gameSelOnLaunchBtn_ && gameSelOnChevron_ == 0 &&
                         gameSelCursor_ >= 0 && gameSelCursor_ < (int)availableGames_.size()) {
                         openSaveMenu(availableGames_[gameSelCursor_],
                                      importedOccurrence(gameSelCursor_));
@@ -2255,6 +2327,27 @@ void UI::handleGameSelectorInput(bool& running) {
             stickMoved_ = true;
             markDirty();
         }
+    } else if (showTradeList_ && stickDirY_ != 0) {
+        uint32_t now = SDL_GetTicks();
+        uint32_t delay = stickMoved_ ? STICK_REPEAT_DELAY : STICK_INITIAL_DELAY;
+        if (now - stickMoveTime_ >= delay) {
+            int count = (int)tradeCandidates_.size();
+            constexpr int VISIBLE = 6;
+            if (count > 0) {
+                if (stickDirY_ > 0) {
+                    if (tradeCursor_ < count - 1) tradeCursor_++;
+                    else tradeCursor_ = 0;
+                } else {
+                    if (tradeCursor_ > 0) tradeCursor_--;
+                    else tradeCursor_ = count - 1;
+                }
+                if (tradeCursor_ < tradeScroll_) tradeScroll_ = tradeCursor_;
+                else if (tradeCursor_ >= tradeScroll_ + VISIBLE) tradeScroll_ = tradeCursor_ - VISIBLE + 1;
+            }
+            stickMoveTime_ = now;
+            stickMoved_ = true;
+            markDirty();
+        }
     } else if (showGameSelMenu_ && stickDirY_ != 0) {
         uint32_t now = SDL_GetTicks();
         uint32_t delay = stickMoved_ ? STICK_REPEAT_DELAY : STICK_INITIAL_DELAY;
@@ -2289,7 +2382,7 @@ void UI::handleGameSelectorInput(bool& running) {
             stickMoved_ = true;
             markDirty();
         }
-    } else if (!showGameSelMenu_ && !showSaveMenu_ && !showBackupList_ && !showCrashList_ && !showSettings_ && !showBackpack_ && (stickDirX_ != 0 || stickDirY_ != 0)) {
+    } else if (!showTradeList_ && !showGameSelMenu_ && !showSaveMenu_ && !showBackupList_ && !showCrashList_ && !showSettings_ && !showBackpack_ && !showRadialMenu_ && (stickDirX_ != 0 || stickDirY_ != 0)) {
         uint32_t now = SDL_GetTicks();
         uint32_t delay = stickMoved_ ? STICK_REPEAT_DELAY : STICK_INITIAL_DELAY;
         // Galleria: lista verticale una voce alla volta. Con lo stesso passo
@@ -2412,6 +2505,402 @@ void UI::applyFavoritesOrder() {
     std::stable_partition(availableGames_.begin(), availableGames_.end(),
         [&](GameType g){ return isFavorite(g); });
 }
+// Rilevamento mGBA (v1): una tantum, non ogni frame. Vedi Emulator::findMgba().
+void UI::ensureMgbaChecked() {
+    if (mgbaChecked_) return;
+    mgbaChecked_ = true;
+    mgbaPath_ = Emulator::findMgba();
+}
+
+// Vero se availableGames_[idx] e' lanciabile ora: stessa logica a due strade
+// di requestLaunchGame() (titolo nativo vs emulato via mGBA) ma senza alcun
+// effetto -- solo lettura/rilevamento, nessun dialogo, nessun avvio. Usata
+// sia dall'hint "ZL: Avvia" sia dal tastino "Avvia" del pannello anteprima
+// Galleria, cosi' i due non possano disallinearsi.
+bool UI::isGameLaunchableAt(int idx) {
+    if (idx < 0 || idx >= (int)availableGames_.size()) return false;
+    GameType g = availableGames_[idx];
+    bool isTitle = selectedProfile_ >= 0 && titleIdOf(g) >= 0x0100000000010000ULL &&
+                   saveFileNameOf(g)[0] != '\0';
+    if (isTitle) return true;
+    ensureMgbaChecked();
+    if (mgbaPath_.empty()) return false;
+    std::string sp = importedSavePath(g, importedOccurrence(idx));
+    if (sp.empty()) return false;
+    return !Emulator::findRomForSave(sp, g).empty();
+}
+
+// ---------------------------------------------------------------------------
+// Menu radiale (Classica, dietro Settings::radialMenu()). Vedi enum
+// RadialAction / membri radial*_ in ui.h. Angoli e raggio-in-funzione-del-
+// numero-di-voci ripresi dal mockup HTML validato con l'utente (arco
+// 200-340 gradi sopra l'ancora, si allarga aggiungendo voci) -- cosi' e'
+// spontaneo aggiungere una quinta icona in futuro: basta una entry in piu'
+// in openRadialMenu() e un case in radialMenuActivate(), la geometria si
+// aggiusta da sola.
+// ---------------------------------------------------------------------------
+
+// Angolo (gradi, convenzione schermo y-down: 0=destra, 90=giu', 180=sinistra,
+// 270=su) della voce j su n lungo l'arco. Condivisa fra radialItemCenter()
+// (dove disegnare i bottoni) e il puntamento analogico in
+// handleRadialMenuInput() (quale voce "punta" lo stick) cosi' restano
+// sempre coerenti fra loro.
+static float radialItemAngleDeg(int j, int n) {
+    // Passo fisso fra voci adiacenti: l'arco totale cresce con n invece di
+    // restare fisso, cosi' le icone non si stringono mai fra loro (vedi nota
+    // sopra radialItemCenter). Sempre centrato in alto (270).
+    constexpr float ANGLE_STEP = 45.0f;
+    if (n <= 1) return 270.0f;
+    float span = ANGLE_STEP * (n - 1);
+    return (270.0f - span / 2.0f) + ANGLE_STEP * j;
+}
+
+// Centro del bottone j su n intorno all'ancora (ax, ay). Clampata a
+// restare a schermo (le tile di riga 0 altrimenti sforerebbero in alto,
+// stesso problema/fix del mockup). TENERE IN SYNC fra draw e tap-hit-test:
+// entrambi passano da qui.
+static void radialItemCenter(int ax, int ay, int j, int n, int& cx, int& cy) {
+    // SCREEN_W/H ridichiarati localmente (sono private in UI, non
+    // raggiungibili da una funzione libera) -- stessa convenzione delle
+    // altre costanti di layout duplicate per funzione in questo file.
+    constexpr int SCREEN_W = 1280, SCREEN_H = 720;
+    constexpr int EDGE = 12, HALF = 42; // 42 ~= raggio bottone (34) + alone fuoco
+    float R = 112.0f; // fisso, un po' piu' distante ora che l'ancora e' il centro vero della card (era 99)
+    float rad = radialItemAngleDeg(j, n) * 3.14159265f / 180.0f;
+    int x = ax + (int)(R * std::cos(rad));
+    int y = ay + (int)(R * std::sin(rad));
+    if (x < EDGE + HALF) x = EDGE + HALF;
+    if (x > SCREEN_W - EDGE - HALF) x = SCREEN_W - EDGE - HALF;
+    if (y < EDGE + HALF) y = EDGE + HALF;
+    if (y > SCREEN_H - EDGE - HALF) y = SCREEN_H - EDGE - HALF;
+    cx = x; cy = y;
+}
+
+void UI::openRadialMenu(int idx) {
+    if (idx < 0 || idx >= (int)availableGames_.size()) return;
+    constexpr int COLS = 6, CARD_W = 160, CARD_H = 200, CARD_GAP = 20, GAMES_PER_PAGE = 12;
+    int numGames = (int)availableGames_.size();
+    int pageStart = selPageShown_ * GAMES_PER_PAGE;
+    int pageEnd = std::min(pageStart + GAMES_PER_PAGE, numGames);
+    int pageCount = pageEnd - pageStart;
+    if (pageCount <= 0) return;
+    int rows = (pageCount + COLS - 1) / COLS;
+    int totalH = rows * CARD_H + (rows - 1) * CARD_GAP;
+    int gridStartY = (SCREEN_H - totalH) / 2 - 20;
+    int rel = idx - pageStart;
+    if (rel < 0 || rel >= pageCount) return; // tile non nella pagina mostrata (difensivo)
+    int r = rel / COLS, c = rel % COLS;
+    int rowItems = std::min(COLS, pageCount - r * COLS);
+    int rowW = rowItems * CARD_W + (rowItems - 1) * CARD_GAP;
+    int cardX = (SCREEN_W - rowW) / 2 + c * (CARD_W + CARD_GAP);
+    int cardY = gridStartY + r * (CARD_H + CARD_GAP);
+    radialAnchorX_ = cardX + CARD_W / 2;
+    radialAnchorY_ = cardY + CARD_H / 2; // centro vero della card (non il bordo alto): il menu deve apparire centrato sull'icona e piu' in basso, non sbattere in alto
+
+    radialItems_.clear();
+    if (isGameLaunchableAt(idx)) radialItems_.push_back((int)RadialAction::Launch);
+    radialItems_.push_back((int)RadialAction::Backpack);
+    radialItems_.push_back((int)RadialAction::Bank);
+    radialItems_.push_back((int)RadialAction::SaveMenu);
+    if (!isDualBankMode() && TradeEvo::supported(availableGames_[idx]))
+        radialItems_.push_back((int)RadialAction::Trade);
+
+    radialGameIdx_ = idx;
+    radialCursor_ = -1; // nessuna voce a fuoco finche' D-pad o stick non puntano da qualche parte
+    radialAnim_ = 0.0f;
+    radialClosing_ = false;
+    showRadialMenu_ = true;
+    markDirty();
+}
+
+void UI::closeRadialMenu() {
+    if (!showRadialMenu_ || radialClosing_) return;
+    radialClosing_ = true; // drawRadialMenu() anima radialAnim_ verso 0
+    markDirty();
+}
+
+void UI::radialMenuActivate(bool& running) {
+    int n = (int)radialItems_.size();
+    if (n <= 0) { closeRadialMenu(); return; }
+    if (radialCursor_ < 0) return; // niente puntato (analogico al centro): A non fa nulla
+    if (radialCursor_ >= n) radialCursor_ = n - 1;
+    RadialAction action = (RadialAction)radialItems_[radialCursor_];
+    int idx = radialGameIdx_;
+    // Chiusura immediata (senza animazione): si passa a un'altra schermata/
+    // popup, non ha senso animare la chiusura sotto quello che segue.
+    showRadialMenu_ = false;
+    radialClosing_ = false;
+    radialAnim_ = 0.0f;
+    if (idx < 0 || idx >= (int)availableGames_.size()) return;
+    switch (action) {
+        case RadialAction::Launch:
+            gameSelCursor_ = idx;
+            requestLaunchGame(running);
+            break;
+        case RadialAction::Bank:
+            selectGame(availableGames_[idx], importedOccurrence(idx));
+            break;
+        case RadialAction::Backpack:
+            openBackpackOn(idx);
+            break;
+        case RadialAction::SaveMenu:
+            openSaveMenu(availableGames_[idx], importedOccurrence(idx));
+            break;
+        case RadialAction::Trade: {
+            // selectGame() naviga anche alla schermata Banca (screen_ =
+            // BankSelector) come side-effect del "seleziona questo gioco":
+            // per il badge Scambio basta il popup sopra il selettore,
+            // senza passare dalla Banca -- ripristino la schermata subito
+            // dopo (nei percorsi di errore di selectGame() screen_ non e'
+            // mai stato toccato, quindi il ripristino e' innocuo anche li').
+            AppScreen prevScreen = screen_;
+            selectGame(availableGames_[idx], importedOccurrence(idx));
+            screen_ = prevScreen;
+            openTradeList();
+            break;
+        }
+    }
+    markDirty();
+}
+
+void UI::handleRadialMenuInput(const SDL_Event& event, bool& running) {
+    if (radialClosing_) return; // lascia finire l'animazione, ignora l'input
+    int n = (int)radialItems_.size();
+    if (event.type == SDL_CONTROLLERBUTTONDOWN) {
+        markDirty();
+        if (n <= 0) { closeRadialMenu(); return; }
+        switch (event.cbutton.button) {
+            case SDL_CONTROLLER_BUTTON_DPAD_LEFT:
+                radialCursor_ = (radialCursor_ < 0) ? (n - 1) : (radialCursor_ + n - 1) % n;
+                break;
+            case SDL_CONTROLLER_BUTTON_DPAD_RIGHT:
+                radialCursor_ = (radialCursor_ < 0) ? 0 : (radialCursor_ + 1) % n;
+                break;
+            case SDL_CONTROLLER_BUTTON_B: // Switch A = conferma
+                radialMenuActivate(running);
+                break;
+            case SDL_CONTROLLER_BUTTON_A: // Switch B = chiudi
+            case SDL_CONTROLLER_BUTTON_BACK:
+            case SDL_CONTROLLER_BUTTON_START:
+                closeRadialMenu();
+                break;
+        }
+    } else if (event.type == SDL_CONTROLLERAXISMOTION) {
+        // Puntamento analogico vero: la voce evidenziata segue l'angolo
+        // dello stick (stessa convenzione di radialItemAngleDeg), non
+        // scatta a sinistra/destra come un tasto digitale. Leggo entrambi
+        // gli assi da SDL_GameControllerGetAxis (non solo quello che ha
+        // generato l'evento) per avere sempre il vettore 2D completo.
+        if (event.caxis.axis != SDL_CONTROLLER_AXIS_LEFTX &&
+            event.caxis.axis != SDL_CONTROLLER_AXIS_LEFTY) return;
+        if (n <= 0) return;
+        float lx = (float)SDL_GameControllerGetAxis(pad_, SDL_CONTROLLER_AXIS_LEFTX);
+        float ly = (float)SDL_GameControllerGetAxis(pad_, SDL_CONTROLLER_AXIS_LEFTY);
+        constexpr float DEADZONE = 8000.0f;
+        if (lx * lx + ly * ly < DEADZONE * DEADZONE) {
+            // Al centro: nessuna voce evidenziata.
+            if (radialCursor_ != -1) { radialCursor_ = -1; markDirty(); }
+            return;
+        }
+        float ang = std::atan2(ly, lx) * 180.0f / 3.14159265f;
+        if (ang < 0.0f) ang += 360.0f;
+        int best = 0;
+        float bestDiff = 1e9f;
+        for (int j = 0; j < n; j++) {
+            float diff = std::fabs(ang - radialItemAngleDeg(j, n));
+            if (diff > 180.0f) diff = 360.0f - diff;
+            if (diff < bestDiff) { bestDiff = diff; best = j; }
+        }
+        if (radialCursor_ != best) { radialCursor_ = best; markDirty(); }
+    }
+}
+
+void UI::radialMenuTap(float px, float py, bool& running) {
+    if (radialClosing_) return;
+    int n = (int)radialItems_.size();
+    for (int j = 0; j < n; j++) {
+        int cx, cy;
+        radialItemCenter(radialAnchorX_, radialAnchorY_, j, n, cx, cy);
+        // dist2 qui e' una lambda locale di un'altra funzione (selectorTap),
+        // non un helper condiviso: calcolo la distanza al quadrato inline.
+        float ddx = px - (float)cx, ddy = py - (float)cy;
+        if (ddx * ddx + ddy * ddy < 42.0f * 42.0f) {
+            radialCursor_ = j;
+            radialMenuActivate(running);
+            markDirty();
+            return;
+        }
+    }
+    // Tap fuori da qualunque voce: chiudi, come toccare "fuori" nel mockup.
+    closeRadialMenu();
+    markDirty();
+}
+
+void UI::drawRadialMenu() {
+    // Anima l'apertura/chiusura un passo per frame (stesso schema di
+    // selSlide_ nel draw della griglia: nessun timer, un incremento fisso
+    // a ogni draw finche' non arriva a destinazione).
+    if (radialClosing_) {
+        radialAnim_ -= 0.16f;
+        if (radialAnim_ <= 0.0f) {
+            radialAnim_ = 0.0f;
+            showRadialMenu_ = false;
+            radialClosing_ = false;
+            return;
+        }
+        markDirty();
+    } else if (radialAnim_ < 1.0f) {
+        radialAnim_ += 0.16f;
+        if (radialAnim_ >= 1.0f) radialAnim_ = 1.0f;
+        else markDirty();
+    }
+
+    // Velo scuro dietro al menu, dosato con l'animazione (niente blur
+    // disponibile in SDL2 -- stesso "overlay" di tema usato dagli altri
+    // popup, qui pero' sfuma insieme all'apertura invece di essere fisso).
+    // La tile aperta resta illuminata (spotlight): il velo si disegna in
+    // 4 strisce che la circondano, non su tutto lo schermo.
+    //
+    // Il buco deve combaciare con la card COME VIENE DISEGNATA DAVVERO dal
+    // grid draw: stessa crescita per lo zoom della card selezionata (grow,
+    // dal valore Settings Zoom via zoomGrow_, con la stessa easing) e stessi
+    // angoli arrotondati (raggio 12, identico a drawRoundRect(...,12,...)
+    // nel grid draw) -- non un rettangolo fisso a spigoli vivi.
+    constexpr int CARD_W = 160, CARD_H = 200, CARD_R = 12;
+    float zEase = zoomT_ * zoomT_ * (3 - 2 * zoomT_); // smoothstep, stessa curva del grid draw
+    int grow = 0;
+    if (radialGameIdx_ == zoomCard_) grow = (int)(zoomGrow_ * zEase);
+    else if (radialGameIdx_ == zoomPrev_) grow = (int)(zoomGrow_ * (1.0f - zEase));
+    int cw = CARD_W + 2 * grow, ch = CARD_H + 2 * grow;
+    int tileX = radialAnchorX_ - cw / 2;
+    int tileY = radialAnchorY_ - CARD_H / 2 - grow; // radialAnchorY_ e' il centro della card, non il suo bordo alto
+    if (tileX < 0) tileX = 0;
+    if (tileY < 0) tileY = 0;
+    SDL_Color ov = T().overlay;
+    ov.a = (Uint8)(ov.a * radialAnim_);
+    if (tileY > 0) drawRect(0, 0, SCREEN_W, tileY, ov);
+    int belowY = tileY + ch;
+    if (belowY < SCREEN_H) drawRect(0, belowY, SCREEN_W, SCREEN_H - belowY, ov);
+    if (tileX > 0) drawRect(0, tileY, tileX, ch, ov);
+    int rightX = tileX + cw;
+    if (rightX < SCREEN_W) drawRect(rightX, tileY, SCREEN_W - rightX, ch, ov);
+    // Angoli: la card e' arrotondata ma il buco sopra e' ancora un
+    // rettangolo a spigoli vivi -- tinteggia nei 4 angoli la parte FUORI dal
+    // cerchio di raggio CARD_R (stessa equazione usata da drawRoundRect, qui
+    // invertita: coloriamo il di fuori invece del dentro).
+    int rr = CARD_R;
+    if (rr * 2 > cw) rr = cw / 2;
+    if (rr * 2 > ch) rr = ch / 2;
+    for (int k = 0; k < rr; k++) {
+        int dv = rr - k;
+        int dh = (int)std::sqrt((double)(rr * rr - dv * dv));
+        int dimW = rr - dh;
+        if (dimW <= 0) continue;
+        drawRect(tileX, tileY + k, dimW, 1, ov);                      // angolo alto-sinistra
+        drawRect(tileX + cw - dimW, tileY + k, dimW, 1, ov);           // angolo alto-destra
+        drawRect(tileX, tileY + ch - 1 - k, dimW, 1, ov);              // angolo basso-sinistra
+        drawRect(tileX + cw - dimW, tileY + ch - 1 - k, dimW, 1, ov);  // angolo basso-destra
+    }
+
+    int n = (int)radialItems_.size();
+    if (n <= 0) return;
+    float ease = 1.0f - (1.0f - radialAnim_) * (1.0f - radialAnim_) * (1.0f - radialAnim_); // ease-out cubic
+    constexpr int BTN_R = 34, ICON_R = 24;
+    for (int j = 0; j < n; j++) {
+        int tx, ty;
+        radialItemCenter(radialAnchorX_, radialAnchorY_, j, n, tx, ty);
+        // Parte dal centro della tile (radialAnchorY_ e' il suo bordo alto,
+        // ma va benissimo come "centro" apparente per l'effetto zoom) e
+        // arriva alla posizione sull'arco.
+        int cx = radialAnchorX_ + (int)((tx - radialAnchorX_) * ease);
+        int cy = radialAnchorY_ + (int)((ty - radialAnchorY_) * ease);
+        int r = (int)(BTN_R * ease);
+        int ir = (int)(ICON_R * ease);
+        if (r < 1) continue;
+        bool focused = (j == radialCursor_);
+        drawRoundSelect(cx, cy, r + 1, focused);
+        SDL_Texture* tex = nullptr;
+        const char* labelKey = nullptr;
+        switch ((RadialAction)radialItems_[j]) {
+            case RadialAction::Launch:   tex = iconRocket_; labelKey = StrKey::LaunchGameButton; break;
+            case RadialAction::Bank:     tex = iconVault_;  labelKey = StrKey::LocBank; break;
+            case RadialAction::Backpack: tex = iconPack_;   labelKey = StrKey::BackpackTitle; break;
+            case RadialAction::SaveMenu: tex = iconFloppy_; labelKey = StrKey::RadialSaveMenu; break;
+            case RadialAction::Trade:    tex = iconTrade_;  labelKey = StrKey::RadialTrade; break;
+        }
+        if (tex && ir > 0) {
+            SDL_SetTextureColorMod(tex, T().text.r, T().text.g, T().text.b);
+            SDL_Rect dst = {cx - ir, cy - ir, ir * 2, ir * 2};
+            SDL_RenderCopy(renderer_, tex, nullptr, &dst);
+            SDL_SetTextureColorMod(tex, 255, 255, 255);
+        }
+        if (focused && radialAnim_ >= 1.0f && labelKey) {
+            SDL_Color labelShadow = {0, 0, 0, 200};
+            drawTextCentered(i18n::get(labelKey), cx + 2, cy + BTN_R + 19, labelShadow, font_);
+            drawTextCentered(i18n::get(labelKey), cx, cy + BTN_R + 17, T().text, font_);
+        }
+    }
+}
+
+// Tasto rapido ZL in Galleria: avvia il gioco evidenziato, con conferma
+// esplicita. Due strade, mutuamente esclusive per costruzione (un GameType
+// e' o titleId-bound o file-backed, mai entrambi -- vedi game_type.h):
+//
+// - Titolo Switch nativo (titleId reale, es. l'app GBA di Nintendo Switch
+//   Online): appletRequestLaunchApplication() e' l'API sanzionata per
+//   "avvia questo titolo" (libnx applet.h) -- nessun rilevamento necessario,
+//   se c'e' il titleId il sistema sa gia' dove si trova sul disco.
+// - Emulato (file-backed, rom scansionata dall'import): invariato, mGBA se
+//   rilevato + rom trovata accanto al save (vedi Emulator::findRomForSave).
+//
+// V1: niente in appletMode_ (salto Album/Library Applet). Per il titolo
+// nativo, application_id=0 significa li' "rilancia il titolo corrente"
+// (doc libnx) -- un id diverso non e' garantito con certezza in quel
+// contesto. Per l'emulato, e' lo stesso limite del chainload mGBA (niente
+// nextLoad da un Library Applet). Meglio verificare prima su hardware vero
+// che restringere subito: nessun popup per i casi che non si applicano,
+// il tasto resta semplicemente muto (stessa filosofia della riga
+// "Emulatore predefinito").
+void UI::requestLaunchGame(bool& running) {
+    if (appletMode_) return;
+    if (gameSelCursor_ < 0 || gameSelCursor_ >= (int)availableGames_.size()) return;
+    GameType g = availableGames_[gameSelCursor_];
+
+    bool isTitle = selectedProfile_ >= 0 && titleIdOf(g) >= 0x0100000000010000ULL &&
+                   saveFileNameOf(g)[0] != '\0';
+    if (isTitle) {
+        if (!showConfirmDialog(i18n::get(StrKey::LaunchGameTitle),
+                                i18n::fmt(StrKey::LaunchGameConfirm, gameDisplayNameOf(g))))
+            return;
+        Result rc = appletRequestLaunchApplication(titleIdOf(g), nullptr);
+        if (R_SUCCEEDED(rc)) {
+            running = false;
+        } else {
+            DebugLog::line("launch: appletRequestLaunchApplication(%016lX) fallita rc=0x%x",
+                           titleIdOf(g), rc);
+            showMessageAndWait(i18n::get(StrKey::LaunchGameTitle), i18n::get(StrKey::LaunchGameFailed));
+        }
+        return;
+    }
+
+    ensureMgbaChecked();
+    if (mgbaPath_.empty()) return;
+    int occ = importedOccurrence(gameSelCursor_);
+    std::string savePath = importedSavePath(g, occ);
+    if (savePath.empty()) return;
+    std::string romPath = Emulator::findRomForSave(savePath, g);
+    if (romPath.empty()) return; // rom non trovata accanto al save
+    if (!showConfirmDialog(i18n::get(StrKey::LaunchGameTitle),
+                            i18n::fmt(StrKey::LaunchGameConfirm, gameDisplayNameOf(g))))
+        return;
+    if (Emulator::launchInMgba(mgbaPath_, romPath))
+        running = false;
+    else
+        showMessageAndWait(i18n::get(StrKey::LaunchGameTitle), i18n::get(StrKey::LaunchGameFailed));
+    launchTriggerHeld_ = false;
+    favTriggerHeld_ = false;
+}
+
 void UI::toggleFavorite(GameType g) {
     int v = static_cast<int>(g);
     if (favorites_.count(v)) favorites_.erase(v);
@@ -3414,8 +3903,8 @@ void UI::sendSaveFor(GameType g, int occ) {
     }
 }
 
-bool UI::backupGameSave(GameType g, std::string& out, const std::string& alreadyMounted) {
-    std::string dir = manualBackupDir(g);
+bool UI::backupGameSave(GameType g, std::string& out, const std::string& alreadyMounted, bool manual) {
+    std::string dir = manual ? manualBackupDir(g) : autoBackupDir(g);
     ensureDirRecursive(dir);
     std::string path = importedSavePath(g, saveMenuOcc_);
     if (!path.empty()) {
@@ -3587,6 +4076,9 @@ void UI::openSettings() {
     setFocusLeft_ = true;
     showGameSelMenu_ = false;
     if (langList_.empty()) langList_ = i18n::availableLangs();
+    // Rilevamento emulatore (v1: solo mGBA): idempotente, gia' fatto al
+    // boot (vedi ui.cpp) -- qui e' solo un fallback difensivo.
+    ensureMgbaChecked();
     markDirty();
 }
 
@@ -3757,8 +4249,8 @@ bool UI::writeUpdateCfgUrl(const std::string& basePath, const std::string& url) 
 int UI::settingsRowCount(int cat) const {
     switch (cat) {
         case 0: return 1; // Utente predefinito
-        case 1: return 4; // Tema, Lingua, Zoom, Layout selettore
-        case 2: return 2; // Sistema: Core + Installa launcher
+        case 1: return 6; // Tema, Lingua, Layout selettore, Zoom, Menu radiale, Animazione scambio
+        case 2: return mgbaPath_.empty() ? 2 : 3; // Sistema: Core + Installa launcher [+ Emulatore predefinito]
         case 3: return 4; // Cartelle, Scansiona, Max, Pulisci
         case 4: {
             // Sorgente/edit custom solo con debug: l'utente normale resta su GitHub.
@@ -3784,11 +4276,14 @@ std::string UI::settingsRowLabel(int cat, int row) const {
         if (row == 0) return i18n::get(StrKey::SetTheme);
         if (row == 1) return i18n::get(StrKey::SetLanguage);
         if (row == 2) return i18n::get(StrKey::SetGalleryLayout);
-        return i18n::get(StrKey::SetZoom);
+        if (row == 3) return i18n::get(StrKey::SetZoom);
+        if (row == 4) return i18n::get(StrKey::SetRadialMenu);
+        return i18n::get(StrKey::SetTradeAnim);
     }
     if (cat == 2) {
         if (row == 0) return i18n::get(StrKey::SetCore);
-        return i18n::get(StrKey::SetInstallLauncher);
+        if (row == 1) return i18n::get(StrKey::SetInstallLauncher);
+        return i18n::get(StrKey::SetDefaultEmulator);
     }
     if (cat == 3) {
         if (row == 0) return i18n::get(StrKey::SetSavePaths);
@@ -3824,12 +4319,15 @@ std::string UI::settingsRowValue(int cat, int row) {
         if (row == 2)
             return (gameSelectorLayout_ == GameSelectorLayout::Gallery)
                  ? i18n::get(StrKey::LayoutGallery) : i18n::get(StrKey::LayoutClassic);
-        return std::to_string(zoomGrow_) + "px";
+        if (row == 3) return std::to_string(zoomGrow_) + "px";
+        if (row == 4) return Settings::radialMenu() ? i18n::get(StrKey::SetOn) : i18n::get(StrKey::SetOff);
+        return Settings::tradeAnim() ? i18n::get(StrKey::SetOn) : i18n::get(StrKey::SetOff);
     }
     if (cat == 2) {
         if (row == 0)
             return useOpenHome() ? i18n::get(StrKey::SetCoreOh) : i18n::get(StrKey::SetCorePk);
-        return ""; // riga azione, come "Scansiona": niente valore a destra
+        if (row == 1) return ""; // riga azione, come "Scansiona": niente valore a destra
+        return "mGBA"; // riga info: unico emulatore supportato per ora
     }
     if (cat == 3) {
         if (row == 0) {
@@ -3979,7 +4477,7 @@ void UI::settingsRowActivate(int cat, int row, int dir, bool& running) {
             // enorme dal nulla verso la selezione corrente.
             galSelShown_ = -1;
             galSlide_ = 0.0f;
-        } else {
+        } else if (row == 3) {
             static const int STEPS[] = {0, 4, 8, 12, 16};
             int i = 0;
             for (; i < 5; i++)
@@ -3990,13 +4488,19 @@ void UI::settingsRowActivate(int cat, int row, int dir, bool& running) {
             if (ni > 4) ni = 4;
             zoomGrow_ = STEPS[ni];
             saveZoomGrow(basePath_, zoomGrow_);
+        } else if (row == 4) {
+            // Menu radiale: solo 2 valori, qualunque dir alterna (come Layout).
+            Settings::setRadialMenu(!Settings::radialMenu());
+        } else {
+            // Animazione scambio: idem, solo on/off.
+            Settings::setTradeAnim(!Settings::tradeAnim());
         }
     } else if (cat == 2) {
         if (row == 0) {
             setCryptoEngine(useOpenHome() ? CryptoEngine::PK : CryptoEngine::OH);
-        } else {
+        } else if (row == 1) {
             installLauncherForwarder();
-        }
+        } // row 2 (Emulatore predefinito): riga info, nessuna azione
     } else if (cat == 3) {
         if (row == 0) {
             // Stessa lista del menu + (Import): toggle/rimuovi percorsi.

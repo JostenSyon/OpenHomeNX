@@ -74,6 +74,23 @@ constexpr int GAL_ROW_H = 46, GAL_VISIBLE_ROWS = 9;
 constexpr int GAL_PREVIEW_X = GAL_LIST_X + GAL_LIST_W + 40;   // 470
 constexpr int GAL_PREVIEW_Y = 100;
 constexpr int GAL_PREVIEW_H = 460;
+constexpr int GAL_BTN_W = 190, GAL_BTN_H = 50, GAL_BTN_MARGIN = 34;
+// Stessa X del blocco di testo (titolo/party/statistiche) del pannello:
+// coverX + COVER + 40, vedi textX in drawGameList_Gallery -- TENERLA IN
+// SYNC se cambia quel calcolo. Il pulsante sta sotto quel blocco, non
+// appeso al bordo destro del pannello.
+constexpr int GAL_BTN_X = GAL_PREVIEW_X + 46 + 260 + 40;
+
+// Rettangolo del pulsante "Avvia" nel pannello anteprima: stessa geometria
+// sia in drawGameList_Gallery() (disegno) sia in selectorTapGallery() (tap)
+// -- TENERLE IN SYNC se si cambia margine/misura (stessa regola di
+// GAL_LIST_*/GAL_PREVIEW_* qui sopra).
+void galButtonRect(int panelY, int& bx, int& by, int& bw, int& bh) {
+    bw = GAL_BTN_W;
+    bh = GAL_BTN_H;
+    bx = GAL_BTN_X;
+    by = panelY + GAL_PREVIEW_H - GAL_BTN_MARGIN - bh;
+}
 
 int galClampSel(int cursor, int numGames) {
     if (numGames <= 0) return 0;
@@ -131,7 +148,8 @@ void UI::drawGameList_Gallery() {
     int rowEnd = std::min(scroll + GAL_VISIBLE_ROWS + 1, numGames);
 
     bool cursorOnList = !gameSelOnAllBanks_ && !gameSelOnSettings_ && !gameSelOnEject_ &&
-                         !gameSelOnAvatar_ && !gameSelOnPack_ && gameSelOnChevron_ == 0;
+                         !gameSelOnAvatar_ && !gameSelOnPack_ && !gameSelOnLaunchBtn_ &&
+                         gameSelOnChevron_ == 0;
 
     auto dot = [&](int cx, int cy, int rr, SDL_Color col) {
         SDL_SetRenderDrawColor(renderer_, col.r, col.g, col.b, col.a);
@@ -375,12 +393,56 @@ void UI::drawGameList_Gallery() {
             }
         }
     }
+
+    // Pulsante "Avvia" nel pannello anteprima: contorno tratteggiato, colori
+    // del tema (T().cursor/T().text, gli stessi del bordo pannello e dei
+    // testi circostanti) -- niente riquadro pieno, solo il tastino. Visibile
+    // solo se il gioco mostrato e' davvero lanciabile ora, stessa condizione
+    // dell'hint "ZL: Avvia" in basso (vedi isGameLaunchableAt()).
+    if (isGameLaunchableAt(shown)) {
+        int bx, by, bw, bh;
+        galButtonRect(panelY, bx, by, bw, bh);
+        // Fermo: sfondo dello stesso colore dello sfondo tema, contorno
+        // pieno (il tratteggio precedente aliasava troppo a questa
+        // risoluzione, niente antialiasing sul renderer). A fuoco (cursore
+        // spostato qui col pad): stesso trattamento delle altre selezioni
+        // (righe lista/card), sfondo T().menuHighlight + contorno piu' netto.
+        if (gameSelOnLaunchBtn_) {
+            drawRoundRect(bx, by, bw, bh, bh / 2, T().menuHighlight);
+            drawRoundRectOutline(bx, by, bw, bh, bh / 2, T().cursor, 2);
+        } else {
+            drawRoundRect(bx, by, bw, bh, bh / 2, T().bg);
+            drawRoundRectOutline(bx, by, bw, bh, bh / 2, T().cursor, 2);
+        }
+        std::string label = i18n::get(StrKey::LaunchGameButton) + " >";
+        TTF_SetFontStyle(font_, TTF_STYLE_BOLD);
+        drawTextCentered(label, bx + bw / 2, by + bh / 2, T().text, font_);
+        TTF_SetFontStyle(font_, TTF_STYLE_NORMAL);
+    }
 }
 
 void UI::selectorTapGallery(float px, float py, bool& running) {    int numGames = (int)availableGames_.size();
     if (numGames == 0) return;
 
     int sel = galClampSel(gameSelCursor_, numGames);
+
+    // Pulsante "Avvia" del pannello anteprima: stessa geometria del draw
+    // (galButtonRect(), TENERE IN SYNC), verificata sul gioco davvero
+    // mostrato in questo istante ("shown", non "sel": durante lo slide
+    // verticale sono transitoriamente diversi).
+    {
+        int shown = galClampSel(galSelShown_, numGames);
+        if (isGameLaunchableAt(shown)) {
+            int panelY = GAL_PREVIEW_Y + (int)(galSlide_ * GAL_PREVIEW_H);
+            int bx, by, bw, bh;
+            galButtonRect(panelY, bx, by, bw, bh);
+            if (px >= bx && px <= bx + bw && py >= by && py <= by + bh) {
+                requestLaunchGame(running);
+                markDirty();
+                return;
+            }
+        }
+    }
     // Stesso offset fluido del draw (senza avanzare l'animazione qui).
     float fx = galScrollX_ < 0 ? (float)galScrollFor(sel, numGames) : galScrollX_;
     int scroll = (int)fx;

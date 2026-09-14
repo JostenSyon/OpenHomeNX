@@ -135,6 +135,12 @@ int main(int argc, char* argv[]) {
     if (pendingUpdate && ui.tryUpdateBounce(basePath)) {
         ui.shutdown();
         ledExit();
+        // Senza questo, l'hook OnExitRequest registrato sopra resta agganciato
+        // alla sessione applet condivisa con chi ci ha chainloadati (hbloader/
+        // forwarder) mentre il chainload verso il .nro vero sta per sostituire
+        // questo stesso codice "usa e getta" -- sospetta causa del mancato
+        // riavvio dopo un update (regressione 0.3.2, hook introdotto li').
+        appletUnhook(&s_exitHookCookie);
         romfsExit();
         return 0;   // libnx exit -> loader chainloads the fresh OpenHomeNX.nro
     }
