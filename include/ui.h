@@ -101,6 +101,12 @@ public:
     // Si/No qui -- stesso schema single-dismiss di showMessageAndWait.
     void showLauncherPromptPopup();
     void showWorking(const std::string& msg);
+    // Percorso mGBA rilevato (vuoto = non trovato/non ricontrollato). V1:
+    // solo rilevamento automatico, controllato una tantum -- vedi
+    // ensureMgbaChecked()/Emulator::findMgba() (mai ogni frame).
+    std::string mgbaPath_;
+    bool mgbaChecked_ = false;
+    void ensureMgbaChecked();
     void setAppletMode(bool mode) { appletMode_ = mode; }
     bool isDualBankMode() const { return appletMode_ || allBanksMode_; }
     void run(const std::string& basePath, const std::string& savePath);
@@ -180,7 +186,28 @@ private:
     SDL_Texture* iconDebug_        = nullptr; // bug accanto al wifi con debug on
     SDL_Texture* iconArrow_        = nullptr; // frecce pagine (dx ruotata 180)
     SDL_Texture* iconPack_         = nullptr; // zaino eventi/strumenti (48px 1:1)
+    SDL_Texture* iconRocket_       = nullptr; // "Avvia" nel menu radiale (48px 1:1)
+    SDL_Texture* iconFloppy_       = nullptr; // "Salvataggi" nel menu radiale (48px 1:1)
+    SDL_Texture* iconTrade_        = nullptr; // "Scambio": asset pronto, non ancora in radialItems_ (48px 1:1)
     bool gameSelOnPack_ = false;      // cursore sullo zaino a sx delle banche
+    // Cursore sul tastino "Avvia" del pannello anteprima Galleria (destra
+    // dalla lista, solo se il gioco evidenziato e' lanciabile -- vedi
+    // isGameLaunchableAt()). Stesso schema esclusivo delle altre gameSelOn*_.
+    bool gameSelOnLaunchBtn_ = false;
+
+    // Menu radiale (solo layout Classico, dietro Settings::radialMenu()):
+    // alla conferma di una tile apre un piccolo arco di scorciatoie sopra
+    // la tile stessa, al posto di andare dritti in banca. Elenco voci in
+    // radialItems_ (RadialAction) cosi' aggiungerne una nuova in futuro e'
+    // solo una entry in piu' + un case nello switch di radialMenuActivate().
+    enum class RadialAction { Launch, Bank, Backpack, SaveMenu, Trade };
+    bool showRadialMenu_ = false;
+    bool radialClosing_ = false;   // true durante l'animazione di chiusura
+    int radialGameIdx_ = -1;       // indice in availableGames_ della tile aperta
+    int radialCursor_ = 0;         // voce a fuoco in radialItems_
+    float radialAnim_ = 0.0f;      // 0..1, apertura/chiusura (easing per-frame)
+    int radialAnchorX_ = 0, radialAnchorY_ = 0; // centro-alto della tile, fissato all'apertura
+    std::vector<int> radialItems_; // RadialAction disponibili per la tile aperta
 
     // Game-selector logos for imported (titleId-less) games — see init()'s
     // loadLogo(). Keyed by GameType since there are only a handful of these.
@@ -334,7 +361,14 @@ private:
     // (AccountManager ha un solo slot di mount) lasciando il chiamante con
     // un mount ormai fantasma -> scritture successive fallite in silenzio
     // (bug 2026-09-13: regalo fossile ok in memoria ma mai salvato).
-    bool backupGameSave(GameType g, std::string& out, const std::string& alreadyMounted = "");
+    // manual=true -> manualBackupDir() (tag "MAN", mai potato): backup
+    // chiesto esplicitamente dall'utente (menu debug "Backup save").
+    // manual=false -> autoBackupDir() (tag "AUTO", soggetto al tetto/pruning
+    // come tutti gli auto): backup scattato da un'azione automatica (es. lo
+    // zaino prima di un regalo) -- per definizione NON e' manuale anche se
+    // il chiamante lo fa "una tantum per sessione".
+    bool backupGameSave(GameType g, std::string& out, const std::string& alreadyMounted = "",
+                         bool manual = true);
     struct BackupListEntry { std::string path; std::string label; };
     std::vector<BackupListEntry> collectBackupEntries(GameType g);
     bool restoreBackupEntry(GameType g, const std::string& entry);
@@ -474,6 +508,20 @@ private:
     int  pkImportCursor_  = 0;
     int  pkImportScroll_  = 0;
     std::vector<PkFileInfo> pkImportList_;
+
+    // Self-trade (menu Scambio): lista scorrevole su party + TUTTI i box,
+    // filtrata alle sole specie che possono evolvere per scambio (pronte o
+    // in attesa dello strumento). Eleggibilità ricalcolata dal save ogni
+    // volta che si apre (rebuildTradeCandidates).
+    bool showTradeList_ = false;
+    int  tradeCursor_  = 0;
+    int  tradeScroll_  = 0;
+    struct TradeCandidate { int box; int slot; }; // box == -1 -> party
+    std::vector<TradeCandidate> tradeCandidates_;
+    void openTradeList();
+    void rebuildTradeCandidates();
+    void doTradeEvolve(int candidateIdx);
+    void playTradeEvolveAnim(uint16_t fromSpecies, uint16_t toSpecies);
 
     // Debug test-mon generator (menu Generate, solo debug): segnalini
     // on-demand per i test HW. Tabella estendibile in genMonTable().
@@ -621,6 +669,30 @@ private:
     // Preferiti galleria: ZR toggla, stella al posto del pallino, ordine stabile in cima.
     std::unordered_set<int> favorites_;
     bool favTriggerHeld_ = false;
+    // Avvio rapido galleria: ZL sul gioco evidenziato. Titoli Switch nativi
+    // (titleId reale) -> appletRequestLaunchApplication; emulati (rom
+    // scansionata) -> mGBA se rilevato. Non disponibile in appletMode_
+    // (salto Album/Library Applet): ne' il chainload ne' un titleId diverso
+    // da 0 sono garantiti li', meglio non rischiare per ora. Chiede sempre
+    // conferma esplicita.
+    bool launchTriggerHeld_ = false;
+    void requestLaunchGame(bool& running);
+    // Vero se availableGames_[idx] e' lanciabile ora (titolo Switch nativo,
+    // oppure emulato con mGBA rilevato + rom trovata accanto al save).
+    // Stessa condizione usata sia per l'hint "ZL: Avvia" in basso sia per il
+    // tastino "Avvia" nel pannello anteprima Galleria -- unica cosi' le due
+    // non possano disallinearsi. Non const: puo' innescare ensureMgbaChecked().
+    bool isGameLaunchableAt(int idx);
+    // Menu radiale Classica -- vedi enum RadialAction e i membri radial*_
+    // sopra. idx e' un indice in availableGames_ (stessa convenzione di
+    // gameSelCursor_). Le funzioni di draw/input vivono in ui_selectors.cpp
+    // insieme al resto dell'input del selettore giochi.
+    void openRadialMenu(int idx);
+    void closeRadialMenu();
+    void radialMenuActivate(bool& running);
+    void handleRadialMenuInput(const SDL_Event& event, bool& running);
+    void radialMenuTap(float px, float py, bool& running);
+    void drawRadialMenu();
     bool isFavorite(GameType g) const { return favorites_.count(static_cast<int>(g)) != 0; }
     void loadFavorites();
     void saveFavorites() const;
@@ -887,6 +959,8 @@ private:
     void drawSpeciesListPicker();
     void drawWondercardListPopup();
     void drawPkImportListPopup();
+    void drawTradeListPopup();
+    void handleTradeListInput(const SDL_Event& event);
     void drawLearnsetPopup();
     void drawHeldOverlay();
     void drawBoxViewOverlay();
@@ -909,6 +983,11 @@ private:
     // niente rischio del doppio-alpha "pacman" agli angoli).
     void drawRoundRectGradientH(int x, int y, int w, int h, int r, SDL_Color left, SDL_Color right);
     void drawRoundRectOutline(int x, int y, int w, int h, int r, SDL_Color color, int thickness);
+    // Come drawRoundRectOutline() ma tratteggiato: dashLen/gapLen in px,
+    // pattern continuo lungo tutto il perimetro (angoli compresi), non
+    // riavviato a ogni lato/arco.
+    void drawRoundRectOutlineDashed(int x, int y, int w, int h, int r, SDL_Color color,
+                                     int thickness, int dashLen, int gapLen);
     void drawRoundSelect(int cx, int cy, int r, bool focused);
     void drawStatusBar(const std::string& msg);
 

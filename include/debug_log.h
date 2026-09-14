@@ -15,6 +15,7 @@
 #include <cstdio>
 #include <ctime>
 #include <string>
+#include <mutex>
 
 #ifdef OH_DEBUG_LOG
 

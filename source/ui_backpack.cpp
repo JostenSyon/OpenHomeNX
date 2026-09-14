@@ -457,7 +457,10 @@ void UI::backpackDoGift() {
     std::snprintf(body, sizeof(body), "%s x%d%s\n%s", d.name.c_str(), qty,
                   base ? " (Base)" : "", gameDisplayNameOf(backpackGame_));
     if (!showConfirmDialog(i18n::get(StrKey::BackpackTitle), body)) return;
-    // Backup una tantum per gioco per sessione zaino (manuale, mai auto).
+    // Backup di sicurezza una tantum per gioco per sessione zaino, prima
+    // del regalo: e' l'azione "regala" a scatenarlo, non una richiesta
+    // esplicita dell'utente -> per definizione e' AUTOMATICO (pool auto/,
+    // tag "AUTO", soggetto al tetto come tutti gli auto), NON manuale.
     int gi = static_cast<int>(backpackGame_);
     if (backpackBackedUp_.count(gi) == 0) {
         saveMenuOcc_ = backpackOcc_[backpackGameCursor_];
@@ -465,7 +468,7 @@ void UI::backpackDoGift() {
         // backpackSaveMnt_ ("save:/" se gioco montato da titolo, vuoto se
         // file-backed): passato cosi' il backup riusa il mount dello zaino
         // invece di rubarglielo (vedi commento in ui.h / bug fossile FRLG).
-        if (!backupGameSave(backpackGame_, out, backpackSaveMnt_)) {
+        if (!backupGameSave(backpackGame_, out, backpackSaveMnt_, false)) {
             if (!showConfirmDialog(i18n::get(StrKey::BackupFailed),
                                    i18n::get(StrKey::BackupFailedBody)))
                 return;

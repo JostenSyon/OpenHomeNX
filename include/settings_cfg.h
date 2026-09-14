@@ -33,4 +33,8 @@ std::string defaultUser(); // "" = chiedi
 void setDefaultUser(const std::string& v);
 bool quickMenu();
 void setQuickMenu(bool v);
+bool radialMenu(); // menu radiale (Classica): on/off, default off finche' non implementato
+void setRadialMenu(bool v);
+bool tradeAnim(); // animazione schermo diviso allo scambio: on/off, default on
+void setTradeAnim(bool v);
 } // namespace Settings

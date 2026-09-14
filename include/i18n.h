@@ -122,6 +122,7 @@ namespace StrKey {
     constexpr const char* StatusGameQuitPage   = "status_game_quit_page";
     constexpr const char* StatusGameQuit       = "status_game_quit";
     constexpr const char* StatusGameEject      = "status_game_eject";
+    constexpr const char* StatusGameLaunch     = "status_game_launch";
     constexpr const char* DualBankMode         = "dual_bank_mode";
     constexpr const char* NoBanksTitle         = "no_banks_title";
     constexpr const char* NoBanksAnyGame       = "no_banks_any_game";
@@ -198,6 +199,22 @@ namespace StrKey {
     constexpr const char* MenuWondercard       = "menu_wondercard";
     constexpr const char* MenuExportSelected   = "menu_export_selected";
     constexpr const char* MenuImportPk         = "menu_import_pk";
+    constexpr const char* MenuTrade            = "menu_trade";
+    constexpr const char* TradeTitle           = "trade_title";
+    constexpr const char* TradeNone            = "trade_none";
+    constexpr const char* TradeConfirmTitle    = "trade_confirm_title";
+    constexpr const char* TradeConfirmBody     = "trade_confirm_body";
+    constexpr const char* TradeDoneTitle       = "trade_done_title";
+    constexpr const char* TradeDoneBody        = "trade_done_body";
+    constexpr const char* TradeFailed          = "trade_failed";
+    constexpr const char* TradeNotEligible     = "trade_not_eligible";
+    constexpr const char* TradeNeedsItem       = "trade_needs_item";
+    constexpr const char* TradeOutOfRange      = "trade_out_of_range";
+    constexpr const char* TradePairedHint      = "trade_paired_hint";
+    constexpr const char* TradeDoubleConfirmBody = "trade_double_confirm_body";
+    constexpr const char* TradeDoubleDoneBody  = "trade_double_done_body";
+    constexpr const char* TradeItemWhere       = "trade_item_where";
+    constexpr const char* TradeFooter          = "trade_footer";
     constexpr const char* MenuSwitchBank       = "menu_switch_bank";
     constexpr const char* MenuChangeGame       = "menu_change_game";
     constexpr const char* MenuSaveQuit         = "menu_save_quit";
@@ -235,6 +252,10 @@ namespace StrKey {
     constexpr const char* SetLanguage     = "set_language";
     constexpr const char* SetZoom         = "set_zoom";
     constexpr const char* SetGalleryLayout = "set_gallery_layout";
+    constexpr const char* SetRadialMenu   = "set_radial_menu";
+    constexpr const char* SetTradeAnim    = "set_trade_anim";
+    constexpr const char* RadialSaveMenu  = "radial_savemenu";
+    constexpr const char* RadialTrade     = "radial_trade";
     constexpr const char* LayoutClassic    = "layout_classic";
     constexpr const char* LayoutGallery    = "layout_gallery";
     constexpr const char* SetCore         = "set_core";
@@ -262,6 +283,11 @@ namespace StrKey {
     constexpr const char* LauncherPromptFooter = "launcher_prompt_footer";
     // Riga "Installa launcher" dentro Sistema (ex Core) + suo dialogo/esiti.
     constexpr const char* SetInstallLauncher      = "set_install_launcher";
+    constexpr const char* SetDefaultEmulator      = "set_default_emulator";
+    constexpr const char* LaunchGameTitle         = "launch_game_title";
+    constexpr const char* LaunchGameConfirm       = "launch_game_confirm";
+    constexpr const char* LaunchGameFailed        = "launch_game_failed";
+    constexpr const char* LaunchGameButton        = "launch_game_button";
     constexpr const char* LauncherInstallConfirm  = "launcher_install_confirm";
     constexpr const char* LauncherInstallOk       = "launcher_install_ok";
     constexpr const char* LauncherInstallUnavail  = "launcher_install_unavail";

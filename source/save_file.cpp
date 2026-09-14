@@ -2560,6 +2560,30 @@ uint8_t* SaveFile::findGbaSectorData(int sectionId) {
     return nullptr;
 }
 
+bool SaveFile::isNationalDexEnabled() const {
+    if (!isImportedFile(gameType_)) return false;
+    uint8_t* sec0 = const_cast<SaveFile*>(this)->findGbaSectorData(0);
+    if (!sec0) return false;
+    return sec0[0x19] != 0;
+}
+
+void SaveFile::setNationalDexEnabled() {
+    if (!isImportedFile(gameType_)) return;
+    // Scrivi su entrambe le slot (come fa il gioco quando sblocca il National Dex)
+    for (int slot = 0; slot < 2; slot++) {
+        int base = slot * GBA_SECTOR_COUNT * GBA_SECTOR_SIZE;
+        for (int i = 0; i < GBA_SECTOR_COUNT; i++) {
+            int ofs = base + i * GBA_SECTOR_SIZE;
+            if (ofs + GBA_SAVE_SIZE > (int)rawData_.size()) continue;
+            uint16_t sid = readU16LE(rawData_.data() + ofs + GBA_OFS_SECTOR_ID);
+            if (sid == 0) {
+                rawData_[ofs + 0x19] = 1;
+            }
+        }
+    }
+    dirty_ = true;
+}
+
 // --- Borsa Gen3 GBA ---
 // Offsets relativi all'inizio dati settore 1 (SaveBlock1) + slot count.
 // Fonti: pret include/global.h (pokeruby/pokeemerald/pokefirered) incrociato

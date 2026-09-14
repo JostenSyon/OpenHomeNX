@@ -85,6 +85,7 @@ public:
     // True once a mutator has changed persistent content since the last
     // load()/save(). Lets the UI skip rewriting an untouched save on B.
     bool isDirty() const { return dirty_; }
+    void markDirty() { dirty_ = true; invalidateAllBoxCache(); }
     GameType gameType() const { return gameType_; }
 
     // Access SCBlock by key (for SCBlock-based games: ZA/SV/SwSh/LA) — via FFI wrapper M3a
@@ -97,6 +98,10 @@ public:
     // Find GBA sector data by section ID in the active save slot.
     // Returns pointer to the sector's 0x1000-byte region, or nullptr.
     uint8_t* findGbaSectorData(int sectionId);
+
+    // National Dex flag for R/S/E (SaveBlock2+0x19, byte 0/1, entrambe le slot)
+    bool isNationalDexEnabled() const;
+    void setNationalDexEnabled();
 
     // Borsa Gen3 GBA (RSE/FRLG, settore 1 = SaveBlock1). Slot da 4B
     // {id u16 LE, count u16 LE}. Layout verificato: pret global.h di

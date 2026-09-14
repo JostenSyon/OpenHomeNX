@@ -5,6 +5,9 @@
 #include "pokemon_ffi.h"
 #include "led.h"
 #include "species_converter.h"
+#include "trade_evo.h"
+#include "item_locations.h"
+#include "pokedex.h"
 #include "form_names.h"
 #include "personal_za.h"
 #include "personal_sv.h"
@@ -13,6 +16,7 @@
 #include "personal_la.h"
 #include "personal_gg.h"
 #include "update_net.h"
+#include "settings_cfg.h"
 #include <algorithm>
 #include <cmath>
 #include <cctype>
@@ -136,6 +140,7 @@ void UI::handleInput(bool& running) {
         if (showSearchResults_)      { handleSearchResultsInput(event); continue; }
         if (showWondercardList_)     { handleWondercardListInput(event); continue; }
         if (showPkImportList_)       { handlePkImportListInput(event); continue; }
+        if (showTradeList_)          { handleTradeListInput(event); continue; }
         if (showGenMonList_)         { handleGenMonListInput(event); continue; }
         if (showLearnset_)           { handleLearnsetInput(event); continue; }
         if (showBoxView_)            { handleBoxViewInput(event); continue; }
@@ -156,6 +161,8 @@ void UI::handleMenuInput(const SDL_Event& event, bool& running) {
     bool hasSend = !isDualBankMode() && save_.isLoaded();
     // "Generate test mons": solo debug, mai dual-bank.
     bool hasGen = DebugLog::enabled() && !isDualBankMode();
+    // "Scambio": solo a save Gen3 caricato (record Pk3, Fase 1), mai dual-bank.
+    bool hasTrade = !isDualBankMode() && save_.isLoaded() && TradeEvo::supported(save_.gameType());
     int menuCount = menuVisibleCount();
     if (menuSelection_ >= menuCount) menuSelection_ = menuCount - 1;
     if (menuSelection_ < 0) menuSelection_ = 0;
@@ -260,7 +267,14 @@ void UI::handleMenuInput(const SDL_Event& event, bool& running) {
             }
             return;
         }
-        int sel = menuSelection_ - (hasWC ? 5 : 4) - (hasExport ? 1 : 0) - 1 - (hasGen ? 1 : 0) - (hasSend ? 1 : 0);
+        // Scambio self-trade (indice sendIdx+1, dopo Send save).
+        int tradeIdx = sendIdx + (hasSend ? 1 : 0);
+        if (hasTrade && menuSelection_ == tradeIdx) {
+            showMenu_ = false;
+            openTradeList();
+            return;
+        }
+        int sel = menuSelection_ - (hasWC ? 5 : 4) - (hasExport ? 1 : 0) - 1 - (hasGen ? 1 : 0) - (hasSend ? 1 : 0) - (hasTrade ? 1 : 0);
         if (isDualBankMode()) {
             // sel: 0=Switch Left Bank, 1=Switch Right Bank, 2=Change Game,
             // 3=Save Banks, 4=Quit
@@ -895,6 +909,16 @@ void UI::handleStickRepeat() {
             else if (pkImportCursor_ >= pkImportScroll_ + visibleRows)
                 pkImportScroll_ = pkImportCursor_ - visibleRows + 1;
         }
+    } else if (showTradeList_) {
+        if (stickDirY_ != 0 && !tradeCandidates_.empty()) {
+            int count = static_cast<int>(tradeCandidates_.size());
+            tradeCursor_ += stickDirY_ > 0 ? 1 : -1;
+            if (tradeCursor_ < 0) tradeCursor_ = count - 1;
+            if (tradeCursor_ >= count) tradeCursor_ = 0;
+            constexpr int VISIBLE = 6;
+            if (tradeCursor_ < tradeScroll_) tradeScroll_ = tradeCursor_;
+            else if (tradeCursor_ >= tradeScroll_ + VISIBLE) tradeScroll_ = tradeCursor_ - VISIBLE + 1;
+        }
     } else if (showGenMonList_) {
         if (stickDirY_ != 0 && !genMonList_.empty()) {
             int count = static_cast<int>(genMonList_.size());
@@ -1162,6 +1186,14 @@ void UI::setPokemonAt(int box, int slot, Panel panel, const Pokemon& pkm) {
         if (isDualBankMode()) {
             if (leftBankName_.empty()) return;
             bankLeft_.setSlot(box, slot, pkm);
+            // In dual-bank la banca sinistra può essere dello stesso gioco del save
+            // caricato (es. Smeraldo). Il box della banca non aggiorna il dex del
+            // save, ma in-game il dex deve risultare posseduto — sincronizziamo
+            // subito il SaveFile in memoria.
+            if (save_.isLoaded() && !pkm.isEmpty() && !pkm.isEgg() &&
+                save_.gameType() == bankLeft_.gameType()) {
+                Pokedex::registerPokemon(save_, pkm);
+            }
         } else
             save_.setBoxSlot(box, slot, pkm);
     } else if (bank_.isCrossGen()) {
@@ -1411,6 +1443,16 @@ bool UI::prepareForPlacement(Pokemon& pkm, Panel panel, std::string& whyNot) con
         pkm.gameType_ = d;
         pkm.ohpkmBlob_.clear();
         if (dg == 1) fillGen1Names(pkm, gen1Ot, gen1Nick);
+        // Hotfix Jolteon Lv0: cross-gen bank → Gen3 a volte produce EXP 0 (OHPKM
+        // con exp 0, vedi Emerald box10 Jolteon 135). EXP 0 → Lv1, non 0, ma
+        // in-game appare 0 perché la coda party non è ancora ricalcolata.
+        // Se il record appena convertito ha EXP 0, forziamo a Lv50 (125000 MF)
+        // così non arriva mai a 0 e il checksum resta valido.
+        if ((isFRLG(d) || isImportedFile(d)) && pkm.readU32(0x24) == 0) {
+            DebugLog::line("xfer: fix EXP 0 -> 125000 for spc=%u (was Lv0)", pkm.species());
+            pkm.writeU32(0x24, 125000);
+            pkm.refreshChecksum();
+        }
         if (pkm.ohBackup_.empty() && !backup.empty())
             pkm.ohBackup_ = std::move(backup);
         return true;
@@ -3164,6 +3206,353 @@ void UI::handlePkImportListInput(const SDL_Event& event) {
                 break;
             case SDL_CONTROLLER_BUTTON_A: // Switch B = cancel
                 showPkImportList_ = false;
+                break;
+        }
+    }
+}
+
+void UI::openTradeList() {
+    if (!save_.isLoaded() || !TradeEvo::supported(save_.gameType())) {
+        showMessageAndWait(i18n::get(StrKey::TradeTitle), i18n::get(StrKey::TradeFailed));
+        return;
+    }
+    uint32_t t0 = SDL_GetTicks();
+    rebuildTradeCandidates();
+    uint32_t dt = SDL_GetTicks() - t0;
+    DebugLog::line("trade: open candidates=%zu dt=%ums save=%s", tradeCandidates_.size(), dt, gameDisplayNameOf(save_.gameType()));
+    if (tradeCandidates_.empty()) {
+        showMessageAndWait(i18n::get(StrKey::TradeTitle), i18n::get(StrKey::TradeNone));
+        return;
+    }
+    tradeCursor_ = 0;
+    tradeScroll_ = 0;
+    showTradeList_ = true;
+}
+
+// Party soltanto (per ora): 6 slot, niente scan dei 420 box — apre istantaneo.
+// Estenderemo a tutti i box quando il dex-sync sarà stabile (vedi TODO).
+void UI::rebuildTradeCandidates() {
+    tradeCandidates_.clear();
+    for (int i = 0; i < 6; i++) {
+        Pokemon pkm = save_.getPartySlot(i);
+        if (pkm.isEmpty() || pkm.isEgg() || pkm.species() == 0) continue;
+        if (TradeEvo::baseRuleFor(pkm.species()))
+            tradeCandidates_.push_back({-1, i});
+    }
+    DebugLog::line("trade: candidates %zu (party-only)", tradeCandidates_.size());
+}
+
+void UI::doTradeEvolve(int candidateIdx) {
+    if (candidateIdx < 0 || candidateIdx >= (int)tradeCandidates_.size()) return;
+    TradeCandidate ref = tradeCandidates_[candidateIdx];
+    Pokemon pkm = ref.box < 0 ? save_.getPartySlot(ref.slot) : save_.getBoxSlot(ref.box, ref.slot);
+    if (pkm.isEmpty() || pkm.isEgg() || pkm.species() == 0) return;
+    uint16_t heldRaw = pkm.heldItem();
+    uint16_t heldModern = TradeEvo::heldToModern(save_.gameType(), heldRaw);
+    DebugLog::line("trade: doEvolve idx=%d spc=%u heldRaw=%u heldModern=%u box=%d slot=%d", candidateIdx, pkm.species(), heldRaw, heldModern, ref.box, ref.slot);
+    // Everstone blocca qualsiasi evoluzione anche per scambio
+    if (heldModern == 229 || heldRaw == 195) { // 229 modern Everstone, 195 gen3 Everstone
+        showMessageAndWait(i18n::get(StrKey::TradeTitle), "Everstone blocca l'evoluzione.");
+        return;
+    }
+    const TradeEvo::TradeRule* rule = TradeEvo::findRule(pkm.species(), heldModern);
+    if (!rule) {
+        // Nei filtri la specie PUO' evolvere: qui manca lo strumento.
+        const TradeEvo::TradeRule* base = TradeEvo::baseRuleFor(pkm.species());
+        if (base && base->heldModern != 0) {
+            std::string where = ItemLocations::footerLine(base->heldModern);
+            std::string msg = i18n::get(StrKey::TradeNeedsItem) + "\n" + ItemLocations::itemName(base->heldModern);
+            if (!where.empty()) msg += "\n" + where;
+            showMessageAndWait(i18n::get(StrKey::TradeTitle), msg);
+        } else {
+            showMessageAndWait(i18n::get(StrKey::TradeTitle), i18n::get(StrKey::TradeNeedsItem));
+        }
+        return;
+    }
+    if (TradeEvo::isOutOfRange(save_.gameType(), rule->to)) {
+        showMessageAndWait(i18n::get(StrKey::TradeTitle), i18n::get(StrKey::TradeOutOfRange));
+        return;
+    }
+
+    // Karrablast 588 ↔ Shelmet 616 : prova doppio se controparte nel save.
+    if (TradeEvo::isPairedSpecies(pkm.species())) {
+        uint16_t need = TradeEvo::pairedCounterpart(pkm.species());
+        TradeCandidate other{-2, -1};
+        bool found = false;
+        for (int i = 0; i < 6 && !found; i++) {
+            if (ref.box < 0 && i == ref.slot) continue;
+            Pokemon q = save_.getPartySlot(i);
+            if (!q.isEmpty() && !q.isEgg() && q.species() == need) { other = {-1, i}; found = true; }
+        }
+        // Box search disabilitato per ora (party-only come da TODO): riattiveremo
+        // quando il dex-sync sarà stabile.
+        if (found) {
+            Pokemon pkm2 = other.box < 0 ? save_.getPartySlot(other.slot) : save_.getBoxSlot(other.box, other.slot);
+            uint16_t held2Modern = TradeEvo::heldToModern(save_.gameType(), pkm2.heldItem());
+            const TradeEvo::TradeRule* rule2 = TradeEvo::findRule(pkm2.species(), held2Modern);
+            if (rule2 && !TradeEvo::isOutOfRange(save_.gameType(), rule2->to)) {
+                std::string from1 = SpeciesName::get(pkm.species());
+                std::string to1 = SpeciesName::get(rule->to);
+                std::string from2 = SpeciesName::get(pkm2.species());
+                std::string to2 = SpeciesName::get(rule2->to);
+                if (!showConfirmDialog(i18n::get(StrKey::TradeConfirmTitle),
+                                       i18n::fmt(StrKey::TradeDoubleConfirmBody, from1, from2, to1, to2)))
+                    return;
+                Pokemon a = pkm, b = pkm2;
+                if (!TradeEvo::applyTradeEvolution(a, rule) || !TradeEvo::applyTradeEvolution(b, rule2)) {
+                    showMessageAndWait(i18n::get(StrKey::TradeTitle), i18n::get(StrKey::TradeFailed));
+                    return;
+                }
+                if (ref.box < 0) save_.setPartySlot(ref.slot, a); else save_.setBoxSlot(ref.box, ref.slot, a);
+                if (other.box < 0) save_.setPartySlot(other.slot, b); else save_.setBoxSlot(other.box, other.slot, b);
+                Pokedex::registerPokemon(save_, a);
+                Pokedex::registerPokemon(save_, b);
+                persistGameSaveIfDirty();
+                showTradeList_ = false;
+                playTradeEvolveAnim(pkm.species(), rule->to);
+                playTradeEvolveAnim(pkm2.species(), rule2->to);
+                showMessageAndWait(i18n::get(StrKey::TradeDoneTitle),
+                                   i18n::fmt(StrKey::TradeDoubleDoneBody, from1, to1, from2, to2));
+                return;
+            }
+        }
+        // nessuna controparte valida → fallback singolo (hybrid)
+    }
+
+    const std::string from = SpeciesName::get(pkm.species());
+    const std::string to = SpeciesName::get(rule->to);
+    uint16_t fromSpeciesAnim = pkm.species();
+    uint16_t toSpeciesAnim = rule->to;
+    if (!showConfirmDialog(i18n::get(StrKey::TradeConfirmTitle),
+                           i18n::fmt(StrKey::TradeConfirmBody, from, to)))
+        return;
+    if (!TradeEvo::applyTradeEvolution(pkm, rule)) {
+        showMessageAndWait(i18n::get(StrKey::TradeTitle), i18n::get(StrKey::TradeFailed));
+        return;
+    }
+    if (ref.box < 0) save_.setPartySlot(ref.slot, pkm);
+    else save_.setBoxSlot(ref.box, ref.slot, pkm);
+    Pokedex::registerPokemon(save_, pkm);
+    persistGameSaveIfDirty();
+    showTradeList_ = false;
+    playTradeEvolveAnim(fromSpeciesAnim, toSpeciesAnim);
+    showMessageAndWait(i18n::get(StrKey::TradeDoneTitle),
+                       i18n::fmt(StrKey::TradeDoneBody, from, to));
+}
+
+void UI::playTradeEvolveAnim(uint16_t fromSpecies, uint16_t toSpecies) {
+    if (!renderer_) return;
+    if (!Settings::tradeAnim()) return; // toggle Aspetto: animazione scambio
+    markDirty(); // Forza redraw dopo il ritorno (stesso schema dei modali bloccanti sopra)
+
+    SDL_Texture* fromTex = getSprite(fromSpecies, 0);
+    SDL_Texture* toTex = getSprite(toSpecies, 0);
+    std::string fromName = SpeciesName::get(fromSpecies);
+    std::string toName = SpeciesName::get(toSpecies);
+
+    constexpr int SPR = 176;
+    // Ritmo ricalcato su quello dei giochi veri (nessuna fonte pubblica
+    // documenta i frame esatti: la sequenza di scambio/evoluzione li' e'
+    // volutamente lenta e "cerimoniale", qualche secondo a testa, non uno
+    // scatto) -- ogni Pokemon ha un ciclo entra/pausa/esce di ENTER_MS+
+    // PAUSE_MS+EXIT_MS, i due cicli in sequenza fanno DUR_MS totali.
+    constexpr Uint32 ENTER_MS = 900, PAUSE_MS = 750, EXIT_MS = 900;
+    constexpr Uint32 PHASE_MS = ENTER_MS + PAUSE_MS + EXIT_MS;
+    constexpr Uint32 DUR_MS = PHASE_MS * 2;
+    constexpr Uint32 FADE_MS = 350; // dissolvenza in apertura/chiusura di ciascun ciclo
+    Uint32 start = SDL_GetTicks();
+
+    // Palette dedicata dell'effetto (non il tema dell'app: stesso blu/verde
+    // dell'animazione di scambio dei giochi veri, un colore per lato).
+    const SDL_Color BLUE_SIDE  = {20, 52, 122, 255};
+    const SDL_Color GREEN_SIDE = {22, 110, 58, 255};
+    const SDL_Color STREAK     = {225, 240, 255, 255};
+
+    // Hash deterministico 0..1 da un intero (niente stato rand persistente).
+    auto hash1 = [](int i) {
+        float x = std::sin((float)i * 12.9898f) * 43758.5453f;
+        return x - std::floor(x);
+    };
+
+    // Estremi della diagonale (alto-destra -> basso-sinistra, stessa
+    // formula dello sfondo sotto) per i percorsi PARALLELI ad essa: ciascun
+    // Pokemon cammina nel proprio triangolo, mai sulla linea -- OFFSET lo
+    // scosta di lato (verso alto-sinistra per il blu, verso basso-destra
+    // per il verde), la y segue comunque la diagonale cosi' il percorso
+    // resta sempre parallelo ad essa senza mai attraversarla.
+    constexpr float OFFSET = 230.0f;
+    float blY = SCREEN_H * 0.86f, trY = SCREEN_H * 0.14f;
+    auto splitXAt = [=](float y) { return SCREEN_W * (1.0f - y / SCREEN_H); };
+
+    // Percorso di un Pokemon nel proprio triangolo: entra (0 -> meta'), si
+    // ferma un attimo al centro, poi esce (meta' -> 1) dal lato opposto --
+    // mai un salto, sempre in scia alla diagonale.
+    auto along = [=](Uint32 localMs) -> float {
+        if (localMs < ENTER_MS) {
+            float p = (float)localMs / ENTER_MS;
+            float ep = p * p * (3 - 2 * p); // smoothstep
+            return ep * 0.5f;
+        } else if (localMs < ENTER_MS + PAUSE_MS) {
+            return 0.5f;
+        } else {
+            float p = (float)(localMs - ENTER_MS - PAUSE_MS) / EXIT_MS;
+            if (p > 1.0f) p = 1.0f;
+            float ep = p * p * (3 - 2 * p);
+            return 0.5f + ep * 0.5f;
+        }
+    };
+    auto fadeAlpha = [=](Uint32 localMs) -> Uint8 {
+        float a;
+        if (localMs < FADE_MS) a = (float)localMs / FADE_MS;
+        else if (localMs > PHASE_MS - FADE_MS) a = (float)(PHASE_MS - localMs) / FADE_MS;
+        else a = 1.0f;
+        if (a < 0.0f) a = 0.0f;
+        if (a > 1.0f) a = 1.0f;
+        return (Uint8)(255 * a);
+    };
+
+    // Direzione/perpendicolare della diagonale (basso-sx -> alto-dx) per
+    // orientare segmenti e crocette lungo il taglio: diagUx/Uy e' il verso
+    // di percorrenza, diagVx/Vy la perpendicolare (spargimento laterale).
+    // STREAK_SPEED e' in frazioni di diagonale al secondo, piu' alta della
+    // velocita' media del Pokemon cosi' che i fasci lo superino.
+    const float diagLen = std::sqrt((float)(SCREEN_W * SCREEN_W + SCREEN_H * SCREEN_H));
+    const float diagUx = SCREEN_W / diagLen, diagUy = -SCREEN_H / diagLen;
+    const float diagVx = SCREEN_H / diagLen, diagVy = SCREEN_W / diagLen;
+    constexpr float STREAK_SPEED = 0.9f;
+
+    bool done = false;
+    while (!done) {
+        SDL_Event event;
+        while (SDL_PollEvent(&event)) {
+            if (event.type == SDL_QUIT) done = true;
+        }
+
+        Uint32 elapsed = SDL_GetTicks() - start;
+        if (elapsed > DUR_MS) elapsed = DUR_MS;
+        float secs = elapsed / 1000.0f;
+
+        SDL_SetRenderDrawColor(renderer_, 8, 8, 14, 255);
+        SDL_RenderClear(renderer_);
+
+        // Due sfondi separati dalla diagonale (alto-destra -> basso-sinistra):
+        // blu nel triangolo alto-sinistra, verde in quello basso-destra.
+        for (int y = 0; y < SCREEN_H; y++) {
+            int splitX = (int)splitXAt((float)y);
+            if (splitX > 0) drawRect(0, y, splitX, 1, BLUE_SIDE);
+            if (splitX < SCREEN_W) drawRect(splitX, y, SCREEN_W - splitX, 1, GREEN_SIDE);
+        }
+
+        // Particellato a righe lungo la diagonale: segmenti sparsi su tutta
+        // la larghezza (non solo vicino al taglio), di lunghezza variabile,
+        // che scorrono nella stessa direzione del Pokemon in scena ma a
+        // velocita' piu' elevata della sua camminata.
+        float dirSign = (elapsed < PHASE_MS) ? 1.0f : -1.0f;
+        float localSecs = ((elapsed < PHASE_MS) ? elapsed : (elapsed - PHASE_MS)) / 1000.0f;
+        for (int i = 0; i < 16; i++) {
+            float baseS = hash1(i * 13 + 5);
+            float sPos = baseS + dirSign * localSecs * STREAK_SPEED;
+            sPos -= std::floor(sPos);
+            float segLen = 70.0f + hash1(i * 9 + 2) * 170.0f;
+            float perp = (hash1(i * 17 + 7) - 0.5f) * (SCREEN_W * 1.1f);
+            float cx = sPos * SCREEN_W + perp * diagVx;
+            float cy = SCREEN_H * (1.0f - sPos) + perp * diagVy;
+            float half = segLen * 0.5f;
+            int x1 = (int)(cx - diagUx * half), y1 = (int)(cy - diagUy * half);
+            int x2 = (int)(cx + diagUx * half), y2 = (int)(cy + diagUy * half);
+            Uint8 a = (Uint8)(90 + 90 * hash1(i * 5 + 11));
+            SDL_SetRenderDrawColor(renderer_, STREAK.r, STREAK.g, STREAK.b, a);
+            SDL_RenderDrawLine(renderer_, x1, y1, x2, y2);
+        }
+        // Stelline: crocette che scintillano (alpha pulsante), sparse su
+        // tutta la fascia attorno alla diagonale cosi' da essere ben visibili.
+        for (int i = 0; i < 26; i++) {
+            float baseS = hash1(i * 23 + 3);
+            float sPos = baseS + dirSign * localSecs * (STREAK_SPEED * 0.5f);
+            sPos -= std::floor(sPos);
+            float perp = (hash1(i * 11 + 6) - 0.5f) * (SCREEN_W * 0.85f);
+            float sx = sPos * SCREEN_W + perp * diagVx;
+            float sy = SCREEN_H * (1.0f - sPos) + perp * diagVy;
+            if (sx < 5 || sx >= SCREEN_W - 5 || sy < 5 || sy >= SCREEN_H - 5) continue;
+            float twinkle = 0.5f + 0.5f * std::sin(secs * 5.0f + i * 1.7f);
+            Uint8 a = (Uint8)(120 + 135 * twinkle);
+            int arm = (hash1(i * 3 + 1) > 0.6f) ? 6 : 4;
+            SDL_SetRenderDrawColor(renderer_, STREAK.r, STREAK.g, STREAK.b, a);
+            int ix = (int)sx, iy = (int)sy;
+            SDL_RenderDrawLine(renderer_, ix - arm, iy, ix + arm, iy);
+            SDL_RenderDrawLine(renderer_, ix, iy - arm, ix, iy + arm);
+        }
+
+        SDL_Color shadow = {0, 0, 0, 200};
+        if (elapsed < PHASE_MS) {
+            // Primo Pokemon (quello che se ne va): corsia blu, dal
+            // basso-sinistra verso l'alto-destra della propria corsia.
+            Uint32 localMs = elapsed;
+            float al = along(localMs);
+            float y = blY + (trY - blY) * al;
+            int sx = (int)(splitXAt(y) - OFFSET);
+            int sy = (int)y;
+            Uint8 a = fadeAlpha(localMs);
+            if (fromTex && a > 0) {
+                SDL_SetTextureAlphaMod(fromTex, a);
+                drawSpriteFit(sx - SPR / 2, sy - SPR / 2, SPR, SPR, fromTex);
+                SDL_SetTextureAlphaMod(fromTex, 255);
+            }
+            drawTextCentered(fromName, SCREEN_W / 2 + 2, SCREEN_H - 48, shadow, font_);
+            drawTextCentered(fromName, SCREEN_W / 2, SCREEN_H - 50, T().text, font_);
+        } else {
+            // Secondo Pokemon (l'evoluzione): corsia verde, dal lato e
+            // verso opposti -- entra dall'alto-destra verso il basso-sinistra.
+            Uint32 localMs = elapsed - PHASE_MS;
+            float al = along(localMs);
+            float y = trY + (blY - trY) * al;
+            int sx = (int)(splitXAt(y) + OFFSET);
+            int sy = (int)y;
+            Uint8 a = fadeAlpha(localMs);
+            if (toTex && a > 0) {
+                SDL_SetTextureAlphaMod(toTex, a);
+                drawSpriteFit(sx - SPR / 2, sy - SPR / 2, SPR, SPR, toTex);
+                SDL_SetTextureAlphaMod(toTex, 255);
+            }
+            drawTextCentered(toName, SCREEN_W / 2 + 2, SCREEN_H - 48, shadow, font_);
+            drawTextCentered(toName, SCREEN_W / 2, SCREEN_H - 50, T().text, font_);
+        }
+
+        SDL_RenderPresent(renderer_);
+        SDL_Delay(16);
+
+        if (elapsed >= DUR_MS) done = true;
+    }
+}
+
+void UI::handleTradeListInput(const SDL_Event& event) {
+    int count = (int)tradeCandidates_.size();
+    constexpr int VISIBLE = 6;
+    auto scrollIntoView = [&]() {
+        if (tradeCursor_ < tradeScroll_)
+            tradeScroll_ = tradeCursor_;
+        else if (tradeCursor_ >= tradeScroll_ + VISIBLE)
+            tradeScroll_ = tradeCursor_ - VISIBLE + 1;
+    };
+    if (event.type == SDL_CONTROLLERBUTTONDOWN) {
+        switch (event.cbutton.button) {
+            case SDL_CONTROLLER_BUTTON_DPAD_UP:
+                if (count > 0) {
+                    tradeCursor_ = (tradeCursor_ > 0) ? tradeCursor_ - 1 : count - 1;
+                    scrollIntoView();
+                }
+                break;
+            case SDL_CONTROLLER_BUTTON_DPAD_DOWN:
+                if (count > 0) {
+                    tradeCursor_ = (tradeCursor_ < count - 1) ? tradeCursor_ + 1 : 0;
+                    scrollIntoView();
+                }
+                break;
+            case SDL_CONTROLLER_BUTTON_B: // Switch A = evolvi
+                doTradeEvolve(tradeCursor_);
+                break;
+            case SDL_CONTROLLER_BUTTON_A: // Switch B = chiudi
+                showTradeList_ = false;
                 break;
         }
     }
