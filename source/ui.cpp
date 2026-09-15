@@ -790,6 +790,7 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
                 else if (screen_ == AppScreen::GameSelector) {
                     drawGameSelectorFrame();
                     if (showGameSelMenu_) drawGameSelMenuPopup();
+                    if (showGamePick_) drawGamePickPopup();
                     if (showSettings_) drawSettingsPopup();
                 if (showSaveMenu_) drawSaveMenuPopup();
                 if (showBackpack_) drawBackpackPopup();
@@ -866,6 +867,7 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
                 else if (screen_ == AppScreen::GameSelector) {
                     drawGameSelectorFrame();
                     if (showGameSelMenu_) drawGameSelMenuPopup();
+                    if (showGamePick_) drawGamePickPopup();
                     if (showSettings_) drawSettingsPopup();
                 if (showSaveMenu_) drawSaveMenuPopup();
                 if (showBackpack_) drawBackpackPopup();
@@ -932,6 +934,7 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
                 drawGameSelectorFrame();
                 if (showRadialMenu_) drawRadialMenu();
                 if (showGameSelMenu_) drawGameSelMenuPopup();
+                if (showGamePick_) drawGamePickPopup();
                     if (showSettings_) drawSettingsPopup();
                 if (showSaveMenu_) drawSaveMenuPopup();
                 if (showBackpack_) drawBackpackPopup();
@@ -1035,6 +1038,7 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
                 else if (screen_ == AppScreen::GameSelector) {
                     drawGameSelectorFrame();
                     if (showGameSelMenu_) drawGameSelMenuPopup();
+                    if (showGamePick_) drawGamePickPopup();
                     if (showSettings_) drawSettingsPopup();
                 if (showSaveMenu_) drawSaveMenuPopup();
                 if (showBackpack_) drawBackpackPopup();
@@ -1110,6 +1114,7 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
                 else if (screen_ == AppScreen::GameSelector) {
                     drawGameSelectorFrame();
                     if (showGameSelMenu_) drawGameSelMenuPopup();
+                    if (showGamePick_) drawGamePickPopup();
                     if (showSettings_) drawSettingsPopup();
                 if (showSaveMenu_) drawSaveMenuPopup();
                 if (showBackpack_) drawBackpackPopup();
@@ -1227,6 +1232,7 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
                 drawGameSelectorFrame();
                 if (showRadialMenu_) drawRadialMenu();
                 if (showGameSelMenu_) drawGameSelMenuPopup();
+                if (showGamePick_) drawGamePickPopup();
                     if (showSettings_) drawSettingsPopup();
                 if (showSaveMenu_) drawSaveMenuPopup();
                 if (showBackpack_) drawBackpackPopup();

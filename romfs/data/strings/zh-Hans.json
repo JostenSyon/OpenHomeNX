@@ -227,6 +227,7 @@
     "left": "左",
     "right": "右",
     "status_game_eject": "  X：弹出USB",
+    "dock_eject": "弹出USB",
     "no_boxes_title": "暂无盒子",
     "menu_import_pk": "导入PK文件",
     "set_title": "设置",

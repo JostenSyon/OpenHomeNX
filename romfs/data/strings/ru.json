@@ -227,6 +227,7 @@
     "left": "Левый",
     "right": "Правый",
     "status_game_eject": "  X: Извлечь USB",
+    "dock_eject": "Извлечь USB",
     "no_boxes_title": "Пока нет боксов",
     "menu_import_pk": "Импорт файлов PK",
     "set_title": "Настройки",

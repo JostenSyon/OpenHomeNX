@@ -57,6 +57,7 @@
     "status_game_quit_page": "A: Seleziona  B: Esci  L/R: Pagina  Y: Tema  -: Info",
     "status_game_quit": "A: Seleziona  B: Esci  Y: Tema  -: Info",
     "status_game_eject": "  X: Espelli USB",
+    "dock_eject": "Espelli USB",
     "status_game_launch": "  ZL: Avvia",
     "dual_bank_mode": "Modalita doppia banca",
     "no_banks_title": "Nessuna banca",

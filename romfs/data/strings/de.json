@@ -227,6 +227,7 @@
     "left": "Links",
     "right": "Rechts",
     "status_game_eject": "  X: USB auswerfen",
+    "dock_eject": "USB auswerfen",
     "no_boxes_title": "Noch keine Boxen",
     "menu_import_pk": "PK-Dateien importieren",
     "set_title": "Einstellungen",
