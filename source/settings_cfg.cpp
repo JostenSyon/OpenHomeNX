@@ -157,5 +157,15 @@ bool radialMenu() { return getInt("radial_menu", 0) != 0; }
 void setRadialMenu(bool v) { setInt("radial_menu", v ? 1 : 0); }
 bool tradeAnim() { return getInt("trade_anim", 1) != 0; }
 void setTradeAnim(bool v) { setInt("trade_anim", v ? 1 : 0); }
+std::string dockOrder() {
+    auto it = g_kv.find("dock_order");
+    return (it == g_kv.end()) ? "Backpack,Banks,SaveMenu,Trade,Eject" : it->second;
+}
+void setDockOrder(const std::string& v) {
+    g_kv["dock_order"] = v;
+    save();
+}
+bool dockVisible() { return getInt("dock_visible", 1) != 0; }
+void setDockVisible(bool v) { setInt("dock_visible", v ? 1 : 0); }
 
 } // namespace Settings

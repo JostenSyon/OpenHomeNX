@@ -18,6 +18,9 @@
 #include <dirent.h>
 #include <fstream>
 #include <sys/stat.h>
+#ifdef OH_USB_UPDATE
+#include <usbhsfs.h>
+#endif
 
 namespace {
 // update.cfg accanto all'NRO (o in sdmc:/switch/OpenHomeNX/). Righe key=value:
@@ -147,21 +150,123 @@ bool readUpdateCfg(const std::string& basePath, UpdateCfg& out) {
 }
 } // namespace
 
+// Forward: definita piu' sotto accanto agli altri helper backup.
+static bool removeRecursive(const std::string& p);
+
+// ==================== Dock inferiore (riga bassa selettore giochi) ====================
+// Stato persistito in settings.cfg (dock_order CSV + dock_visible). Disegno,
+// tap e navigazione sono tutti guidati da dockLayout(), cosi' l'ordine utente
+// non desincronizza mai le tre cose (era il bug del menu popup v0.1.37).
+
+void UI::dockStateLoad() {
+    dockState_.customOrder.clear();
+    std::string orderStr = Settings::dockOrder();
+    size_t start = 0;
+    while (start < orderStr.size()) {
+        size_t end = orderStr.find(',', start);
+        if (end == std::string::npos) end = orderStr.size();
+        std::string token = orderStr.substr(start, end - start);
+        if (token == "Backpack") dockState_.customOrder.push_back(DockState::Item::Backpack);
+        else if (token == "Banks") dockState_.customOrder.push_back(DockState::Item::Banks);
+        else if (token == "SaveMenu") dockState_.customOrder.push_back(DockState::Item::SaveMenu);
+        else if (token == "Trade") dockState_.customOrder.push_back(DockState::Item::Trade);
+        else if (token == "Eject") dockState_.customOrder.push_back(DockState::Item::Eject);
+        if (end == std::string::npos) break;
+        start = end + 1;
+    }
+    if (dockState_.customOrder.empty()) dockStateResetToDefault();
+    dockState_.visible = Settings::dockVisible();
+    dockLoaded_ = true;
+}
+
+void UI::dockStateSave() const {
+    std::string orderStr;
+    for (size_t i = 0; i < dockState_.customOrder.size(); ++i) {
+        if (i > 0) orderStr += ",";
+        switch (dockState_.customOrder[i]) {
+            case DockState::Item::Backpack: orderStr += "Backpack"; break;
+            case DockState::Item::Banks: orderStr += "Banks"; break;
+            case DockState::Item::SaveMenu: orderStr += "SaveMenu"; break;
+            case DockState::Item::Trade: orderStr += "Trade"; break;
+            case DockState::Item::Eject: orderStr += "Eject"; break;
+        }
+    }
+    Settings::setDockOrder(orderStr);
+    Settings::setDockVisible(dockState_.visible);
+}
+
+void UI::dockStateResetToDefault() {
+    dockState_.customOrder = { DockState::Item::Backpack, DockState::Item::Banks,
+        DockState::Item::SaveMenu, DockState::Item::Trade, DockState::Item::Eject };
+    dockState_.visible = true;
+    dockState_.reorderMode = false;
+    dockState_.reorderFocusIdx = 0;
+    dockState_.reorderEnterTime = 0;
+}
+
+bool UI::dockStateCanReorder() const {
+    return dockLayout().size() >= 2 && !dockState_.reorderMode;
+}
+
+void UI::dockStateEnterReorderMode(int startIdx) {
+    if (!dockLoaded_) dockStateLoad();
+    auto slots = dockLayout();
+    if (slots.size() < 2) return;
+    dockState_.reorderMode = true;
+    if (startIdx < 0 || startIdx >= (int)slots.size()) startIdx = 0;
+    dockState_.reorderFocusIdx = startIdx;
+    dockState_.reorderEnterTime = SDL_GetTicks();
+    dockFocusItem(slots[startIdx].item);
+}
+
+void UI::dockStateExitReorderMode(bool save) {
+    dockState_.reorderMode = false;
+    dockState_.reorderFocusIdx = 0;
+    dockState_.reorderEnterTime = 0;
+    if (save) dockStateSave();
+}
+
+void UI::dockStateSwapItems(int i, int j) {
+    if (i >= 0 && i < (int)dockState_.customOrder.size() && j >= 0 && j < (int)dockState_.customOrder.size())
+        std::swap(dockState_.customOrder[i], dockState_.customOrder[j]);
+}
+
+bool UI::dockStateItemVisible(DockState::Item item) const {
+    switch (item) {
+        case DockState::Item::SaveMenu:
+            return true; // opera sul gioco evidenziato (come la voce radiale)
+        case DockState::Item::Trade: {
+            // Come il radial menu: niente dual-bank, solo se il gioco
+            // evidenziato supporta lo scambio.
+            if (isDualBankMode()) return false;
+            if (gameSelCursor_ < 0 || gameSelCursor_ >= (int)availableGames_.size()) return false;
+            return TradeEvo::supported(availableGames_[gameSelCursor_]);
+        }
+        case DockState::Item::Eject:
+#ifdef OH_USB_UPDATE
+            return usbHsFsGetMountedDeviceCount() > 0;
+#else
+            return false;
+#endif
+        default:
+            return true; // Backpack, Banks sempre visibili
+    }
+}
+
 static bool readQuickMenu(const std::string& basePath);
 static void writeQuickMenu(const std::string& basePath, bool on);
 
 // Righe popup save (X con debug): Normalize solo per GBA (RSE/FRLG, anche
 // via USB se con +16B) — per gli altri giochi non serve e resta nascosta.
+// Etichetta i18n condivisa tra builder e handler (mai hardcodata in due punti).
+static std::string normalizeRowLabel() { return i18n::get(StrKey::SetNormalizeSave); }
 static std::vector<std::string> saveMenuRows(GameType g) {
     std::vector<std::string> r = { "Backup save", "Browse backups", "Clean old backups" };
-    if (isImportedFile(g) || isFRLG(g)) r.push_back("Normalize save");
+    if (isImportedFile(g) || isFRLG(g)) r.push_back(normalizeRowLabel());
     r.push_back("Send save");
     r.push_back("Close");
     return r;
 }
-#ifdef OH_USB_UPDATE
-#include <usbhsfs.h>
-#endif
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
@@ -340,6 +445,8 @@ void UI::selectProfile(int index) {
     gameSelOnAllBanks_ = false;
     gameSelOnSettings_ = false;
     gameSelOnEject_ = false;
+    gameSelOnSaveMenu_ = false;
+    gameSelOnTrade_ = false;
     gameSelOnAvatar_ = false;
     gameSelOnPack_ = false;
     gameSelOnLaunchBtn_ = false;
@@ -970,6 +1077,241 @@ void UI::drawGameArt(int i, int iconX, int iconY, int size, bool scaleInner) {
     }
 }
 
+// Voci visibili nell'ordine utente + posizioni x centrate (stesso stile
+// della vecchia riga fissa: con 3 voci le posizioni coincidono con le
+// vecchie PCX/VCX/eject, cosi' tap e memoria muscolare non cambiano).
+std::vector<UI::DockSlot> UI::dockLayout() const {
+    std::vector<DockSlot> out;
+    if (!dockState_.visible) return out;
+    std::vector<DockState::Item> vis;
+    for (auto it : dockState_.customOrder)
+        if (dockStateItemVisible(it)) vis.push_back(it);
+    constexpr int ROW_DX = 104;
+    int n = (int)vis.size();
+    int x0 = SCREEN_W / 2 - (n - 1) * ROW_DX / 2;
+    for (int i = 0; i < n; i++) out.push_back({ vis[i], x0 + i * ROW_DX });
+    return out;
+}
+
+void UI::dockClearFocus() {
+    gameSelOnPack_ = gameSelOnAllBanks_ = false;
+    gameSelOnSaveMenu_ = gameSelOnTrade_ = gameSelOnEject_ = false;
+}
+
+void UI::dockFocusItem(DockState::Item item) {
+    gameSelOnAvatar_ = false;
+    gameSelOnLaunchBtn_ = false;
+    gameSelOnChevron_ = 0;
+    gameSelOnPack_     = (item == DockState::Item::Backpack);
+    gameSelOnAllBanks_ = (item == DockState::Item::Banks);
+    gameSelOnSaveMenu_ = (item == DockState::Item::SaveMenu);
+    gameSelOnTrade_    = (item == DockState::Item::Trade);
+    gameSelOnEject_    = (item == DockState::Item::Eject);
+}
+
+bool UI::dockFocusedItem(DockState::Item& out) const {
+    if (gameSelOnPack_) { out = DockState::Item::Backpack; return true; }
+    if (gameSelOnAllBanks_) { out = DockState::Item::Banks; return true; }
+    if (gameSelOnSaveMenu_) { out = DockState::Item::SaveMenu; return true; }
+    if (gameSelOnTrade_) { out = DockState::Item::Trade; return true; }
+    if (gameSelOnEject_) { out = DockState::Item::Eject; return true; }
+    return false;
+}
+
+bool UI::dockHasFocus() const {
+    DockState::Item it;
+    return dockFocusedItem(it);
+}
+
+bool UI::dockMoveFocus(int dir) {
+    auto slots = dockLayout();
+    if (slots.empty()) return false;
+    DockState::Item cur;
+    int idx = -1;
+    if (dockFocusedItem(cur)) {
+        for (int i = 0; i < (int)slots.size(); i++)
+            if (slots[i].item == cur) { idx = i; break; }
+    } else {
+        // Nessuna voce a fuoco: atterra all'estremo verso cui si va.
+        dockFocusItem(slots[dir > 0 ? 0 : (int)slots.size() - 1].item);
+        return true;
+    }
+    // La voce a fuoco e' sparita dal layout (es. chiavetta rimossa):
+    // riparti dall'estremo.
+    if (idx < 0) {
+        dockFocusItem(slots[dir > 0 ? 0 : (int)slots.size() - 1].item);
+        return true;
+    }
+    int nxt = idx + dir;
+    if (nxt < 0 || nxt >= (int)slots.size()) return false;
+    dockFocusItem(slots[nxt].item);
+    return true;
+}
+
+bool UI::dockFocusFirst() {
+    auto slots = dockLayout();
+    if (slots.empty()) return false;
+    dockFocusItem(slots[0].item);
+    return true;
+}
+
+bool UI::dockFocusBanksOrFirst() {
+    auto slots = dockLayout();
+    for (auto& s : slots)
+        if (s.item == DockState::Item::Banks) { dockFocusItem(s.item); return true; }
+    return dockFocusFirst();
+}
+
+// Stesse azioni del tap/conferma sulle vecchie icone fisse (pack -> zaino,
+// vault -> tutte le banche, eject -> espelli) + SaveMenu/Trade come il menu
+// radiale (openSaveMenu / selectGame+openTradeList).
+void UI::dockActivateFocused(bool& running) {
+    DockState::Item it;
+    if (!dockFocusedItem(it)) return;
+    switch (it) {
+        case DockState::Item::Backpack:
+            openBackpackOn(gameSelCursor_);
+            break;
+        case DockState::Item::Banks:
+            enterAllBanksMode();
+            break;
+        case DockState::Item::SaveMenu:
+            if (gameSelCursor_ >= 0 && gameSelCursor_ < (int)availableGames_.size())
+                openSaveMenu(availableGames_[gameSelCursor_],
+                             importedOccurrence(gameSelCursor_));
+            break;
+        case DockState::Item::Trade: {
+            if (gameSelCursor_ < 0 || gameSelCursor_ >= (int)availableGames_.size()) break;
+            AppScreen prevScreen = screen_;
+            selectGame(availableGames_[gameSelCursor_], importedOccurrence(gameSelCursor_));
+            screen_ = prevScreen;
+            openTradeList();
+            break;
+        }
+        case DockState::Item::Eject:
+            ejectUsbDevices();
+            break;
+    }
+    (void)running;
+}
+
+void UI::drawDock() {
+    if (!dockLoaded_) dockStateLoad();
+    // Timeout auto-uscita dal riordino (20 s senza tocchi): esce senza salvare.
+    if (dockState_.reorderMode && SDL_GetTicks() - dockState_.reorderEnterTime > 20000)
+        dockStateExitReorderMode(false);
+    if (!dockState_.visible) {
+        dockClearFocus();
+        return;
+    }
+    constexpr int R = 34;
+    constexpr int ICON_R = 24;
+    constexpr int BTN_Y = SCREEN_H - 110;
+    auto slots = dockLayout();
+    if (slots.empty()) {
+        dockClearFocus();
+        return;
+    }
+    // Animazione espelli (come la vecchia riga fissa): il target e' la
+    // posizione della voce Eject nel layout, o fuori schermo se nascosta.
+    int ejectTarget = SCREEN_W / 2 + 104;
+    for (auto& s : slots)
+        if (s.item == DockState::Item::Eject) ejectTarget = s.cx;
+    float ejectAlphaT =
+#ifdef OH_USB_UPDATE
+        (dockStateItemVisible(DockState::Item::Eject) ? 255.0f : 0.0f);
+#else
+        0.0f;
+#endif
+    if (ejectBtnX_ < 0) ejectBtnX_ = (float)ejectTarget;
+    if (ejectAnimStage_ == 1) {
+        // Appena espulso: prima sparisce l'eject.
+        ejectAlphaT = 0.0f;
+        if (ejectBtnA_ == 0.0f) ejectAnimStage_ = 2;
+    } else if (ejectAnimStage_ == 2) {
+        ejectAlphaT = 0.0f;
+        ejectAnimStage_ = 0;
+    } else if (ejectAlphaT > 0.0f) {
+        ejectAnimStage_ = 0;
+    }
+    if (ejectBtnA_ == 0 && ejectAlphaT > 0.0f) ejectBtnX_ = (float)ejectTarget + 60.0f; // entra da destra
+    auto approach = [](float cur, float tgt) {
+        float d = tgt - cur;
+        if (d > -1.0f && d < 1.0f) return tgt;
+        return cur + d * 0.25f;
+    };
+    float ne = approach(ejectBtnX_, (float)ejectTarget);
+    float na = approach(ejectBtnA_, ejectAlphaT);
+    if (ne != ejectBtnX_ || na != ejectBtnA_) markDirty();
+    ejectBtnX_ = ne; ejectBtnA_ = na;
+    auto drawIcon = [&](SDL_Texture* tex, int cx) {
+        SDL_SetTextureColorMod(tex, T().text.r, T().text.g, T().text.b);
+        SDL_Rect dst = {cx - ICON_R, BTN_Y - ICON_R, ICON_R * 2, ICON_R * 2};
+        SDL_RenderCopy(renderer_, tex, nullptr, &dst);
+        SDL_SetTextureColorMod(tex, 255, 255, 255);
+    };
+    auto iconFor = [&](DockState::Item it) -> SDL_Texture* {
+        switch (it) {
+            case DockState::Item::Backpack: return iconPack_;
+            case DockState::Item::Banks: return iconVault_;
+            case DockState::Item::SaveMenu: return iconFloppy_;
+            case DockState::Item::Trade: return iconTrade_;
+            case DockState::Item::Eject: return iconEject_;
+        }
+        return nullptr;
+    };
+    auto focusedFor = [&](DockState::Item it) {
+        switch (it) {
+            case DockState::Item::Backpack: return gameSelOnPack_;
+            case DockState::Item::Banks: return gameSelOnAllBanks_;
+            case DockState::Item::SaveMenu: return gameSelOnSaveMenu_;
+            case DockState::Item::Trade: return gameSelOnTrade_;
+            case DockState::Item::Eject: return gameSelOnEject_;
+        }
+        return false;
+    };
+    for (auto& s : slots) {
+        int cx = (s.item == DockState::Item::Eject) ? (int)(ejectBtnX_ + 0.5f) : s.cx;
+        bool focused = focusedFor(s.item);
+        // In riordino evidenzia la voce che si sta spostando.
+        if (dockState_.reorderMode && (int)(&s - &slots[0]) == dockState_.reorderFocusIdx)
+            focused = true;
+        if (s.item == DockState::Item::Eject && ejectBtnA_ <= 1.0f) {
+            if (!dockStateItemVisible(DockState::Item::Eject)) gameSelOnEject_ = false;
+            continue; // fade-out: non disegnabile (come prima)
+        }
+        drawRoundSelect(cx, BTN_Y, R + 1, focused);
+        if (s.item == DockState::Item::Backpack) {
+            // Zaino: texture gia' a misura (48px), blit 1:1 senza scaling.
+            if (iconPack_) {
+                SDL_SetTextureColorMod(iconPack_, T().text.r, T().text.g, T().text.b);
+                SDL_Rect dst = {cx - ICON_R, BTN_Y - ICON_R, ICON_R * 2, ICON_R * 2};
+                SDL_RenderCopy(renderer_, iconPack_, nullptr, &dst);
+                SDL_SetTextureColorMod(iconPack_, 255, 255, 255);
+            }
+        } else if (SDL_Texture* tex = iconFor(s.item)) {
+            if (s.item == DockState::Item::Eject) {
+                SDL_SetTextureAlphaMod(tex, (Uint8)ejectBtnA_);
+                SDL_SetTextureColorMod(tex, T().text.r, T().text.g, T().text.b);
+                SDL_Rect dst = {cx - ICON_R, BTN_Y - ICON_R, ICON_R * 2, ICON_R * 2};
+                SDL_RenderCopy(renderer_, tex, nullptr, &dst);
+                SDL_SetTextureAlphaMod(tex, 255);
+                SDL_SetTextureColorMod(tex, 255, 255, 255);
+            } else {
+                drawIcon(tex, cx);
+            }
+        }
+        if (s.item == DockState::Item::Banks && gameSelOnAllBanks_) {
+            drawTextCentered(i18n::get(StrKey::ViewAllBanks), SCREEN_W / 2,
+                             BTN_Y + R + 17, T().text, font_);
+        }
+    }
+    if (dockState_.reorderMode) {
+        drawTextCentered("Sposta: L/R  Conferma: A  Annulla: B", SCREEN_W / 2,
+                         BTN_Y + R + 17, T().textDim, fontSmall_);
+    }
+}
+
 void UI::drawGameSelectorFrame() {
     SDL_SetRenderDrawColor(renderer_, T().bg.r, T().bg.g, T().bg.b, 255);
     SDL_RenderClear(renderer_);
@@ -1140,79 +1482,10 @@ void UI::drawGameSelectorFrame() {
 
     }
 
-    // Riga bassa: zaino (sx, fisso) + banche (centro, fisso) + espelli USB
-    // (dx, animato). Etichetta banche solo quando evidenziata.
-    {
-        constexpr int R = 34;
-        constexpr int ICON_R = 24;
-        constexpr int BTN_Y = SCREEN_H - 110;
-        constexpr int ROW_DX = 104; // distanza fissa tra i pulsanti
-        constexpr int VCX = SCREEN_W / 2;
-        constexpr int PCX = SCREEN_W / 2 - ROW_DX;
-#ifdef OH_USB_UPDATE
-        bool ejectVisible = usbHsFsGetMountedDeviceCount() > 0;
-#else
-        bool ejectVisible = false;
-#endif
-        float ejectTarget = (float)SCREEN_W / 2 + ROW_DX;
-        float ejectAlphaT = ejectVisible ? 255.0f : 0.0f;
-        if (ejectBtnX_ < 0) ejectBtnX_ = ejectTarget;
-        if (ejectVisible) ejectAnimStage_ = 0; // chiavetta tornata: annulla sequenza
-        if (ejectAnimStage_ == 1) {
-            // Appena espulso: prima sparisce l'eject.
-            ejectAlphaT = 0.0f;
-            if (ejectBtnA_ == 0.0f) ejectAnimStage_ = 2;
-        } else if (ejectAnimStage_ == 2) {
-            ejectAlphaT = 0.0f;
-            ejectAnimStage_ = 0;
-        } else if (ejectVisible) {
-            ejectAnimStage_ = 0;
-        }
-        if (ejectBtnA_ == 0 && ejectVisible) ejectBtnX_ = ejectTarget + 60.0f; // entra da destra
-        auto approach = [](float cur, float tgt) {
-            float d = tgt - cur;
-            if (d > -1.0f && d < 1.0f) return tgt;
-            return cur + d * 0.25f;
-        };
-        float ne = approach(ejectBtnX_, ejectTarget);
-        float na = approach(ejectBtnA_, ejectAlphaT);
-        if (ne != ejectBtnX_ || na != ejectBtnA_) markDirty();
-        ejectBtnX_ = ne; ejectBtnA_ = na;
-        auto drawIcon = [&](SDL_Texture* tex, int cx) {
-            SDL_SetTextureColorMod(tex, T().text.r, T().text.g, T().text.b);
-            SDL_Rect dst = {cx - ICON_R, BTN_Y - ICON_R, ICON_R * 2, ICON_R * 2};
-            SDL_RenderCopy(renderer_, tex, nullptr, &dst);
-            SDL_SetTextureColorMod(tex, 255, 255, 255);
-        };
-        // Zaino (WIP: messaggio finche non c'e l'injector eventi/strumenti).
-        // Texture gia a misura (48px): blit 1:1, niente scaling = niente aliasing.
-        drawRoundSelect(PCX, BTN_Y, R + 1, gameSelOnPack_);
-        if (iconPack_) {
-            SDL_SetTextureColorMod(iconPack_, T().text.r, T().text.g, T().text.b);
-            SDL_Rect dst = {PCX - ICON_R, BTN_Y - ICON_R, ICON_R * 2, ICON_R * 2};
-            SDL_RenderCopy(renderer_, iconPack_, nullptr, &dst);
-            SDL_SetTextureColorMod(iconPack_, 255, 255, 255);
-        }
-        // Banche
-        drawRoundSelect(VCX, BTN_Y, R + 1, gameSelOnAllBanks_);
-        if (iconVault_) drawIcon(iconVault_, VCX);
-        if (gameSelOnAllBanks_) {
-            drawTextCentered(i18n::get(StrKey::ViewAllBanks), SCREEN_W / 2,
-                             BTN_Y + R + 17, T().text, font_);
-        }
-        if (ejectBtnA_ > 1.0f && iconEject_) {
-            int ecx = (int)(ejectBtnX_ + 0.5f);
-            drawRoundSelect(ecx, BTN_Y, R + 1, gameSelOnEject_);
-            SDL_SetTextureAlphaMod(iconEject_, (Uint8)ejectBtnA_);
-            SDL_SetTextureColorMod(iconEject_, T().text.r, T().text.g, T().text.b);
-            SDL_Rect dst = {ecx - ICON_R, BTN_Y - ICON_R, ICON_R * 2, ICON_R * 2};
-            SDL_RenderCopy(renderer_, iconEject_, nullptr, &dst);
-            SDL_SetTextureAlphaMod(iconEject_, 255);
-            SDL_SetTextureColorMod(iconEject_, 255, 255, 255);
-        } else if (!ejectVisible) {
-            gameSelOnEject_ = false;
-        }
-    }
+    // Riga bassa: dock guidato da dockLayout() (ordine utente, voci
+    // condizionali). Con l'ordine di fabbrica coincide con la vecchia riga
+    // fissa zaino/banche/eject.
+    drawDock();
 
     // Ingranaggio impostazioni in basso a destra, stessa riga delle banche.
     // Apre lo stesso menu del tasto + (menu dedicato in futuro).
@@ -1319,29 +1592,25 @@ void UI::selectorTap(float px, float py, bool& running) {
         markDirty();
         return;
     }
-    // Vault / eject / gear (riga bassa fissa)
+    // Dock (riga bassa guidata da dockLayout()) / gear.
+    // In riordino il tap non attiva nulla: esce senza salvare.
+    if (dockState_.reorderMode) {
+        dockStateExitReorderMode(false);
+        markDirty();
+        return;
+    }
     constexpr float BTN_Y = SCREEN_H - 110;
-    if (dist2(px, py, SCREEN_W / 2, BTN_Y) < 45 * 45) {
-        gameSelOnAllBanks_ = true;
-        gameSelOnAvatar_ = gameSelOnPack_ = false;
-        gameSelOnEject_ = gameSelOnSettings_ = false;
-        gameSelOnLaunchBtn_ = false;
-        gameSelOnChevron_ = 0;
-        enterAllBanksMode();
-        return;
-    }
-    if (dist2(px, py, SCREEN_W / 2 - 104, BTN_Y) < 45 * 45) {
-        gameSelOnPack_ = true;
-        gameSelOnAvatar_ = gameSelOnAllBanks_ = false;
-        gameSelOnEject_ = gameSelOnSettings_ = false;
-        gameSelOnLaunchBtn_ = false;
-        gameSelOnChevron_ = 0;
-        openBackpackOn(gameSelCursor_);
-        return;
-    }
-    if (ejectBtnA_ > 128 && dist2(px, py, ejectBtnX_, BTN_Y) < 45 * 45) {
-        ejectUsbDevices();
-        return;
+    for (auto& s : dockLayout()) {
+        if (s.item == DockState::Item::Eject && ejectBtnA_ <= 128) continue; // in fade: non cliccabile
+        if (dist2(px, py, (float)s.cx, BTN_Y) < 45 * 45) {
+            dockFocusItem(s.item);
+            gameSelOnAvatar_ = false;
+            gameSelOnSettings_ = false;
+            gameSelOnLaunchBtn_ = false;
+            gameSelOnChevron_ = 0;
+            dockActivateFocused(running);
+            return;
+        }
     }
     if (dist2(px, py, SCREEN_W - 64, BTN_Y) < 40 * 40) {
         openSettings(); // il gear apre SEMPRE le impostazioni
@@ -1501,10 +1770,8 @@ void UI::handleGameSelectorInput(bool& running) {
             if (dy > 0) {
                 gameSelOnChevron_ = 0;
                 gameSelOnSettings_ = false;
-                gameSelOnEject_ = false;
                 gameSelOnAvatar_ = false;
-                gameSelOnAllBanks_ = true;
-                gameSelOnPack_ = false;
+                dockFocusBanksOrFirst(); // giu' dai chevron: banche o prima voce
             }
             if (dy < 0) {
                 gameSelOnChevron_ = 0;
@@ -1522,91 +1789,64 @@ void UI::handleGameSelectorInput(bool& running) {
                 gameSelOnLaunchBtn_ = false;
             } else if (dx > 0 || dy > 0) {
                 gameSelOnLaunchBtn_ = false;
-                gameSelOnPack_ = true;
+                dockFocusFirst(); // verso la prima icona della dock
             }
             return;
         }
 
-        if (gameSelOnPack_) {
-            // Sullo zaino (prima icona a sx della dock): destra torna alle
-            // banche, sinistra torna alla lista/griglia (posizione
-            // invariata), su torna in griglia (ultima riga).
+        // Dock: navigazione guidata dal layout (l'ordine utente non conta,
+        // i gesti restano quelli di sempre). In riordino sx/dx scambiano
+        // le voci, su/giu' annullano.
+        if (dockHasFocus()) {
+            if (dockState_.reorderMode) {
+                if (dx != 0) {
+                    DockState::Item cur;
+                    if (dockFocusedItem(cur)) {
+                        auto slots = dockLayout();
+                        int idx = -1;
+                        for (int i = 0; i < (int)slots.size(); i++)
+                            if (slots[i].item == cur) { idx = i; break; }
+                        int nxt = idx + dx;
+                        if (idx >= 0 && nxt >= 0 && nxt < (int)slots.size()) {
+                            // Scambia nell'ordine utente (il layout e'
+                            // filtrato per visibilita': gli indici non
+                            // coincidono), poi riaggancia il focus.
+                            int pi = -1, pj = -1;
+                            for (int i = 0; i < (int)dockState_.customOrder.size(); i++) {
+                                if (dockState_.customOrder[i] == slots[idx].item) pi = i;
+                                if (dockState_.customOrder[i] == slots[nxt].item) pj = i;
+                            }
+                            if (pi >= 0 && pj >= 0) {
+                                dockStateSwapItems(pi, pj);
+                                dockState_.reorderFocusIdx = nxt;
+                                dockFocusItem(slots[nxt].item);
+                            }
+                        }
+                    }
+                } else if (dy != 0) {
+                    dockStateExitReorderMode(false);
+                }
+                return;
+            }
             if (dx > 0) {
-                gameSelOnPack_ = false;
-                gameSelOnAllBanks_ = true;
+                if (!dockMoveFocus(1)) {
+                    // Oltre l'ultima voce: ingranaggio (come il vecchio eject->gear).
+                    dockClearFocus();
+                    gameSelOnSettings_ = true;
+                }
             } else if (dx < 0) {
-                gameSelOnPack_ = false;
+                if (!dockMoveFocus(-1)) dockClearFocus(); // prima voce: torna alla lista
             } else if (dy < 0) {
-                gameSelOnPack_ = false;
+                dockClearFocus();
                 if (gallerySel_ && isGameLaunchableAt(gameSelCursor_)) {
                     // Galleria, gioco lanciabile: "su" dalla dock torna al
                     // tastino "Avvia" del pannello anteprima (stesso gesto
-                    // simmetrico del "giu'" dal tastino qui sopra).
+                    // simmetrico del "giu'" dal tastino).
                     gameSelOnLaunchBtn_ = true;
                 } else if (!gallerySel_) {
                     // Solo Classica: la griglia ha piu' righe, "su" atterra
                     // sull'ultima riga mantenendo la colonna. In Galleria e'
-                    // una lista sola: il cursore resta dov'era (il
-                    // "segnalino" non deve saltare all'ultimo gioco).
-                    int totalRows = (pageCount + COLS - 1) / COLS;
-                    int lastRowStart = (totalRows - 1) * COLS;
-                    int lastRowItems = pageCount - lastRowStart;
-                    int col = (gameSelCursor_ - pageStart) % COLS;
-                    if (col >= lastRowItems) col = lastRowItems - 1;
-                    gameSelCursor_ = pageStart + lastRowStart + col;
-                }
-            }
-            return;
-        }
-
-        if (gameSelOnAllBanks_) {
-            // Riga bassa: sinistra = zaino, destra = eject/gear, su = griglia
-            if (dx < 0) {
-                gameSelOnAllBanks_ = false;
-                gameSelOnPack_ = true;
-                return;
-            }
-            if (dx > 0) {
-                gameSelOnAllBanks_ = false;
-#ifdef OH_USB_UPDATE
-                if (usbHsFsGetMountedDeviceCount() > 0)
-                    gameSelOnEject_ = true;
-                else
-                    gameSelOnSettings_ = true;
-#else
-                gameSelOnSettings_ = true;
-#endif
-                return;
-            }
-            if (dy < 0) {
-                gameSelOnAllBanks_ = false;
-                if (!gallerySel_) {
-                    // Place cursor on bottom row of current page
-                    // (Galleria: cursore invariato, vedi commento sopra su onPack_)
-                    int totalRows = (pageCount + COLS - 1) / COLS;
-                    int lastRowStart = (totalRows - 1) * COLS;
-                    int lastRowItems = pageCount - lastRowStart;
-                    int col = (gameSelCursor_ - pageStart) % COLS;
-                    if (col >= lastRowItems) col = lastRowItems - 1;
-                    gameSelCursor_ = pageStart + lastRowStart + col;
-                }
-            }
-            return;
-        }
-
-        if (gameSelOnEject_) {
-            // Sull'espelli: sinistra torna alle banche, destra al gear, su in griglia
-            if (dx < 0) {
-                gameSelOnEject_ = false;
-                gameSelOnAllBanks_ = true;
-                gameSelOnPack_ = false;
-            } else if (dx > 0) {
-                gameSelOnEject_ = false;
-                gameSelOnSettings_ = true;
-            } else if (dy < 0) {
-                gameSelOnEject_ = false;
-                if (!gallerySel_) {
-                    // (Galleria: cursore invariato, vedi commento sopra su onPack_)
+                    // una lista sola: il cursore resta dov'era.
                     int totalRows = (pageCount + COLS - 1) / COLS;
                     int lastRowStart = (totalRows - 1) * COLS;
                     int lastRowItems = pageCount - lastRowStart;
@@ -1659,23 +1899,20 @@ void UI::handleGameSelectorInput(bool& running) {
                     gameSelOnAvatar_ = true;
                 } else {
                     gameSelOnSettings_ = false;
-                    gameSelOnEject_ = false;
-                    gameSelOnAllBanks_ = true;
-                    gameSelOnPack_ = false;
+                    dockFocusBanksOrFirst();
                 }
             } else {
                 // Destra: se il gioco evidenziato e' lanciabile, prima il
                 // tastino "Avvia" del pannello anteprima; altrimenti dritti
                 // alla prima icona della dock (zaino/pack), come prima.
                 gameSelOnSettings_ = false;
-                gameSelOnEject_ = false;
                 gameSelOnAvatar_ = false;
-                gameSelOnAllBanks_ = false;
                 if (isGameLaunchableAt(gameSelCursor_)) {
-                    gameSelOnPack_ = false;
+                    dockClearFocus();
                     gameSelOnLaunchBtn_ = true;
                 } else {
-                    gameSelOnPack_ = true;
+                    gameSelOnAllBanks_ = false;
+                    dockFocusFirst();
                 }
             }
             return;
@@ -1694,14 +1931,11 @@ void UI::handleGameSelectorInput(bool& running) {
         // coerente con "destra" dalla lista (vedi blocco piu' sotto).
         if (row >= totalRows) {
             gameSelOnSettings_ = false;
-            gameSelOnEject_ = false;
             gameSelOnAvatar_ = false;
             if (gallerySel_) {
-                gameSelOnAllBanks_ = false;
-                gameSelOnPack_ = true;
+                dockFocusFirst();
             } else {
-                gameSelOnAllBanks_ = true;
-                gameSelOnPack_ = false;
+                dockFocusBanksOrFirst();
             }
             return;
         }
@@ -1839,12 +2073,26 @@ void UI::handleGameSelectorInput(bool& running) {
                         }
                         break;
                     case SDL_CONTROLLER_BUTTON_LEFTSHOULDER:
+                        backupListZlHeld_ = true;
+                        if (backupListZrHeld_) {
+                            // ZL+ZR insieme = elimina evidenziato (con conferma).
+                            backupListZlHeld_ = backupListZrHeld_ = false;
+                            tryDeleteHighlightedBackup();
+                            break;
+                        }
                         if (count > 0) {
                             backupListCursor_ = std::max(0, backupListCursor_ - 10);
                             scrollIntoView();
                         }
                         break;
                     case SDL_CONTROLLER_BUTTON_RIGHTSHOULDER:
+                        backupListZrHeld_ = true;
+                        if (backupListZlHeld_) {
+                            // ZL+ZR insieme = elimina evidenziato (con conferma).
+                            backupListZlHeld_ = backupListZrHeld_ = false;
+                            tryDeleteHighlightedBackup();
+                            break;
+                        }
                         if (count > 0) {
                             backupListCursor_ = std::min(count - 1, backupListCursor_ + 10);
                             scrollIntoView();
@@ -1868,9 +2116,16 @@ void UI::handleGameSelectorInput(bool& running) {
                     case SDL_CONTROLLER_BUTTON_X:
                     case SDL_CONTROLLER_BUTTON_BACK:
                     case SDL_CONTROLLER_BUTTON_START:
+                        backupListZlHeld_ = backupListZrHeld_ = false;
                         showBackupList_ = false;
                         break;
                 }
+            } else if (event.type == SDL_CONTROLLERBUTTONUP) {
+                // Rilascio ZL/ZR: azzera l'edge-detect del combo elimina.
+                if (event.cbutton.button == SDL_CONTROLLER_BUTTON_LEFTSHOULDER)
+                    backupListZlHeld_ = false;
+                else if (event.cbutton.button == SDL_CONTROLLER_BUTTON_RIGHTSHOULDER)
+                    backupListZrHeld_ = false;
             } else if (event.type == SDL_CONTROLLERAXISMOTION) {
                 if (event.caxis.axis == SDL_CONTROLLER_AXIS_LEFTX ||
                     event.caxis.axis == SDL_CONTROLLER_AXIS_LEFTY) {
@@ -1978,16 +2233,16 @@ void UI::handleGameSelectorInput(bool& running) {
                             std::snprintf(msg, sizeof(msg), "Liberati %.1f MB di auto-backup.",
                                           freed / 1048576.0);
                             showMessageAndWait("Clean old backups", msg);
-                        } else if (sel == "Normalize save") {
+                        } else if (sel == normalizeRowLabel()) {
                             // Normalizza Delta: via i 16B extra, file raw 128K.
                             std::string p = importedSavePath(saveMenuGame_, saveMenuOcc_);
                             showSaveMenu_ = false;
                             if (p.empty()) {
-                                showMessageAndWait("Normalize save", "Solo save SD (niente titoli installati).");
+                                showMessageAndWait(normalizeRowLabel(), "Solo save SD (niente titoli installati).");
                             } else {
                                 std::string info;
                                 SaveFile::normalizeDeltaSave(p, info);
-                                showMessageAndWait("Normalize save", info);
+                                showMessageAndWait(normalizeRowLabel(), info);
                             }
                         } else if (sel == "Send save") {
                             showSaveMenu_ = false;
@@ -2114,6 +2369,25 @@ void UI::handleGameSelectorInput(bool& running) {
                                 showGameSelMenu_ = false;
                                 openSettings();
                                 break;
+                            case GameSelMenuAction::ToggleDock: {
+                                if (!dockLoaded_) dockStateLoad();
+                                dockState_.visible = !dockState_.visible;
+                                if (!dockState_.visible) dockClearFocus();
+                                dockStateSave();
+                                showGameSelMenu_ = false;
+                                markDirty();
+                                break;
+                            }
+                            case GameSelMenuAction::ReorderDock:
+                                showGameSelMenu_ = false;
+                                if (!dockLoaded_) dockStateLoad();
+                                if (!dockState_.visible) {
+                                    dockState_.visible = true;
+                                    dockStateSave();
+                                }
+                                dockStateEnterReorderMode(0);
+                                markDirty();
+                                break;
                             case GameSelMenuAction::Exit:
                                 DebugLog::line("nav: menu Exit -> QUIT");
                                 showGameSelMenu_ = false;
@@ -2145,7 +2419,7 @@ void UI::handleGameSelectorInput(bool& running) {
         if (event.type == SDL_CONTROLLERAXISMOTION) {
             if (event.caxis.axis == SDL_CONTROLLER_AXIS_TRIGGERRIGHT) {
                 bool pressed = event.caxis.value > TRIGGER_DEADZONE;
-                if (pressed && !favTriggerHeld_ && gallerySel_ && !showGameSelMenu_ && !showSaveMenu_ && !showBackupList_ && !showCrashList_ && !showSettings_ && !showBackpack_ && !showAbout_ && !showThemeSelector_ && !showLanguageSelector_ && !gameSelOnAllBanks_ && !gameSelOnAvatar_ && !gameSelOnPack_ && !gameSelOnEject_ && !gameSelOnSettings_ && !gameSelOnLaunchBtn_ && gameSelOnChevron_ == 0) {
+                if (pressed && !favTriggerHeld_ && gallerySel_ && !showGameSelMenu_ && !showSaveMenu_ && !showBackupList_ && !showCrashList_ && !showSettings_ && !showBackpack_ && !showAbout_ && !showThemeSelector_ && !showLanguageSelector_ && !gameSelOnAllBanks_ && !gameSelOnAvatar_ && !gameSelOnPack_ && !gameSelOnEject_ && !gameSelOnSaveMenu_ && !gameSelOnTrade_ && !gameSelOnSettings_ && !gameSelOnLaunchBtn_ && gameSelOnChevron_ == 0) {
                     if (gameSelCursor_ >= 0 && gameSelCursor_ < (int)availableGames_.size()) {
                         GameType g = availableGames_[gameSelCursor_];
                         toggleFavorite(g);
@@ -2155,7 +2429,7 @@ void UI::handleGameSelectorInput(bool& running) {
             }
             if (event.caxis.axis == SDL_CONTROLLER_AXIS_TRIGGERLEFT) {
                 bool pressed = event.caxis.value > TRIGGER_DEADZONE;
-                if (pressed && !launchTriggerHeld_ && gallerySel_ && !showGameSelMenu_ && !showSaveMenu_ && !showBackupList_ && !showCrashList_ && !showSettings_ && !showBackpack_ && !showAbout_ && !showThemeSelector_ && !showLanguageSelector_ && !gameSelOnAllBanks_ && !gameSelOnAvatar_ && !gameSelOnPack_ && !gameSelOnEject_ && !gameSelOnSettings_ && !gameSelOnLaunchBtn_ && gameSelOnChevron_ == 0) {
+                if (pressed && !launchTriggerHeld_ && gallerySel_ && !showGameSelMenu_ && !showSaveMenu_ && !showBackupList_ && !showCrashList_ && !showSettings_ && !showBackpack_ && !showAbout_ && !showThemeSelector_ && !showLanguageSelector_ && !gameSelOnAllBanks_ && !gameSelOnAvatar_ && !gameSelOnPack_ && !gameSelOnEject_ && !gameSelOnSaveMenu_ && !gameSelOnTrade_ && !gameSelOnSettings_ && !gameSelOnLaunchBtn_ && gameSelOnChevron_ == 0) {
                     requestLaunchGame(running);
                 }
                 launchTriggerHeld_ = pressed;
@@ -2183,6 +2457,7 @@ void UI::handleGameSelectorInput(bool& running) {
                     moveGrid(0, 1);
                     break;
                 case SDL_CONTROLLER_BUTTON_B: // Switch A = select
+                    if (dockState_.reorderMode) { dockStateExitReorderMode(true); break; } // A conferma il riordino
                     if (gameSelOnChevron_ == -1 && gameSelPage_ > 0) {
                         gameSelPage_--;
                         gameSelCursor_ = gameSelPage_ * GAMES_PER_PAGE;
@@ -2205,6 +2480,21 @@ void UI::handleGameSelectorInput(bool& running) {
                     }
                     else if (gameSelOnEject_)
                         ejectUsbDevices();
+                    else if (gameSelOnSaveMenu_) {
+                        if (gameSelCursor_ >= 0 && gameSelCursor_ < (int)availableGames_.size())
+                            openSaveMenu(availableGames_[gameSelCursor_],
+                                         importedOccurrence(gameSelCursor_));
+                    }
+                    else if (gameSelOnTrade_) {
+                        // Come il badge radiale: seleziona senza lasciare il
+                        // selettore, poi apri lo scambio.
+                        if (gameSelCursor_ >= 0 && gameSelCursor_ < (int)availableGames_.size()) {
+                            AppScreen prevScreen = screen_;
+                            selectGame(availableGames_[gameSelCursor_], importedOccurrence(gameSelCursor_));
+                            screen_ = prevScreen;
+                            openTradeList();
+                        }
+                    }
                     else if (gameSelOnSettings_) {
                         openSettings(); // il gear apre SEMPRE le impostazioni
                     }
@@ -2214,6 +2504,7 @@ void UI::handleGameSelectorInput(bool& running) {
                         selectGame(availableGames_[gameSelCursor_], importedOccurrence(gameSelCursor_));
                     break;
                 case SDL_CONTROLLER_BUTTON_A: // Switch B = back
+                    if (dockState_.reorderMode) { dockStateExitReorderMode(false); break; } // B annulla il riordino
                     if (gameSelOnAvatar_) { gameSelOnAvatar_ = false; break; }
                     DebugLog::line("nav: B in games profile=%d -> %s", selectedProfile_,
                         selectedProfile_ >= 0 ? "ProfileSelector" : "QUIT");
@@ -2228,12 +2519,14 @@ void UI::handleGameSelectorInput(bool& running) {
                     }
                     break;
                 case SDL_CONTROLLER_BUTTON_X: // Switch Y = theme
+                    if (dockState_.reorderMode) { dockStateExitReorderMode(false); break; }
                     showThemeSelector_ = true;
                     themeSelCursor_ = themeIndex_;
                     themeSelOriginal_ = themeIndex_;
                     break;
                 case SDL_CONTROLLER_BUTTON_Y: // Switch X = save menu (debug) / eject USB
-                    if (DebugLog::enabled() && !gameSelOnAllBanks_ && !gameSelOnSettings_ && !gameSelOnEject_ && !gameSelOnAvatar_ && !gameSelOnPack_ && !gameSelOnLaunchBtn_ && gameSelOnChevron_ == 0 &&
+                    if (dockState_.reorderMode) { dockStateExitReorderMode(false); break; }
+                    if (DebugLog::enabled() && !gameSelOnAllBanks_ && !gameSelOnSettings_ && !gameSelOnEject_ && !gameSelOnSaveMenu_ && !gameSelOnTrade_ && !gameSelOnAvatar_ && !gameSelOnPack_ && !gameSelOnLaunchBtn_ && gameSelOnChevron_ == 0 &&
                         gameSelCursor_ >= 0 && gameSelCursor_ < (int)availableGames_.size()) {
                         openSaveMenu(availableGames_[gameSelCursor_],
                                      importedOccurrence(gameSelCursor_));
@@ -2260,9 +2553,11 @@ void UI::handleGameSelectorInput(bool& running) {
                     break;
                 }
                 case SDL_CONTROLLER_BUTTON_BACK: // - = about
+                    if (dockState_.reorderMode) { dockStateExitReorderMode(false); break; }
                     showAbout_ = true;
                     break;
                 case SDL_CONTROLLER_BUTTON_START: // + : menu rapido se ON, impostazioni se OFF
+                    if (dockState_.reorderMode) { dockStateExitReorderMode(false); break; }
                     if (readQuickMenu(basePath_)) {
                         showGameSelMenu_ = true;
                         gameSelMenuCursor_ = 0;
@@ -3530,8 +3825,45 @@ void UI::openBackupList(GameType g) {
     backupListEntries_ = collectBackupEntries(g);
     backupListCursor_ = 0;
     backupListScroll_ = 0;
+    backupListZlHeld_ = backupListZrHeld_ = false;
     showBackupList_ = true;
     showSaveMenu_ = false;
+}
+
+// ZL+ZR: elimina il backup evidenziato (con conferma), poi ricarica la
+// lista e riaggancia cursore/scroll. Mai silenzioso (vedi deleteBackupEntry).
+void UI::tryDeleteHighlightedBackup() {
+    int count = (int)backupListEntries_.size();
+    if (count <= 0) return;
+    if (backupListCursor_ < 0 || backupListCursor_ >= count) return;
+    std::string e = backupListEntries_[backupListCursor_].path;
+    auto slash = e.find_last_of('/');
+    std::string base = (slash == std::string::npos) ? e : e.substr(slash + 1);
+    if (!showConfirmDialog("Delete backup", base + "\nElimino definitivamente. Procedo?")) return;
+    if (deleteBackupEntry(e)) {
+        backupListEntries_ = collectBackupEntries(backupListGame_);
+        count = (int)backupListEntries_.size();
+        if (backupListCursor_ >= count)
+            backupListCursor_ = count > 0 ? count - 1 : 0;
+        if (backupListScroll_ > backupListCursor_)
+            backupListScroll_ = backupListCursor_;
+        showMessageAndWait("Delete backup", "OK, backup eliminato.");
+    } else {
+        showMessageAndWait("Delete backup", "FAILED (vedi debug.log)");
+    }
+}
+
+// Elimina un backup (file o dir, speculare al restore). Mai silenzioso:
+// ogni fallimento torna false e il chiamante mostra FAILED.
+bool UI::deleteBackupEntry(const std::string& entry) {
+    struct stat st;
+    if (stat(entry.c_str(), &st) != 0) {
+        DebugLog::line("backup delete FAILED (stat): %s", entry.c_str());
+        return false;
+    }
+    bool ok = removeRecursive(entry);
+    DebugLog::line("backup delete: %s (%s)", entry.c_str(), ok ? "ok" : "FAIL");
+    return ok;
 }
 
 void UI::drawBackupListPopup() {
@@ -3566,7 +3898,7 @@ void UI::drawBackupListPopup() {
             drawText(base, popX + 30, rowY + 6, T().text, fontSmall_);
         }
     }
-    drawTextCentered("A: restore  B: back", popX + POP_W / 2, popY + POP_H - 18, T().textDim, fontSmall_);
+    drawTextCentered("A: restore  B: back  ZL+ZR: delete", popX + POP_W / 2, popY + POP_H - 18, T().textDim, fontSmall_);
 }
 
 // Legge sdmc:/atmosphere/crash_reports/ (+ il vecchio fatal_errors/ come
@@ -4008,6 +4340,8 @@ std::vector<GameSelMenuAction> UI::gameSelMenuActions() const {
     v.push_back(GameSelMenuAction::ImportSettings);
     v.push_back(GameSelMenuAction::CheckUpdate);
     v.push_back(GameSelMenuAction::OpenSettings);
+    v.push_back(GameSelMenuAction::ToggleDock);
+    v.push_back(GameSelMenuAction::ReorderDock);
     v.push_back(GameSelMenuAction::Exit);
     return v;
 }
@@ -4051,6 +4385,8 @@ void UI::drawGameSelMenuPopup() {
             case GameSelMenuAction::ImportSettings:  label = "Import settings"; break;
             case GameSelMenuAction::CheckUpdate:     label = "Check for update"; break;
             case GameSelMenuAction::OpenSettings:     label = i18n::get(StrKey::SetTitle); break;
+            case GameSelMenuAction::ToggleDock:        label = std::string("Dock: ") + (dockState_.visible ? "on" : "off"); break;
+            case GameSelMenuAction::ReorderDock:       label = "Reorder dock"; break;
             case GameSelMenuAction::Exit:             label = "Exit"; break;
         }
         // drawTextCentered() takes the text's vertical CENTRE; match it to the

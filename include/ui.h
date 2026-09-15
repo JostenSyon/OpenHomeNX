@@ -34,7 +34,7 @@ enum class TextInputPurpose {
 // Rows of the "+" game-selector menu. A single list drives both the popup's
 // draw order and its input handling — the old parallel hardcoded row-count
 // arithmetic (see v0.1.37's alignment bug) drifts every time a row is added.
-enum class GameSelMenuAction { SwitchCore, DebugLog, ClearLog, SendLog, SendSave, CrashReport, ImportSettings, CheckUpdate, OpenSettings, Exit };
+enum class GameSelMenuAction { SwitchCore, DebugLog, ClearLog, SendLog, SendSave, CrashReport, ImportSettings, CheckUpdate, OpenSettings, ToggleDock, ReorderDock, Exit };
 
 // Search filter enums
 enum class GenderFilter { Any, Male, Female, Genderless };
@@ -209,6 +209,48 @@ private:
     int radialAnchorX_ = 0, radialAnchorY_ = 0; // centro-alto della tile, fissato all'apertura
     std::vector<int> radialItems_; // RadialAction disponibili per la tile aperta
 
+    // Dock inferiore (riga bassa del selettore giochi): ordine persistente e
+    // personalizzabile via Settings::dockOrder/dockVisible. Il disegno e le
+    // zone tap sono guidati da dockLayout(); la navigazione D-pad usa
+    // dockMoveFocus() cosi' l'ordine utente non desincronizza mai i flag.
+    struct DockState {
+        enum class Item { Backpack, Banks, SaveMenu, Trade, Eject };
+
+        std::vector<Item> customOrder; // ordine utente (default: factory)
+        bool visible = true;           // mostra/nascondi dock
+        bool reorderMode = false;      // modalita' riordino attiva
+        int reorderFocusIdx = 0;       // indice in customOrder in riordino
+        uint32_t reorderEnterTime = 0; // per timeout auto-uscita
+    };
+
+    DockState dockState_;
+    bool dockLoaded_ = false; // dockStateLoad() lazy al primo draw (Settings pronto)
+
+    void dockStateLoad();
+    void dockStateSave() const;
+    void dockStateResetToDefault();
+    bool dockStateCanReorder() const;
+    void dockStateEnterReorderMode(int startIdx);
+    void dockStateExitReorderMode(bool save);
+    void dockStateSwapItems(int i, int j);
+    bool dockStateItemVisible(DockState::Item item) const;
+    // Voci visibili nell'ordine utente + posizioni x centrate (stile riga bassa).
+    struct DockSlot { DockState::Item item; int cx; };
+    std::vector<DockSlot> dockLayout() const;
+    void drawDock();
+    // Focus esclusivo su una voce (azzera tutti gli altri flag dock).
+    void dockFocusItem(DockState::Item item);
+    void dockClearFocus();
+    bool dockFocusedItem(DockState::Item& out) const;
+    bool dockHasFocus() const;
+    // Sposta il focus alla voce visibile precedente/successiva; true se mosso.
+    bool dockMoveFocus(int dir);
+    // Prima voce visibile (atterraggio da griglia/chevron/launchbtn).
+    bool dockFocusFirst();
+    bool dockFocusBanksOrFirst();
+    // Attiva la voce puntata (stesse azioni del tap/conferma).
+    void dockActivateFocused(bool& running);
+
     // Game-selector logos for imported (titleId-less) games — see init()'s
     // loadLogo(). Keyed by GameType since there are only a handful of these.
     std::unordered_map<GameType, SDL_Texture*> gameLogoCache_;
@@ -372,6 +414,8 @@ private:
     struct BackupListEntry { std::string path; std::string label; };
     std::vector<BackupListEntry> collectBackupEntries(GameType g);
     bool restoreBackupEntry(GameType g, const std::string& entry);
+    bool deleteBackupEntry(const std::string& entry); // ZL+ZR nella lista backup, con conferma
+    void tryDeleteHighlightedBackup(); // ZL+ZR: conferma + elimina + ricarica lista
     // Voce lista backup: solo unita ripristinabili (file per i save
     // file-backed, dir con file dentro per i titoli installati) + etichetta
     // "[AUTO]/[MAN] data-ora" cosi i file sciolti tipo "main" non compaiono.
@@ -381,6 +425,7 @@ private:
     int  backupListScroll_ = 0;
     std::vector<BackupListEntry> backupListEntries_;
     GameType backupListGame_ = GameType::EMERALD;
+    bool backupListZlHeld_ = false, backupListZrHeld_ = false; // edge-detect ZL+ZR: elimina backup evidenziato
     void openBackupList(GameType g);
     void drawBackupListPopup();
     // Lista crash report scritti da Atmosphere (sdmc:/atmosphere/crash_reports/,
@@ -627,6 +672,8 @@ private:
     int gameSelOnChevron_ = 0;        // 0=none, -1=left chevron, 1=right chevron
     bool gameSelOnSettings_ = false;  // cursore sull'ingranaggio in basso a dx
     bool gameSelOnEject_ = false;     // cursore sull'icona espelli USB
+    bool gameSelOnSaveMenu_ = false;  // cursore sulla voce dock Salvataggi
+    bool gameSelOnTrade_ = false;     // cursore sulla voce dock Scambi
     // Animazione pulsanti bassi: posizioni/alpha correnti -> target per frame.
     float ejectBtnX_ = -1.0f;
     float ejectBtnA_ = 0.0f;
