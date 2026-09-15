@@ -4576,6 +4576,10 @@ void UI::openSettings() {
     setCat_ = 0;
     setRow_ = 0;
     setFocusLeft_ = true;
+    // Aspetto: niente animazione fantasma alla prima apertura -- la molla
+    // parte solo se il layout cambia mentre le impostazioni sono aperte.
+    appearanceCollapse_ = (gameSelectorLayout_ == GameSelectorLayout::Gallery) ? 1.0f : 0.0f;
+    appearanceCollapseVel_ = 0.0f;
     showGameSelMenu_ = false;
     if (langList_.empty()) langList_ = i18n::availableLangs();
     // Rilevamento emulatore (v1: solo mGBA): idempotente, gia' fatto al
@@ -5205,39 +5209,118 @@ void UI::drawSettingsPopup() {
     int divX = popX + CAT_W + 10;
     SDL_RenderDrawLine(renderer_, divX, listY, divX, popY + POP_H - 50);
     int rx = divX + 24;
-    int n = settingsRowCount(setCat_);
-    for (int r = 0; r < n; r++) {
-        int rowY = listY + r * ROW_H;
-        if (r == setRow_ && !setFocusLeft_) {
-            drawRect(rx - 8, rowY, POP_W - (rx - popX) - 28, ROW_H - 4, T().menuHighlight);
-            drawRectOutline(rx - 8, rowY, POP_W - (rx - popX) - 28, ROW_H - 4, T().cursor, 2);
-        }
-        drawText(settingsRowLabel(setCat_, r), rx, rowY + 8, T().text, font_);
-        std::string v = settingsRowValue(setCat_, r);
-        if (!v.empty()) {
-            const auto& e = getTextEntry(v, font_, T().selected);
-            drawText(v, popX + POP_W - 36 - e.w, rowY + 8, T().selected, font_);
-        }
-        if (setCat_ == 1 && appearanceRow(r, gameSelectorLayout_ == GameSelectorLayout::Gallery) == 3) {
-            // Slider zoom 0..16px con pallino, accanto al valore (stessa riga).
-            // Larghezza riservata fissa su "16px" così la barra non balla quando passa da 1 a 2 cifre.
-            static int maxVw = -1;
-            if (maxVw < 0) maxVw = getTextEntry("16px", font_, T().selected).w;
-            int bw = 100, bh = 8;
-            int bx = popX + POP_W - 36 - maxVw - 14 - bw;
-            int by = rowY + (ROW_H - 4) / 2 - bh / 2;
-            drawRect(bx, by, bw, bh, T().textDim);
-            int dx = bx + (int)(bw * zoomGrow_ / 16.0);
-            if (dx < bx) dx = bx;
-            if (dx > bx + bw) dx = bx + bw;
-            auto dot = [&](int cx, int cy, int rr, SDL_Color c) {
-                SDL_SetRenderDrawColor(renderer_, c.r, c.g, c.b, c.a);
-                for (int dy = -rr; dy <= rr; dy++) {
-                    int ddx = static_cast<int>(std::sqrt((double)(rr * rr - dy * dy)));
-                    SDL_RenderDrawLine(renderer_, cx - ddx, cy + dy, cx + ddx, cy + dy);
+    if (setCat_ == 1) {
+        // Aspetto: le voci "Zoom giochi" (3) e "Menu radiale" (4) sono voci
+        // morte in layout Galleria (vedi settingsRowCount/appearanceRow).
+        // Anziche' farle sparire di colpo, qui si anima con la stessa molla
+        // usata per il riordino dock (dockSpringStep, K/D uguali) un fattore
+        // di collasso 0..1: le due righe sfumano scivolando a destra, le
+        // righe sotto risalgono a riempire lo spazio con un filo di
+        // overshoot (budino) prima di fermarsi. Il layout logico/nav resta
+        // quello istantaneo di sempre (appearanceRow) -- qui e' solo il
+        // disegno a interpolare.
+        float target = (gameSelectorLayout_ == GameSelectorLayout::Gallery) ? 1.0f : 0.0f;
+        {
+            constexpr float K = 0.35f, D = 0.65f;
+            float disp = appearanceCollapse_ - target;
+            if (disp != 0.0f || appearanceCollapseVel_ != 0.0f) {
+                float force = -disp * K - appearanceCollapseVel_ * D;
+                appearanceCollapseVel_ += force;
+                appearanceCollapse_ += appearanceCollapseVel_;
+                if (std::fabs(appearanceCollapse_ - target) < 0.01f && std::fabs(appearanceCollapseVel_) < 0.01f) {
+                    appearanceCollapse_ = target;
+                    appearanceCollapseVel_ = 0.0f;
+                } else {
+                    markDirty();
                 }
-            };
-            dot(dx, by + bh / 2, 7, T().selected);
+            }
+        }
+        float collapse = appearanceCollapse_;
+        int selectedLogical = appearanceRow(setRow_, gameSelectorLayout_ == GameSelectorLayout::Gallery);
+        for (int r = 0; r < 8; r++) {
+            bool hideable = (r == 3 || r == 4);
+            float localCollapse = hideable ? appearanceCollapse_ : 0.0f;
+            if (localCollapse < 0.0f) localCollapse = 0.0f;
+            if (localCollapse > 1.3f) localCollapse = 1.3f; // margine per l'overshoot della molla
+            float alphaCollapse = localCollapse > 1.0f ? 1.0f : localCollapse;
+            Uint8 alphaMul = hideable ? (Uint8)(((int)(255.0f * (1.0f - alphaCollapse)) / 16) * 16) : 255;
+            if (hideable && alphaMul == 0) continue; // completamente nascosta: niente da disegnare
+            float rowShift = 2.0f * ROW_H * collapse; // le righe sotto risalgono seguendo la molla (con overshoot)
+            int rowY = listY + (int)(r * ROW_H - (r >= 5 ? rowShift : 0.0f) + 0.5f);
+            std::string label, value;
+            switch (r) {
+                case 0: label = i18n::get(StrKey::SetTheme); value = getThemeName(themeIndex_); break;
+                case 1: label = i18n::get(StrKey::SetLanguage); value = langDisplayName(i18n::currentLang()); break;
+                case 2:
+                    label = i18n::get(StrKey::SetGalleryLayout);
+                    value = (gameSelectorLayout_ == GameSelectorLayout::Gallery)
+                          ? i18n::get(StrKey::LayoutGallery) : i18n::get(StrKey::LayoutClassic);
+                    break;
+                case 3: label = i18n::get(StrKey::SetZoom); value = std::to_string(zoomGrow_) + "px"; break;
+                case 4:
+                    label = i18n::get(StrKey::SetRadialMenu);
+                    value = Settings::radialMenu() ? i18n::get(StrKey::SetOn) : i18n::get(StrKey::SetOff);
+                    break;
+                case 5:
+                    label = i18n::get(StrKey::SetTradeAnim);
+                    value = Settings::tradeAnim() ? i18n::get(StrKey::SetOn) : i18n::get(StrKey::SetOff);
+                    break;
+                case 6:
+                    label = i18n::get(StrKey::SetDockVisible);
+                    if (!dockLoaded_) dockStateLoad();
+                    value = dockState_.visible ? i18n::get(StrKey::SetOn) : i18n::get(StrKey::SetOff);
+                    break;
+                default: label = i18n::get(StrKey::SetDockReset); value = ""; break;
+            }
+            int rowX = rx + (hideable ? (int)(30.0f * localCollapse) : 0); // scivolano a destra mentre sfumano
+            SDL_Color textCol = T().text; textCol.a = (Uint8)((int)textCol.a * alphaMul / 255);
+            SDL_Color valCol = T().selected; valCol.a = (Uint8)((int)valCol.a * alphaMul / 255);
+            if (r == selectedLogical && !setFocusLeft_) {
+                drawRect(rx - 8, rowY, POP_W - (rx - popX) - 28, ROW_H - 4, T().menuHighlight);
+                drawRectOutline(rx - 8, rowY, POP_W - (rx - popX) - 28, ROW_H - 4, T().cursor, 2);
+            }
+            drawText(label, rowX, rowY + 8, textCol, font_);
+            if (!value.empty()) {
+                const auto& e = getTextEntry(value, font_, valCol);
+                drawText(value, popX + POP_W - 36 - e.w, rowY + 8, valCol, font_);
+            }
+            if (r == 3) {
+                // Slider zoom 0..16px con pallino, accanto al valore (stessa riga).
+                // Larghezza riservata fissa su "16px" così la barra non balla quando passa da 1 a 2 cifre.
+                static int maxVw = -1;
+                if (maxVw < 0) maxVw = getTextEntry("16px", font_, T().selected).w;
+                int bw = 100, bh = 8;
+                int bx = popX + POP_W - 36 - maxVw - 14 - bw;
+                int by = rowY + (ROW_H - 4) / 2 - bh / 2;
+                SDL_Color barCol = T().textDim; barCol.a = (Uint8)((int)barCol.a * alphaMul / 255);
+                drawRect(bx, by, bw, bh, barCol);
+                int dxp = bx + (int)(bw * zoomGrow_ / 16.0);
+                if (dxp < bx) dxp = bx;
+                if (dxp > bx + bw) dxp = bx + bw;
+                auto dot = [&](int cx, int cy, int rr, SDL_Color c) {
+                    SDL_SetRenderDrawColor(renderer_, c.r, c.g, c.b, c.a);
+                    for (int ddy = -rr; ddy <= rr; ddy++) {
+                        int ddx = static_cast<int>(std::sqrt((double)(rr * rr - ddy * ddy)));
+                        SDL_RenderDrawLine(renderer_, cx - ddx, cy + ddy, cx + ddx, cy + ddy);
+                    }
+                };
+                dot(dxp, by + bh / 2, 7, valCol);
+            }
+        }
+    } else {
+        int n = settingsRowCount(setCat_);
+        for (int r = 0; r < n; r++) {
+            int rowY = listY + r * ROW_H;
+            if (r == setRow_ && !setFocusLeft_) {
+                drawRect(rx - 8, rowY, POP_W - (rx - popX) - 28, ROW_H - 4, T().menuHighlight);
+                drawRectOutline(rx - 8, rowY, POP_W - (rx - popX) - 28, ROW_H - 4, T().cursor, 2);
+            }
+            drawText(settingsRowLabel(setCat_, r), rx, rowY + 8, T().text, font_);
+            std::string v = settingsRowValue(setCat_, r);
+            if (!v.empty()) {
+                const auto& e = getTextEntry(v, font_, T().selected);
+                drawText(v, popX + POP_W - 36 - e.w, rowY + 8, T().selected, font_);
+            }
         }
     }
     // Footer contestuale: se la riga focalizzata è uno slider, mostra hint con Stick ←/→
