@@ -148,6 +148,7 @@ void UI::drawGameList_Gallery() {
     int rowEnd = std::min(scroll + GAL_VISIBLE_ROWS + 1, numGames);
 
     bool cursorOnList = !gameSelOnAllBanks_ && !gameSelOnSettings_ && !gameSelOnEject_ &&
+                         !gameSelOnSaveMenu_ && !gameSelOnTrade_ &&
                          !gameSelOnAvatar_ && !gameSelOnPack_ && !gameSelOnLaunchBtn_ &&
                          gameSelOnChevron_ == 0;
 
@@ -457,6 +458,7 @@ void UI::selectorTapGallery(float px, float py, bool& running) {    int numGames
             gameSelCursor_ = i;
             gameSelOnAllBanks_ = gameSelOnAvatar_ = false;
             gameSelOnEject_ = gameSelOnSettings_ = false;
+            gameSelOnSaveMenu_ = gameSelOnTrade_ = false;
             gameSelOnChevron_ = 0;
             selectGame(availableGames_[i], importedOccurrence(i));
             markDirty();

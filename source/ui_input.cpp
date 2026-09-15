@@ -2036,6 +2036,8 @@ void UI::returnToGameSelector() {
     activeBankPath_.clear();
     allBanksMode_ = false;
     gameSelOnAllBanks_ = false;
+    gameSelOnSaveMenu_ = false;
+    gameSelOnTrade_ = false;
     bankRightCrossGen_ = false;
     showMenu_ = false;
     screen_ = AppScreen::GameSelector;

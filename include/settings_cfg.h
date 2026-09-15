@@ -37,4 +37,8 @@ bool radialMenu(); // menu radiale (Classica): on/off, default off finche' non i
 void setRadialMenu(bool v);
 bool tradeAnim(); // animazione schermo diviso allo scambio: on/off, default on
 void setTradeAnim(bool v);
+std::string dockOrder(); // CSV: "Backpack,Banks,SaveMenu,Trade,Eject"
+void setDockOrder(const std::string& v);
+bool dockVisible(); // mostra/nascondi dock inferiore
+void setDockVisible(bool v);
 } // namespace Settings

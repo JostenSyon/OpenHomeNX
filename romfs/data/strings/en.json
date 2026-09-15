@@ -350,6 +350,7 @@
     "clearbphist_body": "Forgets what was gifted from here so far (the games\u2019 real bags are untouched). You will not be able to take back old gifts through this app anymore. Continue?",
     "clearbphist_done": "Backpack history cleared.",
     "clearbphist_failed": "Could not write backpack.json.",
+    "set_normalize_save": "Normalize save",
     "clearlog_done": "Log cleared (kept last {0} lines).",
     "clearlog_failed": "Nothing to clear: log file not found.",
     "sendsave_title": "Send save",

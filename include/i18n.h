@@ -470,6 +470,7 @@ namespace StrKey {
     constexpr const char* ClearBpHistBody      = "clearbphist_body";
     constexpr const char* ClearBpHistDone      = "clearbphist_done";
     constexpr const char* ClearBpHistFailed    = "clearbphist_failed";
+    constexpr const char* SetNormalizeSave     = "set_normalize_save";
     constexpr const char* ClearLogDone         = "clearlog_done";
     constexpr const char* ClearLogFailed       = "clearlog_failed";
     constexpr const char* SendSaveTitle        = "sendsave_title";

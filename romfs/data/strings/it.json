@@ -350,6 +350,7 @@
     "clearbphist_body": "Dimentica cosa \u00e8 stato regalato finora da qui (le borse reali dei giochi restano intatte). Non potrai pi\u00f9 riprendere indietro i vecchi regali da questa app. Continuare?",
     "clearbphist_done": "Cronologia zaino ripulita.",
     "clearbphist_failed": "Scrittura di backpack.json fallita.",
+    "set_normalize_save": "Normalizza save",
     "clearlog_done": "Log pulito (tenute ultime {0} righe).",
     "clearlog_failed": "Niente da pulire: log non trovato.",
     "sendsave_title": "Invia save",
