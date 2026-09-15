@@ -414,6 +414,22 @@ private:
     void openSaveMenu(GameType g, int occ);
     void drawSaveMenuPopup();
     void sendSaveFor(GameType g, int occ);
+
+    // Game picker popup (layout Classica): a differenza della Galleria (che
+    // evidenzia un gioco) la dock non sa su quale gioco agire, quindi
+    // SaveMenu/Trade aprono una lista popup per scegliere. Galleria agisce
+    // direttamente sul gioco evidenziato.
+    enum class GamePickTarget { SaveMenu, Trade };
+    bool showGamePick_ = false;
+    GamePickTarget gamePickTarget_ = GamePickTarget::SaveMenu;
+    std::vector<int> gamePickAvail_; // indici in availableGames_ selezionabili
+    int gamePickCursor_ = 0;
+    int gamePickScroll_ = 0;
+    void openGamePick(GamePickTarget t);
+    void drawGamePickPopup();
+    // availableGames_[i] ha un save raggiungibile ora (file importato o
+    // titolo installato con nome di save noto)? Stessa regola dello zaino.
+    bool tileHasUsableSave(int i) const;
     std::string manualBackupDir(GameType g) const;
     std::string autoBackupDir(GameType g) const;
     // alreadyMounted: se il chiamante ha gia' "save:/" montato per questo

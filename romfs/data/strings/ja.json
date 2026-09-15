@@ -227,6 +227,7 @@
     "left": "左",
     "right": "右",
     "status_game_eject": "　X：USB取り出し",
+    "dock_eject": "USB取り出し",
     "no_boxes_title": "ボックスがありません",
     "menu_import_pk": "PKファイルをインポート",
     "set_title": "設定",

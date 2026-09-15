@@ -227,6 +227,7 @@
     "left": "왼쪽",
     "right": "오른쪽",
     "status_game_eject": "  X: USB 꾼내기",
+    "dock_eject": "USB 꾼내기",
     "no_boxes_title": "박스가 없습니다",
     "menu_import_pk": "PK 파일 가져오기",
     "set_title": "설정",

@@ -57,6 +57,7 @@
     "status_game_quit_page": "A: Select  B: Quit  L/R: Page  Y: Theme  -: About",
     "status_game_quit": "A: Select  B: Quit  Y: Theme  -: About",
     "status_game_eject": "  X: Eject USB",
+    "dock_eject": "Eject USB",
     "status_game_launch": "  ZL: Launch",
     "dual_bank_mode": "Dual Bank Mode",
     "no_banks_title": "No Banks",

@@ -262,11 +262,18 @@ bool UI::dockStateItemVisible(DockState::Item item) const {
         case DockState::Item::SaveMenu:
             return true; // opera sul gioco evidenziato (come la voce radiale)
         case DockState::Item::Trade: {
-            // Come il radial menu: niente dual-bank, solo se il gioco
-            // evidenziato supporta lo scambio.
             if (isDualBankMode()) return false;
-            if (gameSelCursor_ < 0 || gameSelCursor_ >= (int)availableGames_.size()) return false;
-            return TradeEvo::supported(availableGames_[gameSelCursor_]);
+            if (gameSelectorLayout_ == GameSelectorLayout::Gallery) {
+                if (gameSelCursor_ < 0 || gameSelCursor_ >= (int)availableGames_.size()) return false;
+                return TradeEvo::supported(availableGames_[gameSelCursor_]);
+            }
+            // Classica: la dock apre una lista giochi -> visibile se almeno
+            // UN gioco usabile supporta lo scambio (non solo il cursore).
+            for (int i = 0; i < (int)availableGames_.size(); i++) {
+                if (!tileHasUsableSave(i)) continue;
+                if (TradeEvo::supported(availableGames_[i])) return true;
+            }
+            return false;
         }
         case DockState::Item::Eject:
 #ifdef OH_USB_UPDATE
@@ -1201,11 +1208,20 @@ void UI::dockActivateFocused(bool& running) {
             enterAllBanksMode();
             break;
         case DockState::Item::SaveMenu:
-            if (gameSelCursor_ >= 0 && gameSelCursor_ < (int)availableGames_.size())
+            if (gameSelectorLayout_ == GameSelectorLayout::Classic) {
+                // Classico: niente gioco evidenziato -> lista popup.
+                openGamePick(GamePickTarget::SaveMenu);
+            } else if (gameSelCursor_ >= 0 && gameSelCursor_ < (int)availableGames_.size()) {
                 openSaveMenu(availableGames_[gameSelCursor_],
                              importedOccurrence(gameSelCursor_));
+            }
             break;
         case DockState::Item::Trade: {
+            if (gameSelectorLayout_ == GameSelectorLayout::Classic) {
+                // Classico: niente gioco evidenziato -> lista popup.
+                openGamePick(GamePickTarget::Trade);
+                break;
+            }
             if (gameSelCursor_ < 0 || gameSelCursor_ >= (int)availableGames_.size()) break;
             AppScreen prevScreen = screen_;
             selectGame(availableGames_[gameSelCursor_], importedOccurrence(gameSelCursor_));
@@ -1327,9 +1343,33 @@ void UI::drawDock() {
                 drawIcon(tex, cx);
             }
         }
-        if (s.item == DockState::Item::Banks && gsDockIs(DockState::Item::Banks)) {
-            drawTextCentered(i18n::get(StrKey::ViewAllBanks), SCREEN_W / 2,
-                             BTN_Y + R + 17, T().text, font_);
+        if (focused && !dockState_.reorderMode) {
+            const char* lblKey = nullptr;
+            switch (s.item) {
+                case DockState::Item::Backpack: lblKey = StrKey::BackpackTitle; break;
+                case DockState::Item::Banks: lblKey = StrKey::ViewAllBanks; break;
+                case DockState::Item::SaveMenu: lblKey = StrKey::RadialSaveMenu; break;
+                case DockState::Item::Trade: lblKey = StrKey::RadialTrade; break;
+                case DockState::Item::Eject: lblKey = StrKey::DockEject; break;
+            }
+            if (lblKey) {
+                std::string lbl = i18n::get(lblKey);
+                int ly = BTN_Y + R + 19; // un paio di px sotto l'icona, come nel radial
+                SDL_Color sh = {0, 0, 0, 220};
+                // ombra rinforzata: alone 8 direzioni + leggero offset per staccare dal fondo
+                drawTextCentered(lbl, cx + 1, ly + 1, sh, font_);
+                drawTextCentered(lbl, cx - 1, ly + 1, sh, font_);
+                drawTextCentered(lbl, cx + 1, ly - 1, sh, font_);
+                drawTextCentered(lbl, cx - 1, ly - 1, sh, font_);
+                drawTextCentered(lbl, cx, ly + 1, sh, font_);
+                drawTextCentered(lbl, cx, ly - 1, sh, font_);
+                drawTextCentered(lbl, cx + 1, ly, sh, font_);
+                drawTextCentered(lbl, cx - 1, ly, sh, font_);
+                SDL_Color sh2 = {0, 0, 0, 140};
+                drawTextCentered(lbl, cx + 2, ly + 2, sh2, font_);
+                drawTextCentered(lbl, cx - 2, ly + 2, sh2, font_);
+                drawTextCentered(lbl, cx, ly, T().text, font_);
+            }
         }
     }
     if (dockState_.reorderMode) {
@@ -2197,6 +2237,58 @@ void UI::handleGameSelectorInput(bool& running) {
             continue;
         }
 
+        // Game picker popup (Classica da dock: Scambio/Salvataggi). Intercetta
+        // input sopra il save-menu: aperto solo con layout Classic.
+        if (showGamePick_) {
+            if (event.type == SDL_CONTROLLERBUTTONDOWN) {
+                markDirty();
+                int count = (int)gamePickAvail_.size();
+                constexpr int VISIBLE = 12;
+                if (event.cbutton.button == SDL_CONTROLLER_BUTTON_DPAD_UP ||
+                    event.cbutton.button == SDL_CONTROLLER_BUTTON_DPAD_LEFT) {
+                    if (count > 0) gamePickCursor_ = (gamePickCursor_ + count - 1) % count;
+                } else if (event.cbutton.button == SDL_CONTROLLER_BUTTON_DPAD_DOWN ||
+                           event.cbutton.button == SDL_CONTROLLER_BUTTON_DPAD_RIGHT) {
+                    if (count > 0) gamePickCursor_ = (gamePickCursor_ + 1) % count;
+                } else if (event.cbutton.button == SDL_CONTROLLER_BUTTON_B) {
+                    // Switch A = conferma: agisci sul gioco scelto.
+                    if (count > 0 && gamePickCursor_ < count) {
+                        GamePickTarget t = gamePickTarget_;
+                        int idx = gamePickAvail_[gamePickCursor_];
+                        GameType g = availableGames_[idx];
+                        int occ = importedOccurrence(idx);
+                        showGamePick_ = false;
+                        if (t == GamePickTarget::SaveMenu) {
+                            openSaveMenu(g, occ);
+                        } else {
+                            AppScreen prevScreen = screen_;
+                            selectGame(g, occ);
+                            screen_ = prevScreen;
+                            openTradeList();
+                        }
+                    }
+                } else if (event.cbutton.button == SDL_CONTROLLER_BUTTON_A ||
+                           event.cbutton.button == SDL_CONTROLLER_BUTTON_X ||
+                           event.cbutton.button == SDL_CONTROLLER_BUTTON_BACK ||
+                           event.cbutton.button == SDL_CONTROLLER_BUTTON_START) {
+                    // Switch B = indietro
+                    showGamePick_ = false;
+                }
+                // Keep scroll visible.
+                if (gamePickCursor_ < gamePickScroll_) gamePickScroll_ = gamePickCursor_;
+                else if (gamePickCursor_ >= gamePickScroll_ + VISIBLE)
+                    gamePickScroll_ = gamePickCursor_ - VISIBLE + 1;
+            } else if (event.type == SDL_CONTROLLERAXISMOTION) {
+                if (event.caxis.axis == SDL_CONTROLLER_AXIS_LEFTX ||
+                    event.caxis.axis == SDL_CONTROLLER_AXIS_LEFTY) {
+                    int16_t lx = SDL_GameControllerGetAxis(pad_, SDL_CONTROLLER_AXIS_LEFTX);
+                    int16_t ly = SDL_GameControllerGetAxis(pad_, SDL_CONTROLLER_AXIS_LEFTY);
+                    updateStick(lx, ly);
+                }
+            }
+            continue;
+        }
+
         // Debug save popup intercepts input (sotto il menu +)
         if (showSaveMenu_) {
             if (event.type == SDL_CONTROLLERBUTTONDOWN) {
@@ -2591,12 +2683,33 @@ void UI::handleGameSelectorInput(bool& running) {
             stickMoved_ = true;
             markDirty();
         }
-    } else     if (showSaveMenu_ && stickDirY_ != 0) {
+} else if (showSaveMenu_ && stickDirY_ != 0) {
         uint32_t now = SDL_GetTicks();
         uint32_t delay = stickMoved_ ? STICK_REPEAT_DELAY : STICK_INITIAL_DELAY;
         if (now - stickMoveTime_ >= delay) {
             int smN = (int)saveMenuRows(saveMenuGame_).size();
             saveMenuCursor_ = (saveMenuCursor_ + (stickDirY_ > 0 ? 1 : smN - 1)) % smN;
+            stickMoveTime_ = now;
+            stickMoved_ = true;
+            markDirty();
+        }
+    } else if (showGamePick_ && stickDirY_ != 0 && !gamePickAvail_.empty()) {
+        uint32_t now = SDL_GetTicks();
+        uint32_t delay = stickMoved_ ? STICK_REPEAT_DELAY : STICK_INITIAL_DELAY;
+        if (now - stickMoveTime_ >= delay) {
+            int count = (int)gamePickAvail_.size();
+            if (stickDirY_ > 0) {
+                if (gamePickCursor_ < count - 1) gamePickCursor_++;
+                else gamePickCursor_ = 0;
+            } else {
+                if (gamePickCursor_ > 0) gamePickCursor_--;
+                else gamePickCursor_ = count - 1;
+            }
+            constexpr int VISIBLE = 12;
+            if (gamePickCursor_ < gamePickScroll_)
+                gamePickScroll_ = gamePickCursor_;
+            else if (gamePickCursor_ >= gamePickScroll_ + VISIBLE)
+                gamePickScroll_ = gamePickCursor_ - VISIBLE + 1;
             stickMoveTime_ = now;
             stickMoved_ = true;
             markDirty();
@@ -2656,7 +2769,7 @@ void UI::handleGameSelectorInput(bool& running) {
             stickMoved_ = true;
             markDirty();
         }
-    } else if (!showTradeList_ && !showGameSelMenu_ && !showSaveMenu_ && !showBackupList_ && !showCrashList_ && !showSettings_ && !showBackpack_ && !showRadialMenu_ && (stickDirX_ != 0 || stickDirY_ != 0)) {
+    } else if (!showTradeList_ && !showGameSelMenu_ && !showSaveMenu_ && !showBackupList_ && !showCrashList_ && !showSettings_ && !showBackpack_ && !showRadialMenu_ && !showGamePick_ && (stickDirX_ != 0 || stickDirY_ != 0)) {
         uint32_t now = SDL_GetTicks();
         uint32_t delay = stickMoved_ ? STICK_REPEAT_DELAY : STICK_INITIAL_DELAY;
         // Galleria: lista verticale una voce alla volta. Con lo stesso passo
@@ -3111,7 +3224,7 @@ void UI::drawRadialMenu() {
         if (focused && radialAnim_ >= 1.0f && labelKey) {
             std::string lbl = i18n::get(labelKey);
             bool below = (labelKey == StrKey::LaunchGameButton || labelKey == StrKey::RadialTrade);
-            int ly = below ? cy + BTN_R + 17 : cy - BTN_R - 14;
+            int ly = below ? cy + BTN_R + 26 : cy - BTN_R - 24;
             SDL_Color sh = {0, 0, 0, 220};
             // ombra rinforzata: alone 8 direzioni + leggero offset per staccare dal fondo
             drawTextCentered(lbl, cx + 1, ly + 1, sh, font_);
@@ -3716,6 +3829,68 @@ void UI::openSaveMenu(GameType g, int occ) {
     saveMenuOcc_ = occ;
     saveMenuCursor_ = 0;
     showSaveMenu_ = true;
+}
+
+bool UI::tileHasUsableSave(int i) const {
+    if (i < 0 || i >= (int)availableGames_.size()) return false;
+    GameType g = availableGames_[i];
+    int occ = importedOccurrence(i);
+    bool fileBacked = !importedSavePath(g, occ).empty();
+    bool title = !fileBacked && selectedProfile_ >= 0 && !appletMode_ &&
+                 titleIdOf(g) >= 0x0100000000010000ULL && saveFileNameOf(g)[0] != '\0';
+    return fileBacked || title;
+}
+
+void UI::openGamePick(GamePickTarget t) {
+    gamePickTarget_ = t;
+    gamePickAvail_.clear();
+    for (int i = 0; i < (int)availableGames_.size(); i++) {
+        if (!tileHasUsableSave(i)) continue;
+        // Trade esposto solo sui giochi che lo supportano davvero.
+        if (t == GamePickTarget::Trade && !TradeEvo::supported(availableGames_[i])) continue;
+        gamePickAvail_.push_back(i);
+    }
+    if (gamePickAvail_.empty()) {
+        showMessageAndWait(i18n::get(StrKey::Error),
+                           t == GamePickTarget::Trade
+                               ? "Nessun gioco supporta lo scambio."
+                               : "Nessun save disponibile.");
+        return;
+    }
+    gamePickCursor_ = 0;
+    gamePickScroll_ = 0;
+    showGamePick_ = true;
+    markDirty();
+}
+
+void UI::drawGamePickPopup() {
+    drawRect(0, 0, SCREEN_W, SCREEN_H, T().overlay);
+    constexpr int POP_W = 360;
+    constexpr int MAX_VIS = 12;
+    int count = (int)gamePickAvail_.size();
+    int vis = std::min(count, MAX_VIS);
+    int rowH = 36;
+    int POP_H = 50 + vis * rowH + 30;
+    int popX = (SCREEN_W - POP_W) / 2;
+    int popY = (SCREEN_H - POP_H) / 2;
+    drawRect(popX, popY, POP_W, POP_H, T().panelBg);
+    drawRectOutline(popX, popY, POP_W, POP_H, T().cursor, 2);
+    std::string title = std::string(gamePickTarget_ == GamePickTarget::Trade ? "Trade: " : "Save: ") +
+                        i18n::get(StrKey::SelectGame);
+    drawTextCentered(title, popX + POP_W / 2, popY + 22, T().text, font_);
+    int startY = popY + 50;
+    for (int i = 0; i < vis; i++) {
+        int rowY = startY + i * rowH;
+        if (gamePickScroll_ + i == gamePickCursor_) {
+            drawRect(popX + 20, rowY, POP_W - 40, rowH - 4, T().menuHighlight);
+            drawRectOutline(popX + 20, rowY, POP_W - 40, rowH - 4, T().cursor, 2);
+        }
+        int idx = gamePickAvail_[gamePickScroll_ + i];
+        std::string nm = gameDisplayNameOf(availableGames_[idx]);
+        if (nm.substr(0, 8) == "Pokemon ") nm = nm.substr(8);
+        drawTextCentered(nm, popX + POP_W / 2, rowY + (rowH - 4) / 2, T().text, font_);
+    }
+    drawTextCentered(i18n::get(StrKey::ASelectBCancel), popX + POP_W / 2, popY + POP_H - 18, T().textDim, fontSmall_);
 }
 
 std::string UI::manualBackupDir(GameType g) const {
@@ -4333,8 +4508,6 @@ std::vector<GameSelMenuAction> UI::gameSelMenuActions() const {
     v.push_back(GameSelMenuAction::ImportSettings);
     v.push_back(GameSelMenuAction::CheckUpdate);
     v.push_back(GameSelMenuAction::OpenSettings);
-    v.push_back(GameSelMenuAction::ToggleDock);
-    v.push_back(GameSelMenuAction::ReorderDock);
     v.push_back(GameSelMenuAction::Exit);
     return v;
 }
@@ -4578,7 +4751,10 @@ bool UI::writeUpdateCfgUrl(const std::string& basePath, const std::string& url) 
 int UI::settingsRowCount(int cat) const {
     switch (cat) {
         case 0: return 1; // Utente predefinito
-        case 1: return 8; // Tema, Lingua, Layout selettore, Zoom, Menu radiale, Animazione scambio, Dock, Reset dock
+        case 1: // Tema, Lingua, Layout selettore, [Zoom, Menu radiale,] Animazione scambio, Dock, Reset dock
+            // Zoom e Menu radiale sono voci morte in Galleria (la vedi non li usa):
+            // con il layout Galleria la lista si accorcia di 2 righe.
+            return (gameSelectorLayout_ == GameSelectorLayout::Gallery) ? 6 : 8;
         case 2: return mgbaPath_.empty() ? 2 : 3; // Sistema: Core + Installa launcher [+ Emulatore predefinito]
         case 3: return 4; // Cartelle, Scansiona, Max, Pulisci
         case 4: {
@@ -4598,17 +4774,27 @@ int UI::settingsRowCount(int cat) const {
     }
 }
 
+// Riga cat 1 visualizzata -> riga logica. Solo in Galleria le voci Zoom (3) e
+// Menu radiale (4) sono nascoste: le righe visualizzate dopo "Layout" (2)
+// puntano alle righe logiche 5/6/7. In Classico l'identita'.
+// Da usare in LABEL/VALUE/ACTIVATE: MAI indicizzare row grezza nel cat 1.
+static int appearanceRow(int row, bool gallery) {
+    if (gallery && row >= 3) return row + 2;
+    return row;
+}
+
 static std::string readDefaultUser(const std::string& basePath);
 std::string UI::settingsRowLabel(int cat, int row) const {
     if (cat == 0) return i18n::get(StrKey::SetDefaultUser);
     if (cat == 1) {
-        if (row == 0) return i18n::get(StrKey::SetTheme);
-        if (row == 1) return i18n::get(StrKey::SetLanguage);
-        if (row == 2) return i18n::get(StrKey::SetGalleryLayout);
-        if (row == 3) return i18n::get(StrKey::SetZoom);
-        if (row == 4) return i18n::get(StrKey::SetRadialMenu);
-        if (row == 5) return i18n::get(StrKey::SetTradeAnim);
-        if (row == 6) return i18n::get(StrKey::SetDockVisible);
+        int r = appearanceRow(row, gameSelectorLayout_ == GameSelectorLayout::Gallery);
+        if (r == 0) return i18n::get(StrKey::SetTheme);
+        if (r == 1) return i18n::get(StrKey::SetLanguage);
+        if (r == 2) return i18n::get(StrKey::SetGalleryLayout);
+        if (r == 3) return i18n::get(StrKey::SetZoom);
+        if (r == 4) return i18n::get(StrKey::SetRadialMenu);
+        if (r == 5) return i18n::get(StrKey::SetTradeAnim);
+        if (r == 6) return i18n::get(StrKey::SetDockVisible);
         return i18n::get(StrKey::SetDockReset);
     }
     if (cat == 2) {
@@ -4646,15 +4832,16 @@ std::string UI::settingsRowValue(int cat, int row) {
         return want;
     }
     if (cat == 1) {
-        if (row == 0) return getThemeName(themeIndex_);
-        if (row == 1) return langDisplayName(i18n::currentLang());
-        if (row == 2)
+        int r = appearanceRow(row, gameSelectorLayout_ == GameSelectorLayout::Gallery);
+        if (r == 0) return getThemeName(themeIndex_);
+        if (r == 1) return langDisplayName(i18n::currentLang());
+        if (r == 2)
             return (gameSelectorLayout_ == GameSelectorLayout::Gallery)
                  ? i18n::get(StrKey::LayoutGallery) : i18n::get(StrKey::LayoutClassic);
-        if (row == 3) return std::to_string(zoomGrow_) + "px";
-        if (row == 4) return Settings::radialMenu() ? i18n::get(StrKey::SetOn) : i18n::get(StrKey::SetOff);
-        if (row == 5) return Settings::tradeAnim() ? i18n::get(StrKey::SetOn) : i18n::get(StrKey::SetOff);
-        if (row == 6) {
+        if (r == 3) return std::to_string(zoomGrow_) + "px";
+        if (r == 4) return Settings::radialMenu() ? i18n::get(StrKey::SetOn) : i18n::get(StrKey::SetOff);
+        if (r == 5) return Settings::tradeAnim() ? i18n::get(StrKey::SetOn) : i18n::get(StrKey::SetOff);
+        if (r == 6) {
             if (!dockLoaded_) dockStateLoad();
             return dockState_.visible ? i18n::get(StrKey::SetOn) : i18n::get(StrKey::SetOff);
         }
@@ -4781,12 +4968,13 @@ void UI::settingsRowActivate(int cat, int row, int dir, bool& running) {
         std::string next = opts[(i + dir + (int)opts.size()) % (int)opts.size()];
         Settings::setDefaultUser(next); // "" = chiedi
     } else if (cat == 1) {
-        if (row == 0) {
+        int r = appearanceRow(row, gameSelectorLayout_ == GameSelectorLayout::Gallery);
+        if (r == 0) {
             themeIndex_ = (themeIndex_ + dir + THEME_COUNT) % THEME_COUNT;
             theme_ = &getTheme(themeIndex_);
             saveThemeIndex(basePath_, themeIndex_);
             clearTextCache();
-        } else if (row == 1) {
+        } else if (r == 1) {
             int n = (int)langList_.size();
             if (n > 0) {
                 int cur = 0;
@@ -4797,7 +4985,7 @@ void UI::settingsRowActivate(int cat, int row, int dir, bool& running) {
                 clearTextCache();
                 Settings::setLanguage(nl);
             }
-        } else if (row == 2) {
+        } else if (r == 2) {
             // Layout selettore giochi: solo 2 valori, qualunque dir alterna.
             gameSelectorLayout_ = (gameSelectorLayout_ == GameSelectorLayout::Classic)
                 ? GameSelectorLayout::Gallery : GameSelectorLayout::Classic;
@@ -4814,7 +5002,12 @@ void UI::settingsRowActivate(int cat, int row, int dir, bool& running) {
             // enorme dal nulla verso la selezione corrente.
             galSelShown_ = -1;
             galSlide_ = 0.0f;
-        } else if (row == 3) {
+            // Zoom/Menu radiale spariscono in Galleria: se il cursore era lì
+            // riportalo sull'ultima riga visibile (il clamp in testa serve al
+            // prossimo giro, qui setRow_ va corretto subito per il draw).
+            int newCount = settingsRowCount(cat);
+            if (setRow_ >= newCount) setRow_ = newCount - 1;
+        } else if (r == 3) {
             static const int STEPS[] = {0, 4, 8, 12, 16};
             int i = 0;
             for (; i < 5; i++)
@@ -4825,13 +5018,13 @@ void UI::settingsRowActivate(int cat, int row, int dir, bool& running) {
             if (ni > 4) ni = 4;
             zoomGrow_ = STEPS[ni];
             saveZoomGrow(basePath_, zoomGrow_);
-        } else if (row == 4) {
+        } else if (r == 4) {
             // Menu radiale: solo 2 valori, qualunque dir alterna (come Layout).
             Settings::setRadialMenu(!Settings::radialMenu());
-        } else if (row == 5) {
+        } else if (r == 5) {
             // Animazione scambio: idem, solo on/off.
             Settings::setTradeAnim(!Settings::tradeAnim());
-        } else if (row == 6) {
+        } else if (r == 6) {
             // Dock inferiore: mostra/nascondi (sincronizza lo stato live).
             if (!dockLoaded_) dockStateLoad();
             dockState_.visible = !dockState_.visible;
@@ -5025,7 +5218,7 @@ void UI::drawSettingsPopup() {
             const auto& e = getTextEntry(v, font_, T().selected);
             drawText(v, popX + POP_W - 36 - e.w, rowY + 8, T().selected, font_);
         }
-        if (setCat_ == 1 && r == 3) {
+        if (setCat_ == 1 && appearanceRow(r, gameSelectorLayout_ == GameSelectorLayout::Gallery) == 3) {
             // Slider zoom 0..16px con pallino, accanto al valore (stessa riga).
             // Larghezza riservata fissa su "16px" così la barra non balla quando passa da 1 a 2 cifre.
             static int maxVw = -1;
@@ -5048,7 +5241,7 @@ void UI::drawSettingsPopup() {
         }
     }
     // Footer contestuale: se la riga focalizzata è uno slider, mostra hint con Stick ←/→
-    bool _isSlider = !setFocusLeft_ && ((setCat_ == 1 && setRow_ == 3) || (setCat_ == 3 && setRow_ == 2));
+    bool _isSlider = !setFocusLeft_ && ((setCat_ == 1 && appearanceRow(setRow_, gameSelectorLayout_ == GameSelectorLayout::Gallery) == 3) || (setCat_ == 3 && setRow_ == 2));
     const char* _footKey = _isSlider ? StrKey::SetFooterSlider : StrKey::SetFooter;
     std::string _foot = i18n::get(_footKey);
     if (_isSlider && _foot == _footKey) _foot = i18n::get(StrKey::SetFooter); // fallback se traduzione manca
@@ -5057,7 +5250,7 @@ void UI::drawSettingsPopup() {
 
 void UI::handleSettingsInput(const SDL_Event& event, bool& running) {
     auto _isSliderRow = [&](int cat, int row) -> bool {
-        return (cat == 1 && row == 3) || (cat == 3 && row == 2);
+        return (cat == 1 && appearanceRow(row, gameSelectorLayout_ == GameSelectorLayout::Gallery) == 3) || (cat == 3 && row == 2);
     };
     // Stick analogico: su/giu come il D-pad (con repeat), sulla colonna attiva.
     // In impostazioni usiamo anche LEFTX per regolare gli slider (zoom / backup).
