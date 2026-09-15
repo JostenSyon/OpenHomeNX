@@ -189,11 +189,6 @@ private:
     SDL_Texture* iconRocket_       = nullptr; // "Avvia" nel menu radiale (48px 1:1)
     SDL_Texture* iconFloppy_       = nullptr; // "Salvataggi" nel menu radiale (48px 1:1)
     SDL_Texture* iconTrade_        = nullptr; // "Scambio": asset pronto, non ancora in radialItems_ (48px 1:1)
-    bool gameSelOnPack_ = false;      // cursore sullo zaino a sx delle banche
-    // Cursore sul tastino "Avvia" del pannello anteprima Galleria (destra
-    // dalla lista, solo se il gioco evidenziato e' lanciabile -- vedi
-    // isGameLaunchableAt()). Stesso schema esclusivo delle altre gameSelOn*_.
-    bool gameSelOnLaunchBtn_ = false;
 
     // Menu radiale (solo layout Classico, dietro Settings::radialMenu()):
     // alla conferma di una tile apre un piccolo arco di scorciatoie sopra
@@ -226,6 +221,29 @@ private:
     DockState dockState_;
     bool dockLoaded_ = false; // dockStateLoad() lazy al primo draw (Settings pronto)
 
+    // Focus unificato del selettore giochi (Classica + Galleria).
+    // Sostituisce i vecchi flag sparsi gameSelOn*: un solo setter azzera
+    // gli altri, cosi' aggiungere una voce dock non richiede di toccare
+    // ogni transizione. L'ingranaggio (Settings) resta fuori dock con
+    // regole proprie, ma condivide il modello per l'esclusivita'.
+    enum class GSFocus : uint8_t {
+        Grid = 0, // cursore su lista/griglia giochi
+        Avatar,   // avatar profilo in alto a sx
+        ChevLeft, // freccia pagina sx
+        ChevRight,// freccia pagina dx
+        Launch,   // tastino Avvia anteprima Galleria
+        Dock,     // voce dock (gsDockItem_)
+        Settings  // ingranaggio in basso a dx (fuori dock)
+    };
+    GSFocus gsFocus_ = GSFocus::Grid;
+    DockState::Item gsDockItem_ = DockState::Item::Backpack; // se focus == Dock
+
+    // Setter unico (azzera tutto il resto) + rimozione mirata.
+    void gsSetFocus(GSFocus f, DockState::Item dockItem = DockState::Item::Backpack);
+    void gsUnfocus(GSFocus f); // a Grid solo se il focus corrente e' f
+    bool gsDockIs(DockState::Item it) const; // focus == Dock && voce == it
+    bool gsChevronActive() const; // focus su uno dei due chevron
+
     void dockStateLoad();
     void dockStateSave() const;
     void dockStateResetToDefault();
@@ -245,8 +263,9 @@ private:
     bool dockHasFocus() const;
     // Sposta il focus alla voce visibile precedente/successiva; true se mosso.
     bool dockMoveFocus(int dir);
-    // Prima voce visibile (atterraggio da griglia/chevron/launchbtn).
+    // Prima/ultima voce visibile (atterraggi e ripartenza gear).
     bool dockFocusFirst();
+    bool dockFocusLast();
     bool dockFocusBanksOrFirst();
     // Attiva la voce puntata (stesse azioni del tap/conferma).
     void dockActivateFocused(bool& running);
@@ -660,20 +679,13 @@ private:
     int profileSelCursor_ = 0;
     int selectedProfile_ = -1;
 
-    // Game selector state
+    // Game selector state (focus periferico: vedi GSFocus/gsSetFocus)
     GameType selectedGame_ = GameType::ZA;
     int gameSelCursor_ = 0;
     int gameSelPage_ = 0;
-    bool gameSelOnAllBanks_ = false;  // cursor is on "View All Banks" option
-    bool gameSelOnAvatar_ = false;    // cursore sull'avatar utente in alto a sx
     float touchStartX_ = 0, touchStartY_ = 0;
     bool touchDown_ = false, touchMoved_ = false;
     void selectorTap(float px, float py, bool& running);
-    int gameSelOnChevron_ = 0;        // 0=none, -1=left chevron, 1=right chevron
-    bool gameSelOnSettings_ = false;  // cursore sull'ingranaggio in basso a dx
-    bool gameSelOnEject_ = false;     // cursore sull'icona espelli USB
-    bool gameSelOnSaveMenu_ = false;  // cursore sulla voce dock Salvataggi
-    bool gameSelOnTrade_ = false;     // cursore sulla voce dock Scambi
     // Animazione pulsanti bassi: posizioni/alpha correnti -> target per frame.
     float ejectBtnX_ = -1.0f;
     float ejectBtnA_ = 0.0f;

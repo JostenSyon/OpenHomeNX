@@ -172,6 +172,8 @@
     "layout_gallery": "Gallery",
     "set_radial_menu": "Radial menu",
     "set_trade_anim": "Trade animation",
+    "set_dock_visible": "Bottom dock",
+    "set_dock_reset": "Reset dock order",
     "radial_savemenu": "Backups",
     "radial_trade": "Trade",
     "set_core": "Core",

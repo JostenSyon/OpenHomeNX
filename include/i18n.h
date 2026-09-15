@@ -254,6 +254,8 @@ namespace StrKey {
     constexpr const char* SetGalleryLayout = "set_gallery_layout";
     constexpr const char* SetRadialMenu   = "set_radial_menu";
     constexpr const char* SetTradeAnim    = "set_trade_anim";
+    constexpr const char* SetDockVisible  = "set_dock_visible";
+    constexpr const char* SetDockReset    = "set_dock_reset";
     constexpr const char* RadialSaveMenu  = "radial_savemenu";
     constexpr const char* RadialTrade     = "radial_trade";
     constexpr const char* LayoutClassic    = "layout_classic";

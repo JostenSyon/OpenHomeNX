@@ -2035,9 +2035,7 @@ void UI::returnToGameSelector() {
     activeBankName_.clear();
     activeBankPath_.clear();
     allBanksMode_ = false;
-    gameSelOnAllBanks_ = false;
-    gameSelOnSaveMenu_ = false;
-    gameSelOnTrade_ = false;
+    gsSetFocus(GSFocus::Grid);
     bankRightCrossGen_ = false;
     showMenu_ = false;
     screen_ = AppScreen::GameSelector;
