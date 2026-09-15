@@ -686,6 +686,13 @@ private:
     float touchStartX_ = 0, touchStartY_ = 0;
     bool touchDown_ = false, touchMoved_ = false;
     void selectorTap(float px, float py, bool& running);
+    // Effetto molla/budino sul riordino dock (entry: Y su icona dock o menu +):
+    // offset x per slot, il draw lo insegue con molla smorzata (overshoot +
+    // ritorno), azzerato a riposo.
+    static constexpr int MAX_DOCK_SLOTS = 5; // dock: Backpack, Banks, SaveMenu, Trade, Eject
+    float dockSlide_[MAX_DOCK_SLOTS] = {};
+    float dockSlideVel_[MAX_DOCK_SLOTS] = {};
+    void dockSpringStep(std::vector<DockSlot>& slots); // aggiorna dockSlide_ per frame
     // Animazione pulsanti bassi: posizioni/alpha correnti -> target per frame.
     float ejectBtnX_ = -1.0f;
     float ejectBtnA_ = 0.0f;

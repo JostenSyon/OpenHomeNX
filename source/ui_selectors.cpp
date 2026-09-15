@@ -157,6 +157,7 @@ static bool removeRecursive(const std::string& p);
 // Stato persistito in settings.cfg (dock_order CSV + dock_visible). Disegno,
 // tap e navigazione sono tutti guidati da dockLayout(), cosi' l'ordine utente
 // non desincronizza mai le tre cose (era il bug del menu popup v0.1.37).
+static constexpr int DOCK_ROW_DX = 104; // spaziatura icone dock (condivisa con la molla)
 
 void UI::dockStateLoad() {
     dockState_.customOrder.clear();
@@ -217,6 +218,8 @@ void UI::dockStateEnterReorderMode(int startIdx) {
     dockState_.reorderFocusIdx = startIdx;
     dockState_.reorderEnterTime = SDL_GetTicks();
     dockFocusItem(slots[startIdx].item);
+    // Azzera molla: le icone partono tutte dalle loro posizioni target.
+    for (int i = 0; i < MAX_DOCK_SLOTS; i++) { dockSlide_[i] = 0.0f; dockSlideVel_[i] = 0.0f; }
 }
 
 void UI::dockStateExitReorderMode(bool save) {
@@ -224,6 +227,29 @@ void UI::dockStateExitReorderMode(bool save) {
     dockState_.reorderFocusIdx = 0;
     dockState_.reorderEnterTime = 0;
     if (save) dockStateSave();
+}
+
+// Effetto molla/budino sulle icone dock: ogni slot ha un offset x che
+// parte dalla posizione "altra" dello swap e ritorna a 0 con overshoot.
+// Chiamato ogni frame da drawDock().  K=0.35 stiffness, D=0.65 damping:
+// producing ~1 overshoot before settling (budino).
+void UI::dockSpringStep(std::vector<DockSlot>& slots) {
+    constexpr float K = 0.35f;
+    constexpr float D = 0.65f;
+    bool anyMoving = false;
+    for (int i = 0; i < MAX_DOCK_SLOTS && i < (int)slots.size(); i++) {
+        if (dockSlide_[i] == 0.0f && dockSlideVel_[i] == 0.0f) continue;
+        float force = -dockSlide_[i] * K - dockSlideVel_[i] * D;
+        dockSlideVel_[i] += force;
+        dockSlide_[i] += dockSlideVel_[i];
+        if (std::fabs(dockSlide_[i]) < 0.3f && std::fabs(dockSlideVel_[i]) < 0.3f) {
+            dockSlide_[i] = 0.0f;
+            dockSlideVel_[i] = 0.0f;
+        } else {
+            anyMoving = true;
+        }
+    }
+    if (anyMoving) markDirty();
 }
 
 void UI::dockStateSwapItems(int i, int j) {
@@ -256,13 +282,11 @@ bool UI::dockStateItemVisible(DockState::Item item) const {
 static bool readQuickMenu(const std::string& basePath);
 static void writeQuickMenu(const std::string& basePath, bool on);
 
-// Righe popup save (X con debug): Normalize solo per GBA (RSE/FRLG, anche
-// via USB se con +16B) — per gli altri giochi non serve e resta nascosta.
-// Etichetta i18n condivisa tra builder e handler (mai hardcodata in due punti).
+// Righe popup save (X con debug): invio save, backup, browse, clean.
+// Normalize e' ora in Impostazioni -> Sviluppatore (analizza tutti i save).
 static std::string normalizeRowLabel() { return i18n::get(StrKey::SetNormalizeSave); }
 static std::vector<std::string> saveMenuRows(GameType g) {
     std::vector<std::string> r = { "Backup save", "Browse backups", "Clean old backups" };
-    if (isImportedFile(g) || isFRLG(g)) r.push_back(normalizeRowLabel());
     r.push_back("Send save");
     r.push_back("Close");
     return r;
@@ -1078,10 +1102,9 @@ std::vector<UI::DockSlot> UI::dockLayout() const {
     std::vector<DockState::Item> vis;
     for (auto it : dockState_.customOrder)
         if (dockStateItemVisible(it)) vis.push_back(it);
-    constexpr int ROW_DX = 104;
     int n = (int)vis.size();
-    int x0 = SCREEN_W / 2 - (n - 1) * ROW_DX / 2;
-    for (int i = 0; i < n; i++) out.push_back({ vis[i], x0 + i * ROW_DX });
+    int x0 = SCREEN_W / 2 - (n - 1) * DOCK_ROW_DX / 2;
+    for (int i = 0; i < n; i++) out.push_back({ vis[i], x0 + i * DOCK_ROW_DX });
     return out;
 }
 
@@ -1154,9 +1177,6 @@ bool UI::dockFocusFirst() {
 }
 
 bool UI::dockFocusBanksOrFirst() {
-    auto slots = dockLayout();
-    for (auto& s : slots)
-        if (s.item == DockState::Item::Banks) { dockFocusItem(s.item); return true; }
     return dockFocusFirst();
 }
 
@@ -1207,6 +1227,7 @@ void UI::drawDock() {
         dockStateExitReorderMode(false);
     if (!dockState_.visible) {
         dockClearFocus();
+        for (int i = 0; i < MAX_DOCK_SLOTS; i++) { dockSlide_[i] = 0.0f; dockSlideVel_[i] = 0.0f; }
         return;
     }
     constexpr int R = 34;
@@ -1249,6 +1270,8 @@ void UI::drawDock() {
     float na = approach(ejectBtnA_, ejectAlphaT);
     if (ne != ejectBtnX_ || na != ejectBtnA_) markDirty();
     ejectBtnX_ = ne; ejectBtnA_ = na;
+    // Effetto molla/budino del riordino: slot inseguono il target.
+    dockSpringStep(slots);
     auto drawIcon = [&](SDL_Texture* tex, int cx) {
         SDL_SetTextureColorMod(tex, T().text.r, T().text.g, T().text.b);
         SDL_Rect dst = {cx - ICON_R, BTN_Y - ICON_R, ICON_R * 2, ICON_R * 2};
@@ -1269,7 +1292,11 @@ void UI::drawDock() {
         return gsDockIs(it);
     };
     for (auto& s : slots) {
+        int si = (int)(&s - &slots[0]);
+        float slideOff = (si < MAX_DOCK_SLOTS) ? dockSlide_[si] : 0.0f;
         int cx = (s.item == DockState::Item::Eject) ? (int)(ejectBtnX_ + 0.5f) : s.cx;
+        if (s.item != DockState::Item::Eject)
+            cx += (int)(slideOff + 0.5f); // molla/budino sul riordino
         bool focused = focusedFor(s.item);
         // In riordino evidenzia la voce che si sta spostando.
         if (dockState_.reorderMode && (int)(&s - &slots[0]) == dockState_.reorderFocusIdx)
@@ -1803,9 +1830,19 @@ void UI::handleGameSelectorInput(bool& running) {
                                 if (dockState_.customOrder[i] == slots[nxt].item) pj = i;
                             }
                             if (pi >= 0 && pj >= 0) {
+                                // Effetto molla/budino: le due icone partono
+                                // dalla posizione dell'altra e ritornano a posto.
+                                if (idx < MAX_DOCK_SLOTS && nxt < MAX_DOCK_SLOTS) {
+                                    dockSlide_[idx] = (float)((nxt - idx) * DOCK_ROW_DX);
+                                    dockSlideVel_[idx] = 0.0f;
+                                    dockSlide_[nxt] = (float)((idx - nxt) * DOCK_ROW_DX);
+                                    dockSlideVel_[nxt] = 0.0f;
+                                }
                                 dockStateSwapItems(pi, pj);
                                 dockState_.reorderFocusIdx = nxt;
-                                dockFocusItem(slots[nxt].item);
+                                // L'icona spostata resta a fuoco sulla sua nuova
+                                // posizione (destinazione): mai quella di partenza.
+                                dockFocusItem(cur);
                             }
                         }
                     }
@@ -2036,26 +2073,14 @@ void UI::handleGameSelectorInput(bool& running) {
                         }
                         break;
                     case SDL_CONTROLLER_BUTTON_LEFTSHOULDER:
-                        backupListZlHeld_ = true;
-                        if (backupListZrHeld_) {
-                            // ZL+ZR insieme = elimina evidenziato (con conferma).
-                            backupListZlHeld_ = backupListZrHeld_ = false;
-                            tryDeleteHighlightedBackup();
-                            break;
-                        }
+                        // L = pagina su (-10), mai delete (ZL+ZR è solo trigger)
                         if (count > 0) {
                             backupListCursor_ = std::max(0, backupListCursor_ - 10);
                             scrollIntoView();
                         }
                         break;
                     case SDL_CONTROLLER_BUTTON_RIGHTSHOULDER:
-                        backupListZrHeld_ = true;
-                        if (backupListZlHeld_) {
-                            // ZL+ZR insieme = elimina evidenziato (con conferma).
-                            backupListZlHeld_ = backupListZrHeld_ = false;
-                            tryDeleteHighlightedBackup();
-                            break;
-                        }
+                        // R = pagina giu (+10), mai delete
                         if (count > 0) {
                             backupListCursor_ = std::min(count - 1, backupListCursor_ + 10);
                             scrollIntoView();
@@ -2083,14 +2108,24 @@ void UI::handleGameSelectorInput(bool& running) {
                         showBackupList_ = false;
                         break;
                 }
-            } else if (event.type == SDL_CONTROLLERBUTTONUP) {
-                // Rilascio ZL/ZR: azzera l'edge-detect del combo elimina.
-                if (event.cbutton.button == SDL_CONTROLLER_BUTTON_LEFTSHOULDER)
-                    backupListZlHeld_ = false;
-                else if (event.cbutton.button == SDL_CONTROLLER_BUTTON_RIGHTSHOULDER)
-                    backupListZrHeld_ = false;
             } else if (event.type == SDL_CONTROLLERAXISMOTION) {
-                if (event.caxis.axis == SDL_CONTROLLER_AXIS_LEFTX ||
+                if (event.caxis.axis == SDL_CONTROLLER_AXIS_TRIGGERLEFT) {
+                    bool pressed = event.caxis.value > TRIGGER_DEADZONE;
+                    bool was = backupListZlHeld_;
+                    backupListZlHeld_ = pressed;
+                    if (pressed && !was && backupListZrHeld_) {
+                        backupListZlHeld_ = backupListZrHeld_ = false;
+                        tryDeleteHighlightedBackup();
+                    }
+                } else if (event.caxis.axis == SDL_CONTROLLER_AXIS_TRIGGERRIGHT) {
+                    bool pressed = event.caxis.value > TRIGGER_DEADZONE;
+                    bool was = backupListZrHeld_;
+                    backupListZrHeld_ = pressed;
+                    if (pressed && !was && backupListZlHeld_) {
+                        backupListZlHeld_ = backupListZrHeld_ = false;
+                        tryDeleteHighlightedBackup();
+                    }
+                } else if (event.caxis.axis == SDL_CONTROLLER_AXIS_LEFTX ||
                     event.caxis.axis == SDL_CONTROLLER_AXIS_LEFTY) {
                     int16_t lx = SDL_GameControllerGetAxis(pad_, SDL_CONTROLLER_AXIS_LEFTX);
                     int16_t ly = SDL_GameControllerGetAxis(pad_, SDL_CONTROLLER_AXIS_LEFTY);
@@ -2196,17 +2231,6 @@ void UI::handleGameSelectorInput(bool& running) {
                             std::snprintf(msg, sizeof(msg), "Liberati %.1f MB di auto-backup.",
                                           freed / 1048576.0);
                             showMessageAndWait("Clean old backups", msg);
-                        } else if (sel == normalizeRowLabel()) {
-                            // Normalizza Delta: via i 16B extra, file raw 128K.
-                            std::string p = importedSavePath(saveMenuGame_, saveMenuOcc_);
-                            showSaveMenu_ = false;
-                            if (p.empty()) {
-                                showMessageAndWait(normalizeRowLabel(), "Solo save SD (niente titoli installati).");
-                            } else {
-                                std::string info;
-                                SaveFile::normalizeDeltaSave(p, info);
-                                showMessageAndWait(normalizeRowLabel(), info);
-                            }
                         } else if (sel == "Send save") {
                             showSaveMenu_ = false;
                             sendSaveFor(saveMenuGame_, saveMenuOcc_);
@@ -2468,8 +2492,21 @@ void UI::handleGameSelectorInput(bool& running) {
                     themeSelCursor_ = themeIndex_;
                     themeSelOriginal_ = themeIndex_;
                     break;
-                case SDL_CONTROLLER_BUTTON_Y: // Switch X = save menu (debug) / eject USB
+                case SDL_CONTROLLER_BUTTON_Y: // Switch X = riordino dock (se icona dock) / save menu (debug) / eject
                     if (dockState_.reorderMode) { dockStateExitReorderMode(false); break; }
+                    if (dockHasFocus() && dockState_.visible) {
+                        DockState::Item cur;
+                        if (dockFocusedItem(cur)) {
+                            auto slots = dockLayout();
+                            for (int i = 0; i < (int)slots.size(); i++)
+                                if (slots[i].item == cur) {
+                                    dockStateEnterReorderMode(i);
+                                    markDirty();
+                                    break;
+                                }
+                        }
+                        break;
+                    }
                     if (DebugLog::enabled() && gsFocus_ == GSFocus::Grid &&
                         gameSelCursor_ >= 0 && gameSelCursor_ < (int)availableGames_.size()) {
                         openSaveMenu(availableGames_[gameSelCursor_],
@@ -3072,9 +3109,23 @@ void UI::drawRadialMenu() {
             SDL_SetTextureColorMod(tex, 255, 255, 255);
         }
         if (focused && radialAnim_ >= 1.0f && labelKey) {
-            SDL_Color labelShadow = {0, 0, 0, 200};
-            drawTextCentered(i18n::get(labelKey), cx + 2, cy + BTN_R + 19, labelShadow, font_);
-            drawTextCentered(i18n::get(labelKey), cx, cy + BTN_R + 17, T().text, font_);
+            std::string lbl = i18n::get(labelKey);
+            bool below = (labelKey == StrKey::LaunchGameButton || labelKey == StrKey::RadialTrade);
+            int ly = below ? cy + BTN_R + 17 : cy - BTN_R - 14;
+            SDL_Color sh = {0, 0, 0, 220};
+            // ombra rinforzata: alone 8 direzioni + leggero offset per staccare dal fondo
+            drawTextCentered(lbl, cx + 1, ly + 1, sh, font_);
+            drawTextCentered(lbl, cx - 1, ly + 1, sh, font_);
+            drawTextCentered(lbl, cx + 1, ly - 1, sh, font_);
+            drawTextCentered(lbl, cx - 1, ly - 1, sh, font_);
+            drawTextCentered(lbl, cx, ly + 1, sh, font_);
+            drawTextCentered(lbl, cx, ly - 1, sh, font_);
+            drawTextCentered(lbl, cx + 1, ly, sh, font_);
+            drawTextCentered(lbl, cx - 1, ly, sh, font_);
+            SDL_Color sh2 = {0, 0, 0, 140};
+            drawTextCentered(lbl, cx + 2, ly + 2, sh2, font_);
+            drawTextCentered(lbl, cx - 2, ly + 2, sh2, font_);
+            drawTextCentered(lbl, cx, ly, T().text, font_);
         }
     }
 }
@@ -4537,9 +4588,9 @@ int UI::settingsRowCount(int cat) const {
             return n; // Update, Sorgente, Canale [, Modifica]
         }
         case 5: {
-            // Debug, Menu + [, Pulisci cronologia zaino] [, Invia log, Crash report]
+            // Debug, Menu + [, Pulisci cronologia zaino] [, Normalize save] [, Invia log, Crash report]
             int n = 2;
-            if (DebugLog::enabled()) n += 1;
+            if (DebugLog::enabled()) n += 1 + 1; // + ClearBp, + Normalize
             if (sendAvailable()) n += 2;
             return n;
         }
@@ -4581,7 +4632,8 @@ std::string UI::settingsRowLabel(int cat, int row) const {
         if (row == 0) return i18n::get(StrKey::SetDebugToggle);
         if (row == 1) return i18n::get(StrKey::SetDbgMenu);
         if (row == 2) return i18n::get(StrKey::ClearBpHistTitle);
-        if (row == 3) return i18n::get(StrKey::SendLogTitle);
+        if (row == 3) return normalizeRowLabel();
+        if (row == 4) return i18n::get(StrKey::SendLogTitle);
         return i18n::get(StrKey::CrashReportTitle);
     }
     if (row == 0) return i18n::get(StrKey::SetVersion);
@@ -4902,6 +4954,23 @@ void UI::settingsRowActivate(int cat, int row, int dir, bool& running) {
                     showMessageAndWait(i18n::get(StrKey::ClearBpHistTitle), i18n::get(StrKey::ClearBpHistFailed));
             }
         } else if (row == 3) {
+            // Normalize save: analizza tutti i save salvati in sdmc e
+            // corregge i Delta GBA con i 16B extra.  TODO: estendere a
+            // scan cartelle ROM per corruzione/normalizzazione.
+            int count = 0, fixed = 0;
+            for (GameType g : availableGames_) {
+                std::string p = importedSavePath(g, 0);
+                if (p.empty()) continue;
+                std::string info;
+                if (SaveFile::normalizeDeltaSave(p, info)) fixed++;
+                count++;
+            }
+            char buf[128];
+            std::snprintf(buf, sizeof(buf), "%s: %d/%d %s",
+                normalizeRowLabel().c_str(), fixed, count,
+                fixed > 0 ? "corretti" : "tutto OK");
+            showMessageAndWait(normalizeRowLabel(), buf);
+        } else if (row == 4) {
             sendLogNow();
         } else {
             openCrashList();
