@@ -709,6 +709,11 @@ private:
     float dockSlide_[MAX_DOCK_SLOTS] = {};
     float dockSlideVel_[MAX_DOCK_SLOTS] = {};
     void dockSpringStep(std::vector<DockSlot>& slots); // aggiorna dockSlide_ per frame
+    // Stessa molla, applicata al collasso delle voci Zoom/Menu radiale in
+    // Impostazioni > Aspetto (nascoste in layout Galleria): 0 = visibili,
+    // 1 = nascoste, con overshoot durante la transizione (vedi drawSettingsPopup).
+    float appearanceCollapse_ = 0.0f;
+    float appearanceCollapseVel_ = 0.0f;
     // Animazione pulsanti bassi: posizioni/alpha correnti -> target per frame.
     float ejectBtnX_ = -1.0f;
     float ejectBtnA_ = 0.0f;
