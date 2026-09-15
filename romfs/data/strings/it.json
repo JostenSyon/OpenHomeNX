@@ -172,6 +172,8 @@
     "layout_gallery": "Galleria",
     "set_radial_menu": "Menu radiale",
     "set_trade_anim": "Animazione scambio",
+    "set_dock_visible": "Dock inferiore",
+    "set_dock_reset": "Ripristina ordine dock",
     "radial_savemenu": "Salvataggi",
     "radial_trade": "Scambio",
     "set_core": "Core",

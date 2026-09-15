@@ -147,10 +147,7 @@ void UI::drawGameList_Gallery() {
     int pixOff = (int)((galScrollX_ - scroll) * GAL_ROW_H);
     int rowEnd = std::min(scroll + GAL_VISIBLE_ROWS + 1, numGames);
 
-    bool cursorOnList = !gameSelOnAllBanks_ && !gameSelOnSettings_ && !gameSelOnEject_ &&
-                         !gameSelOnSaveMenu_ && !gameSelOnTrade_ &&
-                         !gameSelOnAvatar_ && !gameSelOnPack_ && !gameSelOnLaunchBtn_ &&
-                         gameSelOnChevron_ == 0;
+    bool cursorOnList = (gsFocus_ == GSFocus::Grid);
 
     auto dot = [&](int cx, int cy, int rr, SDL_Color col) {
         SDL_SetRenderDrawColor(renderer_, col.r, col.g, col.b, col.a);
@@ -408,7 +405,7 @@ void UI::drawGameList_Gallery() {
         // risoluzione, niente antialiasing sul renderer). A fuoco (cursore
         // spostato qui col pad): stesso trattamento delle altre selezioni
         // (righe lista/card), sfondo T().menuHighlight + contorno piu' netto.
-        if (gameSelOnLaunchBtn_) {
+        if (gsFocus_ == GSFocus::Launch) {
             drawRoundRect(bx, by, bw, bh, bh / 2, T().menuHighlight);
             drawRoundRectOutline(bx, by, bw, bh, bh / 2, T().cursor, 2);
         } else {
@@ -456,10 +453,7 @@ void UI::selectorTapGallery(float px, float py, bool& running) {    int numGames
         int rowH = GAL_ROW_H - 6;
         if (py >= rowY && py <= rowY + rowH) {
             gameSelCursor_ = i;
-            gameSelOnAllBanks_ = gameSelOnAvatar_ = false;
-            gameSelOnEject_ = gameSelOnSettings_ = false;
-            gameSelOnSaveMenu_ = gameSelOnTrade_ = false;
-            gameSelOnChevron_ = 0;
+            gsSetFocus(GSFocus::Grid);
             selectGame(availableGames_[i], importedOccurrence(i));
             markDirty();
             return;

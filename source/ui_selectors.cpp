@@ -442,15 +442,7 @@ void UI::selectProfile(int index) {
     selSlide_ = 0.0f;
     galSelShown_ = -1;
     galSlide_ = 0.0f;
-    gameSelOnAllBanks_ = false;
-    gameSelOnSettings_ = false;
-    gameSelOnEject_ = false;
-    gameSelOnSaveMenu_ = false;
-    gameSelOnTrade_ = false;
-    gameSelOnAvatar_ = false;
-    gameSelOnPack_ = false;
-    gameSelOnLaunchBtn_ = false;
-    gameSelOnChevron_ = 0;
+    gsSetFocus(GSFocus::Grid); // reset focus periferico (vedi GSFocus)
     showWorking(i18n::get(StrKey::LoadingGameIcons));
     loadGameIcons();
     screen_ = AppScreen::GameSelector;
@@ -1093,29 +1085,35 @@ std::vector<UI::DockSlot> UI::dockLayout() const {
     return out;
 }
 
+void UI::gsSetFocus(GSFocus f, DockState::Item dockItem) {
+    gsFocus_ = f;
+    if (f == GSFocus::Dock) gsDockItem_ = dockItem;
+}
+
+void UI::gsUnfocus(GSFocus f) {
+    if (gsFocus_ == f) gsFocus_ = GSFocus::Grid;
+}
+
+bool UI::gsDockIs(DockState::Item it) const {
+    return gsFocus_ == GSFocus::Dock && gsDockItem_ == it;
+}
+
+bool UI::gsChevronActive() const {
+    return gsFocus_ == GSFocus::ChevLeft || gsFocus_ == GSFocus::ChevRight;
+}
+
 void UI::dockClearFocus() {
-    gameSelOnPack_ = gameSelOnAllBanks_ = false;
-    gameSelOnSaveMenu_ = gameSelOnTrade_ = gameSelOnEject_ = false;
+    gsUnfocus(GSFocus::Dock);
 }
 
 void UI::dockFocusItem(DockState::Item item) {
-    gameSelOnAvatar_ = false;
-    gameSelOnLaunchBtn_ = false;
-    gameSelOnChevron_ = 0;
-    gameSelOnPack_     = (item == DockState::Item::Backpack);
-    gameSelOnAllBanks_ = (item == DockState::Item::Banks);
-    gameSelOnSaveMenu_ = (item == DockState::Item::SaveMenu);
-    gameSelOnTrade_    = (item == DockState::Item::Trade);
-    gameSelOnEject_    = (item == DockState::Item::Eject);
+    gsSetFocus(GSFocus::Dock, item);
 }
 
 bool UI::dockFocusedItem(DockState::Item& out) const {
-    if (gameSelOnPack_) { out = DockState::Item::Backpack; return true; }
-    if (gameSelOnAllBanks_) { out = DockState::Item::Banks; return true; }
-    if (gameSelOnSaveMenu_) { out = DockState::Item::SaveMenu; return true; }
-    if (gameSelOnTrade_) { out = DockState::Item::Trade; return true; }
-    if (gameSelOnEject_) { out = DockState::Item::Eject; return true; }
-    return false;
+    if (gsFocus_ != GSFocus::Dock) return false;
+    out = gsDockItem_;
+    return true;
 }
 
 bool UI::dockHasFocus() const {
@@ -1160,6 +1158,13 @@ bool UI::dockFocusBanksOrFirst() {
     for (auto& s : slots)
         if (s.item == DockState::Item::Banks) { dockFocusItem(s.item); return true; }
     return dockFocusFirst();
+}
+
+bool UI::dockFocusLast() {
+    auto slots = dockLayout();
+    if (slots.empty()) return false;
+    dockFocusItem(slots.back().item);
+    return true;
 }
 
 // Stesse azioni del tap/conferma sulle vecchie icone fisse (pack -> zaino,
@@ -1261,14 +1266,7 @@ void UI::drawDock() {
         return nullptr;
     };
     auto focusedFor = [&](DockState::Item it) {
-        switch (it) {
-            case DockState::Item::Backpack: return gameSelOnPack_;
-            case DockState::Item::Banks: return gameSelOnAllBanks_;
-            case DockState::Item::SaveMenu: return gameSelOnSaveMenu_;
-            case DockState::Item::Trade: return gameSelOnTrade_;
-            case DockState::Item::Eject: return gameSelOnEject_;
-        }
-        return false;
+        return gsDockIs(it);
     };
     for (auto& s : slots) {
         int cx = (s.item == DockState::Item::Eject) ? (int)(ejectBtnX_ + 0.5f) : s.cx;
@@ -1277,7 +1275,8 @@ void UI::drawDock() {
         if (dockState_.reorderMode && (int)(&s - &slots[0]) == dockState_.reorderFocusIdx)
             focused = true;
         if (s.item == DockState::Item::Eject && ejectBtnA_ <= 1.0f) {
-            if (!dockStateItemVisible(DockState::Item::Eject)) gameSelOnEject_ = false;
+            if (gsDockIs(DockState::Item::Eject) && !dockStateItemVisible(DockState::Item::Eject))
+                gsUnfocus(GSFocus::Dock); // voce sparita in fade: torna in griglia
             continue; // fade-out: non disegnabile (come prima)
         }
         drawRoundSelect(cx, BTN_Y, R + 1, focused);
@@ -1301,7 +1300,7 @@ void UI::drawDock() {
                 drawIcon(tex, cx);
             }
         }
-        if (s.item == DockState::Item::Banks && gameSelOnAllBanks_) {
+        if (s.item == DockState::Item::Banks && gsDockIs(DockState::Item::Banks)) {
             drawTextCentered(i18n::get(StrKey::ViewAllBanks), SCREEN_W / 2,
                              BTN_Y + R + 17, T().text, font_);
         }
@@ -1328,7 +1327,7 @@ void UI::drawGameSelectorFrame() {
     if (selectedProfile_ >= 0 && selectedProfile_ < account_.profileCount()) {
         constexpr int AV = 56;
         constexpr int AVX = 36, AVY = 30;
-        if (gameSelOnAvatar_) {
+        if (gsFocus_ == GSFocus::Avatar) {
             drawRoundSelect(AVX + AV / 2, AVY + AV / 2, AV / 2 + 1, true);
         }
         SDL_Texture* av = account_.profiles()[selectedProfile_].iconTextureRound;
@@ -1428,7 +1427,7 @@ void UI::drawGameSelectorFrame() {
 
         // Card selezionata ingrandita (zoom animato intero): sfondo e icona
         // crescono, i testi restano centrati (il centro non si sposta).
-        bool sel = (i == gameSelCursor_ && !gameSelOnAllBanks_ && !gameSelOnSettings_ && !gameSelOnEject_ && !gameSelOnAvatar_ && !gameSelOnPack_ && !gameSelOnLaunchBtn_ && gameSelOnChevron_ == 0);
+        bool sel = (i == gameSelCursor_ && gsFocus_ == GSFocus::Grid);
         if (gameSelCursor_ != zoomCard_) {
             zoomPrev_ = zoomCard_;
             zoomCard_ = gameSelCursor_;
@@ -1493,7 +1492,7 @@ void UI::drawGameSelectorFrame() {
         constexpr int GR = 26;
         int gcx = SCREEN_W - 64;
         int gcy = SCREEN_H - 110;
-        drawRoundSelect(gcx, gcy, GR + 1, gameSelOnSettings_);
+        drawRoundSelect(gcx, gcy, GR + 1, gsFocus_ == GSFocus::Settings);
         if (iconSettings_) {
             constexpr int SET_R = 20;
             SDL_SetTextureColorMod(iconSettings_, T().text.r, T().text.g, T().text.b);
@@ -1522,8 +1521,8 @@ void UI::drawGameSelectorFrame() {
             SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "0");
             SDL_SetTextureColorMod(iconArrow_, 255, 255, 255);
         };
-        bool leftFocused = gameSelOnChevron_ == -1;
-        bool rightFocused = gameSelOnChevron_ == 1;
+        bool leftFocused = gsFocus_ == GSFocus::ChevLeft;
+        bool rightFocused = gsFocus_ == GSFocus::ChevRight;
         arrow(34, false, gameSelPage_ > 0, leftFocused);
         arrow(SCREEN_W - 34, true, gameSelPage_ < totalPages - 1, rightFocused);
     }
@@ -1603,11 +1602,7 @@ void UI::selectorTap(float px, float py, bool& running) {
     for (auto& s : dockLayout()) {
         if (s.item == DockState::Item::Eject && ejectBtnA_ <= 128) continue; // in fade: non cliccabile
         if (dist2(px, py, (float)s.cx, BTN_Y) < 45 * 45) {
-            dockFocusItem(s.item);
-            gameSelOnAvatar_ = false;
-            gameSelOnSettings_ = false;
-            gameSelOnLaunchBtn_ = false;
-            gameSelOnChevron_ = 0;
+            dockFocusItem(s.item); // setter unico: azzera avatar/gear/launch/chevron
             dockActivateFocused(running);
             return;
         }
@@ -1625,18 +1620,14 @@ void UI::selectorTap(float px, float py, bool& running) {
         if (dist2(px, py, 34, SCREEN_H / 2) < 34 * 34 && gameSelPage_ > 0) {
             gameSelPage_--;
             gameSelCursor_ = gameSelPage_ * 12;
-            gameSelOnAllBanks_ = gameSelOnAvatar_ = false;
-            gameSelOnEject_ = gameSelOnSettings_ = false;
-            gameSelOnChevron_ = 0;
+            gsSetFocus(GSFocus::Grid);
             markDirty();
             return;
         }
         if (dist2(px, py, SCREEN_W - 34, SCREEN_H / 2) < 34 * 34 && gameSelPage_ < totalPages - 1) {
             gameSelPage_++;
             gameSelCursor_ = gameSelPage_ * 12;
-            gameSelOnAllBanks_ = gameSelOnAvatar_ = false;
-            gameSelOnEject_ = gameSelOnSettings_ = false;
-            gameSelOnChevron_ = 0;
+            gsSetFocus(GSFocus::Grid);
             markDirty();
             return;
         }
@@ -1662,9 +1653,7 @@ void UI::selectorTap(float px, float py, bool& running) {
         int cardY = gridStartY + r * (CARD_H + CARD_GAP);
         if (px >= cardX && px <= cardX + CARD_W && py >= cardY && py <= cardY + CARD_H) {
             gameSelCursor_ = i;
-            gameSelOnAllBanks_ = gameSelOnAvatar_ = false;
-            gameSelOnEject_ = gameSelOnSettings_ = false;
-            gameSelOnChevron_ = 0;
+            gsSetFocus(GSFocus::Grid);
             if (Settings::radialMenu()) {
                 openRadialMenu(i);
             } else {
@@ -1688,7 +1677,7 @@ void UI::ejectUsbDevices() {
         if (usbHsFsUnmountDevice(&devs[i], true)) ok++;
     DebugLog::line("usb eject: unmounted %d/%u device(s)", ok, got);
     rescanImportedGames();
-    gameSelOnEject_ = false;
+    if (gsDockIs(DockState::Item::Eject)) gsUnfocus(GSFocus::Dock); // l'eject sparisce
     if (ok > 0) ejectAnimStage_ = 1; // sequenza: fade eject, poi rientro vault
     markDirty();
 #else
@@ -1753,14 +1742,14 @@ void UI::handleGameSelectorInput(bool& running) {
         int pageCount = pageEnd - pageStart;
 
         // On a chevron button
-        if (gameSelOnChevron_ != 0) {
+        if (gsChevronActive()) {
             if (dx != 0) {
-                if (gameSelOnChevron_ == -1 && dx > 0) {
+                if (gsFocus_ == GSFocus::ChevLeft && dx > 0) {
                     // Right from left chevron → back to grid col 0
-                    gameSelOnChevron_ = 0;
-                } else if (gameSelOnChevron_ == 1 && dx < 0) {
+                    gsUnfocus(GSFocus::ChevLeft);
+                } else if (gsFocus_ == GSFocus::ChevRight && dx < 0) {
                     // Left from right chevron → back to grid last col
-                    gameSelOnChevron_ = 0;
+                    gsUnfocus(GSFocus::ChevRight);
                     int localIdx = gameSelCursor_ - pageStart;
                     int row = localIdx / COLS;
                     int rowItems = std::min(COLS, pageCount - row * COLS);
@@ -1768,28 +1757,25 @@ void UI::handleGameSelectorInput(bool& running) {
                 }
             }
             if (dy > 0) {
-                gameSelOnChevron_ = 0;
-                gameSelOnSettings_ = false;
-                gameSelOnAvatar_ = false;
+                gsSetFocus(GSFocus::Grid);
                 dockFocusBanksOrFirst(); // giu' dai chevron: banche o prima voce
             }
             if (dy < 0) {
-                gameSelOnChevron_ = 0;
+                gsUnfocus(GSFocus::ChevLeft);
+                gsUnfocus(GSFocus::ChevRight);
             }
             return;
         }
 
-        if (gameSelOnLaunchBtn_) {
+        if (gsFocus_ == GSFocus::Launch) {
             // Sul tastino "Avvia" del pannello anteprima: sinistra torna
             // alla lista (cursore invariato), destra o giu' continuano
-            // verso la prima icona della dock (zaino/pack) -- "giu'" e'
-            // lo stesso gesto che dalla dock riporta su qui (vedi dy < 0
-            // dentro gameSelOnPack_ piu' sotto).
+            // verso la prima icona della dock -- "giu'" e' lo stesso gesto
+            // che dalla dock riporta su qui (vedi dy < 0 nel blocco dock).
             if (dx < 0) {
-                gameSelOnLaunchBtn_ = false;
+                gsUnfocus(GSFocus::Launch);
             } else if (dx > 0 || dy > 0) {
-                gameSelOnLaunchBtn_ = false;
-                dockFocusFirst(); // verso la prima icona della dock
+                dockFocusFirst(); // verso la prima icona della dock (azzera Launch)
             }
             return;
         }
@@ -1831,8 +1817,7 @@ void UI::handleGameSelectorInput(bool& running) {
             if (dx > 0) {
                 if (!dockMoveFocus(1)) {
                     // Oltre l'ultima voce: ingranaggio (come il vecchio eject->gear).
-                    dockClearFocus();
-                    gameSelOnSettings_ = true;
+                    gsSetFocus(GSFocus::Settings);
                 }
             } else if (dx < 0) {
                 if (!dockMoveFocus(-1)) dockClearFocus(); // prima voce: torna alla lista
@@ -1842,7 +1827,7 @@ void UI::handleGameSelectorInput(bool& running) {
                     // Galleria, gioco lanciabile: "su" dalla dock torna al
                     // tastino "Avvia" del pannello anteprima (stesso gesto
                     // simmetrico del "giu'" dal tastino).
-                    gameSelOnLaunchBtn_ = true;
+                    gsSetFocus(GSFocus::Launch);
                 } else if (!gallerySel_) {
                     // Solo Classica: la griglia ha piu' righe, "su" atterra
                     // sull'ultima riga mantenendo la colonna. In Galleria e'
@@ -1858,24 +1843,15 @@ void UI::handleGameSelectorInput(bool& running) {
             return;
         }
 
-        if (gameSelOnSettings_) {
-            // Sull'ingranaggio: sinistra torna a eject (se c'e) o banche
+        if (gsFocus_ == GSFocus::Settings) {
+            // Sull'ingranaggio (fuori dock, regole proprie): sinistra torna
+            // all'ultima voce visibile della dock, su in griglia.
             if (dx < 0) {
-                gameSelOnSettings_ = false;
-#ifdef OH_USB_UPDATE
-                if (usbHsFsGetMountedDeviceCount() > 0)
-                    gameSelOnEject_ = true;
-                else
-                    gameSelOnAllBanks_ = true;
-                gameSelOnPack_ = false;
-#else
-                gameSelOnAllBanks_ = true;
-                gameSelOnPack_ = false;
-#endif
+                if (!dockFocusLast()) gsSetFocus(GSFocus::Grid);
             } else if (dy < 0) {
-                gameSelOnSettings_ = false;
+                gsUnfocus(GSFocus::Settings);
                 if (!gallerySel_) {
-                    // (Galleria: cursore invariato, vedi commento sopra su onPack_)
+                    // (Galleria: cursore invariato, vedi blocco dock sopra)
                     int totalRows = (pageCount + COLS - 1) / COLS;
                     int lastRowStart = (totalRows - 1) * COLS;
                     int lastRowItems = pageCount - lastRowStart;
@@ -1893,25 +1869,20 @@ void UI::handleGameSelectorInput(bool& running) {
         // quando il cursore e' nella lista stessa: l'avatar (unico
         // elemento periferico non gia' filtrato dai return sopra) ha
         // la sua gestione dx piu' sotto (nessun effetto), invariata.
-        if (gallerySel_ && dx != 0 && !gameSelOnAvatar_) {
+        if (gallerySel_ && dx != 0 && gsFocus_ != GSFocus::Avatar) {
             if (dx < 0) {
                 if (selectedProfile_ >= 0) {
-                    gameSelOnAvatar_ = true;
+                    gsSetFocus(GSFocus::Avatar);
                 } else {
-                    gameSelOnSettings_ = false;
                     dockFocusBanksOrFirst();
                 }
             } else {
                 // Destra: se il gioco evidenziato e' lanciabile, prima il
                 // tastino "Avvia" del pannello anteprima; altrimenti dritti
-                // alla prima icona della dock (zaino/pack), come prima.
-                gameSelOnSettings_ = false;
-                gameSelOnAvatar_ = false;
+                // alla prima icona della dock, come prima.
                 if (isGameLaunchableAt(gameSelCursor_)) {
-                    dockClearFocus();
-                    gameSelOnLaunchBtn_ = true;
+                    gsSetFocus(GSFocus::Launch);
                 } else {
-                    gameSelOnAllBanks_ = false;
                     dockFocusFirst();
                 }
             }
@@ -1930,8 +1901,7 @@ void UI::handleGameSelectorInput(bool& running) {
         // in Galleria va invece alla prima icona della dock (lo zaino),
         // coerente con "destra" dalla lista (vedi blocco piu' sotto).
         if (row >= totalRows) {
-            gameSelOnSettings_ = false;
-            gameSelOnAvatar_ = false;
+            gsUnfocus(GSFocus::Avatar);
             if (gallerySel_) {
                 dockFocusFirst();
             } else {
@@ -1943,12 +1913,12 @@ void UI::handleGameSelectorInput(bool& running) {
         // Navigate to chevrons when going past grid edges (only if page exists)
         if (totalPages > 1) {
             if (col < 0 && gameSelPage_ > 0) {
-                gameSelOnChevron_ = -1;
+                gsSetFocus(GSFocus::ChevLeft);
                 return;
             }
             int rowItems = std::min(COLS, pageCount - row * COLS);
             if (col >= rowItems && gameSelPage_ < totalPages - 1) {
-                gameSelOnChevron_ = 1;
+                gsSetFocus(GSFocus::ChevRight);
                 return;
             }
         }
@@ -1960,19 +1930,16 @@ void UI::handleGameSelectorInput(bool& running) {
         if (col >= rowItems) col = 0;
 
         // Wrap rows (up from top goes to avatar, down from avatar to grid)
-        if (gameSelOnAvatar_) {
+        if (gsFocus_ == GSFocus::Avatar) {
             // Giu' o destra tornano alla lista/griglia (posizione invariata).
-            if (dy > 0 || dx > 0) gameSelOnAvatar_ = false;
+            if (dy > 0 || dx > 0) gsUnfocus(GSFocus::Avatar);
             return;
         }
         if (row < 0) {
             if (selectedProfile_ >= 0) {
-                gameSelOnAvatar_ = true;
+                gsSetFocus(GSFocus::Avatar);
             } else {
-                gameSelOnSettings_ = false;
-                gameSelOnEject_ = false;
-                gameSelOnAllBanks_ = true;
-                gameSelOnPack_ = false;
+                dockFocusBanksOrFirst();
             }
             return;
         }
@@ -2018,18 +1985,14 @@ void UI::handleGameSelectorInput(bool& running) {
                     if (totalPages > 1 && gameSelPage_ < totalPages - 1) {
                         gameSelPage_++;
                         gameSelCursor_ = gameSelPage_ * GAMES_PER_PAGE;
-                        gameSelOnAllBanks_ = gameSelOnAvatar_ = false;
-                        gameSelOnEject_ = gameSelOnSettings_ = false;
-                        gameSelOnChevron_ = 0;
+                        gsSetFocus(GSFocus::Grid);
                         markDirty();
                     }
                 } else if (dx > 120 && std::fabs(dy) < 200) {
                     if (totalPages > 1 && gameSelPage_ > 0) {
                         gameSelPage_--;
                         gameSelCursor_ = gameSelPage_ * GAMES_PER_PAGE;
-                        gameSelOnAllBanks_ = gameSelOnAvatar_ = false;
-                        gameSelOnEject_ = gameSelOnSettings_ = false;
-                        gameSelOnChevron_ = 0;
+                        gsSetFocus(GSFocus::Grid);
                         markDirty();
                     }
                 } else if (!touchMoved_) {
@@ -2341,7 +2304,7 @@ void UI::handleGameSelectorInput(bool& running) {
                                 sendLogNow();
                                 break;
                             case GameSelMenuAction::SendSave:
-                                if (gameSelOnAllBanks_ || gameSelOnChevron_ != 0 ||
+                                if (gsDockIs(DockState::Item::Banks) || gsChevronActive() ||
                                     gameSelCursor_ < 0 || gameSelCursor_ >= (int)availableGames_.size())
                                     showMessageAndWait(i18n::get(StrKey::SendSaveTitle), i18n::get(StrKey::SendSaveNoGame));
                                 else
@@ -2419,7 +2382,7 @@ void UI::handleGameSelectorInput(bool& running) {
         if (event.type == SDL_CONTROLLERAXISMOTION) {
             if (event.caxis.axis == SDL_CONTROLLER_AXIS_TRIGGERRIGHT) {
                 bool pressed = event.caxis.value > TRIGGER_DEADZONE;
-                if (pressed && !favTriggerHeld_ && gallerySel_ && !showGameSelMenu_ && !showSaveMenu_ && !showBackupList_ && !showCrashList_ && !showSettings_ && !showBackpack_ && !showAbout_ && !showThemeSelector_ && !showLanguageSelector_ && !gameSelOnAllBanks_ && !gameSelOnAvatar_ && !gameSelOnPack_ && !gameSelOnEject_ && !gameSelOnSaveMenu_ && !gameSelOnTrade_ && !gameSelOnSettings_ && !gameSelOnLaunchBtn_ && gameSelOnChevron_ == 0) {
+                if (pressed && !favTriggerHeld_ && gallerySel_ && !showGameSelMenu_ && !showSaveMenu_ && !showBackupList_ && !showCrashList_ && !showSettings_ && !showBackpack_ && !showAbout_ && !showThemeSelector_ && !showLanguageSelector_ && gsFocus_ == GSFocus::Grid) {
                     if (gameSelCursor_ >= 0 && gameSelCursor_ < (int)availableGames_.size()) {
                         GameType g = availableGames_[gameSelCursor_];
                         toggleFavorite(g);
@@ -2429,7 +2392,7 @@ void UI::handleGameSelectorInput(bool& running) {
             }
             if (event.caxis.axis == SDL_CONTROLLER_AXIS_TRIGGERLEFT) {
                 bool pressed = event.caxis.value > TRIGGER_DEADZONE;
-                if (pressed && !launchTriggerHeld_ && gallerySel_ && !showGameSelMenu_ && !showSaveMenu_ && !showBackupList_ && !showCrashList_ && !showSettings_ && !showBackpack_ && !showAbout_ && !showThemeSelector_ && !showLanguageSelector_ && !gameSelOnAllBanks_ && !gameSelOnAvatar_ && !gameSelOnPack_ && !gameSelOnEject_ && !gameSelOnSaveMenu_ && !gameSelOnTrade_ && !gameSelOnSettings_ && !gameSelOnLaunchBtn_ && gameSelOnChevron_ == 0) {
+                if (pressed && !launchTriggerHeld_ && gallerySel_ && !showGameSelMenu_ && !showSaveMenu_ && !showBackupList_ && !showCrashList_ && !showSettings_ && !showBackpack_ && !showAbout_ && !showThemeSelector_ && !showLanguageSelector_ && gsFocus_ == GSFocus::Grid) {
                     requestLaunchGame(running);
                 }
                 launchTriggerHeld_ = pressed;
@@ -2458,44 +2421,25 @@ void UI::handleGameSelectorInput(bool& running) {
                     break;
                 case SDL_CONTROLLER_BUTTON_B: // Switch A = select
                     if (dockState_.reorderMode) { dockStateExitReorderMode(true); break; } // A conferma il riordino
-                    if (gameSelOnChevron_ == -1 && gameSelPage_ > 0) {
+                    if (gsFocus_ == GSFocus::ChevLeft && gameSelPage_ > 0) {
                         gameSelPage_--;
                         gameSelCursor_ = gameSelPage_ * GAMES_PER_PAGE;
-                        gameSelOnChevron_ = 0;
-                    } else if (gameSelOnChevron_ == 1 && gameSelPage_ < totalPages - 1) {
+                        gsUnfocus(GSFocus::ChevLeft);
+                    } else if (gsFocus_ == GSFocus::ChevRight && gameSelPage_ < totalPages - 1) {
                         gameSelPage_++;
                         gameSelCursor_ = gameSelPage_ * GAMES_PER_PAGE;
-                        gameSelOnChevron_ = 0;
-                    } else if (gameSelOnAllBanks_)
-                        enterAllBanksMode();
-                    else if (gameSelOnPack_)
-                        openBackpackOn(gameSelCursor_);
-                    else if (gameSelOnLaunchBtn_)
+                        gsUnfocus(GSFocus::ChevRight);
+                    } else if (dockHasFocus()) {
+                        dockActivateFocused(running); // stessa azione del tap
+                    } else if (gsFocus_ == GSFocus::Launch) {
                         requestLaunchGame(running);
-                    else if (gameSelOnAvatar_) {
-                        gameSelOnAvatar_ = false;
+                    } else if (gsFocus_ == GSFocus::Avatar) {
+                        gsUnfocus(GSFocus::Avatar);
                         freeGameIcons();
                         account_.unmountSave();
                         screen_ = AppScreen::ProfileSelector;
                     }
-                    else if (gameSelOnEject_)
-                        ejectUsbDevices();
-                    else if (gameSelOnSaveMenu_) {
-                        if (gameSelCursor_ >= 0 && gameSelCursor_ < (int)availableGames_.size())
-                            openSaveMenu(availableGames_[gameSelCursor_],
-                                         importedOccurrence(gameSelCursor_));
-                    }
-                    else if (gameSelOnTrade_) {
-                        // Come il badge radiale: seleziona senza lasciare il
-                        // selettore, poi apri lo scambio.
-                        if (gameSelCursor_ >= 0 && gameSelCursor_ < (int)availableGames_.size()) {
-                            AppScreen prevScreen = screen_;
-                            selectGame(availableGames_[gameSelCursor_], importedOccurrence(gameSelCursor_));
-                            screen_ = prevScreen;
-                            openTradeList();
-                        }
-                    }
-                    else if (gameSelOnSettings_) {
+                    else if (gsFocus_ == GSFocus::Settings) {
                         openSettings(); // il gear apre SEMPRE le impostazioni
                     }
                     else if (!gallerySel_ && Settings::radialMenu())
@@ -2505,7 +2449,7 @@ void UI::handleGameSelectorInput(bool& running) {
                     break;
                 case SDL_CONTROLLER_BUTTON_A: // Switch B = back
                     if (dockState_.reorderMode) { dockStateExitReorderMode(false); break; } // B annulla il riordino
-                    if (gameSelOnAvatar_) { gameSelOnAvatar_ = false; break; }
+                    if (gsFocus_ == GSFocus::Avatar) { gsUnfocus(GSFocus::Avatar); break; }
                     DebugLog::line("nav: B in games profile=%d -> %s", selectedProfile_,
                         selectedProfile_ >= 0 ? "ProfileSelector" : "QUIT");
                     if (selectedProfile_ >= 0) {
@@ -2526,7 +2470,7 @@ void UI::handleGameSelectorInput(bool& running) {
                     break;
                 case SDL_CONTROLLER_BUTTON_Y: // Switch X = save menu (debug) / eject USB
                     if (dockState_.reorderMode) { dockStateExitReorderMode(false); break; }
-                    if (DebugLog::enabled() && !gameSelOnAllBanks_ && !gameSelOnSettings_ && !gameSelOnEject_ && !gameSelOnSaveMenu_ && !gameSelOnTrade_ && !gameSelOnAvatar_ && !gameSelOnPack_ && !gameSelOnLaunchBtn_ && gameSelOnChevron_ == 0 &&
+                    if (DebugLog::enabled() && gsFocus_ == GSFocus::Grid &&
                         gameSelCursor_ >= 0 && gameSelCursor_ < (int)availableGames_.size()) {
                         openSaveMenu(availableGames_[gameSelCursor_],
                                      importedOccurrence(gameSelCursor_));
@@ -2538,8 +2482,7 @@ void UI::handleGameSelectorInput(bool& running) {
                     if (totalPages > 1 && gameSelPage_ > 0) {
                         gameSelPage_--;
                         gameSelCursor_ = gameSelPage_ * GAMES_PER_PAGE;
-                        gameSelOnAllBanks_ = false;
-                        gameSelOnChevron_ = 0;
+                        gsSetFocus(GSFocus::Grid);
                     }
                     break;
                 }
@@ -2547,8 +2490,7 @@ void UI::handleGameSelectorInput(bool& running) {
                     if (totalPages > 1 && gameSelPage_ < totalPages - 1) {
                         gameSelPage_++;
                         gameSelCursor_ = gameSelPage_ * GAMES_PER_PAGE;
-                        gameSelOnAllBanks_ = false;
-                        gameSelOnChevron_ = 0;
+                        gsSetFocus(GSFocus::Grid);
                     }
                     break;
                 }
@@ -4585,7 +4527,7 @@ bool UI::writeUpdateCfgUrl(const std::string& basePath, const std::string& url) 
 int UI::settingsRowCount(int cat) const {
     switch (cat) {
         case 0: return 1; // Utente predefinito
-        case 1: return 6; // Tema, Lingua, Layout selettore, Zoom, Menu radiale, Animazione scambio
+        case 1: return 8; // Tema, Lingua, Layout selettore, Zoom, Menu radiale, Animazione scambio, Dock, Reset dock
         case 2: return mgbaPath_.empty() ? 2 : 3; // Sistema: Core + Installa launcher [+ Emulatore predefinito]
         case 3: return 4; // Cartelle, Scansiona, Max, Pulisci
         case 4: {
@@ -4614,7 +4556,9 @@ std::string UI::settingsRowLabel(int cat, int row) const {
         if (row == 2) return i18n::get(StrKey::SetGalleryLayout);
         if (row == 3) return i18n::get(StrKey::SetZoom);
         if (row == 4) return i18n::get(StrKey::SetRadialMenu);
-        return i18n::get(StrKey::SetTradeAnim);
+        if (row == 5) return i18n::get(StrKey::SetTradeAnim);
+        if (row == 6) return i18n::get(StrKey::SetDockVisible);
+        return i18n::get(StrKey::SetDockReset);
     }
     if (cat == 2) {
         if (row == 0) return i18n::get(StrKey::SetCore);
@@ -4657,7 +4601,12 @@ std::string UI::settingsRowValue(int cat, int row) {
                  ? i18n::get(StrKey::LayoutGallery) : i18n::get(StrKey::LayoutClassic);
         if (row == 3) return std::to_string(zoomGrow_) + "px";
         if (row == 4) return Settings::radialMenu() ? i18n::get(StrKey::SetOn) : i18n::get(StrKey::SetOff);
-        return Settings::tradeAnim() ? i18n::get(StrKey::SetOn) : i18n::get(StrKey::SetOff);
+        if (row == 5) return Settings::tradeAnim() ? i18n::get(StrKey::SetOn) : i18n::get(StrKey::SetOff);
+        if (row == 6) {
+            if (!dockLoaded_) dockStateLoad();
+            return dockState_.visible ? i18n::get(StrKey::SetOn) : i18n::get(StrKey::SetOff);
+        }
+        return ""; // Reset dock: riga azione, niente valore
     }
     if (cat == 2) {
         if (row == 0)
@@ -4806,7 +4755,7 @@ void UI::settingsRowActivate(int cat, int row, int dir, bool& running) {
             gameSelPage_ = 0;
             selPageShown_ = 0;
             selSlide_ = 0.0f;
-            gameSelOnChevron_ = 0;
+            gsSetFocus(GSFocus::Grid); // cambio layout: focus in griglia
             // Stessa ragione per l'anteprima Galleria: senza reset, al
             // prossimo ingresso in Galleria galSelShown_ punterebbe a un
             // indice della sessione precedente e farebbe partire uno slide
@@ -4827,9 +4776,22 @@ void UI::settingsRowActivate(int cat, int row, int dir, bool& running) {
         } else if (row == 4) {
             // Menu radiale: solo 2 valori, qualunque dir alterna (come Layout).
             Settings::setRadialMenu(!Settings::radialMenu());
-        } else {
+        } else if (row == 5) {
             // Animazione scambio: idem, solo on/off.
             Settings::setTradeAnim(!Settings::tradeAnim());
+        } else if (row == 6) {
+            // Dock inferiore: mostra/nascondi (sincronizza lo stato live).
+            if (!dockLoaded_) dockStateLoad();
+            dockState_.visible = !dockState_.visible;
+            if (!dockState_.visible) dockClearFocus();
+            dockStateSave();
+        } else {
+            // Reset ordine dock: torna al factory e salva.
+            if (!dockLoaded_) dockStateLoad();
+            dockStateResetToDefault();
+            dockStateSave();
+            dockFocusFirst();
+            showMessageAndWait(i18n::get(StrKey::SetDockReset), "OK");
         }
     } else if (cat == 2) {
         if (row == 0) {
