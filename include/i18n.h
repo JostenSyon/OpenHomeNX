@@ -259,6 +259,7 @@ namespace StrKey {
     constexpr const char* RadialSaveMenu  = "radial_savemenu";
     constexpr const char* RadialTrade     = "radial_trade";
     constexpr const char* DockEject       = "dock_eject";
+    constexpr const char* DockDevSync     = "dock_devsync";
     constexpr const char* LayoutClassic    = "layout_classic";
     constexpr const char* LayoutGallery    = "layout_gallery";
     constexpr const char* SetCore         = "set_core";
@@ -535,6 +536,8 @@ namespace StrKey {
     constexpr const char* RemoteBoxSendTitle   = "remotebox_send_title";
     constexpr const char* RemoteBoxSendBody    = "remotebox_send_body";
     constexpr const char* RemoteBoxSendFailed  = "remotebox_send_failed";
+    constexpr const char* RemoteBoxCloseSendBody   = "remotebox_close_send_body";
+    constexpr const char* RemoteBoxCloseSendResult = "remotebox_close_send_result";
 
     // Cross-gen transfer (ui_input.cpp prepareForPlacement + drop dialogs)
     constexpr const char* TransferTitle        = "transfer_title";

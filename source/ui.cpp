@@ -112,6 +112,9 @@ bool UI::init() {
         iconRocket_      = loadIcon("rocket.png");
         iconFloppy_      = loadIcon("floppy.png");
         iconTrade_       = loadIcon("trade.png");
+        iconDevBox_      = loadIcon("devbox.png");
+        iconDevSync_     = loadIcon("devsync.png");
+        iconDevLink_     = loadIcon("devlink.png");
     }
 
     // Game-selector logos for imported (titleId-less) games: no NS control
@@ -798,6 +801,19 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
                 DebugLog::line("remote sync: device trovato in background su %s", foundHost.c_str());
             } else if (wr == RemoteSyncWorkerResult::NotFound) {
                 DebugLog::line("remote sync: ricerca automatica in background senza esito");
+            }
+            // Il device trovato potrebbe essere sparito nel frattempo
+            // (Switch/box remoto riacceso, cambio rete, ecc.):
+            // remoteSyncWorkerStart() tenta la scoperta una sola volta per
+            // boot (vedi il commento sopra), quindi senza questo controllo
+            // l'app lo considererebbe "trovato" per sempre. Ping leggero
+            // gestito internamente da remoteSyncWatchdogCheck(): al massimo
+            // una volta ogni un paio di minuti e MAI durante un uso attivo.
+            if (remoteDeviceAvailable_ && !remoteDeviceHost_.empty()) {
+                if (!remoteSyncWatchdogCheck(remoteDeviceHost_)) {
+                    remoteDeviceAvailable_ = false;
+                    markDirty();
+                }
             }
         }
         // About popup intercepts input from any screen

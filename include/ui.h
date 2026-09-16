@@ -190,6 +190,9 @@ private:
     SDL_Texture* iconRocket_       = nullptr; // "Avvia" nel menu radiale (48px 1:1)
     SDL_Texture* iconFloppy_       = nullptr; // "Salvataggi" nel menu radiale (48px 1:1)
     SDL_Texture* iconTrade_        = nullptr; // "Scambio": asset pronto, non ancora in radialItems_ (48px 1:1)
+    SDL_Texture* iconDevBox_       = nullptr; // "Box remoto" in dock: apre openRemoteBox() (48px 1:1)
+    SDL_Texture* iconDevSync_      = nullptr; // "DevSync" in dock: apre remoteSyncTestRow() (48px 1:1)
+    SDL_Texture* iconDevLink_      = nullptr; // device remoto trovato: barra di stato accanto a wifi/lan (36px 1:1)
 
     // Menu radiale (solo layout Classico, dietro Settings::radialMenu()):
     // alla conferma di una tile apre un piccolo arco di scorciatoie sopra
@@ -210,7 +213,7 @@ private:
     // zone tap sono guidati da dockLayout(); la navigazione D-pad usa
     // dockMoveFocus() cosi' l'ordine utente non desincronizza mai i flag.
     struct DockState {
-        enum class Item { Backpack, Banks, SaveMenu, Trade, Eject };
+        enum class Item { Backpack, Banks, SaveMenu, Trade, RemoteBox, DevSync, Eject };
 
         std::vector<Item> customOrder; // ordine utente (default: factory)
         bool visible = true;           // mostra/nascondi dock
@@ -385,6 +388,13 @@ private:
         GameType type = GameType::EMERALD;
         std::string tmpPath;
         std::string host, token, remoteSavePath;
+        // Istantanea dimensione+mtime del tmp file appena scaricato (o
+        // appena rispedito con successo, vedi UI::returnToGameSelector):
+        // permette a UI::closeRemoteBox() di scoprire un save modificato
+        // mai rispedito al device, senza un flag "dirty" a parte da tenere
+        // sincronizzato a mano in ogni punto che tocca il save.
+        long long snapSize = -1;
+        long long snapMtime = 0;
     };
     bool remoteBoxActive_ = false;
     std::vector<RemoteBoxEntry> remoteBoxEntries_;

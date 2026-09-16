@@ -2045,6 +2045,19 @@ void UI::returnToGameSelector() {
                 if (remoteSyncUpload(activeRemoteHost_, activeRemoteToken_, savePath_,
                                       activeRemoteSavePath_, upErr)) {
                     DebugLog::line("box remoto: invio OK (%s)", savePath_.c_str());
+                    // Aggiorna l'istantanea in remoteBoxEntries_ (vedi
+                    // RemoteBoxEntry) cosi' UI::closeRemoteBox() non lo
+                    // consideri di nuovo "da rispedire" alla chiusura del
+                    // box, chiedendo una seconda volta per lo stesso save.
+                    for (auto& e : remoteBoxEntries_) {
+                        if (e.tmpPath != savePath_) continue;
+                        struct stat st;
+                        if (stat(savePath_.c_str(), &st) == 0) {
+                            e.snapSize = (long long)st.st_size;
+                            e.snapMtime = (long long)st.st_mtime;
+                        }
+                        break;
+                    }
                 } else {
                     showMessageAndWait(i18n::get(StrKey::RemoteBoxTitle),
                                         i18n::fmt(StrKey::RemoteBoxSendFailed, upErr));

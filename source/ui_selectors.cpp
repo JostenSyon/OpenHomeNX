@@ -173,11 +173,35 @@ void UI::dockStateLoad() {
         else if (token == "Banks") dockState_.customOrder.push_back(DockState::Item::Banks);
         else if (token == "SaveMenu") dockState_.customOrder.push_back(DockState::Item::SaveMenu);
         else if (token == "Trade") dockState_.customOrder.push_back(DockState::Item::Trade);
+        else if (token == "RemoteBox") dockState_.customOrder.push_back(DockState::Item::RemoteBox);
+        else if (token == "DevSync") dockState_.customOrder.push_back(DockState::Item::DevSync);
         else if (token == "Eject") dockState_.customOrder.push_back(DockState::Item::Eject);
         if (end == std::string::npos) break;
         start = end + 1;
     }
-    if (dockState_.customOrder.empty()) dockStateResetToDefault();
+    if (dockState_.customOrder.empty()) {
+        dockStateResetToDefault();
+    } else {
+        // Migrazione: chi aveva gia' un ordine salvato da prima che
+        // RemoteBox/DevSync esistessero non le troverebbe mai (il parse qui
+        // sopra ignora semplicemente i token che non riconosce) -- le
+        // inseriamo appena prima di Eject (o in fondo se Eject non c'e', es.
+        // find() arriva a end()), cosi' compaiono anche per chi ha gia'
+        // personalizzato la dock, senza toccare l'ordine del resto scelto
+        // dall'utente.
+        auto hasItem = [&](DockState::Item it) {
+            for (auto x : dockState_.customOrder)
+                if (x == it) return true;
+            return false;
+        };
+        auto insertBeforeEjectOrAppend = [&](DockState::Item it) {
+            auto pos = std::find(dockState_.customOrder.begin(), dockState_.customOrder.end(),
+                                  DockState::Item::Eject);
+            dockState_.customOrder.insert(pos, it);
+        };
+        if (!hasItem(DockState::Item::RemoteBox)) insertBeforeEjectOrAppend(DockState::Item::RemoteBox);
+        if (!hasItem(DockState::Item::DevSync)) insertBeforeEjectOrAppend(DockState::Item::DevSync);
+    }
     dockState_.visible = Settings::dockVisible();
     dockLoaded_ = true;
 }
@@ -191,6 +215,8 @@ void UI::dockStateSave() const {
             case DockState::Item::Banks: orderStr += "Banks"; break;
             case DockState::Item::SaveMenu: orderStr += "SaveMenu"; break;
             case DockState::Item::Trade: orderStr += "Trade"; break;
+            case DockState::Item::RemoteBox: orderStr += "RemoteBox"; break;
+            case DockState::Item::DevSync: orderStr += "DevSync"; break;
             case DockState::Item::Eject: orderStr += "Eject"; break;
         }
     }
@@ -200,7 +226,8 @@ void UI::dockStateSave() const {
 
 void UI::dockStateResetToDefault() {
     dockState_.customOrder = { DockState::Item::Backpack, DockState::Item::Banks,
-        DockState::Item::SaveMenu, DockState::Item::Trade, DockState::Item::Eject };
+        DockState::Item::SaveMenu, DockState::Item::Trade, DockState::Item::RemoteBox,
+        DockState::Item::DevSync, DockState::Item::Eject };
     dockState_.visible = true;
     dockState_.reorderMode = false;
     dockState_.reorderFocusIdx = 0;
@@ -277,6 +304,12 @@ bool UI::dockStateItemVisible(DockState::Item item) const {
             }
             return false;
         }
+        case DockState::Item::RemoteBox:
+            // Come UI::openRemoteBox(): niente in dual-bank mode, e solo
+            // quando il worker in background ha davvero trovato un device.
+            return remoteDeviceAvailable_ && !isDualBankMode();
+        case DockState::Item::DevSync:
+            return remoteDeviceAvailable_;
         case DockState::Item::Eject:
 #ifdef OH_USB_UPDATE
             return usbHsFsGetMountedDeviceCount() > 0;
@@ -1231,6 +1264,12 @@ void UI::dockActivateFocused(bool& running) {
             openTradeList();
             break;
         }
+        case DockState::Item::RemoteBox:
+            openRemoteBox();
+            break;
+        case DockState::Item::DevSync:
+            remoteSyncTestRow();
+            break;
         case DockState::Item::Eject:
             ejectUsbDevices();
             break;
@@ -1302,6 +1341,8 @@ void UI::drawDock() {
             case DockState::Item::Banks: return iconVault_;
             case DockState::Item::SaveMenu: return iconFloppy_;
             case DockState::Item::Trade: return iconTrade_;
+            case DockState::Item::RemoteBox: return iconDevBox_;
+            case DockState::Item::DevSync: return iconDevSync_;
             case DockState::Item::Eject: return iconEject_;
         }
         return nullptr;
@@ -1352,6 +1393,8 @@ void UI::drawDock() {
                 case DockState::Item::Banks: lblKey = StrKey::ViewAllBanks; break;
                 case DockState::Item::SaveMenu: lblKey = StrKey::RadialSaveMenu; break;
                 case DockState::Item::Trade: lblKey = StrKey::RadialTrade; break;
+                case DockState::Item::RemoteBox: lblKey = StrKey::RemoteBoxMenuLabel; break;
+                case DockState::Item::DevSync: lblKey = StrKey::DockDevSync; break;
                 case DockState::Item::Eject: lblKey = StrKey::DockEject; break;
             }
             if (lblKey) {
@@ -1428,6 +1471,16 @@ void UI::drawGameSelectorFrame() {
             SDL_Rect ddst = {SCREEN_W - 36 - 36 - 8 - 36, 34, 36, 36};
             SDL_RenderCopy(renderer_, iconDebug_, nullptr, &ddst);
             SDL_SetTextureColorMod(iconDebug_, 255, 255, 255);
+        }
+        // Device remoto trovato (worker in background): un altro posto a
+        // sinistra del primo libero fra wifi e il bug debug.
+        if (remoteDeviceAvailable_ && iconDevLink_) {
+            int dlx = SCREEN_W - 36 - 36 - 8 - 36;
+            if (DebugLog::enabled() && iconDebug_) dlx -= 8 + 36;
+            SDL_SetTextureColorMod(iconDevLink_, T().text.r, T().text.g, T().text.b);
+            SDL_Rect rdst = {dlx, 34, 36, 36};
+            SDL_RenderCopy(renderer_, iconDevLink_, nullptr, &rdst);
+            SDL_SetTextureColorMod(iconDevLink_, 255, 255, 255);
         }
     }
     }
@@ -5685,6 +5738,13 @@ void UI::openRemoteBox() {
         entry.host = host;
         entry.token = token;
         entry.remoteSavePath = c.remoteSavePath;
+        {
+            struct stat st;
+            if (stat(tmpPath.c_str(), &st) == 0) {
+                entry.snapSize = (long long)st.st_size;
+                entry.snapMtime = (long long)st.st_mtime;
+            }
+        }
         remoteBoxEntries_.push_back(entry);
 
         ImportedGame ig;
@@ -5731,6 +5791,51 @@ void UI::closeRemoteBox() {
     importedGames_ = savedImportedGames_;
     savedAvailableGames_.clear();
     savedImportedGames_.clear();
+
+    // Save modificati (dimensione/mtime diversi dall'istantanea presa al
+    // download, vedi RemoteBoxEntry) che nessuno ha ancora rispedito al
+    // device remoto -- capita normalmente uscendo dal save con B, che porta
+    // alla lista banche (UI::actionCancel) e NON passa da
+    // UI::returnToGameSelector() a meno di usare il menu "Cambia gioco":
+    // senza questo controllo, chiudere il box li scartava in silenzio (bug
+    // segnalato: il save modificato viene scritto in locale correttamente,
+    // solo mai rispedito -- "i pokemon inviati non appaiono poi nel
+    // dispositivo"). Stessa policy di UI::returnToGameSelector(): mai un
+    // invio automatico silenzioso, sempre una conferma prima -- qui
+    // aggregata in un solo popup invece di uno per save.
+    std::vector<size_t> pending;
+    for (size_t i = 0; i < remoteBoxEntries_.size(); i++) {
+        struct stat st;
+        if (stat(remoteBoxEntries_[i].tmpPath.c_str(), &st) != 0) continue;
+        if ((long long)st.st_size != remoteBoxEntries_[i].snapSize ||
+            (long long)st.st_mtime != remoteBoxEntries_[i].snapMtime)
+            pending.push_back(i);
+    }
+    if (!pending.empty()) {
+        std::string title = i18n::get(StrKey::RemoteBoxSendTitle);
+        if (showConfirmDialog(title, i18n::fmt(StrKey::RemoteBoxCloseSendBody,
+                                               std::to_string(pending.size())))) {
+            int sent = 0, failed = 0;
+            for (size_t idx : pending) {
+                auto& e = remoteBoxEntries_[idx];
+                std::string upErr;
+                if (remoteSyncUpload(e.host, e.token, e.tmpPath, e.remoteSavePath, upErr)) {
+                    sent++;
+                    DebugLog::line("box remoto: invio OK alla chiusura (%s)", e.tmpPath.c_str());
+                } else {
+                    failed++;
+                    DebugLog::line("box remoto: invio FALLITO alla chiusura (%s): %s",
+                                   e.tmpPath.c_str(), upErr.c_str());
+                }
+            }
+            showMessageAndWait(title, i18n::fmt(StrKey::RemoteBoxCloseSendResult,
+                                                std::to_string(sent), std::to_string(failed)));
+        } else {
+            DebugLog::line("box remoto: invio alla chiusura rifiutato dall'utente (%d save), modifiche solo locali",
+                           (int)pending.size());
+        }
+    }
+
     for (auto& e : remoteBoxEntries_)
         std::remove(e.tmpPath.c_str());
     remoteBoxEntries_.clear();
