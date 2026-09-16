@@ -120,9 +120,12 @@ bool gift(SaveFile& sf, const std::string& basePath, const ItemDef& d,
     //  Mistico (370) -> 0x2A8 RECEIVED + 0x84A SHIP_NAVEL_ROCK
     // La Switch mette entrambi, facciamo uguale. Per Smeraldo/Rubino ecc. vedi docs.
     bool needFlag = d.flag;
-    if (needFlag && isFRLG(sf.gameType()) && (d.id == 371 || d.id == 370)) {
-        // Non bloccare: gestiamo il flag qui sotto dopo aver messo l'oggetto in borsa
-        needFlag = false;
+    if (needFlag) {
+        // Flag gestiti: FRLG Aurora/Mistico, RSE Aurora/Mistico/OldSeaMap/Eon, National Dex
+        if (isFRLG(sf.gameType()) && (d.id == 371 || d.id == 370)) needFlag = false;
+        else if (sf.gameType() == GameType::EMERALD && (d.id == 371 || d.id == 370 || d.id == 376 || d.id == 1000)) needFlag = false;
+        else if ((sf.gameType() == GameType::RUBY || sf.gameType() == GameType::SAPPHIRE) && d.id == 275) needFlag = false;
+        else if (d.id == 1001) needFlag = false; // National Dex per tutti i Gen3
     }
     if (needFlag) {
         msg = d.name + ": richiede anche il flag evento (non ancora implementato per questo gioco/oggetto).";
@@ -175,9 +178,10 @@ bool gift(SaveFile& sf, const std::string& basePath, const ItemDef& d,
     }
     // Flag nave/evento per FRLG e RSE/Smeraldo (SaveBlock1+0xEE0, 1 bit per flag).
     // FRLG: Aurora 371 -> 0x2A7+0x84B, Mistico 370 -> 0x2A8+0x84A (entrambi insieme)
-    // Smeraldo: Aurora 371 0x13A+0x8D5, Mistico 370 0x13B+0x8E0, Old Sea Map/Mew 376 0x13C+0x8D6, Eone 0x8B3
+    // Smeraldo: Aurora 371 0x13A+0x8D5, Mistico 370 0x13B+0x8E0, Old Sea Map/Mew 376 0x13C+0x8D6, Eone 0x8B3 (Mystery Event 1000)
     // Rubino/Zaffiro: Eone Ticket 275 -> 0x853
-    if (d.id == 371 || d.id == 370 || d.id == 376 || d.id == 275) {
+    // National Dex 1001 -> SaveBlock2+0x19
+    if (d.id == 371 || d.id == 370 || d.id == 376 || d.id == 275 || d.id == 1000 || d.id == 1001) {
         if (isFRLG(sf.gameType())) {
             if (d.id == 371) { sf.setGbaFlag(0x2A7); sf.setGbaFlag(0x84B); }
             else if (d.id == 370) { sf.setGbaFlag(0x2A8); sf.setGbaFlag(0x84A); }
@@ -187,15 +191,17 @@ bool gift(SaveFile& sf, const std::string& basePath, const ItemDef& d,
             if (d.id == 371) { sf.setGbaFlag(0x13A); sf.setGbaFlag(0x8D5); }
             else if (d.id == 370) { sf.setGbaFlag(0x13B); sf.setGbaFlag(0x8E0); }
             else if (d.id == 376) { sf.setGbaFlag(0x13C); sf.setGbaFlag(0x8D6); }
+            else if (d.id == 1000) { sf.setGbaFlag(0x8B3); }
             else if (d.id == 275) { /* Eon Ticket su Smeraldo è via Mystery Event, non 275 */ }
-            // Eone su Smeraldo è Mystery Event (non un item) -> 0x8B3, gestito altrove se serve
-            if (d.id == 371 || d.id == 370 || d.id == 376) DebugLog::line("backpack: flag Smeraldo impostati per %s (%d)", d.name.c_str(), d.id);
+            if (d.id == 371 || d.id == 370 || d.id == 376 || d.id == 1000) DebugLog::line("backpack: flag Smeraldo impostati per %s (%d)", d.name.c_str(), d.id);
         } else if (sf.gameType() == GameType::RUBY || sf.gameType() == GameType::SAPPHIRE) {
             if (d.id == 275) { sf.setGbaFlag(0x853); DebugLog::line("backpack: flag Rubino/Zaffiro Eone impostato"); }
-            // Rubino/Zaffiro non hanno Aurora/Mistico come evento nave (sono Smeraldo/FRLG)
         }
-        // Per Smeraldo Eone (Mystery Event) il flag è 0x8B3 SHIP_SOUTHERN — non è un item distributore,
-        // ma se in futuro aggiungiamo un item fittizio per quell'evento, basterà aggiungere qui.
+        // National Dex (1001) — valido per tutti i Gen3, sblocca il Dex Nazionale (SaveBlock2+0x19)
+        if (d.id == 1001) {
+            sf.setNationalDexEnabled();
+            DebugLog::line("backpack: National Dex sbloccato per %s", gameKey(sf.gameType()).c_str());
+        }
     }
     // Giornale (best-effort: il regalo è già scritto, logga l'esito)
     auto jl = journalLoad(basePath);
