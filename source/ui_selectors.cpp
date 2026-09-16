@@ -5527,7 +5527,7 @@ void UI::remoteSyncTestRow() {
                                     for (char& ch : wantBaseLower) ch = (char)std::tolower((unsigned char)ch);
                                     for (auto& e : dirEntries) {
                                         if (e.isDir) continue;
-                                        if (remoteSyncIsSaveFileName(e.name)) continue;
+                                        if (!remoteSyncIsRomFileName(e.name)) continue;
                                         std::string baseLower = e.name;
                                         for (char& ch : baseLower) ch = (char)std::tolower((unsigned char)ch);
                                         size_t dot = baseLower.find_last_of('.');
