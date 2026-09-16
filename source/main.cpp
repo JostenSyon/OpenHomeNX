@@ -6,6 +6,7 @@
 #include "account.h"
 #include "update_net.h"
 #include "autoupdate.h"
+#include "remote_sync.h"
 #include "app_version.h"
 #include "settings_cfg.h"
 
@@ -178,6 +179,15 @@ int main(int argc, char* argv[]) {
         }
     }
 
+    // Scoperta automatica in background del device remoto (Box Remoto /
+    // DevSync): NON si avvia qui apposta -- partirebbe in concorrenza con
+    // l'autoupdate appena lanciato sopra, competendo per le stesse sessioni
+    // di rete e rischiando di allungare proprio il check/download
+    // dell'aggiornamento (bug reale, gia' visto). Parte invece da
+    // UI::run(), un solo tentativo, ma solo DOPO che l'autoupdate si e'
+    // sistemato (autoUpdateSettled(): mai partito, o finito comunque vada)
+    // -- l'aggiornamento ha sempre la precedenza.
+
 #ifdef OH_USB_UPDATE
     // USB Mass Storage host: lets "Check for update" scan an inserted USB drive
     // for a newer OpenHomeNX.nro. FAT/exFAT only (ISC build). Spawns one bg
@@ -245,9 +255,10 @@ int main(int argc, char* argv[]) {
     // senza passaggio dal selettore; idempotente via sidecar).
     ui.backupOnExitIfNeeded();
 
-    // Cleanup — prima il worker update (se mai partito): niente socket/stringhe
-    // toccate durante lo smontaggio rete/USB.
+    // Cleanup — prima i worker in background (se mai partiti): niente
+    // socket/stringhe toccate durante lo smontaggio rete/USB.
     autoUpdateJoin();
+    remoteSyncWorkerJoin();
     ui.shutdown();
     ledExit();
 

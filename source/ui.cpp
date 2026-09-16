@@ -6,6 +6,7 @@
 #include "i18n.h"
 #include "debug_log.h"
 #include "autoupdate.h"
+#include "remote_sync.h"
 #include "settings_cfg.h"
 #include <cmath>
 #include <cstdio>
@@ -770,6 +771,35 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
                 }
             }
         }
+        // Scoperta automatica del device remoto (worker in background --
+        // vedi il commento sopra la sua implementazione in remote_sync.cpp).
+        // Parte SOLO dopo che l'autoupdate si e' sistemato (autoUpdateSettled:
+        // mai partito, o finito comunque vada) -- l'aggiornamento viene
+        // sempre prima e non deve mai competere per la rete con questo
+        // worker (bug reale, gia' visto: vedi il commento sul fallback
+        // rimosso in remoteSyncWorkerMain). remoteSyncWorkerStart() e' lei
+        // stessa no-op dalla seconda chiamata in poi, quindi richiamarla ogni
+        // frame una volta sistemato l'autoupdate costa solo una letture
+        // atomica in piu'. Poll non bloccante, una volta per frame, su
+        // qualsiasi schermata: costa solo una letture atomica nel caso
+        // comune (Pending). Su Found si ricorda l'host (stesso posto in cui
+        // lo salva il flusso manuale a fine login) cosi' la prossima
+        // apertura di RemoteBox/DevSync lo trova gia' pronto.
+        if (autoUpdateSettled()) {
+            remoteSyncWorkerStart();
+            std::string foundHost, foundToken;
+            RemoteSyncWorkerResult wr = remoteSyncWorkerPoll(foundHost, foundToken);
+            if (wr == RemoteSyncWorkerResult::Found) {
+                remoteDeviceAvailable_ = true;
+                remoteDeviceHost_ = foundHost;
+                remoteDeviceToken_ = foundToken;
+                Settings::setRemoteSyncHost(foundHost);
+                markDirty();
+                DebugLog::line("remote sync: device trovato in background su %s", foundHost.c_str());
+            } else if (wr == RemoteSyncWorkerResult::NotFound) {
+                DebugLog::line("remote sync: ricerca automatica in background senza esito");
+            }
+        }
         // About popup intercepts input from any screen
         if (showAbout_) {
             SDL_Event event;
@@ -1279,6 +1309,7 @@ void UI::selectGame(GameType game, int occurrence) {
 
     if (!isDualBankMode()) {
         showWorking(i18n::get(StrKey::LoadingSaveData));
+        activeSaveIsRemote_ = false;
 
         if (isImportedFile(game) || isGen1File(game) || isGen2File(game) ||
             isGen45File(game) || isGen6XY(game) || isGen7SM(game)) {
@@ -1294,6 +1325,22 @@ void UI::selectGame(GameType game, int occurrence) {
             if (savePath_.empty()) {
                 showMessageAndWait(i18n::get(StrKey::MountError), i18n::get(StrKey::FailedMountSave));
                 return;
+            }
+            // Box Remoto: questo file temporaneo arriva da un save remoto
+            // (vedi UI::openRemoteBox) -- segna la provenienza cosi'
+            // UI::returnToGameSelector() sappia rispedirlo al device in
+            // uscita, con conferma, invece di considerarlo un file locale
+            // qualunque.
+            if (remoteBoxActive_) {
+                for (auto& e : remoteBoxEntries_) {
+                    if (e.type == game && e.tmpPath == savePath_) {
+                        activeSaveIsRemote_ = true;
+                        activeRemoteHost_ = e.host;
+                        activeRemoteToken_ = e.token;
+                        activeRemoteSavePath_ = e.remoteSavePath;
+                        break;
+                    }
+                }
             }
             // Come i titoli installati (backupSaveDir sopra), anche i save
             // file-backed meritano un auto-backup all'apertura: finora non ne

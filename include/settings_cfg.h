@@ -41,4 +41,12 @@ std::string dockOrder(); // CSV: "Backpack,Banks,SaveMenu,Trade,Eject"
 void setDockOrder(const std::string& v);
 bool dockVisible(); // mostra/nascondi dock inferiore
 void setDockVisible(bool v);
+// Impostazioni -> Sviluppatore -> Ricerca dispositivi: host/credenziali del
+// Filebrowser web esposto da ArkOS/JELOS/ROCKNIX (vedi remote_sync.h).
+std::string remoteSyncHost(); // "" = non ancora configurato (si chiede l'IP)
+void setRemoteSyncHost(const std::string& v);
+std::string remoteSyncUser(); // default "ark" (credenziale di default ArkOS)
+void setRemoteSyncUser(const std::string& v);
+std::string remoteSyncPass(); // default "ark"
+void setRemoteSyncPass(const std::string& v);
 } // namespace Settings

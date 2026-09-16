@@ -23,6 +23,19 @@ bool autoUpdateTakeResult(std::string& outVersion);
 // frame, altrimenti trova gia' lo stato consumato a 0.
 bool autoUpdateFinishedWithoutUpdate();
 
+// True se il worker autoupdate NON sta lavorando in questo momento: mai
+// partito (update.cfg senza auto=1: niente da aspettare) oppure gia' finito,
+// in entrambi i casi comunque sia andata (trovato, non trovato, errore).
+// Unica differenza da autoUpdateFinishedWithoutUpdate(): quella e' vera solo
+// nel caso "finito senza nulla di nuovo"; questa e' vera anche se non e' mai
+// partito o se ha trovato un aggiornamento -- serve solo a sapere "e' sicuro
+// avviare un'altra richiesta di rete in background adesso, senza competere
+// con l'autoupdate", non a decidere la UX (quella resta alle due funzioni
+// sopra). Usata da remoteSyncWorkerStart() in UI::run() per non fargli mai
+// gareggiare con il check/download dell'aggiornamento per le stesse
+// sessioni di rete.
+bool autoUpdateSettled();
+
 // Logga una sola volta l'esito del worker appena è done (qualsiasi screen):
 // serve a distinguere "fetch in corso" da "morto prima della fetch".
 void autoUpdateLogOnceDone();

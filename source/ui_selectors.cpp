@@ -6,6 +6,7 @@
 #include "nro_version.h"
 #include "app_version.h"
 #include "update_net.h"
+#include "remote_sync.h"
 #include "forwarder.h"
 #include "settings_cfg.h"
 #include "emulator.h"
@@ -14,6 +15,7 @@
 #include <algorithm>
 #include <cerrno>
 #include <cmath>
+#include <cstdio>
 #include <ctime>
 #include <dirent.h>
 #include <fstream>
@@ -2448,6 +2450,10 @@ void UI::handleGameSelectorInput(bool& running) {
                                 showGameSelMenu_ = false;
                                 openSettings();
                                 break;
+                            case GameSelMenuAction::RemoteBox:
+                                showGameSelMenu_ = false;
+                                openRemoteBox();
+                                break;
                             case GameSelMenuAction::ToggleDock: {
                                 if (!dockLoaded_) dockStateLoad();
                                 dockState_.visible = !dockState_.visible;
@@ -2566,6 +2572,7 @@ void UI::handleGameSelectorInput(bool& running) {
                 case SDL_CONTROLLER_BUTTON_A: // Switch B = back
                     if (dockState_.reorderMode) { dockStateExitReorderMode(false); break; } // B annulla il riordino
                     if (gsFocus_ == GSFocus::Avatar) { gsUnfocus(GSFocus::Avatar); break; }
+                    if (remoteBoxActive_) { closeRemoteBox(); break; } // B esce dal box remoto, torna alla lista locale
                     DebugLog::line("nav: B in games profile=%d -> %s", selectedProfile_,
                         selectedProfile_ >= 0 ? "ProfileSelector" : "QUIT");
                     if (selectedProfile_ >= 0) {
@@ -4508,6 +4515,7 @@ std::vector<GameSelMenuAction> UI::gameSelMenuActions() const {
     v.push_back(GameSelMenuAction::ImportSettings);
     v.push_back(GameSelMenuAction::CheckUpdate);
     v.push_back(GameSelMenuAction::OpenSettings);
+    v.push_back(GameSelMenuAction::RemoteBox);
     v.push_back(GameSelMenuAction::Exit);
     return v;
 }
@@ -4553,6 +4561,7 @@ void UI::drawGameSelMenuPopup() {
             case GameSelMenuAction::OpenSettings:     label = i18n::get(StrKey::SetTitle); break;
             case GameSelMenuAction::ToggleDock:        label = std::string("Dock: ") + (dockState_.visible ? "on" : "off"); break;
             case GameSelMenuAction::ReorderDock:       label = "Reorder dock"; break;
+            case GameSelMenuAction::RemoteBox:         label = i18n::get(StrKey::RemoteBoxMenuLabel); break;
             case GameSelMenuAction::Exit:             label = "Exit"; break;
         }
         // drawTextCentered() takes the text's vertical CENTRE; match it to the
@@ -4768,10 +4777,11 @@ int UI::settingsRowCount(int cat) const {
             return n; // Update, Sorgente, Canale [, Modifica]
         }
         case 5: {
-            // Debug, Menu + [, Pulisci cronologia zaino] [, Normalize save] [, Invia log, Crash report]
+            // Debug, Menu + [, Pulisci cronologia zaino] [, Normalize save] [, Invia log, Crash report], Ricerca dispositivi
             int n = 2;
             if (DebugLog::enabled()) n += 1 + 1; // + ClearBp, + Normalize
             if (sendAvailable()) n += 2;
+            n += 1; // + Ricerca dispositivi (sempre ultima riga, vedi remoteSyncTestRow)
             return n;
         }
         default: return 2; // Versione, Crediti
@@ -4819,6 +4829,12 @@ std::string UI::settingsRowLabel(int cat, int row) const {
         return i18n::get(StrKey::SetEditUrl);
     }
     if (cat == 5) {
+        // Ricerca dispositivi e' sempre l'ultima riga della categoria,
+        // qualunque sia il numero di righe extra sbloccate da debug/rete
+        // (vedi settingsRowCount): va controllata per prima o finirebbe per
+        // combaciare con uno degli indici fissi sotto quando le righe extra
+        // non ci sono tutte.
+        if (row == settingsRowCount(5) - 1) return i18n::get(StrKey::DevSyncTitle);
         if (row == 0) return i18n::get(StrKey::SetDebugToggle);
         if (row == 1) return i18n::get(StrKey::SetDbgMenu);
         if (row == 2) return i18n::get(StrKey::ClearBpHistTitle);
@@ -4953,6 +4969,402 @@ static bool writeBackupMb(const std::string& basePath, long mb) {    std::string
     for (auto& l : lines) o << l << "\n";
     updateCfgFoldDecoys(basePath, path);
     return true;
+}
+
+// Impostazioni -> Sviluppatore -> Ricerca dispositivi (stage 1): prova
+// login + lista della cartella radice sul Filebrowser web di ArkOS/JELOS/
+// ROCKNIX (vedi remote_sync.h). Flusso a blocchi (come lo swkbd stesso):
+// primo l'IP salvato (chiesto una sola volta, poi riusato da Settings::),
+// poi le credenziali di default ArkOS "ark"/"ark", chieste a mano solo se
+// il login con quelle fallisce. Nessun browser di cartelle qui (quello e'
+// lo stage 2): questo test conferma solo che si riesce a raggiungere il
+// device e autenticarsi, utile anche per debug quando qualcosa non va.
+std::string UI::promptTextBlocking(const std::string& header, const std::string& initial, int maxLen) {
+    SwkbdConfig kbd;
+    swkbdCreate(&kbd, 0);
+    swkbdConfigMakePresetDefault(&kbd);
+    swkbdConfigSetStringLenMax(&kbd, maxLen);
+    swkbdConfigSetHeaderText(&kbd, header.c_str());
+    if (!initial.empty()) swkbdConfigSetInitialText(&kbd, initial.c_str());
+    char result[160] = {};
+    Result rc = swkbdShow(&kbd, result, sizeof(result));
+    swkbdClose(&kbd);
+    if (R_SUCCEEDED(rc)) return std::string(result);
+    return std::string(); // annullato dall'utente
+}
+
+bool UI::remoteSyncEnsureLogin(const std::string& title, std::string& host,
+                                std::string& user, std::string& pass, std::string& token) {
+    host = Settings::remoteSyncHost();
+    user = Settings::remoteSyncUser();
+    pass = Settings::remoteSyncPass();
+    std::string err;
+    bool ok = false;
+
+    // 1) Host gia' noto (stesso device di prima): riprova diretto, e' il
+    //    caso comune -- zero attesa di scansione.
+    if (!host.empty()) {
+        ok = remoteSyncLogin(host, user, pass, token, err);
+        if (!ok)
+            DebugLog::line("remote sync: login FALLITO su host noto %s: %s", host.c_str(), err.c_str());
+    }
+
+    // 2) Host sconosciuto o non risponde piu' (es. IP cambiato via DHCP):
+    //    scansione automatica della LAN che prova il login vero su OGNI
+    //    host che risponde sulla porta 80, non solo il primo -- su una rete
+    //    con piu' web-server (router, NAS, ecc.) il primo a rispondere e'
+    //    quasi sempre il router e non e' un Filebrowser: fermarsi li' era
+    //    il bug segnalato (login sempre rifiutato, nessun modo di andare
+    //    oltre). Si ferma solo al primo che risponde 200 al login.
+    if (!ok) {
+        std::string scanErr, foundHost, foundToken;
+        // Popup con barra di avanzamento durante lo scan (che resta
+        // sincrono -- nessun thread nuovo, vedi il commento su onProgress
+        // in remote_sync.h): stesso schema gia' usato per il progresso di
+        // download degli aggiornamenti (vedi le chiamate a showWorking nel
+        // flusso di UpdateNetDownload piu' sotto in questo file), cosi'
+        // l'utente vede la ricerca avanzare invece di uno schermo fermo
+        // per i secondi che dura.
+        if (remoteSyncScanLan(user, pass, foundHost, foundToken, scanErr,
+                               [this](const std::string& s) { showWorking(s); })) {
+            host = foundHost;
+            token = foundToken;
+            ok = true;
+        } else {
+            DebugLog::line("remote sync: scansione LAN senza esito: %s", scanErr.c_str());
+        }
+    }
+
+    // 3) Ancora niente: si chiede l'host a mano -- SEMPRE possibile qui,
+    //    anche se un host era gia' noto o trovato dalla scansione (pre-
+    //    compilato come punto di partenza): mai un vicolo cieco su un
+    //    indirizzo sbagliato o non piu' valido, l'utente deve poter
+    //    correggerlo invece di restare bloccato a chiedere solo le
+    //    credenziali per un host che non e' quello giusto.
+    if (!ok) {
+        std::string typed = promptTextBlocking(i18n::get(StrKey::DevSyncHostPrompt), host, 63);
+        if (typed.empty()) { showMessageAndWait(title, i18n::get(StrKey::DevSyncCancelled)); return false; }
+        host = typed;
+        ok = remoteSyncLogin(host, user, pass, token, err);
+    }
+
+    // 4) ...poi le credenziali, solo se anche l'host appena confermato (che
+    //    sia quello scansionato o quello digitato) rifiuta user/pass default.
+    if (!ok) {
+        user = promptTextBlocking(i18n::get(StrKey::DevSyncUserPrompt), user, 31);
+        if (user.empty()) { showMessageAndWait(title, i18n::get(StrKey::DevSyncCancelled)); return false; }
+        pass = promptTextBlocking(i18n::get(StrKey::DevSyncPassPrompt), "", 31);
+        ok = remoteSyncLogin(host, user, pass, token, err);
+    }
+
+    if (!ok) {
+        showMessageAndWait(title, i18n::fmt(StrKey::DevSyncLoginFailed, err));
+        DebugLog::line("remote sync: login FALLITO (host=%s): %s", host.c_str(), err.c_str());
+        return false;
+    }
+
+    // Login riuscito: salva sempre host/credenziali che hanno funzionato --
+    // che fossero gia' salvati, trovati dalla scansione o appena digitati --
+    // cosi' la prossima volta si riparte dal passo 1 (istantaneo).
+    Settings::setRemoteSyncHost(host);
+    Settings::setRemoteSyncUser(user);
+    Settings::setRemoteSyncPass(pass);
+    return true;
+}
+
+void UI::remoteSyncTestRow() {
+    std::string title = i18n::get(StrKey::DevSyncTitle);
+    if (!updateNetEnsureReady()) {
+        showMessageAndWait(title, i18n::get(StrKey::SendLogNetOff));
+        return;
+    }
+
+    std::string host, user, pass, token;
+    if (!remoteSyncEnsureLogin(title, host, user, pass, token))
+        return;
+
+    // Elenco locale (bank/import) da confrontare con quello remoto -- stessa
+    // scansione gia' usata dal selettore giochi, nessuna logica duplicata.
+    std::vector<ImportedGame> localGames = scanImportPaths(importPaths_, autoCheckUsb_);
+
+    std::string buildErr;
+    std::vector<SyncCandidate> candidates = remoteSyncBuildCandidates(host, token, localGames, buildErr);
+    if (candidates.empty()) {
+        showMessageAndWait(title, i18n::get(StrKey::DevSyncNoCandidates));
+        DebugLog::line("remote sync: nessun candidato su %s", host.c_str());
+        return;
+    }
+
+    // Cartella per gli eventuali download di controllo/ricezione -- creata al
+    // volo, mai fatale se fallisce (i download successivi falliranno da soli
+    // e verranno segnalati normalmente).
+    std::string tmpDir = basePath_ + "remote_sync_tmp/";
+    mkdir(tmpDir.c_str(), 0755);
+
+    int sent = 0, received = 0, skipped = 0, failed = 0;
+
+    auto doUpload = [&](const std::string& localPath, const std::string& remotePath) -> bool {
+        std::string opErr;
+        bool okUp = remoteSyncUpload(host, token, localPath, remotePath, opErr);
+        if (okUp) sent++; else failed++;
+        DebugLog::line("remote sync: invia %s -> %s (%s)", localPath.c_str(),
+                       okUp ? "OK" : "FALLITO", opErr.c_str());
+        return okUp;
+    };
+    auto doDownload = [&](const std::string& remotePath, const std::string& localPath) -> bool {
+        std::string opErr;
+        bool okDown = remoteSyncDownload(host, token, remotePath, localPath, opErr);
+        if (okDown) received++; else failed++;
+        DebugLog::line("remote sync: ricevi %s -> %s (%s)", remotePath.c_str(),
+                       okDown ? "OK" : "FALLITO", opErr.c_str());
+        return okDown;
+    };
+    // Copia locale pura (nessuna rete): usata quando il file remoto e' gia'
+    // stato scaricato per il controllo allenatore/TID (tmpPath) e la
+    // sincronizzazione lo conferma come la copia da tenere -- riscaricarlo
+    // sarebbe una richiesta di rete identica e inutile.
+    auto copyLocalAsReceived = [&](const std::string& srcTmp, const std::string& dstLocal) -> bool {
+        std::ifstream in(srcTmp, std::ios::binary);
+        bool okCopy = false;
+        if (in.is_open()) {
+            std::ofstream out(dstLocal, std::ios::binary | std::ios::trunc);
+            if (out.is_open()) {
+                out << in.rdbuf();
+                okCopy = out.good();
+            }
+        }
+        if (okCopy) received++; else failed++;
+        DebugLog::line("remote sync: sincronizza (copia da verifica gia' scaricata) %s -> %s (%s)",
+                       srcTmp.c_str(), dstLocal.c_str(), okCopy ? "OK" : "FALLITO");
+        return okCopy;
+    };
+
+    for (auto& c : candidates) {
+        const GameInfo& gi = gameInfo(c.type);
+
+        // Se ci sono entrambe le copie, scarica quella remota in un file
+        // temporaneo e confronta allenatore+TID con quella locale (via
+        // SaveFile::dsOtName()/dsTid(), gia' popolati per ogni famiglia
+        // file-backed che gestiamo): solo un'identita' confermata abilita
+        // "Sincronizza" -- mai un confronto alla cieca sulle sole date.
+        std::string localOt;
+        bool sameIdentity = false;
+        std::string tmpPath;
+        // true solo se il download di controllo qui sotto e' andato a buon
+        // fine: un "Ricevi" scelto piu' avanti (sia dal ramo Sincronizza sia
+        // da quello di scelta manuale) riusa quel file gia' sul disco invece
+        // di rifare la stessa richiesta di rete -- vedi copyLocalAsReceived.
+        bool tmpDownloadOk = false;
+        if (c.hasLocal && c.hasRemoteSave) {
+            tmpPath = tmpDir + gi.gameTag + "_check.tmp";
+            std::string dlErr;
+            tmpDownloadOk = remoteSyncDownload(host, token, c.remoteSavePath, tmpPath, dlErr);
+            if (tmpDownloadOk) {
+                SaveFile localProbe, remoteProbe;
+                localProbe.setGameType(c.type);
+                remoteProbe.setGameType(c.type);
+                if (localProbe.load(c.localPath) && remoteProbe.load(tmpPath)) {
+                    localOt = localProbe.dsOtName();
+                    sameIdentity = !localOt.empty() &&
+                                   localOt == remoteProbe.dsOtName() &&
+                                   localProbe.dsTid() == remoteProbe.dsTid();
+                }
+            } else {
+                DebugLog::line("remote sync: download di controllo fallito per %s: %s",
+                               gi.gameTag, dlErr.c_str());
+            }
+        }
+
+        struct stat st;
+        long long localModified = 0;
+        if (c.hasLocal && stat(c.localPath.c_str(), &st) == 0)
+            localModified = static_cast<long long>(st.st_mtime);
+
+        // Nome del file remoto quando va creato ex-novo (nessun save la',
+        // solo la ROM): stesso nome base della ROM, estensione .sav --
+        // convenzione degli emulatori piu' comuni; NDS/DraStic potrebbe
+        // volere .dsv, non confermato su hardware reale.
+        std::string remoteTargetPath = c.hasRemoteSave
+            ? c.remoteSavePath
+            : (c.remoteDir + c.remoteRomBaseName + ".sav");
+
+        bool didSomething = false;
+
+        if (sameIdentity) {
+            bool remoteNewer = c.remoteSaveModifiedUnix > localModified;
+            std::string dir = i18n::get(remoteNewer ? StrKey::DevSyncDirRemoteToLocal
+                                                      : StrKey::DevSyncDirLocalToRemote);
+            if (showConfirmDialog(i18n::fmt(StrKey::DevSyncSyncTitle, gi.displayName),
+                                   i18n::fmt(StrKey::DevSyncSyncBody, localOt, dir))) {
+                if (remoteNewer)
+                    copyLocalAsReceived(tmpPath, c.localPath);
+                else
+                    doUpload(c.localPath, remoteTargetPath);
+                didSomething = true;
+            }
+        } else if (c.hasLocal && !c.hasRemoteSave) {
+            if (showConfirmDialog(i18n::fmt(StrKey::DevSyncSendTitle, gi.displayName),
+                                   i18n::get(StrKey::DevSyncSendOnlyLocalBody))) {
+                doUpload(c.localPath, remoteTargetPath);
+                didSomething = true;
+            }
+        } else if (!c.hasLocal && c.hasRemoteSave) {
+            if (showConfirmDialog(i18n::fmt(StrKey::DevSyncReceiveTitle, gi.displayName),
+                                   i18n::get(StrKey::DevSyncReceiveOnlyRemoteBody))) {
+                std::string localDest = importPaths_.empty() ? (basePath_ + "import/") : importPaths_.front().path;
+                mkdir(localDest.c_str(), 0755);
+                std::string baseName = c.remoteRomBaseName.empty() ? std::string(gi.gameTag) : c.remoteRomBaseName;
+                doDownload(c.remoteSavePath, localDest + baseName + ".sav");
+                didSomething = true;
+            }
+        } else if (c.hasLocal && c.hasRemoteSave) {
+            // Presenti entrambi ma non risultano lo stesso allenatore/gioco
+            // (o la verifica non e' riuscita): direzione sempre a scelta
+            // dell'utente, mai un confronto automatico alla cieca.
+            if (showConfirmDialog(i18n::fmt(StrKey::DevSyncReceiveTitle, gi.displayName),
+                                   i18n::get(StrKey::DevSyncChooseReceiveBody))) {
+                // Il download di controllo (sopra) ha gia' preso questo
+                // stesso file per confrontare allenatore/TID: se e' andato a
+                // buon fine lo riusa, altrimenti (raro: fallito solo quel
+                // download) fa un vero tentativo di rete.
+                if (tmpDownloadOk)
+                    copyLocalAsReceived(tmpPath, c.localPath);
+                else
+                    doDownload(c.remoteSavePath, c.localPath);
+                didSomething = true;
+            } else if (showConfirmDialog(i18n::fmt(StrKey::DevSyncSendTitle, gi.displayName),
+                                          i18n::get(StrKey::DevSyncChooseSendBody))) {
+                doUpload(c.localPath, remoteTargetPath);
+                didSomething = true;
+            }
+        }
+
+        if (!tmpPath.empty())
+            std::remove(tmpPath.c_str());
+        if (!didSomething)
+            skipped++;
+    }
+
+    showMessageAndWait(title, i18n::fmt(StrKey::DevSyncFlowSummary,
+        std::to_string(sent), std::to_string(received),
+        std::to_string(skipped), std::to_string(failed)));
+    DebugLog::line("remote sync: flusso completato su %s (inviati=%d ricevuti=%d saltati=%d falliti=%d)",
+                   host.c_str(), sent, received, skipped, failed);
+}
+
+// --- Box Remoto: apre save gia' presenti sul dispositivo remoto dentro lo
+// stesso selettore giochi/banca locale. Il save scelto si scarica in un
+// file temporaneo che si comporta come un ImportedGame qualunque (stessa
+// UI::selectGame(), stesso bank/edit di sempre); in uscita dal gioco (non
+// dal box) UI::returnToGameSelector() chiede conferma e rispedisce il file
+// al dispositivo remoto solo se e' stato davvero modificato.
+
+void UI::openRemoteBox() {
+    std::string title = i18n::get(StrKey::RemoteBoxTitle);
+    if (!updateNetEnsureReady()) {
+        showMessageAndWait(title, i18n::get(StrKey::SendLogNetOff));
+        return;
+    }
+    if (isDualBankMode()) {
+        showMessageAndWait(title, i18n::get(StrKey::RemoteBoxNotInDualMode));
+        return;
+    }
+
+    std::string host, user, pass, token;
+    if (!remoteSyncEnsureLogin(title, host, user, pass, token))
+        return;
+
+    std::vector<ImportedGame> localGames = scanImportPaths(importPaths_, autoCheckUsb_);
+    std::string buildErr;
+    std::vector<SyncCandidate> candidates = remoteSyncBuildCandidates(host, token, localGames, buildErr);
+
+    // Cartella per i save remoti scaricati mentre il box e' aperto -- ripulita
+    // (i singoli file) alla chiusura in closeRemoteBox().
+    std::string tmpDir = basePath_ + "remote_box_tmp/";
+    mkdir(tmpDir.c_str(), 0755);
+
+    remoteBoxEntries_.clear();
+    std::vector<ImportedGame> boxGames;
+    for (auto& c : candidates) {
+        // Solo save che esistono gia' sul dispositivo remoto: il box apre
+        // partite esistenti, non ne crea di nuove da una sola ROM (per
+        // quello c'e' "Invia" nel flusso Invia/Ricevi/Sincronizza).
+        if (!c.hasRemoteSave) continue;
+        const GameInfo& gi = gameInfo(c.type);
+        std::string tmpPath = tmpDir + gi.gameTag + "_box.tmp";
+        std::string dlErr;
+        if (!remoteSyncDownload(host, token, c.remoteSavePath, tmpPath, dlErr)) {
+            DebugLog::line("box remoto: download fallito per %s: %s", gi.gameTag, dlErr.c_str());
+            continue;
+        }
+        RemoteBoxEntry entry;
+        entry.type = c.type;
+        entry.tmpPath = tmpPath;
+        entry.host = host;
+        entry.token = token;
+        entry.remoteSavePath = c.remoteSavePath;
+        remoteBoxEntries_.push_back(entry);
+
+        ImportedGame ig;
+        ig.type = c.type;
+        ig.filePath = tmpPath;
+        ig.sourceTag = "R36S";
+        boxGames.push_back(ig);
+    }
+
+    if (boxGames.empty()) {
+        showMessageAndWait(title, i18n::get(StrKey::RemoteBoxNoSaves));
+        return;
+    }
+
+    // Salva lo stato locale della griglia -- si ripristina alla chiusura del
+    // box (closeRemoteBox), esattamente come si trovava prima di entrare.
+    savedAvailableGames_ = availableGames_;
+    savedImportedGames_ = importedGames_;
+
+    importedGames_ = boxGames;
+    availableGames_.clear();
+    for (auto& ig : importedGames_)
+        availableGames_.push_back(ig.type);
+
+    remoteBoxActive_ = true;
+
+    gameSelCursor_ = 0;
+    gameSelPage_ = 0;
+    selPageShown_ = 0;
+    selSlide_ = 0.0f;
+    galSelShown_ = -1;
+    galSlide_ = 0.0f;
+    gsSetFocus(GSFocus::Grid);
+    showWorking(i18n::get(StrKey::LoadingGameIcons));
+    loadGameIcons();
+    screen_ = AppScreen::GameSelector;
+
+    showMessageAndWait(title, i18n::fmt(StrKey::RemoteBoxEntered, std::to_string((int)boxGames.size())));
+    DebugLog::line("box remoto: aperto, %d save da %s", (int)boxGames.size(), host.c_str());
+}
+
+void UI::closeRemoteBox() {
+    availableGames_ = savedAvailableGames_;
+    importedGames_ = savedImportedGames_;
+    savedAvailableGames_.clear();
+    savedImportedGames_.clear();
+    for (auto& e : remoteBoxEntries_)
+        std::remove(e.tmpPath.c_str());
+    remoteBoxEntries_.clear();
+    remoteBoxActive_ = false;
+
+    gameSelCursor_ = 0;
+    gameSelPage_ = 0;
+    selPageShown_ = 0;
+    selSlide_ = 0.0f;
+    galSelShown_ = -1;
+    galSlide_ = 0.0f;
+    gsSetFocus(GSFocus::Grid);
+    showWorking(i18n::get(StrKey::LoadingGameIcons));
+    loadGameIcons();
+
+    DebugLog::line("box remoto: chiuso, ripristinata lista locale");
 }
 
 void UI::settingsRowActivate(int cat, int row, int dir, bool& running) {
@@ -5129,7 +5541,11 @@ void UI::settingsRowActivate(int cat, int row, int dir, bool& running) {
             beginTextInput(TextInputPurpose::EditUpdateUrl);
         }
     } else if (cat == 5) {
-        if (row == 0) {
+        if (row == settingsRowCount(5) - 1) {
+            // Ricerca dispositivi: sempre l'ultima riga, va controllata per
+            // prima per lo stesso motivo spiegato in settingsRowLabel.
+            remoteSyncTestRow();
+        } else if (row == 0) {
             bool on = !DebugLog::enabled();
             DebugLog::setEnabled(on);
             std::string flag = basePath_ + "debug.enable";

@@ -92,6 +92,18 @@ void writeLineUnlocked(const char* msg) {
     std::fputs(buf, s_file);
     std::fflush(s_file);
 }
+
+// Legge s_basePath (assume s_mutex gia' detenuto dal chiamante). Usata dai
+// tre metodi che tengono gia' il lock -- MAI richiamare logPath() da dentro
+// una funzione che il lock ce l'ha gia': stesso autodeadlock documentato
+// sopra per openLogFile()/lineUnlocked(), qui capitava in
+// flushAndReopenForUpload(), clearLog() e reopenAfterUpload() (freeze su
+// "Invia log" e "Clear log" dal menu, mai su un mutex non ricorsivo
+// rilockato dallo stesso thread).
+std::string logPathUnlocked() {
+    if (s_basePath.empty()) return "";
+    return s_basePath + "debug.log";
+}
 } // anonymous namespace
 
 void init(const std::string& basePath) {
@@ -143,8 +155,7 @@ void line(const char* fmt, ...) {
 
 std::string logPath() {
     std::lock_guard<std::mutex> lock(s_mutex);
-    if (s_basePath.empty()) return "";
-    return s_basePath + "debug.log";
+    return logPathUnlocked();
 }
 
 // Tiene solo gli ultimi maxBytes byte di un file, riscrivendolo IN PLACE
@@ -179,7 +190,7 @@ bool flushAndReopenForUpload(std::string& outPath) {
         std::fclose(s_file);
         s_file = nullptr;
     }
-    outPath = logPath();
+    outPath = logPathUnlocked();
     if (outPath.empty()) return false;
     // Tetto upload: il log cresce senza limiti e l'invio rallenta (480KB+).
     // Tieni solo gli ultimi 256KB — la coda è quella che serve per
@@ -204,7 +215,7 @@ bool clearLog(int keepLastLines) {
         std::fclose(s_file);
         s_file = nullptr;
     }
-    std::string path = logPath();
+    std::string path = logPathUnlocked();
     if (path.empty()) return false;
     // Coda generosa in byte (basta per centinaia di righe), poi si tiene
     // solo le ultime keepLastLines righe vere e proprie.
@@ -249,7 +260,7 @@ bool clearLog(int keepLastLines) {
 void reopenAfterUpload() {
     std::lock_guard<std::mutex> lock(s_mutex);
     if (!s_enabled || s_file) return;
-    std::string p = logPath();
+    std::string p = logPathUnlocked();
     if (!p.empty()) s_file = std::fopen(p.c_str(), "a");
 }
 

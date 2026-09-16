@@ -1,6 +1,7 @@
 #pragma once
 #include <string>
 #include <functional>
+#include <mutex>
 
 // Callback di avanzamento download: riceve una riga pronta da mostrare, es.
 // "Downloading v0.1.21…  47%  ·  2.1 MB/s". Throttlata a ~4 volte/s.
@@ -23,6 +24,24 @@ void updateNetSetReady(bool ready);
 // Ritenta l'init socket (+curl) se giu: il boot puo fallire la race col WiFi.
 // true se rete usabile. Chiamato dai gate update prima di dichiararla off.
 bool updateNetEnsureReady();
+
+// Inizializza nifm:u una sola volta (idempotente, mai bloccante): usata sia
+// da updateNetLinkStr() qui sotto sia da chi altro (es. remote_sync.cpp, per
+// l'IP locale durante la scansione LAN) ha bisogno di nifm senza duplicarne
+// l'init.
+bool updateNetEnsureNifm();
+
+// Lock condiviso per QUALSIASI chiamata nifm*, init compreso: nifm:u e' una
+// singola sessione IPC ora condivisa fra piu' thread (autoupdate.cpp, il
+// worker di scoperta in remote_sync.cpp, e il main thread) -- le chiamate
+// IPC di libnx non sono garantite sicure se lanciate in concorrenza sulla
+// stessa sessione da thread diversi: il rischio concreto e' un hang, non
+// solo un dato letto storto (causa esatta del blocco segnalato dopo
+// l'introduzione del worker in background). updateNetEnsureNifm() e
+// updateNetLinkStr() prendono gia' questo lock da sole; chi chiama una
+// nifm* direttamente altrove (remoteSyncScanLan in remote_sync.cpp, per
+// nifmGetCurrentIpAddress) deve prenderlo per tutta la chiamata.
+std::mutex& updateNetNifmMutex();
 
 // Stato reale del link (WiFi/LAN/OFF) via nifm, throttled (~1 query ogni 2s,
 // risultato cachato). updateNetAvailable() dice solo "socket pronti" — vero
