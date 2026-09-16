@@ -5487,7 +5487,12 @@ void UI::remoteSyncTestRow() {
                     }
                     if (ok) { rescanImportedGames(); markDirty(); }
                 } else {
-                    std::string localDest = importPaths_.empty() ? (basePath_ + "import/") : importPaths_.front().path;
+                    // Per file-backed (gba/gbc/gb/nds + FRLG) salva in sdmc:/roms/ insieme alla ROM,
+                    // non nella cartella dell'app. Per gli altri usa il primo import path.
+                    std::string localDest;
+                    bool fileBacked = isFRLG(c.type) || isImportedFile(c.type) || isGen1File(c.type) || isGen2File(c.type) || isGen4File(c.type) || isGen5File(c.type);
+                    if (fileBacked) localDest = "sdmc:/roms/";
+                    else localDest = importPaths_.empty() ? (basePath_ + "import/") : importPaths_.front().path;
                     if (!localDest.empty() && localDest.back() != '/') localDest += "/";
                     mkdir(localDest.c_str(), 0755);
                     std::string baseName = c.remoteRomBaseName.empty() ? std::string(gi.gameTag) : c.remoteRomBaseName;
