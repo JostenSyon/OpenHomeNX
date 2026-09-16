@@ -27,6 +27,30 @@ size_t writeToStringRS(char* ptr, size_t size, size_t nmemb, void* userdata) {
     return size * nmemb;
 }
 
+std::string encodePathSegments(const std::string& path) {
+    // Codifica ogni segmento tra '/' con curl_easy_escape (spazi -> %20, ecc.)
+    // Mantiene '/' come separatore. Necessario per Filebrowser con nomi con spazi.
+    CURL* curl = curl_easy_init();
+    if (!curl) return path;
+    std::string out;
+    size_t start = 0;
+    while (true) {
+        size_t slash = path.find('/', start);
+        std::string seg = (slash == std::string::npos) ? path.substr(start) : path.substr(start, slash - start);
+        if (!seg.empty()) {
+            char* esc = curl_easy_escape(curl, seg.c_str(), (int)seg.size());
+            if (esc) { out += esc; curl_free(esc); }
+            else out += seg;
+        }
+        if (slash == std::string::npos) break;
+        out += '/';
+        start = slash + 1;
+        if (start >= path.size()) break; // trailing slash
+    }
+    curl_easy_cleanup(curl);
+    return out;
+}
+
 // Come sopra ma scrive su un FILE* aperto dal chiamante (download su disco
 // invece che in memoria -- i save DS arrivano a 512KB, inutile tenerli
 // interi in una std::string quando vanno comunque scritti su file).
@@ -330,7 +354,7 @@ bool remoteSyncListPath(const std::string& host, const std::string& token,
     std::string authHdr = "X-Auth: " + token;
     hdrs = curl_slist_append(hdrs, authHdr.c_str());
 
-    std::string url = "http://" + host + "/api/resources/" + p;
+    std::string url = "http://" + host + "/api/resources/" + encodePathSegments(p);
     curl_easy_setopt(c, CURLOPT_URL, url.c_str());
     curl_easy_setopt(c, CURLOPT_HTTPGET, 1L);
     curl_easy_setopt(c, CURLOPT_HTTPHEADER, hdrs);
@@ -643,7 +667,7 @@ bool remoteSyncDownload(const std::string& host, const std::string& token,
     std::string authHdr = "X-Auth: " + token;
     hdrs = curl_slist_append(hdrs, authHdr.c_str());
 
-    std::string url = "http://" + host + "/api/raw/" + p;
+    std::string url = "http://" + host + "/api/raw/" + encodePathSegments(p);
     curl_easy_setopt(c, CURLOPT_URL, url.c_str());
     curl_easy_setopt(c, CURLOPT_HTTPGET, 1L);
     curl_easy_setopt(c, CURLOPT_HTTPHEADER, hdrs);
@@ -697,7 +721,7 @@ bool remoteSyncUpload(const std::string& host, const std::string& token,
     // ?override=true: senza, Filebrowser rifiuta di sovrascrivere un file
     // gia' esistente (serve sia per "Invia" su un save che c'e' gia', sia
     // per la creazione ex-novo, dove non fa differenza).
-    std::string url = "http://" + host + "/api/resources/" + p + "?override=true";
+    std::string url = "http://" + host + "/api/resources/" + encodePathSegments(p) + "?override=true";
     curl_easy_setopt(c, CURLOPT_URL, url.c_str());
     curl_easy_setopt(c, CURLOPT_POST, 1L);
     curl_easy_setopt(c, CURLOPT_POSTFIELDS, buf.empty() ? "" : buf.data());

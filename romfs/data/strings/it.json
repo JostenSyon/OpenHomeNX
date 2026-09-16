@@ -400,6 +400,8 @@
     "devsync_action_sync": "Sincronizza",
     "devsync_sync_no_identity": "Allenatori diversi o non riconosciuti — sincronizzazione automatica non disponibile. Usa Invia o Ricevi.",
     "devsync_sync_no_local_or_remote": "Nessuna copia da sincronizzare su questo lato.",
+    "devsync_ask_rom_title": "ROM mancante",
+    "devsync_ask_rom_body": "La ROM non è presente in locale. Vuoi scaricare anche la ROM \"{0}\" così il save diventa subito utilizzabile?",
     "remotebox_menu_label": "Box remoto",
     "remotebox_title": "Box remoto",
     "remotebox_no_saves": "Connesso, ma non e' stato trovato nessun save sul dispositivo remoto.",
