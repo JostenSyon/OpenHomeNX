@@ -224,3 +224,11 @@ bool remoteSyncDownload(const std::string& host, const std::string& token,
 bool remoteSyncUpload(const std::string& host, const std::string& token,
                       const std::string& localPath, const std::string& remotePath,
                       std::string& err);
+
+// Ping leggero periodico per un device gia' trovato (vedi il commento sopra
+// la sua implementazione in remote_sync.cpp per la logica di quando scatta
+// davvero): da chiamare una volta per frame quando
+// UI::remoteDeviceAvailable_ e' true. false = il device non risponde piu' e
+// l'app deve tornare a considerarlo non disponibile (nasconde le voci
+// dock/l'indicatore in barra di stato).
+bool remoteSyncWatchdogCheck(const std::string& host);

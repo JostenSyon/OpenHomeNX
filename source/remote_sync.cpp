@@ -65,6 +65,13 @@ static std::string g_cachedHost;
 static std::string g_cachedToken;
 static long long g_cachedExp = 0; // unix timestamp da exp del JWT
 
+// Ultimo contatto di rete riuscito con un device remoto (login/download/
+// upload, aggiornato da remoteSyncWatchdogCheck() stesso quando il ping
+// va a buon fine): serve solo a remoteSyncWatchdogCheck() per non pingare
+// mai un device con cui si e' appena parlato per altri motivi (scambio
+// attivo in corso -- vedi il commento sopra la sua implementazione).
+static double g_lastContactAt = 0.0;
+
 long long jwtExpFromToken(const std::string& token) {
     size_t dot1 = token.find('.');
     if (dot1 == std::string::npos) return 0;
@@ -300,6 +307,7 @@ bool remoteSyncLogin(const std::string& host, const std::string& user,
     g_cachedHost = host;
     g_cachedToken = outToken;
     g_cachedExp = jwtExpFromToken(outToken);
+    g_lastContactAt = wallSecondsRS();
     DebugLog::line("remote sync: token cached for %s exp=%lld (valid %lld sec)", host.c_str(), g_cachedExp, g_cachedExp - (long long)time(nullptr));
     return true;
 }
@@ -762,6 +770,7 @@ bool remoteSyncDownload(const std::string& host, const std::string& token,
         err = "HTTP " + std::to_string(http);
         return false;
     }
+    g_lastContactAt = wallSecondsRS();
     return true;
 }
 
@@ -809,7 +818,47 @@ bool remoteSyncUpload(const std::string& host, const std::string& token,
 
     if (rc != CURLE_OK) { err = std::string("rete: ") + curl_easy_strerror(rc); return false; }
     if (http != 200 && http != 201) { err = "HTTP " + std::to_string(http); return false; }
+    g_lastContactAt = wallSecondsRS();
     return true;
+}
+
+// Controllo periodico "e' ancora vivo?" per il device gia' trovato (dal
+// worker in background o dallo scan manuale): senza questo, spegnere/
+// riaccendere il device remoto (o solo spostarlo di rete) lo lascia
+// "trovato" per sempre agli occhi dell'app, perche' remoteSyncWorkerStart()
+// tenta la scoperta una sola volta per boot (vedi il commento sopra la sua
+// implementazione). Da richiamare una volta per frame dal loop principale
+// (ui.cpp) quando UI::remoteDeviceAvailable_ e' true: quasi sempre non
+// bloccante (un solo confronto fra double), tranne quando scatta davvero il
+// controllo -- al massimo una volta ogni WATCHDOG_INTERVAL_SEC, e MAI se e'
+// arrivato un contatto vero (login/upload/download riusciti, vedi
+// g_lastContactAt) piu' di recente: chi sta scambiando attivamente non
+// subisce mai questo controllo in mezzo a un'operazione, esattamente come
+// richiesto ("se sto attivamente scambiando non ha senso"). Quando scatta
+// e' l'identico controllo in due passi dello scan (probeTcpOpen + fingerprint)
+// contro l'host gia' noto: un singolo hitch di frame ogni un paio di minuti
+// al massimo, mai piu' spesso. true = nessun problema rilevato (o troppo
+// presto per un altro controllo); false = il device non risponde piu' -- il
+// chiamante deve azzerare remoteDeviceAvailable_.
+bool remoteSyncWatchdogCheck(const std::string& host) {
+    constexpr double WATCHDOG_INTERVAL_SEC = 120.0;
+    static double lastCheckAt = 0.0;
+    double now = wallSecondsRS();
+    if (lastCheckAt == 0.0) lastCheckAt = now; // primo giro: arma solo il timer
+    if (now - g_lastContactAt < WATCHDOG_INTERVAL_SEC) return true; // contatto recente, niente ping
+    if (now - lastCheckAt < WATCHDOG_INTERVAL_SEC) return true; // troppo presto dall'ultimo ping
+    lastCheckAt = now;
+    std::string body;
+    bool alive = probeTcpOpen(host, 80, 250) &&
+                 fetchFingerprintBody(host, body) &&
+                 body.find("window.FileBrowser") != std::string::npos;
+    if (alive) {
+        g_lastContactAt = now;
+        DebugLog::line("remote sync: watchdog ok, %s ancora vivo", host.c_str());
+    } else {
+        DebugLog::line("remote sync: watchdog - %s non risponde piu'", host.c_str());
+    }
+    return alive;
 }
 
 // ============================================================================
