@@ -518,6 +518,33 @@ std::vector<SyncCandidate> remoteSyncBuildCandidates(
                 }
                 DebugLog::line("remote sync: %s (%s) non risponde: %s",
                                candidateDir.c_str(), sysPaths.systemId, listErr.c_str());
+                // Fallback anti-doppio "roms/roms": se Filebrowser ha root già su /roms,
+                // "roms/gba/" → 404 ma "gba/" funziona. Proviamo senza prefisso.
+                if (!romsPrefix.empty()) {
+                    std::string altDir = sysName + "/" + (subPath.empty() ? "" : subPath + "/");
+                    if (remoteSyncListPath(host, token, altDir, entries, listErr)) {
+                        dirUsed = altDir;
+                        DebugLog::line("remote sync: %s (%s fallback senza roms): %zu elementi",
+                                       altDir.c_str(), sysPaths.systemId, entries.size());
+                        break;
+                    }
+                    DebugLog::line("remote sync: %s (%s fallback) non risponde: %s",
+                                   altDir.c_str(), sysPaths.systemId, listErr.c_str());
+                }
+            }
+        } else if (!romsPrefix.empty()) {
+            // Nessun sysName in romsEntries ma magari è direttamente in root
+            // (es. Filebrowser con root=/roms dove roms/gba esiste come gba in root ma
+            // la ricerca iniziale ha trovato "roms" per errore). Prova root.
+            for (const auto& subPath : sysPaths.subPaths) {
+                std::string altDir = std::string(sysPaths.systemId) + "/" + (subPath.empty() ? "" : subPath + "/");
+                std::string listErr;
+                if (remoteSyncListPath(host, token, altDir, entries, listErr)) {
+                    dirUsed = altDir;
+                    DebugLog::line("remote sync: %s (%s fallback root): %zu elementi",
+                                   altDir.c_str(), sysPaths.systemId, entries.size());
+                    break;
+                }
             }
         }
         if (dirUsed.empty()) {
