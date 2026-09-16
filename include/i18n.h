@@ -515,6 +515,14 @@ namespace StrKey {
     constexpr const char* DevSyncChooseReceiveBody = "devsync_choose_receive_body";
     constexpr const char* DevSyncChooseSendBody = "devsync_choose_send_body";
     constexpr const char* DevSyncFlowSummary   = "devsync_flow_summary";
+    constexpr const char* DevSyncPickerTitle   = "devsync_picker_title";
+    constexpr const char* DevSyncPickerHint    = "devsync_picker_hint";
+    constexpr const char* DevSyncActionTitle   = "devsync_action_title";
+    constexpr const char* DevSyncActionSend    = "devsync_action_send";
+    constexpr const char* DevSyncActionReceive = "devsync_action_receive";
+    constexpr const char* DevSyncActionSync    = "devsync_action_sync";
+    constexpr const char* DevSyncSyncNoIdentity = "devsync_sync_no_identity";
+    constexpr const char* DevSyncSyncNoLocalOrRemote = "devsync_sync_no_local_or_remote";
 
     // Box Remoto (apre un save remoto nel selettore giochi/banca locale).
     constexpr const char* RemoteBoxMenuLabel   = "remotebox_menu_label";

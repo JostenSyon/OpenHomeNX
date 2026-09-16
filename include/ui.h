@@ -9,6 +9,7 @@
 #include "import_scan.h"
 #include "autocheck_usb.h"
 #include "backpack.h"
+#include "remote_sync.h"
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_ttf.h>
 #include <SDL2/SDL_image.h>
@@ -422,6 +423,9 @@ private:
     // Impostazioni -> Sviluppatore -> Ricerca dispositivi (stage 1: login +
     // test di lista sul Filebrowser web di ArkOS/JELOS/ROCKNIX via LAN).
     void remoteSyncTestRow();
+    // Helpers per il nuovo flusso picker + 3 bottoni (evita spam di dialog per ogni gioco)
+    int pickRemoteSyncGame(const std::vector<SyncCandidate>& candidates);
+    int pickRemoteSyncAction(const SyncCandidate& c);
     // Login comune a remoteSyncTestRow() e openRemoteBox(): stesso device
     // gia' noto -> scansione LAN -> IP a mano -> credenziali a mano. Ritorna
     // false (con messaggio gia' mostrato) se l'utente annulla o il login fallisce.

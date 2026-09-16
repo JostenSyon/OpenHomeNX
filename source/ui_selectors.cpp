@@ -5084,6 +5084,131 @@ bool UI::remoteSyncEnsureLogin(const std::string& title, std::string& host,
     return true;
 }
 
+// Picker per scegliere il gioco tra i candidati trovati sul R36S.
+// Ritorna indice del candidato scelto o -1 se annullato. Popup bloccante
+// con lista + highlight, stesso stile dei menu impostazioni (round rect).
+int UI::pickRemoteSyncGame(const std::vector<SyncCandidate>& candidates) {
+    if (!renderer_ || candidates.empty()) return -1;
+    markDirty();
+    int sel = 0;
+    int result = -2; // -2 = picking, -1 = cancel, >=0 = picked
+    const int POP_W = 640, POP_H = 420;
+    int popX = (SCREEN_W - POP_W) / 2;
+    int popY = (SCREEN_H - POP_H) / 2;
+    while (result == -2) {
+        SDL_Event event;
+        while (SDL_PollEvent(&event)) {
+            if (event.type == SDL_QUIT) result = -1;
+            if (event.type == SDL_CONTROLLERBUTTONDOWN) {
+                if (event.cbutton.button == SDL_CONTROLLER_BUTTON_DPAD_UP)
+                    sel = (sel - 1 + (int)candidates.size()) % (int)candidates.size();
+                else if (event.cbutton.button == SDL_CONTROLLER_BUTTON_DPAD_DOWN)
+                    sel = (sel + 1) % (int)candidates.size();
+                else if (event.cbutton.button == SDL_CONTROLLER_BUTTON_B) // Switch A = conferma
+                    result = sel;
+                else if (event.cbutton.button == SDL_CONTROLLER_BUTTON_A) // Switch B = annulla
+                    result = -1;
+            }
+        }
+        SDL_SetRenderDrawColor(renderer_, T().bg.r, T().bg.g, T().bg.b, 255);
+        SDL_RenderClear(renderer_);
+        drawRect(popX, popY, POP_W, POP_H, T().panelBg);
+        drawRectOutline(popX, popY, POP_W, POP_H, T().cursor, 2);
+        drawTextCentered(i18n::get(StrKey::DevSyncPickerTitle), popX + POP_W / 2, popY + 18, T().text, fontLarge_);
+        const int ROW_H = 44, listY = popY + 60;
+        int vis = std::min<int>((int)candidates.size(), 7);
+        for (int i = 0; i < vis; i++) {
+            int idx = i;
+            // Se ci sono più di 7, centra la selezione (semplice windowing)
+            if ((int)candidates.size() > 7) {
+                int start = std::clamp(sel - 3, 0, (int)candidates.size() - 7);
+                idx = start + i;
+                if (idx >= (int)candidates.size()) break;
+            }
+            const auto& c = candidates[idx];
+            const GameInfo& gi = gameInfo(c.type);
+            int rowY = listY + i * ROW_H;
+            if (idx == sel) {
+                drawRoundRect(popX + 12, rowY, POP_W - 24, ROW_H - 6, 8, T().menuHighlight);
+                drawRoundRectOutline(popX + 12, rowY, POP_W - 24, ROW_H - 6, 8, T().cursor, 2);
+            }
+            std::string label = gi.displayName;
+            if (c.hasLocal && c.hasRemoteSave) label += "  [L+R]";
+            else if (c.hasLocal) label += "  [L]";
+            else label += "  [R]";
+            drawText(label, popX + 28, rowY + 10, T().text, font_);
+        }
+        drawTextCentered(i18n::get(StrKey::DevSyncPickerHint), popX + POP_W / 2, popY + POP_H - 24, T().textDim, fontSmall_);
+        SDL_RenderPresent(renderer_);
+        SDL_Delay(16);
+    }
+    markDirty();
+    return result;
+}
+
+// Overlay con 3 grossi bottoni arrotondati (stesso stile Trade/Bank).
+// Ritorna 0=Invia, 1=Ricevi, 2=Sincronizza, -1=annulla. Blocca con loop eventi.
+int UI::pickRemoteSyncAction(const SyncCandidate& c) {
+    if (!renderer_) return -1;
+    markDirty();
+    const GameInfo& gi = gameInfo(c.type);
+    int sel = 0;
+    // Determina quali azioni sono sensate (per disabilitare visivamente)
+    bool canSend = c.hasLocal;
+    bool canReceive = c.hasRemoteSave;
+    // Sincronizza ha senso solo se entrambi presenti (check identità fatto dopo)
+    bool canSync = c.hasLocal && c.hasRemoteSave;
+    int result = -2;
+    const int POP_W = 520, POP_H = 360;
+    int popX = (SCREEN_W - POP_W) / 2;
+    int popY = (SCREEN_H - POP_H) / 2;
+    const int BTN_W = 340, BTN_H = 56, BTN_R = 12;
+    const int BTN_X = popX + (POP_W - BTN_W) / 2;
+    // Label brevi (senza {0}) per i bottoni
+    const char* labels[3] = { StrKey::DevSyncActionSend, StrKey::DevSyncActionReceive, StrKey::DevSyncActionSync };
+    bool enabled[3] = { canSend, canReceive, canSync };
+    while (result == -2) {
+        SDL_Event event;
+        while (SDL_PollEvent(&event)) {
+            if (event.type == SDL_QUIT) result = -1;
+            if (event.type == SDL_CONTROLLERBUTTONDOWN) {
+                if (event.cbutton.button == SDL_CONTROLLER_BUTTON_DPAD_UP)
+                    sel = (sel - 1 + 3) % 3;
+                else if (event.cbutton.button == SDL_CONTROLLER_BUTTON_DPAD_DOWN)
+                    sel = (sel + 1) % 3;
+                else if (event.cbutton.button == SDL_CONTROLLER_BUTTON_B) { // Switch A
+                    if (enabled[sel]) result = sel;
+                } else if (event.cbutton.button == SDL_CONTROLLER_BUTTON_A) // Switch B
+                    result = -1;
+            }
+        }
+        SDL_SetRenderDrawColor(renderer_, T().bg.r, T().bg.g, T().bg.b, 255);
+        SDL_RenderClear(renderer_);
+        drawRect(popX, popY, POP_W, POP_H, T().panelBg);
+        drawRectOutline(popX, popY, POP_W, POP_H, T().cursor, 2);
+        drawTextCentered(i18n::fmt(StrKey::DevSyncActionTitle, gi.displayName), popX + POP_W / 2, popY + 18, T().text, font_);
+        for (int i = 0; i < 3; i++) {
+            int y = popY + 70 + i * (BTN_H + 18);
+            bool focused = (i == sel);
+            SDL_Color bg = focused ? T().menuHighlight : T().bg;
+            SDL_Color fg = enabled[i] ? T().text : T().textDim;
+            if (!enabled[i] && focused) bg = T().panelBg;
+            drawRoundRect(BTN_X, y, BTN_W, BTN_H, BTN_R, bg);
+            drawRoundRectOutline(BTN_X, y, BTN_W, BTN_H, BTN_R, focused ? T().cursor : T().textDim, focused ? 2 : 1);
+            std::string txt = i18n::get(labels[i]);
+            if (!enabled[i]) txt += " (--)";
+            // Centra testo nel bottone
+            auto e = getTextEntry(txt, font_, fg);
+            drawText(txt, BTN_X + (BTN_W - e.w) / 2, y + (BTN_H - e.h) / 2, fg, font_);
+        }
+        drawTextCentered("A: scegli  B: annulla", popX + POP_W / 2, popY + POP_H - 22, T().textDim, fontSmall_);
+        SDL_RenderPresent(renderer_);
+        SDL_Delay(16);
+    }
+    markDirty();
+    return result;
+}
+
 void UI::remoteSyncTestRow() {
     std::string title = i18n::get(StrKey::DevSyncTitle);
     if (!updateNetEnsureReady()) {
@@ -5151,115 +5276,107 @@ void UI::remoteSyncTestRow() {
         return okCopy;
     };
 
-    for (auto& c : candidates) {
-        const GameInfo& gi = gameInfo(c.type);
+    // Nuovo flusso: picker gioco + 3 bottoni (evita spam di dialog per ogni candidato)
+    int pickedIdx = pickRemoteSyncGame(candidates);
+    if (pickedIdx < 0) {
+        showMessageAndWait(title, i18n::fmt(StrKey::DevSyncFlowSummary, "0", "0", std::to_string(candidates.size()), "0"));
+        return;
+    }
+    SyncCandidate c = candidates[pickedIdx];
+    const GameInfo& gi = gameInfo(c.type);
+    int action = pickRemoteSyncAction(c);
+    if (action < 0) {
+        showMessageAndWait(title, i18n::fmt(StrKey::DevSyncFlowSummary, "0", "0", "1", "0"));
+        return;
+    }
 
-        // Se ci sono entrambe le copie, scarica quella remota in un file
-        // temporaneo e confronta allenatore+TID con quella locale (via
-        // SaveFile::dsOtName()/dsTid(), gia' popolati per ogni famiglia
-        // file-backed che gestiamo): solo un'identita' confermata abilita
-        // "Sincronizza" -- mai un confronto alla cieca sulle sole date.
-        std::string localOt;
-        bool sameIdentity = false;
-        std::string tmpPath;
-        // true solo se il download di controllo qui sotto e' andato a buon
-        // fine: un "Ricevi" scelto piu' avanti (sia dal ramo Sincronizza sia
-        // da quello di scelta manuale) riusa quel file gia' sul disco invece
-        // di rifare la stessa richiesta di rete -- vedi copyLocalAsReceived.
-        bool tmpDownloadOk = false;
-        if (c.hasLocal && c.hasRemoteSave) {
-            tmpPath = tmpDir + gi.gameTag + "_check.tmp";
+    // Logica centralizzata per le 3 azioni
+    std::string remoteTargetPath = c.hasRemoteSave ? c.remoteSavePath : (c.remoteDir + c.remoteRomBaseName + ".sav");
+    bool didSomething = false;
+    if (action == 0) { // Invia
+        if (!c.hasLocal) {
+            showMessageAndWait(title, i18n::get(StrKey::DevSyncSyncNoLocalOrRemote));
+        } else if (showConfirmDialog(i18n::fmt(StrKey::DevSyncSendTitle, gi.displayName), i18n::get(StrKey::DevSyncSendOnlyLocalBody))) {
+            doUpload(c.localPath, remoteTargetPath);
+            didSomething = true;
+        }
+    } else if (action == 1) { // Ricevi
+        if (!c.hasRemoteSave) {
+            showMessageAndWait(title, i18n::get(StrKey::DevSyncSyncNoLocalOrRemote));
+        } else {
+            std::string body = c.hasLocal ? i18n::get(StrKey::DevSyncChooseReceiveBody) : i18n::get(StrKey::DevSyncReceiveOnlyRemoteBody);
+            if (showConfirmDialog(i18n::fmt(StrKey::DevSyncReceiveTitle, gi.displayName), body)) {
+                if (c.hasLocal) {
+                    doDownload(c.remoteSavePath, c.localPath);
+                } else {
+                    std::string localDest = importPaths_.empty() ? (basePath_ + "import/") : importPaths_.front().path;
+                    mkdir(localDest.c_str(), 0755);
+                    std::string baseName = c.remoteRomBaseName.empty() ? std::string(gi.gameTag) : c.remoteRomBaseName;
+                    doDownload(c.remoteSavePath, localDest + baseName + ".sav");
+                }
+                didSomething = true;
+            }
+        }
+    } else if (action == 2) { // Sincronizza
+        if (!c.hasLocal || !c.hasRemoteSave) {
+            showMessageAndWait(title, i18n::get(StrKey::DevSyncSyncNoLocalOrRemote));
+        } else {
+            // Verifica identità allenatore prima di confrontare date (come prima)
+            std::string tmpPath = tmpDir + gi.gameTag + "_check.tmp";
             std::string dlErr;
-            tmpDownloadOk = remoteSyncDownload(host, token, c.remoteSavePath, tmpPath, dlErr);
-            if (tmpDownloadOk) {
+            bool tmpOk = remoteSyncDownload(host, token, c.remoteSavePath, tmpPath, dlErr);
+            std::string localOt;
+            bool sameIdentity = false;
+            if (tmpOk) {
                 SaveFile localProbe, remoteProbe;
                 localProbe.setGameType(c.type);
                 remoteProbe.setGameType(c.type);
                 if (localProbe.load(c.localPath) && remoteProbe.load(tmpPath)) {
                     localOt = localProbe.dsOtName();
-                    sameIdentity = !localOt.empty() &&
-                                   localOt == remoteProbe.dsOtName() &&
-                                   localProbe.dsTid() == remoteProbe.dsTid();
+                    sameIdentity = !localOt.empty() && localOt == remoteProbe.dsOtName() && localProbe.dsTid() == remoteProbe.dsTid();
                 }
             } else {
-                DebugLog::line("remote sync: download di controllo fallito per %s: %s",
-                               gi.gameTag, dlErr.c_str());
+                DebugLog::line("remote sync: download di controllo fallito per %s: %s", gi.gameTag, dlErr.c_str());
+            }
+            if (!sameIdentity) {
+                showMessageAndWait(title, i18n::get(StrKey::DevSyncSyncNoIdentity));
+                std::remove(tmpPath.c_str());
+            } else {
+                struct stat st;
+                long long localModified = 0;
+                long long localBefore = 0;
+                if (stat(c.localPath.c_str(), &st) == 0) localModified = localBefore = (long long)st.st_mtime;
+                bool remoteNewer = c.remoteSaveModifiedUnix > localModified;
+                std::string dir = i18n::get(remoteNewer ? StrKey::DevSyncDirRemoteToLocal : StrKey::DevSyncDirLocalToRemote);
+                if (showConfirmDialog(i18n::fmt(StrKey::DevSyncSyncTitle, gi.displayName), i18n::fmt(StrKey::DevSyncSyncBody, localOt, dir))) {
+                    if (remoteNewer) {
+                        // Usa copia già scaricata (tmpPath) — evita seconda richiesta di rete
+                        // e soprattutto non confrontare più dopo: il mtime locale va sovrascritto ora
+                        copyLocalAsReceived(tmpPath, c.localPath);
+                    } else {
+                        doUpload(c.localPath, remoteTargetPath);
+                    }
+                    didSomething = true;
+                }
+                std::remove(tmpPath.c_str());
+                // Nota mtime: confrontiamo i valori originali prima del transfer (localBefore vs remoteModified).
+                // Dopo il transfer il file locale avrà mtime = now, non va usato per decisioni future nello stesso flusso.
             }
         }
-
-        struct stat st;
-        long long localModified = 0;
-        if (c.hasLocal && stat(c.localPath.c_str(), &st) == 0)
-            localModified = static_cast<long long>(st.st_mtime);
-
-        // Nome del file remoto quando va creato ex-novo (nessun save la',
-        // solo la ROM): stesso nome base della ROM, estensione .sav --
-        // convenzione degli emulatori piu' comuni; NDS/DraStic potrebbe
-        // volere .dsv, non confermato su hardware reale.
-        std::string remoteTargetPath = c.hasRemoteSave
-            ? c.remoteSavePath
-            : (c.remoteDir + c.remoteRomBaseName + ".sav");
-
-        bool didSomething = false;
-
-        if (sameIdentity) {
-            bool remoteNewer = c.remoteSaveModifiedUnix > localModified;
-            std::string dir = i18n::get(remoteNewer ? StrKey::DevSyncDirRemoteToLocal
-                                                      : StrKey::DevSyncDirLocalToRemote);
-            if (showConfirmDialog(i18n::fmt(StrKey::DevSyncSyncTitle, gi.displayName),
-                                   i18n::fmt(StrKey::DevSyncSyncBody, localOt, dir))) {
-                if (remoteNewer)
-                    copyLocalAsReceived(tmpPath, c.localPath);
-                else
-                    doUpload(c.localPath, remoteTargetPath);
-                didSomething = true;
-            }
-        } else if (c.hasLocal && !c.hasRemoteSave) {
-            if (showConfirmDialog(i18n::fmt(StrKey::DevSyncSendTitle, gi.displayName),
-                                   i18n::get(StrKey::DevSyncSendOnlyLocalBody))) {
-                doUpload(c.localPath, remoteTargetPath);
-                didSomething = true;
-            }
-        } else if (!c.hasLocal && c.hasRemoteSave) {
-            if (showConfirmDialog(i18n::fmt(StrKey::DevSyncReceiveTitle, gi.displayName),
-                                   i18n::get(StrKey::DevSyncReceiveOnlyRemoteBody))) {
-                std::string localDest = importPaths_.empty() ? (basePath_ + "import/") : importPaths_.front().path;
-                mkdir(localDest.c_str(), 0755);
-                std::string baseName = c.remoteRomBaseName.empty() ? std::string(gi.gameTag) : c.remoteRomBaseName;
-                doDownload(c.remoteSavePath, localDest + baseName + ".sav");
-                didSomething = true;
-            }
-        } else if (c.hasLocal && c.hasRemoteSave) {
-            // Presenti entrambi ma non risultano lo stesso allenatore/gioco
-            // (o la verifica non e' riuscita): direzione sempre a scelta
-            // dell'utente, mai un confronto automatico alla cieca.
-            if (showConfirmDialog(i18n::fmt(StrKey::DevSyncReceiveTitle, gi.displayName),
-                                   i18n::get(StrKey::DevSyncChooseReceiveBody))) {
-                // Il download di controllo (sopra) ha gia' preso questo
-                // stesso file per confrontare allenatore/TID: se e' andato a
-                // buon fine lo riusa, altrimenti (raro: fallito solo quel
-                // download) fa un vero tentativo di rete.
-                if (tmpDownloadOk)
-                    copyLocalAsReceived(tmpPath, c.localPath);
-                else
-                    doDownload(c.remoteSavePath, c.localPath);
-                didSomething = true;
-            } else if (showConfirmDialog(i18n::fmt(StrKey::DevSyncSendTitle, gi.displayName),
-                                          i18n::get(StrKey::DevSyncChooseSendBody))) {
-                doUpload(c.localPath, remoteTargetPath);
-                didSomething = true;
-            }
-        }
-
-        if (!tmpPath.empty())
-            std::remove(tmpPath.c_str());
-        if (!didSomething)
-            skipped++;
     }
 
-    showMessageAndWait(title, i18n::fmt(StrKey::DevSyncFlowSummary,
-        std::to_string(sent), std::to_string(received),
-        std::to_string(skipped), std::to_string(failed)));
+    // Summary per singola azione (coerente con prima ma con 1 candidato)
+    skipped = didSomething ? 0 : 1;
+    // failed già aggiornato dalle lambda, ma se didSomething=false e failed==0 è uno skip pulito
+    if (didSomething) {
+        showMessageAndWait(title, i18n::fmt(StrKey::DevSyncFlowSummary, std::to_string(sent), std::to_string(received), "0", std::to_string(failed)));
+    } else {
+        // Se failed>0 (upload/download fallito) mostra falliti, altrimenti skip
+        if (failed > 0)
+            showMessageAndWait(title, i18n::fmt(StrKey::DevSyncFlowSummary, "0", "0", "0", std::to_string(failed)));
+        else
+            showMessageAndWait(title, i18n::fmt(StrKey::DevSyncFlowSummary, "0", "0", "1", "0"));
+    }
     DebugLog::line("remote sync: flusso completato su %s (inviati=%d ricevuti=%d saltati=%d falliti=%d)",
                    host.c_str(), sent, received, skipped, failed);
 }
