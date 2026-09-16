@@ -520,12 +520,12 @@ bool remoteSyncGuessGameFromName(const std::string& fileNameIn, GameType& outGue
     if (has("crystal") || has("cristallo")) { outGuess = GameType::CRYSTAL; return true; }
     if (has("gold") || has(" oro ")) { outGuess = GameType::GOLD; return true; }
     if (has("silver") || has("argento")) { outGuess = GameType::SILVER; return true; }
-    if (has("black2") || has("black 2") || has("nero 2") || has("b2w2") || has("bw2")) { outGuess = GameType::BLACK2; return true; }
-    if (has("white2") || has("white 2") || has("bianco 2")) { outGuess = GameType::WHITE2; return true; }
-    if (has("black") || has("nero")) { outGuess = GameType::BLACK; return true; }
-    if (has("white") || has("bianco")) { outGuess = GameType::WHITE; return true; }
-    if (has("yellow") || has("giallo")) { outGuess = GameType::YELLOW; return true; }
-    if (has("red") || has("rosso")) { outGuess = GameType::RED; return true; }
+    if (has("black2") || has("black 2") || has("nero 2") || has("nera 2") || has("b2w2") || has("bw2")) { outGuess = GameType::BLACK2; return true; }
+    if (has("white2") || has("white 2") || has("bianco 2") || has("bianca 2")) { outGuess = GameType::WHITE2; return true; }
+    if (has("black") || has("nero") || has("nera")) { outGuess = GameType::BLACK; return true; }
+    if (has("white") || has("bianco") || has("bianca")) { outGuess = GameType::WHITE; return true; }
+    if (has("yellow") || has("giallo") || has("gialla")) { outGuess = GameType::YELLOW; return true; }
+    if (has("red") || has("rosso") || has("rossa")) { outGuess = GameType::RED; return true; }
     if (has("blue") || has("blu")) { outGuess = GameType::BLUE; return true; }
     return false;
 }
@@ -540,6 +540,17 @@ bool remoteSyncIsSaveFileName(const std::string& fileName) {
     // .sav (tutti i sistemi), .srm (convenzione RetroArch), .dsv (DraStic,
     // l'emulatore NDS piu' comune su questi handheld).
     return ends(".sav") || ends(".srm") || ends(".dsv");
+}
+
+bool remoteSyncIsRomFileName(const std::string& fileName) {
+    std::string low = fileName;
+    for (char& ch : low) ch = (char)std::tolower((unsigned char)ch);
+    auto ends = [&](const char* suf) {
+        size_t sl = std::strlen(suf);
+        return low.size() >= sl && low.compare(low.size() - sl, sl, suf) == 0;
+    };
+    // Solo vere ROM, non state/save/metadata (evita .state, .state.auto, .png, .xml ecc.)
+    return ends(".gba") || ends(".gbc") || ends(".gb") || ends(".nds") || ends(".sfc") || ends(".smc");
 }
 
 std::vector<SyncCandidate> remoteSyncBuildCandidates(
@@ -673,7 +684,7 @@ std::vector<SyncCandidate> remoteSyncBuildCandidates(
                     f.savePath = dirUsed + e.name;
                     f.saveModified = e.modifiedUnix;
                 }
-            } else if (!f.hasRom) {
+            } else if (!f.hasRom && remoteSyncIsRomFileName(e.name)) {
                 f.hasRom = true;
                 std::string base = e.name;
                 size_t dot = base.find_last_of('.');
