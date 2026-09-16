@@ -3397,5 +3397,27 @@
   "emerald": true,
   "frlg": false,
   "flag": true
+ },
+ {
+  "id": 1000,
+  "name": "Mystery Event (Eon Southern Island)",
+  "pocket": "key",
+  "key": true,
+  "max": 1,
+  "ruby": false,
+  "emerald": true,
+  "frlg": false,
+  "flag": true
+ },
+ {
+  "id": 1001,
+  "name": "National Dex",
+  "pocket": "key",
+  "key": true,
+  "max": 1,
+  "ruby": true,
+  "emerald": true,
+  "frlg": true,
+  "flag": true
  }
 ]
