@@ -190,6 +190,7 @@ struct SyncCandidate {
 // true se il nome ha un'estensione da salvataggio nota (.sav/.srm/.dsv), per
 // distinguere un save da una ROM nello stesso elenco di cartella.
 bool remoteSyncIsSaveFileName(const std::string& fileName);
+bool remoteSyncIsRomFileName(const std::string& fileName);
 
 // Incrocia l'elenco locale (da scanImportPaths, gia' in mano al chiamante --
 // nessuna scansione locale qui) con le cartelle remote, restituendo un
