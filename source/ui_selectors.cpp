@@ -5461,6 +5461,7 @@ void UI::remoteSyncTestRow() {
                         std::remove(c.localPath.c_str());
                         DebugLog::line("remote sync: vecchio save rimosso %s", c.localPath.c_str());
                     }
+                    if (ok) { rescanImportedGames(); markDirty(); }
                 } else {
                     std::string localDest = importPaths_.empty() ? (basePath_ + "import/") : importPaths_.front().path;
                     if (!localDest.empty() && localDest.back() != '/') localDest += "/";
@@ -5519,6 +5520,11 @@ void UI::remoteSyncTestRow() {
                     }
                 }
                 didSomething = ok;
+                if (ok) {
+                    // Aggiorna subito la lista giochi senza dover riavviare l'app
+                    rescanImportedGames();
+                    markDirty();
+                }
                 if (!ok) failed = 1; // assicurati che il riepilogo mostri fallito
             }
         }
