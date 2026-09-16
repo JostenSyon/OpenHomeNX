@@ -5095,6 +5095,8 @@ int UI::pickRemoteSyncGame(const std::vector<SyncCandidate>& candidates) {
     const int POP_W = 640, POP_H = 420;
     int popX = (SCREEN_W - POP_W) / 2;
     int popY = (SCREEN_H - POP_H) / 2;
+    // Analog stick debounce
+    uint32_t lastStickMs = 0;
     while (result == -2) {
         SDL_Event event;
         while (SDL_PollEvent(&event)) {
@@ -5108,10 +5110,23 @@ int UI::pickRemoteSyncGame(const std::vector<SyncCandidate>& candidates) {
                     result = sel;
                 else if (event.cbutton.button == SDL_CONTROLLER_BUTTON_A) // Switch B = annulla
                     result = -1;
+            } else if (event.type == SDL_CONTROLLERAXISMOTION) {
+                if (event.caxis.axis == SDL_CONTROLLER_AXIS_LEFTY) {
+                    uint32_t now = SDL_GetTicks();
+                    if (now - lastStickMs > 180) {
+                        if (event.caxis.value < -12000) {
+                            sel = (sel - 1 + (int)candidates.size()) % (int)candidates.size();
+                            lastStickMs = now;
+                        } else if (event.caxis.value > 12000) {
+                            sel = (sel + 1) % (int)candidates.size();
+                            lastStickMs = now;
+                        }
+                    }
+                }
             }
         }
-        SDL_SetRenderDrawColor(renderer_, T().bg.r, T().bg.g, T().bg.b, 255);
-        SDL_RenderClear(renderer_);
+        // Popup overlay (non full-screen) come drawSaveMenuPopup
+        drawRect(0, 0, SCREEN_W, SCREEN_H, T().overlay);
         drawRect(popX, popY, POP_W, POP_H, T().panelBg);
         drawRectOutline(popX, popY, POP_W, POP_H, T().cursor, 2);
         drawTextCentered(i18n::get(StrKey::DevSyncPickerTitle), popX + POP_W / 2, popY + 18, T().text, fontLarge_);
@@ -5167,23 +5182,39 @@ int UI::pickRemoteSyncAction(const SyncCandidate& c) {
     // Label brevi (senza {0}) per i bottoni
     const char* labels[3] = { StrKey::DevSyncActionSend, StrKey::DevSyncActionReceive, StrKey::DevSyncActionSync };
     bool enabled[3] = { canSend, canReceive, canSync };
+    // Parti dal primo abilitato (se "Invia" è disabilitato vai su "Ricevi")
+    for (int k = 0; k < 3; k++) if (enabled[k]) { sel = k; break; }
+    auto nextSel = [&](int dir) {
+        for (int step = 1; step <= 3; step++) {
+            int cand = (sel + dir * step + 3) % 3;
+            if (enabled[cand]) { sel = cand; break; }
+        }
+    };
+    uint32_t lastStickMs = 0;
     while (result == -2) {
         SDL_Event event;
         while (SDL_PollEvent(&event)) {
             if (event.type == SDL_QUIT) result = -1;
             if (event.type == SDL_CONTROLLERBUTTONDOWN) {
                 if (event.cbutton.button == SDL_CONTROLLER_BUTTON_DPAD_UP)
-                    sel = (sel - 1 + 3) % 3;
+                    nextSel(-1);
                 else if (event.cbutton.button == SDL_CONTROLLER_BUTTON_DPAD_DOWN)
-                    sel = (sel + 1) % 3;
+                    nextSel(1);
                 else if (event.cbutton.button == SDL_CONTROLLER_BUTTON_B) { // Switch A
                     if (enabled[sel]) result = sel;
                 } else if (event.cbutton.button == SDL_CONTROLLER_BUTTON_A) // Switch B
                     result = -1;
+            } else if (event.type == SDL_CONTROLLERAXISMOTION) {
+                if (event.caxis.axis == SDL_CONTROLLER_AXIS_LEFTY) {
+                    uint32_t now = SDL_GetTicks();
+                    if (now - lastStickMs > 180) {
+                        if (event.caxis.value < -12000) { nextSel(-1); lastStickMs = now; }
+                        else if (event.caxis.value > 12000) { nextSel(1); lastStickMs = now; }
+                    }
+                }
             }
         }
-        SDL_SetRenderDrawColor(renderer_, T().bg.r, T().bg.g, T().bg.b, 255);
-        SDL_RenderClear(renderer_);
+        drawRect(0, 0, SCREEN_W, SCREEN_H, T().overlay);
         drawRect(popX, popY, POP_W, POP_H, T().panelBg);
         drawRectOutline(popX, popY, POP_W, POP_H, T().cursor, 2);
         drawTextCentered(i18n::fmt(StrKey::DevSyncActionTitle, gi.displayName), popX + POP_W / 2, popY + 18, T().text, font_);
@@ -5292,13 +5323,49 @@ void UI::remoteSyncTestRow() {
 
     // Logica centralizzata per le 3 azioni
     std::string remoteTargetPath = c.hasRemoteSave ? c.remoteSavePath : (c.remoteDir + c.remoteRomBaseName + ".sav");
+    // Helper per trovare la ROM locale corrispondente al save (solo per file-backed gb/gbc/gba/nds + FRLG)
+    auto findLocalRom = [&](const std::string& savePath, GameType type) -> std::string {
+        if (!(isFRLG(type) || isImportedFile(type) || isGen1File(type) || isGen2File(type) || isGen4File(type) || isGen5File(type)))
+            return std::string();
+        size_t slash = savePath.find_last_of('/');
+        std::string dir = (slash == std::string::npos) ? "" : savePath.substr(0, slash + 1);
+        std::string file = (slash == std::string::npos) ? savePath : savePath.substr(slash + 1);
+        size_t dot = file.find_last_of('.');
+        std::string base = (dot == std::string::npos) ? file : file.substr(0, dot);
+        const char* exts[] = {".gba",".gbc",".gb",".nds"};
+        for (auto ext : exts) {
+            std::string cand = dir + base + ext;
+            struct stat st2;
+            if (stat(cand.c_str(), &st2) == 0 && S_ISREG(st2.st_mode)) return cand;
+            // Prova anche lower/upper case varianti già coperte da stat case-insensitive su FAT? No, prova esatto.
+        }
+        return std::string();
+    };
     bool didSomething = false;
     if (action == 0) { // Invia
         if (!c.hasLocal) {
             showMessageAndWait(title, i18n::get(StrKey::DevSyncSyncNoLocalOrRemote));
         } else if (showConfirmDialog(i18n::fmt(StrKey::DevSyncSendTitle, gi.displayName), i18n::get(StrKey::DevSyncSendOnlyLocalBody))) {
-            doUpload(c.localPath, remoteTargetPath);
-            didSomething = true;
+            bool ok = doUpload(c.localPath, remoteTargetPath);
+            // Se sul remoto manca la ROM e il gioco è file-backed, invia anche la ROM
+            if (ok && !c.hasRemoteRom) {
+                std::string localRom = findLocalRom(c.localPath, c.type);
+                if (!localRom.empty()) {
+                    size_t dot = localRom.find_last_of('.');
+                    std::string ext = (dot == std::string::npos) ? ".gba" : localRom.substr(dot);
+                    std::string romBase = c.remoteRomBaseName.empty() ? std::string(gi.gameTag) : c.remoteRomBaseName;
+                    // Pulisci romBase
+                    for (char& ch : romBase) if (ch == '/' || ch == '\\') ch = '_';
+                    std::string remoteRomPath = c.remoteDir + romBase + ext;
+                    std::string romErr;
+                    if (remoteSyncUpload(host, token, localRom, remoteRomPath, romErr)) {
+                        DebugLog::line("remote sync: ROM inviata %s -> %s", localRom.c_str(), remoteRomPath.c_str());
+                    } else {
+                        DebugLog::line("remote sync: ROM non inviata %s: %s", localRom.c_str(), romErr.c_str());
+                    }
+                }
+            }
+            didSomething = ok;
         }
     } else if (action == 1) { // Ricevi
         if (!c.hasRemoteSave) {
@@ -5306,15 +5373,52 @@ void UI::remoteSyncTestRow() {
         } else {
             std::string body = c.hasLocal ? i18n::get(StrKey::DevSyncChooseReceiveBody) : i18n::get(StrKey::DevSyncReceiveOnlyRemoteBody);
             if (showConfirmDialog(i18n::fmt(StrKey::DevSyncReceiveTitle, gi.displayName), body)) {
+                bool ok = false;
                 if (c.hasLocal) {
-                    doDownload(c.remoteSavePath, c.localPath);
+                    ok = doDownload(c.remoteSavePath, c.localPath);
                 } else {
                     std::string localDest = importPaths_.empty() ? (basePath_ + "import/") : importPaths_.front().path;
+                    if (!localDest.empty() && localDest.back() != '/') localDest += "/";
                     mkdir(localDest.c_str(), 0755);
                     std::string baseName = c.remoteRomBaseName.empty() ? std::string(gi.gameTag) : c.remoteRomBaseName;
-                    doDownload(c.remoteSavePath, localDest + baseName + ".sav");
+                    // Pulisci baseName da caratteri non validi per filesystem locale se serve
+                    std::string safeBase = baseName;
+                    for (char& ch : safeBase) if (ch == '/' || ch == '\\') ch = '_';
+                    std::string saveDest = localDest + safeBase + ".sav";
+                    ok = doDownload(c.remoteSavePath, saveDest);
+                    // Se manca il gioco (hasLocal==false) prendiamo anche la ROM se disponibile,
+                    // così il save diventa subito utilizzabile senza doverla copiare a mano.
+                    if (ok && c.hasRemoteRom) {
+                        // Trova la ROM remota con estensione corretta listando la cartella
+                        std::vector<RemoteEntry> dirEntries;
+                        std::string listErr;
+                        if (remoteSyncListPath(host, token, c.remoteDir, dirEntries, listErr)) {
+                            std::string romFile;
+                            std::string wantBaseLower = safeBase;
+                            for (char& ch : wantBaseLower) ch = (char)std::tolower((unsigned char)ch);
+                            for (auto& e : dirEntries) {
+                                if (e.isDir) continue;
+                                if (remoteSyncIsSaveFileName(e.name)) continue;
+                                std::string baseLower = e.name;
+                                for (char& ch : baseLower) ch = (char)std::tolower((unsigned char)ch);
+                                size_t dot = baseLower.find_last_of('.');
+                                std::string baseOnly = (dot == std::string::npos) ? baseLower : baseLower.substr(0, dot);
+                                if (baseOnly == wantBaseLower) { romFile = e.name; break; }
+                            }
+                            if (!romFile.empty()) {
+                                std::string romDest = localDest + safeBase + romFile.substr(romFile.find_last_of('.'));
+                                std::string romErr;
+                                if (remoteSyncDownload(host, token, c.remoteDir + romFile, romDest, romErr)) {
+                                    DebugLog::line("remote sync: ROM ricevuta %s -> %s", (c.remoteDir + romFile).c_str(), romDest.c_str());
+                                } else {
+                                    DebugLog::line("remote sync: ROM non ricevuta %s: %s", romFile.c_str(), romErr.c_str());
+                                }
+                            }
+                        }
+                    }
                 }
-                didSomething = true;
+                didSomething = ok;
+                if (!ok) failed = 1; // assicurati che il riepilogo mostri fallito
             }
         }
     } else if (action == 2) { // Sincronizza
@@ -5354,7 +5458,20 @@ void UI::remoteSyncTestRow() {
                         // e soprattutto non confrontare più dopo: il mtime locale va sovrascritto ora
                         copyLocalAsReceived(tmpPath, c.localPath);
                     } else {
-                        doUpload(c.localPath, remoteTargetPath);
+                        bool ok = doUpload(c.localPath, remoteTargetPath);
+                        if (ok && !c.hasRemoteRom) {
+                            std::string localRom = findLocalRom(c.localPath, c.type);
+                            if (!localRom.empty()) {
+                                size_t dot = localRom.find_last_of('.');
+                                std::string ext = (dot == std::string::npos) ? ".gba" : localRom.substr(dot);
+                                std::string romBase = c.remoteRomBaseName.empty() ? std::string(gi.gameTag) : c.remoteRomBaseName;
+                                for (char& ch : romBase) if (ch == '/' || ch == '\\') ch = '_';
+                                std::string remoteRomPath = c.remoteDir + romBase + ext;
+                                std::string romErr;
+                                if (remoteSyncUpload(host, token, localRom, remoteRomPath, romErr))
+                                    DebugLog::line("remote sync: ROM sincronizzata %s -> %s", localRom.c_str(), remoteRomPath.c_str());
+                            }
+                        }
                     }
                     didSomething = true;
                 }
