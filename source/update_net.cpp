@@ -9,6 +9,7 @@
 #include <vector>
 #include <atomic>
 #include <memory>
+#include <mutex>
 
 #include <switch.h>
 #include <curl/curl.h>
@@ -18,6 +19,21 @@
 namespace {
 
 bool g_netReady = false;
+bool g_nifmReady = false; // vedi updateNetEnsureNifm()
+std::mutex g_nifmMutex; // vedi updateNetNifmMutex() in update_net.h
+
+// Assume il lock g_nifmMutex GIA' preso dal chiamante (updateNetEnsureNifm()
+// o updateNetLinkStr(), che lo tengono per tutta la funzione) -- mai da
+// chiamare direttamente altrove: stesso bug/stessa soluzione di
+// logPathUnlocked() in debug_log.cpp (mutex non ricorsivo -- richiamarla da
+// dentro una funzione che ha gia' il lock preso sarebbe un doppio lock sullo
+// stesso thread, hang garantito).
+bool ensureNifmLocked() {
+    if (g_nifmReady) return true;
+    if (R_FAILED(nifmInitialize(NifmServiceType_User))) return false;
+    g_nifmReady = true;
+    return true;
+}
 
 // romfs:/cacert.pem è opzionale. Se manca (target è un webserver HTTP locale,
 // oppure non lo abbiamo ancora impacchettato) si disattiva la verifica del
@@ -194,21 +210,30 @@ bool updateNetEnsureReady() {
     return g_netReady;
 }
 
+// Init nifm:u condivisa (idempotente): usata sia da updateNetLinkStr() qui
+// sotto sia da remoteSyncScanLan() (remote_sync.cpp) per l'IP locale. Presa
+// del lock qui -- vedi ensureNifmLocked() sopra per il perche' non e' lei
+// stessa a chiamarsi da dentro updateNetLinkStr() (che il lock lo tiene
+// gia').
+bool updateNetEnsureNifm() {
+    std::lock_guard<std::mutex> lock(g_nifmMutex);
+    return ensureNifmLocked();
+}
+
+std::mutex& updateNetNifmMutex() { return g_nifmMutex; }
+
 // Poll throttled dello stato link via nifm (nifm:u). Lazy-init: se nifm non si
 // apre, resta OFF e riprova al poll successivo. Mai fatale, mai bloccante.
 const char* updateNetLinkStr() {
+    std::lock_guard<std::mutex> lock(g_nifmMutex);
     static double lastPoll = -1e9;
     static char cached[8] = "OFF";
-    static bool nifmReady = false;
     double now = (double)armTicksToNs(armGetSystemTick()) / 1.0e9;
     if (now - lastPoll < 2.0)
         return cached;
     lastPoll = now;
-    if (!nifmReady) {
-        if (R_FAILED(nifmInitialize(NifmServiceType_User)))
-            return cached; // resta OFF, riprova tra 2s
-        nifmReady = true;
-    }
+    if (!ensureNifmLocked())
+        return cached; // resta OFF, riprova tra 2s
     NifmInternetConnectionType type = (NifmInternetConnectionType)0;
     u32 strength = 0;
     NifmInternetConnectionStatus st = (NifmInternetConnectionStatus)0;
