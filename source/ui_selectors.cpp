@@ -5321,8 +5321,17 @@ void UI::remoteSyncTestRow() {
         return;
     }
 
-    // Logica centralizzata per le 3 azioni
-    std::string remoteTargetPath = c.hasRemoteSave ? c.remoteSavePath : (c.remoteDir + c.remoteRomBaseName + ".sav");
+    // Logica centralizzata per le 3 azioni — il save deve avere esattamente lo stesso base della ROM
+    auto getExtLocal = [](const std::string& p) -> std::string {
+        size_t dot = p.find_last_of('.');
+        return (dot == std::string::npos) ? std::string(".sav") : p.substr(dot);
+    };
+    auto getBaseLocal = [](const std::string& p) -> std::string {
+        size_t slash = p.find_last_of('/');
+        std::string f = (slash == std::string::npos) ? p : p.substr(slash + 1);
+        size_t dot = f.find_last_of('.');
+        return (dot == std::string::npos) ? f : f.substr(0, dot);
+    };
     // Helper per trovare la ROM locale corrispondente al save (solo per file-backed gb/gbc/gba/nds + FRLG)
     auto findLocalRom = [&](const std::string& savePath, GameType type) -> std::string {
         if (!(isFRLG(type) || isImportedFile(type) || isGen1File(type) || isGen2File(type) || isGen4File(type) || isGen5File(type)))
@@ -5337,10 +5346,39 @@ void UI::remoteSyncTestRow() {
             std::string cand = dir + base + ext;
             struct stat st2;
             if (stat(cand.c_str(), &st2) == 0 && S_ISREG(st2.st_mode)) return cand;
-            // Prova anche lower/upper case varianti già coperte da stat case-insensitive su FAT? No, prova esatto.
         }
         return std::string();
     };
+    // Costruisci il path remoto del save facendo combaciare esattamente il base con la ROM
+    std::string wantRomBase;
+    if (!c.remoteRomBaseName.empty()) wantRomBase = c.remoteRomBaseName;
+    else {
+        std::string lr = findLocalRom(c.localPath, c.type);
+        if (!lr.empty()) wantRomBase = getBaseLocal(lr);
+        else if (!c.localPath.empty()) wantRomBase = getBaseLocal(c.localPath);
+        else wantRomBase = std::string(gameInfo(c.type).gameTag);
+    }
+    for (char& ch : wantRomBase) if (ch == '/' || ch == '\\') ch = '_';
+    std::string localExt = c.hasLocal ? getExtLocal(c.localPath) : getExtLocal(c.remoteSavePath);
+    // Se il save remoto esistente ha base diversa dalla ROM, usa il base della ROM per far combaciare
+    std::string remoteTargetPath;
+    if (c.hasRemoteSave) {
+        std::string curSaveBase = getBaseLocal(c.remoteSavePath);
+        std::string curLower = curSaveBase, wantLower = wantRomBase;
+        for (char& ch : curLower) ch = (char)std::tolower((unsigned char)ch);
+        for (char& ch : wantLower) ch = (char)std::tolower((unsigned char)ch);
+        if (curLower != wantLower && !wantRomBase.empty()) {
+            size_t slash = c.remoteSavePath.find_last_of('/');
+            std::string dir = (slash == std::string::npos) ? c.remoteDir : c.remoteSavePath.substr(0, slash + 1);
+            if (dir.empty()) dir = c.remoteDir;
+            remoteTargetPath = dir + wantRomBase + getExtLocal(c.remoteSavePath);
+            DebugLog::line("remote sync: rinomino save remoto per match ROM: %s -> %s", c.remoteSavePath.c_str(), remoteTargetPath.c_str());
+        } else {
+            remoteTargetPath = c.remoteSavePath;
+        }
+    } else {
+        remoteTargetPath = c.remoteDir + wantRomBase + localExt;
+    }
     bool didSomething = false;
     if (action == 0) { // Invia
         if (!c.hasLocal) {
@@ -5374,8 +5412,55 @@ void UI::remoteSyncTestRow() {
             std::string body = c.hasLocal ? i18n::get(StrKey::DevSyncChooseReceiveBody) : i18n::get(StrKey::DevSyncReceiveOnlyRemoteBody);
             if (showConfirmDialog(i18n::fmt(StrKey::DevSyncReceiveTitle, gi.displayName), body)) {
                 bool ok = false;
+                // Helper per estrarre estensione da un path (include punto)
+                auto getExt = [](const std::string& p) -> std::string {
+                    size_t dot = p.find_last_of('.');
+                    if (dot == std::string::npos) return std::string(".sav");
+                    return p.substr(dot);
+                };
                 if (c.hasLocal) {
-                    ok = doDownload(c.remoteSavePath, c.localPath);
+                    // Quando ricevi su un save esistente, assicurati che il nome del save
+                    // corrisponda esattamente al nome della ROM (stessa base). Se differiscono,
+                    // rinomina il save locale per far combaciare con la ROM.
+                    std::string localRom = findLocalRom(c.localPath, c.type);
+                    std::string wantBase;
+                    if (!localRom.empty()) {
+                        size_t slash = localRom.find_last_of('/');
+                        std::string romFile = (slash == std::string::npos) ? localRom : localRom.substr(slash + 1);
+                        size_t dot = romFile.find_last_of('.');
+                        wantBase = (dot == std::string::npos) ? romFile : romFile.substr(0, dot);
+                    } else if (!c.remoteRomBaseName.empty()) {
+                        wantBase = c.remoteRomBaseName;
+                    }
+                    std::string destPath = c.localPath;
+                    if (!wantBase.empty()) {
+                        size_t slash = destPath.find_last_of('/');
+                        std::string dir = (slash == std::string::npos) ? "" : destPath.substr(0, slash + 1);
+                        std::string ext = getExt(c.remoteSavePath);
+                        std::string curBase;
+                        {
+                            std::string file = (slash == std::string::npos) ? destPath : destPath.substr(slash + 1);
+                            size_t dot = file.find_last_of('.');
+                            curBase = (dot == std::string::npos) ? file : file.substr(0, dot);
+                        }
+                        if (curBase != wantBase) {
+                            destPath = dir + wantBase + ext;
+                            DebugLog::line("remote sync: rinomino save locale per match ROM: %s -> %s", c.localPath.c_str(), destPath.c_str());
+                            // Se il vecchio file esiste con nome diverso, lo rimuoviamo dopo il download? No, sovrascriviamo direttamente sul nuovo nome
+                        } else {
+                            // Usa estensione remota per coerenza se diverso (.srm vs .sav)
+                            size_t dot2 = destPath.find_last_of('.');
+                            std::string curExt = (dot2 == std::string::npos) ? "" : destPath.substr(dot2);
+                            std::string remExt = getExt(c.remoteSavePath);
+                            if (curExt != remExt) destPath = dir + wantBase + remExt;
+                        }
+                    }
+                    ok = doDownload(c.remoteSavePath, destPath);
+                    // Se il destPath è diverso dal vecchio c.localPath e il download è ok, rimuovi il vecchio file orfano
+                    if (ok && destPath != c.localPath) {
+                        std::remove(c.localPath.c_str());
+                        DebugLog::line("remote sync: vecchio save rimosso %s", c.localPath.c_str());
+                    }
                 } else {
                     std::string localDest = importPaths_.empty() ? (basePath_ + "import/") : importPaths_.front().path;
                     if (!localDest.empty() && localDest.back() != '/') localDest += "/";
@@ -5384,34 +5469,50 @@ void UI::remoteSyncTestRow() {
                     // Pulisci baseName da caratteri non validi per filesystem locale se serve
                     std::string safeBase = baseName;
                     for (char& ch : safeBase) if (ch == '/' || ch == '\\') ch = '_';
-                    std::string saveDest = localDest + safeBase + ".sav";
+                    std::string ext = getExt(c.remoteSavePath);
+                    std::string saveDest = localDest + safeBase + ext;
                     ok = doDownload(c.remoteSavePath, saveDest);
-                    // Se manca il gioco (hasLocal==false) prendiamo anche la ROM se disponibile,
-                    // così il save diventa subito utilizzabile senza doverla copiare a mano.
+                    // Se manca il gioco (hasLocal==false) e c'è una ROM remota, chiedi se scaricare anche la ROM
+                    // così il save diventa subito utilizzabile. Il save deve avere esattamente lo stesso base della ROM.
                     if (ok && c.hasRemoteRom) {
-                        // Trova la ROM remota con estensione corretta listando la cartella
-                        std::vector<RemoteEntry> dirEntries;
-                        std::string listErr;
-                        if (remoteSyncListPath(host, token, c.remoteDir, dirEntries, listErr)) {
-                            std::string romFile;
-                            std::string wantBaseLower = safeBase;
-                            for (char& ch : wantBaseLower) ch = (char)std::tolower((unsigned char)ch);
-                            for (auto& e : dirEntries) {
-                                if (e.isDir) continue;
-                                if (remoteSyncIsSaveFileName(e.name)) continue;
-                                std::string baseLower = e.name;
-                                for (char& ch : baseLower) ch = (char)std::tolower((unsigned char)ch);
-                                size_t dot = baseLower.find_last_of('.');
-                                std::string baseOnly = (dot == std::string::npos) ? baseLower : baseLower.substr(0, dot);
-                                if (baseOnly == wantBaseLower) { romFile = e.name; break; }
+                        // Controlla se la ROM locale già esiste (con lo stesso base)
+                        std::string romCheckPath = localDest + safeBase + ".gba";
+                        bool romExists = false;
+                        {
+                            // Prova le estensioni note per vedere se una ROM con quel base esiste già
+                            const char* tryExts[] = {".gba",".gbc",".gb",".nds"};
+                            for (auto ext : tryExts) {
+                                std::string cand = localDest + safeBase + ext;
+                                struct stat st2;
+                                if (stat(cand.c_str(), &st2) == 0) { romExists = true; break; }
                             }
-                            if (!romFile.empty()) {
-                                std::string romDest = localDest + safeBase + romFile.substr(romFile.find_last_of('.'));
-                                std::string romErr;
-                                if (remoteSyncDownload(host, token, c.remoteDir + romFile, romDest, romErr)) {
-                                    DebugLog::line("remote sync: ROM ricevuta %s -> %s", (c.remoteDir + romFile).c_str(), romDest.c_str());
-                                } else {
-                                    DebugLog::line("remote sync: ROM non ricevuta %s: %s", romFile.c_str(), romErr.c_str());
+                        }
+                        if (!romExists) {
+                            if (showConfirmDialog(i18n::get(StrKey::DevSyncAskRomTitle), i18n::fmt(StrKey::DevSyncAskRomBody, safeBase))) {
+                                std::vector<RemoteEntry> dirEntries;
+                                std::string listErr;
+                                if (remoteSyncListPath(host, token, c.remoteDir, dirEntries, listErr)) {
+                                    std::string romFile;
+                                    std::string wantBaseLower = safeBase;
+                                    for (char& ch : wantBaseLower) ch = (char)std::tolower((unsigned char)ch);
+                                    for (auto& e : dirEntries) {
+                                        if (e.isDir) continue;
+                                        if (remoteSyncIsSaveFileName(e.name)) continue;
+                                        std::string baseLower = e.name;
+                                        for (char& ch : baseLower) ch = (char)std::tolower((unsigned char)ch);
+                                        size_t dot = baseLower.find_last_of('.');
+                                        std::string baseOnly = (dot == std::string::npos) ? baseLower : baseLower.substr(0, dot);
+                                        if (baseOnly == wantBaseLower) { romFile = e.name; break; }
+                                    }
+                                    if (!romFile.empty()) {
+                                        std::string romDest = localDest + safeBase + romFile.substr(romFile.find_last_of('.'));
+                                        std::string romErr;
+                                        if (remoteSyncDownload(host, token, c.remoteDir + romFile, romDest, romErr)) {
+                                            DebugLog::line("remote sync: ROM ricevuta %s -> %s", (c.remoteDir + romFile).c_str(), romDest.c_str());
+                                        } else {
+                                            DebugLog::line("remote sync: ROM non ricevuta %s: %s", romFile.c_str(), romErr.c_str());
+                                        }
+                                    }
                                 }
                             }
                         }
