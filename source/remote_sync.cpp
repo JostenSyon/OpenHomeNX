@@ -59,6 +59,55 @@ size_t writeToFileRS(char* ptr, size_t size, size_t nmemb, void* userdata) {
     return std::fwrite(ptr, size, nmemb, fp);
 }
 
+// Token cache: JWT di Filebrowser valido 2h (exp - iat = 7200s). Evita di rifare
+// login ad ogni sync se siamo ancora connessi allo stesso host e il token non è scaduto.
+static std::string g_cachedHost;
+static std::string g_cachedToken;
+static long long g_cachedExp = 0; // unix timestamp da exp del JWT
+
+long long jwtExpFromToken(const std::string& token) {
+    size_t dot1 = token.find('.');
+    if (dot1 == std::string::npos) return 0;
+    size_t dot2 = token.find('.', dot1 + 1);
+    if (dot2 == std::string::npos) return 0;
+    std::string payloadB64 = token.substr(dot1 + 1, dot2 - dot1 - 1);
+    // base64url -> base64
+    for (char& ch : payloadB64) { if (ch == '-') ch = '+'; else if (ch == '_') ch = '/'; }
+    while (payloadB64.size() % 4) payloadB64 += '=';
+    // decodifica manuale base64 (evita dipendenze extra, usiamo solo exp)
+    auto b64val = [](char ch) -> int {
+        if ('A' <= ch && ch <= 'Z') return ch - 'A';
+        if ('a' <= ch && ch <= 'z') return ch - 'a' + 26;
+        if ('0' <= ch && ch <= '9') return ch - '0' + 52;
+        if (ch == '+') return 62;
+        if (ch == '/') return 63;
+        return -1;
+    };
+    std::string json;
+    for (size_t i = 0; i + 3 < payloadB64.size(); i += 4) {
+        int v0 = b64val(payloadB64[i]), v1 = b64val(payloadB64[i+1]), v2 = b64val(payloadB64[i+2]), v3 = b64val(payloadB64[i+3]);
+        if (v0 < 0 || v1 < 0) break;
+        json.push_back(char((v0 << 2) | (v1 >> 4)));
+        if (v2 >= 0) json.push_back(char(((v1 & 0xF) << 4) | (v2 >> 2)));
+        if (v3 >= 0) json.push_back(char(((v2 & 0x3) << 6) | v3));
+    }
+    auto p = json.find("\"exp\"");
+    if (p == std::string::npos) return 0;
+    p = json.find(':', p);
+    if (p == std::string::npos) return 0;
+    size_t s = p + 1; while (s < json.size() && (json[s] == ' ' || json[s] == '\t')) s++;
+    long long exp = 0;
+    while (s < json.size() && std::isdigit((unsigned char)json[s])) { exp = exp * 10 + (json[s] - '0'); s++; }
+    return exp;
+}
+
+bool isCachedTokenValid(const std::string& host) {
+    if (g_cachedHost != host || g_cachedToken.empty() || g_cachedExp == 0) return false;
+    // margine 5 minuti prima della scadenza
+    long long now = (long long)time(nullptr);
+    return g_cachedExp > now + 300;
+}
+
 // Timeout brevi apposta: e' LAN locale (stesso router), non GitHub -- se il
 // device non risponde in fretta meglio fallire subito che bloccare l'app
 // per il timeout lungo pensato per l'updater su internet.
@@ -247,7 +296,17 @@ bool remoteSyncLogin(const std::string& host, const std::string& user,
             outToken = trimmed.substr(1, trimmed.size() - 2);
     }
     if (outToken.empty()) { err = "risposta di login vuota"; return false; }
+    // Cache per riuso: evita login ad ogni sync se siamo ancora connessi allo stesso host
+    g_cachedHost = host;
+    g_cachedToken = outToken;
+    g_cachedExp = jwtExpFromToken(outToken);
+    DebugLog::line("remote sync: token cached for %s exp=%lld (valid %lld sec)", host.c_str(), g_cachedExp, g_cachedExp - (long long)time(nullptr));
     return true;
+}
+
+bool remoteSyncGetCachedToken(const std::string& host, std::string& outToken) {
+    if (isCachedTokenValid(host)) { outToken = g_cachedToken; return true; }
+    return false;
 }
 
 bool remoteSyncScanLan(const std::string& user, const std::string& pass,

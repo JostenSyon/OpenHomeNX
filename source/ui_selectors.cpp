@@ -5002,13 +5002,20 @@ bool UI::remoteSyncEnsureLogin(const std::string& title, std::string& host,
     bool ok = false;
 
     // 1) Host gia' noto (stesso device di prima): riprova diretto, e' il
-    //    caso comune -- zero attesa di scansione.
+    //    caso comune -- zero attesa di scansione. Se il token è ancora valido
+    //    (JWT 2h) lo riusiamo senza rifare login.
     if (!host.empty()) {
-        ok = remoteSyncLogin(host, user, pass, token, err);
-        if (!ok) {
-            DebugLog::line("remote sync: login FALLITO su host noto %s: %s", host.c_str(), err.c_str());
+        if (remoteSyncGetCachedToken(host, token)) {
+            ok = true;
+            DebugLog::line("remote sync: token cached riusato per %s (no login)", host.c_str());
         } else {
-            // Login ok ma potrebbe essere un altro device (router che risponde
+            ok = remoteSyncLogin(host, user, pass, token, err);
+            if (!ok) {
+                DebugLog::line("remote sync: login FALLITO su host noto %s: %s", host.c_str(), err.c_str());
+            }
+        }
+        if (ok) {
+            // Login ok (o token riusato) ma potrebbe essere un altro device (router che risponde
             // 200 con token fake) -- verifico subito che la root sia listabile,
             // altrimenti invalido e passo alla scansione (gestisce IP cambiato
             // es. 192.168.4.5 → 192.168.4.28).

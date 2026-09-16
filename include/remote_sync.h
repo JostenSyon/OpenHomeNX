@@ -116,6 +116,10 @@ void remoteSyncWorkerStart();
 // Pending per sempre.
 RemoteSyncWorkerResult remoteSyncWorkerPoll(std::string& outHost, std::string& outToken);
 
+// Cache token JWT (valido 2h): evita di rifare login ad ogni sync se siamo ancora
+// connessi allo stesso host e il token non è scaduto (con margine 5 min).
+bool remoteSyncGetCachedToken(const std::string& host, std::string& outToken);
+
 // Da chiamare al teardown (vedi autoUpdateJoin in main.cpp), prima di
 // smontare rete/USB: aspetta che il thread in background sia uscito. No-op
 // se il worker non e' mai partito (remote sync non configurato).
