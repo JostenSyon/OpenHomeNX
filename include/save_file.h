@@ -115,6 +115,10 @@ public:
     std::vector<GbaBagSlot> readGbaBag() const;
     // Scrive uno slot (set dirty). False se pocket/slot fuori range.
     bool writeGbaBagSlot(GbaBagPocket p, int slot, uint16_t id, uint16_t count);
+    // Flag evento Gen3 (FRLG/RSE) a SaveBlock1+0xEE0, 1 bit per flag (flag/8, flag%8).
+    // Per FRLG Aurora/Mistico imposta 0x2A7/0x84B e 0x2A8/0x84A, per Smeraldo ecc. vedi docs.
+    bool setGbaFlag(uint16_t flag);
+    bool isGbaFlagSet(uint16_t flag) const;
     // Chiave di sicurezza Gen3 (settore 0, trainer info): RS non la usa
     // (conteggi in chiaro), Emerald/FRLG la XORano su monete/gettoni/
     // conteggi zaino (Bulbapedia "Save data structure (Generation III)").

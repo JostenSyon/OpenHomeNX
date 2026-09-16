@@ -114,8 +114,18 @@ bool gift(SaveFile& sf, const std::string& basePath, const ItemDef& d,
           int qty, bool baseMode, std::string& msg) {
     if (!sf.gbaBagSupported()) { msg = "Borsa non supportata per questo gioco (solo RSE/FRLG)."; return false; }
     if (!gameOk(sf.gameType(), d)) { msg = d.name + " non valido per questo gioco."; return false; }
-    if (d.flag) {
-        msg = d.name + ": richiede anche il flag evento (non ancora implementato).";
+    // FRLG Aurora/Mistico: oltre all'oggetto in borsa serve anche il flag nave.
+    // SaveBlock1+0xEE0, 1 bit per flag. Per FRLG:
+    //  Aurora (371) -> 0x2A7 RECEIVED + 0x84B SHIP_BIRTH_ISLAND
+    //  Mistico (370) -> 0x2A8 RECEIVED + 0x84A SHIP_NAVEL_ROCK
+    // La Switch mette entrambi, facciamo uguale. Per Smeraldo/Rubino ecc. vedi docs.
+    bool needFlag = d.flag;
+    if (needFlag && isFRLG(sf.gameType()) && (d.id == 371 || d.id == 370)) {
+        // Non bloccare: gestiamo il flag qui sotto dopo aver messo l'oggetto in borsa
+        needFlag = false;
+    }
+    if (needFlag) {
+        msg = d.name + ": richiede anche il flag evento (non ancora implementato per questo gioco/oggetto).";
         return false;
     }
     SaveFile::GbaBagPocket target = baseMode ? SaveFile::GbaBagPocket::Key : canonPocket(d);
@@ -162,6 +172,12 @@ bool gift(SaveFile& sf, const std::string& basePath, const ItemDef& d,
             msg = "Scrittura slot fallita (abortito, ricontrolla).";
             return false;
         }
+    }
+    // Flag nave per FRLG Aurora/Mistico (SaveBlock1+0xEE0, vedi descrizione sopra)
+    if (isFRLG(sf.gameType()) && (d.id == 371 || d.id == 370)) {
+        if (d.id == 371) { sf.setGbaFlag(0x2A7); sf.setGbaFlag(0x84B); }
+        else if (d.id == 370) { sf.setGbaFlag(0x2A8); sf.setGbaFlag(0x84A); }
+        DebugLog::line("backpack: flag nave impostati per %s (%d)", d.name.c_str(), d.id);
     }
     // Giornale (best-effort: il regalo è già scritto, logga l'esito)
     auto jl = journalLoad(basePath);

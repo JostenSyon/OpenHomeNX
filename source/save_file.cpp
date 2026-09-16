@@ -2707,6 +2707,28 @@ bool SaveFile::writeGbaBagSlot(GbaBagPocket p, int slot, uint16_t id, uint16_t c
     return true;
 }
 
+bool SaveFile::isGbaFlagSet(uint16_t flag) const {
+    if (!gbaBagSupported()) return false;
+    uint8_t* sec1 = const_cast<SaveFile*>(this)->findGbaSectorData(1);
+    if (!sec1) return false;
+    constexpr int FLAGS_OFF = 0xEE0;
+    size_t off = FLAGS_OFF + (flag >> 3);
+    if (off >= GBA_SECTOR_USED) return false;
+    return (sec1[off] >> (flag & 7)) & 1;
+}
+
+bool SaveFile::setGbaFlag(uint16_t flag) {
+    if (!gbaBagSupported()) return false;
+    uint8_t* sec1 = findGbaSectorData(1);
+    if (!sec1) return false;
+    constexpr int FLAGS_OFF = 0xEE0;
+    size_t off = FLAGS_OFF + (flag >> 3);
+    if (off >= GBA_SECTOR_USED) return false;
+    sec1[off] |= (1u << (flag & 7));
+    dirty_ = true;
+    return true;
+}
+
 // --- Gen 4/5 (DS .sav dumps, PKHeX SAV4*/SAV5BW.cs) — read-only v1 ---
 
 // CRC16-CCITT-FALSE (poly 0x1021, init 0xFFFF, no xorout): PKHeX
