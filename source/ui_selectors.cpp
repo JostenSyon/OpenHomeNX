@@ -5005,8 +5005,20 @@ bool UI::remoteSyncEnsureLogin(const std::string& title, std::string& host,
     //    caso comune -- zero attesa di scansione.
     if (!host.empty()) {
         ok = remoteSyncLogin(host, user, pass, token, err);
-        if (!ok)
+        if (!ok) {
             DebugLog::line("remote sync: login FALLITO su host noto %s: %s", host.c_str(), err.c_str());
+        } else {
+            // Login ok ma potrebbe essere un altro device (router che risponde
+            // 200 con token fake) -- verifico subito che la root sia listabile,
+            // altrimenti invalido e passo alla scansione (gestisce IP cambiato
+            // es. 192.168.4.5 → 192.168.4.28).
+            std::vector<RemoteEntry> probeEntries;
+            std::string probeErr;
+            if (!remoteSyncListPath(host, token, "", probeEntries, probeErr)) {
+                DebugLog::line("remote sync: host noto %s login ok ma root non listabile (%s) → invalido, provo scansione", host.c_str(), probeErr.c_str());
+                ok = false;
+            }
+        }
     }
 
     // 2) Host sconosciuto o non risponde piu' (es. IP cambiato via DHCP):
