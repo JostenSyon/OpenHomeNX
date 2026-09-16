@@ -173,11 +173,29 @@ bool gift(SaveFile& sf, const std::string& basePath, const ItemDef& d,
             return false;
         }
     }
-    // Flag nave per FRLG Aurora/Mistico (SaveBlock1+0xEE0, vedi descrizione sopra)
-    if (isFRLG(sf.gameType()) && (d.id == 371 || d.id == 370)) {
-        if (d.id == 371) { sf.setGbaFlag(0x2A7); sf.setGbaFlag(0x84B); }
-        else if (d.id == 370) { sf.setGbaFlag(0x2A8); sf.setGbaFlag(0x84A); }
-        DebugLog::line("backpack: flag nave impostati per %s (%d)", d.name.c_str(), d.id);
+    // Flag nave/evento per FRLG e RSE/Smeraldo (SaveBlock1+0xEE0, 1 bit per flag).
+    // FRLG: Aurora 371 -> 0x2A7+0x84B, Mistico 370 -> 0x2A8+0x84A (entrambi insieme)
+    // Smeraldo: Aurora 371 0x13A+0x8D5, Mistico 370 0x13B+0x8E0, Old Sea Map/Mew 376 0x13C+0x8D6, Eone 0x8B3
+    // Rubino/Zaffiro: Eone Ticket 275 -> 0x853
+    if (d.id == 371 || d.id == 370 || d.id == 376 || d.id == 275) {
+        if (isFRLG(sf.gameType())) {
+            if (d.id == 371) { sf.setGbaFlag(0x2A7); sf.setGbaFlag(0x84B); }
+            else if (d.id == 370) { sf.setGbaFlag(0x2A8); sf.setGbaFlag(0x84A); }
+            // FRLG non ha 376/275 come evento nave, ma se regalati li mettiamo comunque in borsa
+            DebugLog::line("backpack: flag FRLG impostati per %s (%d)", d.name.c_str(), d.id);
+        } else if (sf.gameType() == GameType::EMERALD) {
+            if (d.id == 371) { sf.setGbaFlag(0x13A); sf.setGbaFlag(0x8D5); }
+            else if (d.id == 370) { sf.setGbaFlag(0x13B); sf.setGbaFlag(0x8E0); }
+            else if (d.id == 376) { sf.setGbaFlag(0x13C); sf.setGbaFlag(0x8D6); }
+            else if (d.id == 275) { /* Eon Ticket su Smeraldo è via Mystery Event, non 275 */ }
+            // Eone su Smeraldo è Mystery Event (non un item) -> 0x8B3, gestito altrove se serve
+            if (d.id == 371 || d.id == 370 || d.id == 376) DebugLog::line("backpack: flag Smeraldo impostati per %s (%d)", d.name.c_str(), d.id);
+        } else if (sf.gameType() == GameType::RUBY || sf.gameType() == GameType::SAPPHIRE) {
+            if (d.id == 275) { sf.setGbaFlag(0x853); DebugLog::line("backpack: flag Rubino/Zaffiro Eone impostato"); }
+            // Rubino/Zaffiro non hanno Aurora/Mistico come evento nave (sono Smeraldo/FRLG)
+        }
+        // Per Smeraldo Eone (Mystery Event) il flag è 0x8B3 SHIP_SOUTHERN — non è un item distributore,
+        // ma se in futuro aggiungiamo un item fittizio per quell'evento, basterà aggiungere qui.
     }
     // Giornale (best-effort: il regalo è già scritto, logga l'esito)
     auto jl = journalLoad(basePath);
