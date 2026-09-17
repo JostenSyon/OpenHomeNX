@@ -363,9 +363,42 @@ bool remoteSyncScanLan(const std::string& user, const std::string& pass,
     // hanno gia' superato probeTcpOpen (ARP gia' risolto), non su tutti i
     // 254 in parallelo come nel tentativo abbandonato in precedenza.
     bool foundOpenPort = false;
+
+    // Scorciatoia: se un host era gia' salvato su questa stessa subnet
+    // (stesso prefisso IP), provalo per primo fuori dal loop -- stesso
+    // identico controllo a due passi (fingerprint, poi login) di ogni altro
+    // host nel loop sotto, solo anticipato perche' e' il candidato piu'
+    // probabile. Se fallisce (device davvero spostato d'indirizzo), si
+    // ricade nel loop normale che lo esclude via "h == preferred" per non
+    // riprovarlo due volte.
+    int preferred = -1;
+    {
+        std::string savedHost = Settings::remoteSyncHost();
+        size_t prefixLen = std::strlen(prefix);
+        if (savedHost.size() > prefixLen && savedHost.compare(0, prefixLen, prefix) == 0) {
+            int val = std::atoi(savedHost.c_str() + prefixLen);
+            if (val >= 1 && val <= 254 && val != self) preferred = val;
+        }
+    }
+    if (preferred != -1) {
+        std::string host = std::string(prefix) + std::to_string(preferred);
+        if (probeTcpOpen(host, 80, 150)) {
+            foundOpenPort = true;
+            std::string body;
+            if (fetchFingerprintBody(host, body) && body.find("window.FileBrowser") != std::string::npos) {
+                std::string loginErr, token;
+                if (remoteSyncLogin(host, user, pass, token, loginErr)) {
+                    outHost = host;
+                    outToken = token;
+                    return true;
+                }
+            }
+        }
+    }
+
     double lastProgressEmit = 0.0;
     for (int h = 1; h <= 254; h++) {
-        if (h == self) continue;
+        if (h == self || h == preferred) continue;
         // Controllo annullamento con B (Switch B = SDL A) durante la scansione
         {
             SDL_Event ev;
@@ -396,7 +429,7 @@ bool remoteSyncScanLan(const std::string& user, const std::string& pass,
             }
         }
         std::string host = std::string(prefix) + std::to_string(h);
-        if (!probeTcpOpen(host, 80, 250)) continue;
+        if (!probeTcpOpen(host, 80, 150)) continue;
         foundOpenPort = true;
         std::string body;
         if (!fetchFingerprintBody(host, body) || body.find("window.FileBrowser") == std::string::npos) {
