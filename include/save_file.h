@@ -125,6 +125,20 @@ public:
     // Ritorna solo i 16 bit bassi (quelli usati per gli item), 0 se non serve.
     uint16_t gbaSecurityKeyLow16() const;
 
+    // Borsa Gen4/5 DS (PKHeX PlayerBag4DP/4Pt/4HGSS/5BW/5B2W2). Slot da 4B
+    // {id u16 LE, count u16 LE}, in chiaro (niente XOR). Gen4: base relativa
+    // al blocco General della partizione attiva (dsPart_); Gen5: blocco 25
+    // fisso 0x18400. Slot gestiti = liste legali PKHeX (padding preservato,
+    // mai toccato); CRC sistemati da saveDS4/saveDS5.
+    enum class DsBagPocket { Items = 0, Key, TmHm, Mail, Medicine, Berries, Balls, Battle, Count };
+    struct DsBagSlot { DsBagPocket pocket; int slot; uint16_t id; uint16_t count; };
+    bool dsBagSupported() const;
+    int dsBagPocketSlots(DsBagPocket p) const; // 0 se non supportato (es. Mail su Gen5)
+    // Tutti gli slot gestiti (anche vuoti id==0) per lettura/scansione.
+    std::vector<DsBagSlot> readDsBag() const;
+    // Scrive uno slot (set dirty). False se pocket/slot fuori range.
+    bool writeDsBagSlot(DsBagPocket p, int slot, uint16_t id, uint16_t count);
+
     // Get trainer info from save file (SV/ZA only, SCBlock-based)
     TrainerInfo getTrainerInfo() const;
 
@@ -324,6 +338,7 @@ private:
     bool loadDS4(const std::string& path);
     bool saveDS4(const std::string& path);
     bool loadDS5(const std::string& path);
+    bool saveDS5(const std::string& path);
     // Gen 6/7 (decrypted 3DS dumps, Citra/Checkpoint style; cartridge-encrypted
     // dumps are rejected explicitly). Flat images without checksums: writable.
     bool loadDXY(const std::string& path);
@@ -333,6 +348,9 @@ private:
     std::vector<uint8_t> dsStorage_;
     Ds4Layout ds4Layout_ = Ds4Layout::DP;
     int dsPart_ = 0; // active Gen4 partition picked by loadDS4
+    // Inizio regione borsa DS nei dati grezzi (assoluto in rawData_), o -1 se
+    // gioco/layout incoerenti (mai scrivere all'offset sbagliato).
+    long dsBagBase() const;
     uint8_t dsRomCode_ = 0;
     uint8_t dsGameByte_ = 0;
     std::vector<Pokemon> dsParty_;

@@ -181,10 +181,9 @@ int findCounterpartInParty(const SaveFile& save, int excludeIdx, uint16_t needed
 }
 
 bool supported(GameType g) {
-    // Scrivibili e verificati: GB, GBA, DS4, XY/SM, LGPE, Switch (SwSh/BDSP/LA/SV/ZA)
-    // Gen5 resta esclusa finché saveDS5 è read-only (save.cpp:137).
+    // Scrivibili e verificati: GB, GBA, DS4, DS5, XY/SM, LGPE, Switch (SwSh/BDSP/LA/SV/ZA)
     if (isGen1File(g) || isGen2File(g) || isFRLG(g) || isImportedFile(g)) return true;
-    if (isGen4File(g)) return true;
+    if (isGen4File(g) || isGen5File(g)) return true;
     if (isGen6XY(g) || isGen7SM(g) || isLGPE(g)) return true;
     if (isSwSh(g) || isBDSP(g) || isSV(g) || g == GameType::LA || g == GameType::ZA) return true;
     return false;

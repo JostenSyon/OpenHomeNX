@@ -803,11 +803,7 @@ void UI::handleNormalInput(const SDL_Event& event) {
 bool UI::canEditParty() const {
     if (!save_.isLoaded())
         return false;
-    // Gen5: save intero read-only (footer CRC a blocchi) — editarne il party
-    // in memoria per poi fallire il save sarebbe perdita mascherata da edit.
-    if (isGen5File(save_.gameType()))
-        return false;
-    // Tutte le altre famiglie (incl. GB/GBC con write-back): solo con debug
+    // Tutte le famiglie (incl. GB/GBC/DS con write-back): solo con debug
     // attivo (toggle dedicato in futuro).
     return DebugLog::enabled();
 }

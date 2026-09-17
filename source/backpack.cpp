@@ -91,6 +91,11 @@ bool loadDefs(const std::string& jsonPath, std::vector<ItemDef>& out, std::strin
         d.ruby = e.value("ruby", false);
         d.emerald = e.value("emerald", false);
         d.frlg = e.value("frlg", false);
+        d.dp = e.value("dp", false);
+        d.pt = e.value("pt", false);
+        d.hgss = e.value("hgss", false);
+        d.bw = e.value("bw", false);
+        d.b2w2 = e.value("b2w2", false);
         d.flag = e.value("flag", false);
         if (d.id <= 0 || d.name.empty() || d.max < 1) continue; // riga sporca: salta, mai fidarsi
         out.push_back(d);
@@ -103,7 +108,12 @@ bool gameOk(GameType g, const ItemDef& d) {
     if (g == GameType::RUBY || g == GameType::SAPPHIRE) return d.ruby;
     if (g == GameType::EMERALD) return d.emerald;
     if (isFRLG(g)) return d.frlg;
-    return false; // solo Gen3 GBA
+    if (g == GameType::DIAMOND || g == GameType::PEARL) return d.dp;
+    if (g == GameType::PLATINUM) return d.pt;
+    if (g == GameType::HEARTGOLD || g == GameType::SOULSILVER) return d.hgss;
+    if (g == GameType::BLACK || g == GameType::WHITE) return d.bw;
+    if (g == GameType::BLACK2 || g == GameType::WHITE2) return d.b2w2;
+    return false; // solo GBA Gen3 + DS Gen4/5
 }
 
 SaveFile::GbaBagPocket canonPocket(const ItemDef& d) {
@@ -380,6 +390,237 @@ bool fixAnomaly(SaveFile& sf, const Anomaly& a, const std::vector<ItemDef>& defs
         for (auto& p : plan)
             if (!sf.writeGbaBagSlot(p.p, p.s, a.id, p.q)) { msg = "Scrittura fallita a metà: ricontrolla."; return false; }
         msg = "Spostato nel pocket " + pocketToStr(dst) + " (ora consumabile).";
+        return true;
+    }
+    msg = "Tipo anomalia ignoto.";
+    return false;
+}
+
+// --- Zaino DS (Gen4/5): stesso contratto del Gen3, su readDsBag/writeDsBagSlot.
+// Tasche Mail/Med/Battle esistono solo qui (pocket 0-slot = tasca assente).
+const ItemDef* dsFindDef(GameType g, const std::vector<ItemDef>& defs, int id) {
+    for (auto& d : defs)
+        if (d.id == id && gameOk(g, d)) return &d;
+    return nullptr;
+}
+
+SaveFile::DsBagPocket dsCanonPocket(const ItemDef& d) {
+    return dsPocketFromStr(d.pocket);
+}
+
+std::string dsPocketToStr(SaveFile::DsBagPocket p) {
+    using P = SaveFile::DsBagPocket;
+    switch (p) {
+        case P::Key: return "key";
+        case P::Balls: return "balls";
+        case P::TmHm: return "tm";
+        case P::Mail: return "mail";
+        case P::Medicine: return "med";
+        case P::Berries: return "berries";
+        case P::Battle: return "battle";
+        default: return "items"; // Items (+ Count, fallback mai usato)
+    }
+}
+
+SaveFile::DsBagPocket dsPocketFromStr(const std::string& p) {
+    using P = SaveFile::DsBagPocket;
+    if (p == "key") return P::Key;
+    if (p == "balls") return P::Balls;
+    if (p == "tm") return P::TmHm;
+    if (p == "mail") return P::Mail;
+    if (p == "med") return P::Medicine;
+    if (p == "berries") return P::Berries;
+    if (p == "battle") return P::Battle;
+    return P::Items;
+}
+
+bool dsGift(SaveFile& sf, const std::string& basePath, const ItemDef& d,
+            int qty, bool baseMode, std::string& msg) {
+    if (!sf.dsBagSupported()) { msg = "Borsa non supportata per questo gioco (solo Gen3/DS)."; return false; }
+    if (!gameOk(sf.gameType(), d)) { msg = d.name + " non valido per questo gioco."; return false; }
+    if (d.flag) {
+        // DB DS v1: mai true (niente flag evento inventati). Se mai lo diventa,
+        // rifiuto esplicito come il path Gen3, mai scrittura monca.
+        msg = d.name + ": richiede anche il flag evento (non ancora implementato per questo gioco/oggetto).";
+        return false;
+    }
+    SaveFile::DsBagPocket target = baseMode ? SaveFile::DsBagPocket::Key : dsCanonPocket(d);
+    int want = baseMode ? 1 : qty;
+    if (want < 1) want = 1;
+    if (want > d.max) want = d.max;
+    auto slots = sf.readDsBag();
+    if (slots.empty()) { msg = "Borsa illeggibile."; return false; }
+    if (baseMode) {
+        for (auto& s : slots)
+            if (s.pocket == target && s.id == d.id) {
+                msg = d.name + " già protetto nei Key Items.";
+                return false;
+            }
+    }
+    // La tasca canonica potrebbe non esistere per questo gioco (es. Mail su
+    // Gen5: 0 slot): niente scrittura nel vuoto, esplicito.
+    bool pocketHere = false;
+    for (auto& s : slots)
+        if (s.pocket == target) { pocketHere = true; break; }
+    if (!pocketHere) { msg = d.name + ": tasca assente in questo gioco."; return false; }
+    struct Plan { int idx; uint16_t setQty; };
+    std::vector<Plan> plan;
+    int rest = want;
+    if (!baseMode) {
+        for (size_t i = 0; i < slots.size() && rest > 0; i++) {
+            if (slots[i].pocket != target || slots[i].id != (uint16_t)d.id) continue;
+            int room = d.max - slots[i].count;
+            if (room <= 0) continue;
+            int put = (rest < room) ? rest : room;
+            plan.push_back({(int)i, (uint16_t)(slots[i].count + put)});
+            rest -= put;
+        }
+    }
+    for (size_t i = 0; i < slots.size() && rest > 0; i++) {
+        if (slots[i].pocket != target || slots[i].id != 0) continue;
+        int put = (rest < d.max) ? rest : d.max;
+        plan.push_back({(int)i, (uint16_t)put});
+        rest -= put;
+    }
+    if (rest > 0) {
+        msg = "Borsa piena nel pocket " + dsPocketToStr(target) + " (mancano " +
+              std::to_string(rest) + "): niente scritto.";
+        return false;
+    }
+    for (auto& p : plan) {
+        if (!sf.writeDsBagSlot(slots[p.idx].pocket, slots[p.idx].slot, (uint16_t)d.id, p.setQty)) {
+            msg = "Scrittura slot fallita (abortito, ricontrolla).";
+            return false;
+        }
+    }
+    auto jl = journalLoad(basePath);
+    JournalEntry je;
+    je.game = gameKey(sf.gameType());
+    je.item = d.id;
+    je.qty = want;
+    je.pocket = dsPocketToStr(target);
+    je.ts = (long)std::time(nullptr);
+    jl.push_back(je);
+    if (!journalSave(basePath, jl))
+        DebugLog::line("backpack: giornale non salvato (regalo ok)");
+    char buf[160];
+    std::snprintf(buf, sizeof(buf), "%s x%d nel pocket %s%s.", d.name.c_str(), want,
+                  dsPocketToStr(target).c_str(), baseMode ? " (protetto)" : "");
+    msg = buf;
+    return true;
+}
+
+bool dsTakeBack(SaveFile& sf, const std::string& basePath, GameType g,
+                int itemId, const std::string& pocket, std::string& msg) {
+    if (!sf.dsBagSupported()) { msg = "Borsa non supportata per questo gioco."; return false; }
+    std::string gk = gameKey(g);
+    auto jl = journalLoad(basePath);
+    int recorded = 0;
+    for (auto& e : jl)
+        if (e.game == gk && e.item == itemId && e.pocket == pocket) recorded += e.qty;
+    if (recorded <= 0) { msg = "Mai regalato da qui in questa modalita' (giornale vuoto per questa voce)."; return false; }
+    SaveFile::DsBagPocket targetPocket = dsPocketFromStr(pocket);
+    auto slots = sf.readDsBag();
+    int rest = recorded, removed = 0;
+    for (auto& s : slots) {
+        if (rest <= 0) break;
+        if (s.id != itemId || s.pocket != targetPocket) continue;
+        int take = (s.count < rest) ? s.count : rest;
+        int left = s.count - take;
+        if (!sf.writeDsBagSlot(s.pocket, s.slot, left > 0 ? (uint16_t)itemId : 0, (uint16_t)left))
+            { msg = "Scrittura slot fallita."; return false; }
+        rest -= take;
+        removed += take;
+    }
+    int dec = removed;
+    for (auto it = jl.begin(); it != jl.end() && dec > 0;) {
+        if (it->game == gk && it->item == itemId && it->pocket == pocket) {
+            int cut = (it->qty < dec) ? it->qty : dec;
+            it->qty -= cut;
+            dec -= cut;
+            if (it->qty <= 0) it = jl.erase(it);
+            else ++it;
+        } else ++it;
+    }
+    journalSave(basePath, jl);
+    char buf[192];
+    if (rest > 0)
+        std::snprintf(buf, sizeof(buf), "Tolti %d (di %d): %d già usati o spostati.", removed, recorded, rest);
+    else
+        std::snprintf(buf, sizeof(buf), "Tolti %d.", removed);
+    msg = buf;
+    return removed > 0;
+}
+
+std::vector<DsAnomaly> dsScanBag(SaveFile& sf, const std::vector<ItemDef>& defs) {
+    std::vector<DsAnomaly> out;
+    if (!sf.dsBagSupported()) return out;
+    for (auto& s : sf.readDsBag()) {
+        if (s.id == 0) {
+            if (s.count != 0) out.push_back({s.pocket, s.slot, 0, s.count, "invalid"});
+            continue;
+        }
+        const ItemDef* d = dsFindDef(sf.gameType(), defs, s.id);
+        if (!d) {
+            out.push_back({s.pocket, s.slot, s.id, s.count, "invalid"});
+            continue;
+        }
+        if (s.count == 0)
+            out.push_back({s.pocket, s.slot, s.id, 0, "invalid"});
+        else if ((int)s.count > d->max)
+            out.push_back({s.pocket, s.slot, s.id, s.count, "over-max"});
+        else if (dsPocketFromStr(d->pocket) != s.pocket)
+            out.push_back({s.pocket, s.slot, s.id, s.count, "protected"});
+    }
+    return out;
+}
+
+bool dsFixAnomaly(SaveFile& sf, const DsAnomaly& a, const std::vector<ItemDef>& defs,
+                  std::string& msg) {
+    if (!sf.dsBagSupported()) { msg = "Borsa non supportata."; return false; }
+    if (a.kind == "invalid") {
+        if (!sf.writeDsBagSlot(a.pocket, a.slot, 0, 0)) { msg = "Scrittura fallita."; return false; }
+        msg = "Slot svuotato.";
+        return true;
+    }
+    const ItemDef* d = nullptr;
+    for (auto& dd : defs)
+        if (dd.id == a.id && gameOk(sf.gameType(), dd)) { d = &dd; break; }
+    if (!d) { msg = "Voce ignota."; return false; }
+    if (a.kind == "over-max") {
+        int q = a.count > d->max ? d->max : a.count;
+        if (q < 1) q = 1;
+        if (!sf.writeDsBagSlot(a.pocket, a.slot, a.id, (uint16_t)q)) { msg = "Scrittura fallita."; return false; }
+        msg = "Clampato a " + std::to_string(q) + " (max " + d->name + ").";
+        return true;
+    }
+    if (a.kind == "protected") {
+        SaveFile::DsBagPocket dst = dsCanonPocket(*d);
+        auto slots = sf.readDsBag();
+        int rest = a.count;
+        struct Plan { SaveFile::DsBagPocket p; int s; uint16_t q; };
+        std::vector<Plan> plan;
+        for (auto& sl : slots) {
+            if (rest <= 0) break;
+            if (sl.pocket != dst || sl.id != a.id) continue;
+            int room = d->max - sl.count;
+            if (room <= 0) continue;
+            int put = rest < room ? rest : room;
+            plan.push_back({dst, sl.slot, (uint16_t)(sl.count + put)});
+            rest -= put;
+        }
+        for (auto& sl : slots) {
+            if (rest <= 0) break;
+            if (sl.pocket != dst || sl.id != 0) continue;
+            int put = rest < d->max ? rest : d->max;
+            plan.push_back({dst, sl.slot, (uint16_t)put});
+            rest -= put;
+        }
+        if (rest > 0) { msg = "Pocket canonico pieno: niente spostato."; return false; }
+        if (!sf.writeDsBagSlot(a.pocket, a.slot, 0, 0)) { msg = "Scrittura fallita."; return false; }
+        for (auto& p : plan)
+            if (!sf.writeDsBagSlot(p.p, p.s, a.id, p.q)) { msg = "Scrittura fallita a metà: ricontrolla."; return false; }
+        msg = "Spostato nel pocket " + dsPocketToStr(dst) + " (ora consumabile).";
         return true;
     }
     msg = "Tipo anomalia ignoto.";

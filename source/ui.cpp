@@ -1335,8 +1335,9 @@ void UI::selectGame(GameType game, int occurrence) {
             // through this same file (SaveFile::load()/save() already route
             // GBA through loadGBA()/saveGBA(), GB through loadGB()/saveGB()
             // and GBC through loadGBC()/saveGBC), so GBA writes
-            // land directly on the user's own emulator save. DS/3DS are
-            // read-only v1 (SaveFile::save refuses explicitly).
+            // land directly on the user's own emulator save. Tutte le famiglie
+            // file-backed sono scrivibili (GB/GBC/GBA/DS/3DS con write-back +
+            // CRC ricalcolati dove servono).
             savePath_ = importedSavePath(game, occurrence);
             if (savePath_.empty()) {
                 showMessageAndWait(i18n::get(StrKey::MountError), i18n::get(StrKey::FailedMountSave));
@@ -1541,8 +1542,8 @@ bool UI::persistGameSaveIfDirty() {
     }
     if (ok) galInvalidateParty(selectedGame_); // preview galleria da ricaricare
     ledOff();
-    // Mai fallimento silenzioso: i save read-only v1 (DS/3DS) e gli errori IO
-    // tornano false — l'utente deve saperlo, i dati in memoria restano intatti.
+    // Mai fallimento silenzioso: gli errori IO tornano false — l'utente deve
+    // saperlo, i dati in memoria restano intatti.
     // (Il fallimento IO non annulla il flusso chiamante: come prima.)
     if (!ok)
         showMessageAndWait(i18n::get(StrKey::SaveFailedTitle),

@@ -462,5 +462,11 @@
     "bp_tab_mn": "MN",
     "bp_tab_cons": "Consum.",
     "bp_tab_special": "Str.Base",
+    "bp_mail": "Posta",
+    "bp_med": "Med",
+    "bp_battle": "Lotta",
+    "bp_tab_mail": "Posta",
+    "bp_tab_med": "Med",
+    "bp_tab_battle": "Lotta",
     "bp_owned": "Posseduto"
 }

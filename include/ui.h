@@ -552,15 +552,14 @@ private:
     // li salta) - vedi backpackLeftStep/backpackBagStep.
     struct BackpackLeftRow { bool header = false; int idx = 0; int pocket = -1; };
     std::vector<BackpackLeftRow> backpackLeft_;
-    std::vector<SaveFile::GbaBagSlot> backpackGameBag_; // slot non vuoti dello scratch
+    std::vector<SaveFile::GbaBagSlot> backpackGameBag_; // slot non vuoti dello scratch (GBA)
+    std::vector<SaveFile::DsBagSlot> backpackGameBagDs_; // idem DS (Gen4/5)
+    bool backpackBagIsDs_ = false; // destra/audit leggono i vettori DS invece dei GBA
     int backpackLeftCursor_ = 0, backpackLeftScroll_ = 0;
-    // Tab categoria del catalogo (0=Sfere,1=MN,2=MT,3=Consumabili,
-    // 4=Speciali,5=Bacche): con ~300 voci per gioco (es. Emerald)
-    // un'unica lista era impraticabile da scorrere, richiesta esplicita
-    // di dividerla come nel gioco vero. MN prima di MT (nel gioco le
-    // Macchine Nascoste vengono prima). ZL/ZR la cambiano (vedi
-    // handleBackpackInput), sempre attiva a prescindere dal fuoco
-    // visto che il catalogo e' sempre visibile.
+    // Tab categoria del catalogo. GBA: 0=Sfere,1=MN,2=MT,3=Consumabili,
+    // 4=Speciali,5=Bacche. Gen4: +6=Posta,7=Med,8=Lotta. Gen5: senza Sfere
+    // (le sfere stanno negli Strumenti): 0=MN,1=MT,2=Consumabili,3=Speciali,
+    // 4=Bacche,5=Med. Vedi bpTabCount/bpCatTabFor/bpCatTabKey in ui_backpack.
     int backpackCatTab_ = 0;
     bool backpackZlHeld_ = false, backpackZrHeld_ = false; // edge-detect ZL/ZR
     // Destra a gioco scelto: righe dello zaino VERO (al posto della
@@ -570,6 +569,7 @@ private:
     int backpackQty_ = 1;
     bool backpackBaseMode_ = false;
     std::vector<Backpack::Anomaly> backpackAnoms_;
+    std::vector<Backpack::DsAnomaly> backpackDsAnoms_;
     std::vector<Backpack::JournalRow> backpackJournal_; // regali (audit): una riga per {item, pocket}
     int backpackAuditCursor_ = 0, backpackAuditScroll_ = 0;
     SaveFile backpackSave_;          // scratch

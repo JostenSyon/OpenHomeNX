@@ -462,5 +462,11 @@
     "bp_tab_mn": "HM",
     "bp_tab_cons": "Consum.",
     "bp_tab_special": "KeyItm.",
+    "bp_mail": "Mail",
+    "bp_med": "Med",
+    "bp_battle": "Battle",
+    "bp_tab_mail": "Mail",
+    "bp_tab_med": "Med",
+    "bp_tab_battle": "Battle",
     "bp_owned": "Owned"
 }

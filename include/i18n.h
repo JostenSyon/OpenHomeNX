@@ -317,11 +317,17 @@ namespace StrKey {
     constexpr const char* BpBalls         = "bp_balls";
     constexpr const char* BpTm            = "bp_tm";
     constexpr const char* BpBerries       = "bp_berries";
+    constexpr const char* BpMail          = "bp_mail";
+    constexpr const char* BpMed           = "bp_med";
+    constexpr const char* BpBattle        = "bp_battle";
     constexpr const char* BpTabBalls      = "bp_tab_balls";
     constexpr const char* BpTabMt         = "bp_tab_mt";
     constexpr const char* BpTabMn         = "bp_tab_mn";
     constexpr const char* BpTabCons       = "bp_tab_cons";
     constexpr const char* BpTabSpecial    = "bp_tab_special";
+    constexpr const char* BpTabMail       = "bp_tab_mail";
+    constexpr const char* BpTabMed        = "bp_tab_med";
+    constexpr const char* BpTabBattle     = "bp_tab_battle";
     constexpr const char* BpOwned         = "bp_owned";
     constexpr const char* SetFooterSlider = "set_footer_slider";
     constexpr const char* ImportFoundTitle     = "import_found_title";

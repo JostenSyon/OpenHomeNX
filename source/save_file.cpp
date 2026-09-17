@@ -134,14 +134,8 @@ bool SaveFile::save(const std::string& path) {
         ok = saveDXY(path);
     else if (isGen7SM(gameType_))
         ok = saveDSM(path);
-    else if (isGen5File(gameType_)) {
-        // Gen5 stays read-only: BW/B2W2 saves carry per-block CRC footers via
-        // a block map this loader doesn't parse — writing slots without fixing
-        // them risks a save the game rejects, with no backup copy on cart.
-        // Explicit failure, never silent.
-        DebugLog::line("save: Gen5 read-only v1, rifiuto scrittura %s", path.c_str());
-        ok = false;
-    }
+    else if (isGen5File(gameType_))
+        ok = saveDS5(path);
     else if (isFRLG(gameType_) || isImportedFile(gameType_))
         ok = saveGBA(path);
     else if (isBDSP(gameType_))
@@ -2729,7 +2723,126 @@ bool SaveFile::setGbaFlag(uint16_t flag) {
     return true;
 }
 
-// --- Gen 4/5 (DS .sav dumps, PKHeX SAV4*/SAV5BW.cs) — read-only v1 ---
+// --- Borsa Gen4/5 DS ---
+// Layout PKHeX PlayerBag4DP/4Pt/4HGSS/5BW/5B2W2: offset tasca (relativi alla
+// base borsa) + slot gestiti (= liste legali ItemStorage, vedi
+// tools/gen_items_gen45.py). Base Gen4 relativa al General della partizione
+// attiva, Gen5 assoluta (blocco 25). Validato byte a byte sulle fixture
+// tools/test save/upstream/oh_*.sav (bad_id=0 over_max=0 ovunque).
+namespace {
+struct DsBagLayout { int base; int off[8]; int slots[8]; };
+// Tabella borsa dal GIOCO (non dal layout rilevato): detectDSVersion distingue
+// Pt/HGSS dai byte, solo il tie D/P e' da filename — e D/P condividono la tabella.
+// Se il layout rilevato contraddice il gioco, niente tabella (mai scrivere
+// all'offset sbagliato): esplicito, mai silenzioso.
+bool dsBagLayoutFor(GameType g, SaveFile::Ds4Layout l4, DsBagLayout& out) {
+    auto layoutOk = [&]() -> bool {
+        switch (l4) {
+            case SaveFile::Ds4Layout::DP: return g == GameType::DIAMOND || g == GameType::PEARL;
+            case SaveFile::Ds4Layout::PT: return g == GameType::PLATINUM;
+            case SaveFile::Ds4Layout::HGSS: return g == GameType::HEARTGOLD || g == GameType::SOULSILVER;
+        }
+        return false;
+    };
+    if (g == GameType::DIAMOND || g == GameType::PEARL) {
+        if (!layoutOk()) return false;
+        out = {0x624,
+               {0x000, 0x294, 0x35C, 0x4EC, 0x51C, 0x5BC, 0x6BC, 0x6F8},
+               {161, 37, 100, 12, 38, 64, 15, 13}};
+        return true;
+    }
+    if (g == GameType::PLATINUM) {
+        if (!layoutOk()) return false;
+        out = {0x630,
+               {0x000, 0x294, 0x35C, 0x4EC, 0x51C, 0x5BC, 0x6BC, 0x6F8},
+               {162, 40, 100, 12, 38, 64, 15, 13}};
+        return true;
+    }
+    if (g == GameType::HEARTGOLD || g == GameType::SOULSILVER) {
+        if (!layoutOk()) return false;
+        out = {0x644,
+               {0x000, 0x294, 0x35C, 0x4F0, 0x520, 0x5C0, 0x6C0, 0x720},
+               {162, 38, 100, 12, 38, 64, 24, 13}};
+        return true;
+    }
+    if (g == GameType::BLACK || g == GameType::WHITE ||
+        g == GameType::BLACK2 || g == GameType::WHITE2) {
+        const bool b2w2 = (g == GameType::BLACK2 || g == GameType::WHITE2);
+        out = {0x18400, // blocco 25, uguale BW/B2W2
+               {0x000, 0x4D8, 0x624, 0, 0x7D8, 0x898, 0, 0},
+               {261, b2w2 ? 27 : 19, 101, 0, 47, 64, 0, 0}};
+        return true;
+    }
+    return false;
+}
+} // namespace
+
+// Inizio regione borsa nei dati grezzi (assoluto in rawData_), o -1.
+long SaveFile::dsBagBase() const {
+    DsBagLayout L;
+    if (!dsBagLayoutFor(gameType_, ds4Layout_, L)) return -1;
+    if (isGen4File(gameType_)) {
+        if (dsPart_ < 0 || dsPart_ > 1) return -1;
+        return static_cast<long>(dsPart_) * DS_PARTITION + L.base;
+    }
+    return L.base; // Gen5: blocco 25 fisso
+}
+
+bool SaveFile::dsBagSupported() const {
+    if (!loaded_) return false;
+    return dsBagBase() >= 0;
+}
+
+int SaveFile::dsBagPocketSlots(DsBagPocket p) const {
+    DsBagLayout L;
+    if (!dsBagLayoutFor(gameType_, ds4Layout_, L)) return 0;
+    int i = static_cast<int>(p);
+    if (i < 0 || i >= 8) return 0;
+    return L.slots[i];
+}
+
+std::vector<SaveFile::DsBagSlot> SaveFile::readDsBag() const {
+    std::vector<DsBagSlot> out;
+    if (!loaded_) return out;
+    DsBagLayout L;
+    if (!dsBagLayoutFor(gameType_, ds4Layout_, L)) return out;
+    long base = dsBagBase();
+    if (base < 0) return out;
+    for (int p = 0; p < 8; p++) {
+        for (int s = 0; s < L.slots[p]; s++) {
+            size_t o = static_cast<size_t>(base) + static_cast<size_t>(L.off[p]) +
+                       static_cast<size_t>(s) * 4;
+            if (o + 4 > rawData_.size()) return out;
+            DsBagSlot e;
+            e.pocket = static_cast<DsBagPocket>(p);
+            e.slot = s;
+            e.id = readU16LE(rawData_.data() + o);
+            e.count = readU16LE(rawData_.data() + o + 2);
+            out.push_back(e);
+        }
+    }
+    return out;
+}
+
+bool SaveFile::writeDsBagSlot(DsBagPocket p, int slot, uint16_t id, uint16_t count) {
+    if (!loaded_) return false;
+    DsBagLayout L;
+    if (!dsBagLayoutFor(gameType_, ds4Layout_, L)) return false;
+    int i = static_cast<int>(p);
+    if (i < 0 || i >= 8) return false;
+    if (slot < 0 || slot >= L.slots[i]) return false;
+    long base = dsBagBase();
+    if (base < 0) return false;
+    size_t o = static_cast<size_t>(base) + static_cast<size_t>(L.off[i]) +
+               static_cast<size_t>(slot) * 4;
+    if (o + 4 > rawData_.size()) return false;
+    writeU16LE(rawData_.data() + o, id);
+    writeU16LE(rawData_.data() + o + 2, count);
+    dirty_ = true; // CRC sistemati da saveDS4/saveDS5
+    return true;
+}
+
+// --- Gen 4/5 (DS .sav dumps, PKHeX SAV4*/SAV5BW.cs) ---
 
 // CRC16-CCITT-FALSE (poly 0x1021, init 0xFFFF, no xorout): PKHeX
 // Checksums.CRC16_CCITT, block checksum for Gen4/Gen5 saves. Verified
@@ -3121,6 +3234,193 @@ bool SaveFile::loadDS5(const std::string& path) {
     boxLayoutLen_ = 0;
     loaded_ = true;
     return true;
+}
+
+// Gen5 block map (PKHeX SaveBlockAccessor5BW / SaveBlockAccessor5B2W2):
+// {data offset, data length, checksum offset, checksum mirror}. Checksum =
+// CRC16-CCITT over [off, off+len), stored u16 LE at chk AND mirror
+// (PKHeX BlockInfoNDS). BW (Game 20/21) e B2W2 (22/23) condividono box,
+// party e testa — solo la coda della mappa cambia.
+struct Ds5Block { uint32_t off, len, chk, mirror; };
+// Blocchi fissi BW esclusi box 1..24 e nomi box (indice 0): in ordine PKHeX,
+// checksum-block per ultimo (i mirror ci scrivono dentro: va ricalcolato dopo).
+static constexpr Ds5Block DS5_FIXED_BW[] = {
+    {0x00000, 0x03E0, 0x003E2, 0x23F00}, // 00 nomi box
+    {0x18400, 0x09C0, 0x18DC2, 0x23F32}, // 25 zaino
+    {0x18E00, 0x0534, 0x19336, 0x23F34}, // 26 party
+    {0x19400, 0x0068, 0x1946A, 0x23F36}, // 27 trainer data
+    {0x19500, 0x009C, 0x1959E, 0x23F38}, // 28 posizione
+    {0x19600, 0x1338, 0x1A93A, 0x23F3A}, // 29 unity tower
+    {0x1AA00, 0x07C4, 0x1B1C6, 0x23F3C}, // 30 pal pad player
+    {0x1B200, 0x0D54, 0x1BF56, 0x23F3E}, // 31 pal pad friend
+    {0x1C000, 0x002C, 0x1C02E, 0x23F40}, // 32 skin info
+    {0x1C100, 0x0658, 0x1C75A, 0x23F42}, // 33 badge data
+    {0x1C800, 0x0A94, 0x1D296, 0x23F44}, // 34 mystery gift
+    {0x1D300, 0x01AC, 0x1D4AE, 0x23F46}, // 35 dream world
+    {0x1D500, 0x03EC, 0x1D8EE, 0x23F48}, // 36 chatter
+    {0x1D900, 0x005C, 0x1D95E, 0x23F4A}, // 37 adventure info
+    {0x1DA00, 0x01E0, 0x1DBE2, 0x23F4C}, // 38 record
+    {0x1DC00, 0x00A8, 0x1DCAA, 0x23F4E}, // 39 ???
+    {0x1DD00, 0x0460, 0x1E162, 0x23F50}, // 40 mail
+    {0x1E200, 0x1400, 0x1F602, 0x23F52}, // 41 overworld
+    {0x1F700, 0x02A4, 0x1F9A6, 0x23F54}, // 42 musical
+    {0x1FA00, 0x02DC, 0x1FCDE, 0x23F56}, // 43 forest/city
+    {0x1FD00, 0x034C, 0x2004E, 0x23F58}, // 44 IR
+    {0x20100, 0x03EC, 0x204EE, 0x23F5A}, // 45 event work
+    {0x20500, 0x00F8, 0x205FA, 0x23F5C}, // 46 GTS
+    {0x20600, 0x02FC, 0x208FE, 0x23F5E}, // 47 regulation
+    {0x20900, 0x0094, 0x20996, 0x23F60}, // 48 gimmick
+    {0x20A00, 0x035C, 0x20D5E, 0x23F62}, // 49 battle box
+    {0x20E00, 0x01CC, 0x20FCE, 0x23F64}, // 50 daycare
+    {0x21000, 0x0168, 0x2116A, 0x23F66}, // 51 boulder
+    {0x21200, 0x00EC, 0x212EE, 0x23F68}, // 52 badge/money
+    {0x21300, 0x01B0, 0x214B2, 0x23F6A}, // 53 entralink
+    {0x21500, 0x001C, 0x2151E, 0x23F6C}, // 54 ???
+    {0x21600, 0x04D4, 0x21AD6, 0x23F6E}, // 55 pokedex
+    {0x21B00, 0x0034, 0x21B36, 0x23F70}, // 56 encount
+    {0x21C00, 0x003C, 0x21C3E, 0x23F72}, // 57 subway play
+    {0x21D00, 0x01AC, 0x21EAE, 0x23F74}, // 58 subway score
+    {0x21F00, 0x0B90, 0x22A92, 0x23F76}, // 59 subway wifi
+    {0x22B00, 0x009C, 0x22B9E, 0x23F78}, // 60 online record
+    {0x22C00, 0x0850, 0x23452, 0x23F7A}, // 61 entralink forest
+    {0x23500, 0x0028, 0x2352A, 0x23F7C}, // 62 ???
+    {0x23600, 0x0284, 0x23886, 0x23F7E}, // 63 questions
+    {0x23900, 0x0010, 0x23912, 0x23F80}, // 64 unity tower
+    {0x23A00, 0x005C, 0x23A5E, 0x23F82}, // 65 battle institute
+    {0x23B00, 0x016C, 0x23C6E, 0x23F84}, // 66 ???
+    {0x23D00, 0x0040, 0x23D42, 0x23F86}, // 67 ???
+    {0x23E00, 0x00FC, 0x23EFE, 0x23F88}, // 68 ???
+    {0x23F00, 0x008C, 0x23F9A, 0x23F9A}, // 69 checksum (chk==mirror)
+};
+static constexpr Ds5Block DS5_FIXED_B2W2[] = {
+    {0x00000, 0x03E0, 0x003E2, 0x25F00}, // 00 nomi box
+    {0x18400, 0x09EC, 0x18DEE, 0x25F32}, // 25 zaino
+    {0x18E00, 0x0534, 0x19336, 0x25F34}, // 26 party
+    {0x19400, 0x00B0, 0x194B2, 0x25F36}, // 27 trainer data
+    {0x19500, 0x00A8, 0x195AA, 0x25F38}, // 28 posizione
+    {0x19600, 0x1338, 0x1A93A, 0x25F3A}, // 29 unity tower
+    {0x1AA00, 0x07C4, 0x1B1C6, 0x25F3C}, // 30 pal pad player
+    {0x1B200, 0x0D54, 0x1BF56, 0x25F3E}, // 31 pal pad friend
+    {0x1C000, 0x0094, 0x1C096, 0x25F40}, // 32 options/skin
+    {0x1C100, 0x0658, 0x1C75A, 0x25F42}, // 33 trainer card
+    {0x1C800, 0x0A94, 0x1D296, 0x25F44}, // 34 mystery gift
+    {0x1D300, 0x01AC, 0x1D4AE, 0x25F46}, // 35 dream world
+    {0x1D500, 0x03EC, 0x1D8EE, 0x25F48}, // 36 chatter
+    {0x1D900, 0x005C, 0x1D95E, 0x25F4A}, // 37 adventure
+    {0x1DA00, 0x01E0, 0x1DBE2, 0x25F4C}, // 38 record
+    {0x1DC00, 0x00A8, 0x1DCAA, 0x25F4E}, // 39 ???
+    {0x1DD00, 0x0460, 0x1E162, 0x25F50}, // 40 mail
+    {0x1E200, 0x1400, 0x1F602, 0x25F52}, // 41 overworld
+    {0x1F700, 0x02A4, 0x1F9A6, 0x25F54}, // 42 musical
+    {0x1FA00, 0x00E0, 0x1FAE2, 0x25F56}, // 43 forest/fused
+    {0x1FB00, 0x034C, 0x1FE4E, 0x25F58}, // 44 IR
+    {0x1FF00, 0x04E0, 0x203E2, 0x25F5A}, // 45 event work
+    {0x20400, 0x00F8, 0x204FA, 0x25F5C}, // 46 GTS
+    {0x20500, 0x02FC, 0x207FE, 0x25F5E}, // 47 regulation
+    {0x20800, 0x0094, 0x20896, 0x25F60}, // 48 gimmick
+    {0x20900, 0x035C, 0x20C5E, 0x25F62}, // 49 battle box
+    {0x20D00, 0x01D4, 0x20ED6, 0x25F64}, // 50 daycare
+    {0x20F00, 0x01E0, 0x210E2, 0x25F66}, // 51 boulder
+    {0x21100, 0x00F0, 0x211F2, 0x25F68}, // 52 misc
+    {0x21200, 0x01B4, 0x213B6, 0x25F6A}, // 53 entralink
+    {0x21400, 0x04DC, 0x218DE, 0x25F6C}, // 54 pokedex
+    {0x21900, 0x0034, 0x21936, 0x25F6E}, // 55 encount
+    {0x21A00, 0x003C, 0x21A3E, 0x25F70}, // 56 subway play
+    {0x21B00, 0x01AC, 0x21CAE, 0x25F72}, // 57 subway score
+    {0x21D00, 0x0B90, 0x22892, 0x25F74}, // 58 subway wifi
+    {0x22900, 0x00AC, 0x229AE, 0x25F76}, // 59 online record
+    {0x22A00, 0x0850, 0x23252, 0x25F78}, // 60 entralink forest
+    {0x23300, 0x0284, 0x23586, 0x25F7A}, // 61 questions
+    {0x23600, 0x0010, 0x23612, 0x25F7C}, // 62 unity tower
+    {0x23700, 0x00A8, 0x237AA, 0x25F7E}, // 63 battle institute/PWT
+    {0x23800, 0x016C, 0x2396E, 0x25F80}, // 64 ???
+    {0x23A00, 0x0080, 0x23A82, 0x25F82}, // 65 ???
+    {0x23B00, 0x00FC, 0x23BFE, 0x25F84}, // 66 hollow/rival
+    {0x23C00, 0x16A8, 0x252AA, 0x25F86}, // 67 join avenue
+    {0x25300, 0x0498, 0x2579A, 0x25F88}, // 68 medal
+    {0x25800, 0x0060, 0x25862, 0x25F8A}, // 69 key system
+    {0x25900, 0x00FC, 0x259FE, 0x25F8C}, // 70 festa
+    {0x25A00, 0x03E4, 0x25DE6, 0x25F8E}, // 71 pokestar
+    {0x25E00, 0x00F0, 0x25EF2, 0x25F90}, // 72 ???
+    {0x25F00, 0x0094, 0x25FA2, 0x25FA2}, // 73 checksum (chk==mirror)
+};
+
+bool SaveFile::saveDS5(const std::string& path) {
+    if (!loaded_ || rawData_.size() != DS_SAVE_SIZE || dsStorage_.empty())
+        return false;
+    if (dsGameByte_ < 20 || dsGameByte_ > 23)
+        return false;
+    const bool b2w2 = dsGameByte_ >= 22;
+
+    // 1. Box: dsStorage_ (mutato da setBoxSlot) nei 24 blocchi da 0x1000.
+    //    Gli slot occupano 0xFF0, il footer 0x10 resta finche' i CRC lo fissano.
+    static constexpr int BOXES = 24;
+    for (int b = 0; b < BOXES; b++)
+        for (int s = 0; s < DS_BOX_SLOTS; s++) {
+            size_t o = 0x400 + static_cast<size_t>(b) * 0x1000 +
+                       static_cast<size_t>(s) * DS_SLOT_SIZE;
+            const uint8_t* src = dsStorage_.data() +
+                (static_cast<size_t>(b) * DS_BOX_SLOTS + s) * DS_SLOT_SIZE;
+            std::memcpy(rawData_.data() + o, src, DS_SLOT_SIZE);
+        }
+
+    // 2. Party: compattato, count + 6x220 cifrati (stessi byte del loader).
+    {
+        std::vector<Pokemon> team;
+        for (auto& pp : dsParty_)
+            if (!pp.isEmpty() && pp.species() != 0) team.push_back(pp);
+        if (team.size() > 6) team.resize(6);
+        rawData_[0x18E04] = static_cast<uint8_t>(team.size());
+        for (int i = 0; i < 6; i++) {
+            uint8_t* dst = rawData_.data() + 0x18E08 + i * 220;
+            if (i >= static_cast<int>(team.size())) {
+                std::memset(dst, 0, 220);
+            } else {
+                Pokemon w = team[i];
+                w.gameType_ = gameType_;
+                w.refreshChecksum();
+                PokemonFFI::encryptArray45(w.data.data(), 220, dst);
+            }
+        }
+        dsParty_.assign(6, Pokemon{});
+        for (size_t i = 0; i < team.size() && i < 6; i++)
+            dsParty_[i] = team[i];
+    }
+
+    // 3. CRC di TUTTI i blocchi (come PKHeX SetChecksums: gli altri blocchi
+    //    tornano identici, i nostri si sistemano; checksum-block per ultimo).
+    auto crcOne = [&](const Ds5Block& B) {
+        if (B.off + B.len > rawData_.size() ||
+            B.chk + 2 > rawData_.size() || B.mirror + 2 > rawData_.size())
+            return;
+        uint16_t c = crc16CcittFalse(rawData_.data() + B.off, B.len);
+        writeU16LE(rawData_.data() + B.chk, c);
+        writeU16LE(rawData_.data() + B.mirror, c);
+    };
+    const Ds5Block* fixed = b2w2 ? DS5_FIXED_B2W2 : DS5_FIXED_BW;
+    size_t nFixed = b2w2 ? sizeof(DS5_FIXED_B2W2) / sizeof(Ds5Block)
+                         : sizeof(DS5_FIXED_BW) / sizeof(Ds5Block);
+    const uint32_t mirrorBase = b2w2 ? 0x25F02 : 0x23F02;
+    crcOne(fixed[0]); // nomi box
+    for (int b = 0; b < BOXES; b++) {
+        Ds5Block bb{static_cast<uint32_t>(0x400 + b * 0x1000), 0xFF0,
+                    static_cast<uint32_t>(0x13F2 + b * 0x1000),
+                    mirrorBase + static_cast<uint32_t>(b) * 2};
+        crcOne(bb);
+    }
+    for (size_t i = 1; i < nFixed; i++)
+        crcOne(fixed[i]); // checksum-block per ultimo
+
+    FILE* f = std::fopen(path.c_str(), "r+b");
+    if (!f)
+        f = std::fopen(path.c_str(), "wb");
+    if (!f)
+        return false;
+    size_t written = std::fwrite(rawData_.data(), 1, rawData_.size(), f);
+    std::fclose(f);
+    DebugLog::line("saveDS5: %s -> OK (game %u %s)", path.c_str(), dsGameByte_,
+                   b2w2 ? "B2W2" : "BW");
+    return written == rawData_.size();
 }
 
 bool SaveFile::loadDXY(const std::string& path) {
