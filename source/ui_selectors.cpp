@@ -5380,23 +5380,16 @@ void UI::remoteSyncTestRow() {
 
     int sent = 0, received = 0, skipped = 0, failed = 0;
 
+    // NOTA: se localPath e' in realta' un marker "save:/..." (save Switch
+    // nativo), il percorso reale e' gia' stato risolto una sola volta,
+    // subito dopo aver scelto il candidato -- vedi "switchSaveRealPath" /
+    // "switchLocalPath" piu' sotto. Qui non si guarda piu' save_/dirty_:
+    // vedi il commento estenso sopra remoteSyncTestRow() per i due bug che
+    // questo evita (save di un altro gioco inviato per errore; dirty_
+    // azzerato per un save scorrelato dalla sync).
     auto doUpload = [&](const std::string& localPath, const std::string& remotePath) -> bool {
-        std::string usePath = localPath;
-        std::string tmpSwitch;
-        // Switch save (save:/) - se non è un file regolare, esporta il save caricato in tmp
-        if (localPath.rfind("save:/", 0) == 0 && save_.isLoaded()) {
-            // Usa il save caricato in memoria (se il gioco è quello giusto o anche se diverso,
-            // il formato save è compatibile per FRLG). Meglio usare il save caricato che è già validato.
-            std::string tag = std::string(gameInfo(save_.gameType()).gameTag);
-            tmpSwitch = tmpDir + tag + "_switch_upload.tmp";
-            if (save_.save(tmpSwitch)) {
-                usePath = tmpSwitch;
-                DebugLog::line("remote sync: Switch save (caricato %s) esportato in tmp: %s", tag.c_str(), tmpSwitch.c_str());
-            }
-        }
         std::string opErr;
-        bool okUp = remoteSyncUpload(host, token, usePath, remotePath, opErr);
-        if (!tmpSwitch.empty()) std::remove(tmpSwitch.c_str());
+        bool okUp = remoteSyncUpload(host, token, localPath, remotePath, opErr);
         if (okUp) sent++; else failed++;
         DebugLog::line("remote sync: invia %s -> %s (%s)", localPath.c_str(),
                        okUp ? "OK" : "FALLITO", opErr.c_str());
@@ -5445,6 +5438,48 @@ void UI::remoteSyncTestRow() {
         break;
     }
     const GameInfo& gi = *giPtr;
+
+    // Se il candidato locale e' un save Switch nativo (marker "save:/...",
+    // aggiunto per FRLG quando manca un file in sdmc:/roms/), qui non c'e'
+    // ancora nessun mount reale: risolvilo UNA SOLA VOLTA in un file
+    // temporaneo con i byte grezzi letti dal mount nativo del gioco ESATTO
+    // scelto (c.type) -- mount -> copia file-a-file -> unmount immediato,
+    // mai attraverso save_/dirty_ (vedi nota su doUpload piu' sopra). Usato
+    // sia per l'invio (doUpload) sia per il controllo identita' nel flusso
+    // "Sincronizza" piu' sotto; il tmp viene ripulito in fondo alla funzione.
+    std::string switchSaveRealPath;
+    if (c.hasLocal && c.localPath.rfind("save:/", 0) == 0) {
+        int profileIdx = -1;
+        if (selectedProfile_ >= 0 && account_.hasSaveData(selectedProfile_, c.type))
+            profileIdx = selectedProfile_;
+        else {
+            for (int p = 0; p < account_.profileCount(); p++)
+                if (account_.hasSaveData(p, c.type)) { profileIdx = p; break; }
+        }
+        if (profileIdx < 0) {
+            DebugLog::line("remote sync: nessun profilo con save Switch per %s", gi.gameTag);
+        } else {
+            std::string mnt = account_.mountSave(profileIdx, c.type);
+            if (mnt.empty()) {
+                DebugLog::line("remote sync: mountSave FALLITO per %s (profilo %d)", gi.gameTag, profileIdx);
+            } else {
+                std::string src = mnt + saveFileNameOf(c.type);
+                std::string dst = tmpDir + std::string(gi.gameTag) + "_switch_native.tmp";
+                std::ifstream in(src, std::ios::binary);
+                if (in.is_open()) {
+                    std::ofstream out(dst, std::ios::binary | std::ios::trunc);
+                    if (out.is_open()) {
+                        out << in.rdbuf();
+                        if (out.good()) switchSaveRealPath = dst;
+                    }
+                }
+                account_.unmountSave();
+                DebugLog::line("remote sync: save Switch nativo %s risolto in tmp (%s): %s",
+                               gi.gameTag, switchSaveRealPath.empty() ? "FALLITO" : "OK", dst.c_str());
+            }
+        }
+    }
+    std::string switchLocalPath = switchSaveRealPath.empty() ? c.localPath : switchSaveRealPath;
 
     // Logica centralizzata per le 3 azioni — il save deve avere esattamente lo stesso base della ROM
     auto getExtLocal = [](const std::string& p) -> std::string {
@@ -5528,7 +5563,7 @@ void UI::remoteSyncTestRow() {
         if (!c.hasLocal) {
             showMessageAndWait(title, i18n::get(StrKey::DevSyncSyncNoLocalOrRemote));
         } else if (showConfirmDialog(i18n::fmt(StrKey::DevSyncSendTitle, gi.displayName), i18n::get(StrKey::DevSyncSendOnlyLocalBody))) {
-            bool ok = doUpload(c.localPath, remoteTargetPath);
+            bool ok = doUpload(switchLocalPath, remoteTargetPath);
             // Se sul remoto manca la ROM e il gioco è file-backed, invia anche la ROM
             if (ok && !c.hasRemoteRom) {
                 std::string localRom = findLocalRom(c.localPath, c.type);
@@ -5689,7 +5724,7 @@ void UI::remoteSyncTestRow() {
                 SaveFile localProbe, remoteProbe;
                 localProbe.setGameType(c.type);
                 remoteProbe.setGameType(c.type);
-                if (localProbe.load(c.localPath) && remoteProbe.load(tmpPath)) {
+                if (localProbe.load(switchLocalPath) && remoteProbe.load(tmpPath)) {
                     localOt = localProbe.dsOtName();
                     sameIdentity = !localOt.empty() && localOt == remoteProbe.dsOtName() && localProbe.dsTid() == remoteProbe.dsTid();
                 }
@@ -5703,7 +5738,7 @@ void UI::remoteSyncTestRow() {
                 struct stat st;
                 long long localModified = 0;
                 long long localBefore = 0;
-                if (stat(c.localPath.c_str(), &st) == 0) localModified = localBefore = (long long)st.st_mtime;
+                if (stat(switchLocalPath.c_str(), &st) == 0) localModified = localBefore = (long long)st.st_mtime;
                 bool remoteNewer = c.remoteSaveModifiedUnix > localModified;
                 std::string dir = i18n::get(remoteNewer ? StrKey::DevSyncDirRemoteToLocal : StrKey::DevSyncDirLocalToRemote);
                 if (showConfirmDialog(i18n::fmt(StrKey::DevSyncSyncTitle, gi.displayName), i18n::fmt(StrKey::DevSyncSyncBody, localOt, dir))) {
@@ -5712,7 +5747,7 @@ void UI::remoteSyncTestRow() {
                         // e soprattutto non confrontare più dopo: il mtime locale va sovrascritto ora
                         copyLocalAsReceived(tmpPath, c.localPath);
                     } else {
-                        bool ok = doUpload(c.localPath, remoteTargetPath);
+                        bool ok = doUpload(switchLocalPath, remoteTargetPath);
                         if (ok && !c.hasRemoteRom) {
                             std::string localRom = findLocalRom(c.localPath, c.type);
                             if (!localRom.empty()) {
@@ -5745,6 +5780,10 @@ void UI::remoteSyncTestRow() {
     }
     DebugLog::line("remote sync: flusso completato su %s (inviati=%d ricevuti=%d saltati=%d falliti=%d)",
                    host.c_str(), sent, received, skipped, failed);
+    // Ripulisci il tmp del save Switch nativo risolto sopra (se creato) --
+    // mai lasciato sul dispositivo dopo che il flusso e' terminato, come
+    // ogni altro tmp di questa funzione.
+    if (!switchSaveRealPath.empty()) std::remove(switchSaveRealPath.c_str());
 }
 
 // --- Box Remoto: apre save gia' presenti sul dispositivo remoto dentro lo
