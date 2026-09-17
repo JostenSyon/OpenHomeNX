@@ -5088,6 +5088,8 @@ bool UI::remoteSyncEnsureLogin(const std::string& title, std::string& host,
     //    quasi sempre il router e non e' un Filebrowser: fermarsi li' era
     //    il bug segnalato (login sempre rifiutato, nessun modo di andare
     //    oltre). Si ferma solo al primo che risponde 200 al login.
+    //    Annullabile con B (vedi remote_sync.cpp).
+    std::string lastScanErr;
     if (!ok) {
         std::string scanErr, foundHost, foundToken;
         // Popup con barra di avanzamento durante lo scan (che resta
@@ -5104,16 +5106,23 @@ bool UI::remoteSyncEnsureLogin(const std::string& title, std::string& host,
             ok = true;
         } else {
             DebugLog::line("remote sync: scansione LAN senza esito: %s", scanErr.c_str());
+            lastScanErr = scanErr;
         }
     }
 
-    // 3) Ancora niente: si chiede l'host a mano -- SEMPRE possibile qui,
-    //    anche se un host era gia' noto o trovato dalla scansione (pre-
-    //    compilato come punto di partenza): mai un vicolo cieco su un
-    //    indirizzo sbagliato o non piu' valido, l'utente deve poter
-    //    correggerlo invece di restare bloccato a chiedere solo le
-    //    credenziali per un host che non e' quello giusto.
+    // 3) Ancora niente: si chiede l'host a mano -- ma solo se l'utente vuole.
+    //    Prima la scansione spammava subito IP/user/pass anche se l'utente
+    //    aveva appena premuto B per annullare. Ora chiediamo conferma.
     if (!ok) {
+        // Se la scansione è stata annullata con B, torna subito senza chiedere altro
+        if (lastScanErr.find("annullato") != std::string::npos) {
+            showMessageAndWait(title, i18n::get(StrKey::DevSyncCancelled));
+            return false;
+        }
+        if (!showConfirmDialog(title, "Scansione non ha trovato dispositivi.\nVuoi inserire un IP fisso manualmente?")) {
+            showMessageAndWait(title, i18n::get(StrKey::DevSyncCancelled));
+            return false;
+        }
         std::string typed = promptTextBlocking(i18n::get(StrKey::DevSyncHostPrompt), host, 63);
         if (typed.empty()) { showMessageAndWait(title, i18n::get(StrKey::DevSyncCancelled)); return false; }
         host = typed;

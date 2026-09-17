@@ -9,6 +9,7 @@
 #include <curl/curl.h>
 #include <switch.h>
 #include <netinet/in.h>
+#include <SDL2/SDL.h>
 
 #include <atomic>
 #include <cctype>
@@ -365,6 +366,17 @@ bool remoteSyncScanLan(const std::string& user, const std::string& pass,
     double lastProgressEmit = 0.0;
     for (int h = 1; h <= 254; h++) {
         if (h == self) continue;
+        // Controllo annullamento con B (Switch B = SDL A) durante la scansione
+        {
+            SDL_Event ev;
+            while (SDL_PollEvent(&ev)) {
+                if (ev.type == SDL_CONTROLLERBUTTONDOWN && ev.cbutton.button == SDL_CONTROLLER_BUTTON_A) {
+                    err = "annullato dall'utente";
+                    return false;
+                }
+                if (ev.type == SDL_QUIT) { err = "annullato"; return false; }
+            }
+        }
         if (onProgress) {
             // Throttle a 0.1s (stesso valore di dlXferInfoUI in
             // update_net.cpp): a questa velocita' di scan (fino a 254 host,
@@ -379,7 +391,7 @@ bool remoteSyncScanLan(const std::string& user, const std::string& pass,
                 char line[96];
                 int pct = (h * 100) / 254;
                 std::snprintf(line, sizeof(line),
-                              "Ricerca dispositivi in corso\n  %d%%  (host %d/254)", pct, h);
+                              "Ricerca dispositivi in corso\n  %d%%  (host %d/254)  [B per annullare]", pct, h);
                 onProgress(line);
             }
         }
