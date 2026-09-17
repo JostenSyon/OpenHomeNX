@@ -5320,6 +5320,17 @@ void UI::remoteSyncTestRow() {
     if (!remoteSyncEnsureLogin(title, host, user, pass, token))
         return;
 
+    // "Monta" il device per il resto della UI (icona barra di stato, icone
+    // dock RemoteBox/DevSync via dockStateItemVisible): senza questo, la
+    // scansione manuale da qui trova il device e lo usa per la sync ma lo
+    // lascia "invisibile" altrove, perche' quei campi li scrive solo il
+    // worker in background al boot (vedi ui.cpp). Stesso aggiornamento,
+    // solo replicato qui.
+    remoteDeviceAvailable_ = true;
+    remoteDeviceHost_ = host;
+    remoteDeviceToken_ = token;
+    markDirty();
+
     // Elenco locale (bank/import) da confrontare con quello remoto -- stessa
     // scansione gia' usata dal selettore giochi, nessuna logica duplicata.
     std::vector<ImportedGame> localGames = scanImportPaths(importPaths_, autoCheckUsb_);
@@ -5717,6 +5728,14 @@ void UI::openRemoteBox() {
     std::string host, user, pass, token;
     if (!remoteSyncEnsureLogin(title, host, user, pass, token))
         return;
+
+    // Stesso motivo di remoteSyncTestRow() sopra: tiene "montato" il device
+    // per icona barra di stato/dock anche qui (in pratica il Box Remoto e'
+    // raggiungibile solo quando gia' visibile, ma un token rinnovato da
+    // remoteSyncEnsureLogin() va comunque ripubblicato).
+    remoteDeviceAvailable_ = true;
+    remoteDeviceHost_ = host;
+    remoteDeviceToken_ = token;
 
     std::vector<ImportedGame> localGames = scanImportPaths(importPaths_, autoCheckUsb_);
     std::string buildErr;
