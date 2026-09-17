@@ -176,12 +176,34 @@ bool gift(SaveFile& sf, const std::string& basePath, const ItemDef& d,
             return false;
         }
     }
+    // Eventi puri senza oggetto (non vanno in borsa, solo flag): Mystery Event e National Dex
+    // Per questi non scrivere nulla in borsa, solo il flag e il giornale.
+    if (d.id == 1000 || d.id == 1001) {
+        if (d.id == 1000 && sf.gameType() == GameType::EMERALD) {
+            sf.setGbaFlag(0x8B3);
+            DebugLog::line("backpack: Mystery Event flag 0x8B3 impostato (Emerald)");
+        } else if (d.id == 1001) {
+            sf.setNationalDexEnabled();
+            DebugLog::line("backpack: National Dex sbloccato (evento puro, no oggetto in borsa)");
+        } else {
+            msg = d.name + " non valido per questo gioco.";
+            return false;
+        }
+        // Giornale anche per gli eventi puri (tracciabilità)
+        auto jl2 = journalLoad(basePath);
+        JournalEntry je2; je2.game = gameKey(sf.gameType()); je2.item = d.id; je2.qty = 1;
+        je2.pocket = pocketToStr(target); je2.ts = (long)std::time(nullptr);
+        jl2.push_back(je2); journalSave(basePath, jl2);
+        msg = std::string(d.name) + " sbloccato (solo flag, nessun oggetto in borsa).";
+        sf.markDirty(); // assicura persistenza anche senza scrittura borsa
+        return true;
+    }
     // Flag nave/evento per FRLG e RSE/Smeraldo (SaveBlock1+0xEE0, 1 bit per flag).
     // FRLG: Aurora 371 -> 0x2A7+0x84B, Mistico 370 -> 0x2A8+0x84A (entrambi insieme)
     // Smeraldo: Aurora 371 0x13A+0x8D5, Mistico 370 0x13B+0x8E0, Old Sea Map/Mew 376 0x13C+0x8D6, Eone 0x8B3 (Mystery Event 1000)
     // Rubino/Zaffiro: Eone Ticket 275 -> 0x853
-    // National Dex 1001 -> SaveBlock2+0x19
-    if (d.id == 371 || d.id == 370 || d.id == 376 || d.id == 275 || d.id == 1000 || d.id == 1001) {
+    // National Dex 1001 -> SaveBlock2+0x19 (gestito sopra come evento puro)
+    if (d.id == 371 || d.id == 370 || d.id == 376 || d.id == 275) {
         if (isFRLG(sf.gameType())) {
             if (d.id == 371) { sf.setGbaFlag(0x2A7); sf.setGbaFlag(0x84B); }
             else if (d.id == 370) { sf.setGbaFlag(0x2A8); sf.setGbaFlag(0x84A); }
