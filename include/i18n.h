@@ -259,6 +259,7 @@ namespace StrKey {
     constexpr const char* RadialSaveMenu  = "radial_savemenu";
     constexpr const char* RadialTrade     = "radial_trade";
     constexpr const char* DockEject       = "dock_eject";
+    constexpr const char* DockDevSync     = "dock_devsync";
     constexpr const char* LayoutClassic    = "layout_classic";
     constexpr const char* LayoutGallery    = "layout_gallery";
     constexpr const char* SetCore         = "set_core";
@@ -492,6 +493,51 @@ namespace StrKey {
     constexpr const char* CrashReportUploading = "crashreport_uploading";
     constexpr const char* CrashReportSent      = "crashreport_sent";
     constexpr const char* CrashReportFailed    = "crashreport_failed";
+
+    // Impostazioni -> Sviluppatore -> Ricerca dispositivi (sync via LAN con
+    // il Filebrowser web di ArkOS/JELOS/ROCKNIX, vedi remote_sync.h).
+    constexpr const char* DevSyncTitle         = "devsync_title";
+    constexpr const char* DevSyncHostPrompt    = "devsync_host_prompt";
+    constexpr const char* DevSyncUserPrompt    = "devsync_user_prompt";
+    constexpr const char* DevSyncPassPrompt    = "devsync_pass_prompt";
+    constexpr const char* DevSyncCancelled     = "devsync_cancelled";
+    constexpr const char* DevSyncLoginFailed   = "devsync_login_failed";
+    constexpr const char* DevSyncListFailed    = "devsync_list_failed";
+    constexpr const char* DevSyncOk            = "devsync_ok";
+    constexpr const char* DevSyncNoCandidates  = "devsync_no_candidates";
+    constexpr const char* DevSyncSyncTitle     = "devsync_sync_title";
+    constexpr const char* DevSyncSyncBody      = "devsync_sync_body";
+    constexpr const char* DevSyncDirRemoteToLocal = "devsync_dir_remote_to_local";
+    constexpr const char* DevSyncDirLocalToRemote = "devsync_dir_local_to_remote";
+    constexpr const char* DevSyncSendTitle     = "devsync_send_title";
+    constexpr const char* DevSyncSendOnlyLocalBody = "devsync_send_only_local_body";
+    constexpr const char* DevSyncReceiveTitle  = "devsync_receive_title";
+    constexpr const char* DevSyncReceiveOnlyRemoteBody = "devsync_receive_only_remote_body";
+    constexpr const char* DevSyncChooseReceiveBody = "devsync_choose_receive_body";
+    constexpr const char* DevSyncChooseSendBody = "devsync_choose_send_body";
+    constexpr const char* DevSyncFlowSummary   = "devsync_flow_summary";
+    constexpr const char* DevSyncPickerTitle   = "devsync_picker_title";
+    constexpr const char* DevSyncPickerHint    = "devsync_picker_hint";
+    constexpr const char* DevSyncActionTitle   = "devsync_action_title";
+    constexpr const char* DevSyncActionSend    = "devsync_action_send";
+    constexpr const char* DevSyncActionReceive = "devsync_action_receive";
+    constexpr const char* DevSyncActionSync    = "devsync_action_sync";
+    constexpr const char* DevSyncSyncNoIdentity = "devsync_sync_no_identity";
+    constexpr const char* DevSyncSyncNoLocalOrRemote = "devsync_sync_no_local_or_remote";
+    constexpr const char* DevSyncAskRomTitle = "devsync_ask_rom_title";
+    constexpr const char* DevSyncAskRomBody  = "devsync_ask_rom_body";
+
+    // Box Remoto (apre un save remoto nel selettore giochi/banca locale).
+    constexpr const char* RemoteBoxMenuLabel   = "remotebox_menu_label";
+    constexpr const char* RemoteBoxTitle       = "remotebox_title";
+    constexpr const char* RemoteBoxNoSaves     = "remotebox_no_saves";
+    constexpr const char* RemoteBoxEntered     = "remotebox_entered";
+    constexpr const char* RemoteBoxNotInDualMode = "remotebox_not_in_dual_mode";
+    constexpr const char* RemoteBoxSendTitle   = "remotebox_send_title";
+    constexpr const char* RemoteBoxSendBody    = "remotebox_send_body";
+    constexpr const char* RemoteBoxSendFailed  = "remotebox_send_failed";
+    constexpr const char* RemoteBoxCloseSendBody   = "remotebox_close_send_body";
+    constexpr const char* RemoteBoxCloseSendResult = "remotebox_close_send_result";
 
     // Cross-gen transfer (ui_input.cpp prepareForPlacement + drop dialogs)
     constexpr const char* TransferTitle        = "transfer_title";

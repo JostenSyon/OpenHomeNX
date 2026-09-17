@@ -17,6 +17,7 @@
 #include "personal_gg.h"
 #include "update_net.h"
 #include "settings_cfg.h"
+#include "remote_sync.h"
 #include <algorithm>
 #include <cmath>
 #include <cctype>
@@ -1194,8 +1195,18 @@ void UI::setPokemonAt(int box, int slot, Panel panel, const Pokemon& pkm) {
                 save_.gameType() == bankLeft_.gameType()) {
                 Pokedex::registerPokemon(save_, pkm);
             }
-        } else
+        } else {
             save_.setBoxSlot(box, slot, pkm);
+            // Assicura che il Pokedex venga aggiornato anche per i trasferimenti
+            // da banca cross-gen (dove pkm potrebbe avere solo OHPKM e non
+            // passare per il normale setBoxSlot con register). Per RSE il dex
+            // deve segnare il possesso subito, senza dover rivedere il save.
+            if (save_.isLoaded() && !pkm.isEmpty() && !pkm.isEgg()) {
+                // setBoxSlot ha già chiamato register, ma per sicurezza (cross-gen
+                // con blob) richiamiamo esplicitamente — è idempotente.
+                Pokedex::registerPokemon(save_, pkm);
+            }
+        }
     } else if (bank_.isCrossGen()) {
         // prepareForPlacement() has already put the OHPKM on pkm.ohpkmBlob_ (or
         // refused). Only write when we actually have a record — never clear a
@@ -2019,6 +2030,11 @@ bool UI::confirmQuitWithHold() {
 void UI::returnToGameSelector() {
     if (!saveBankFiles())
         return;
+    // Catturato PRIMA di persistGameSaveIfDirty(): save_.save() dentro quella
+    // funzione azzera isDirty() anche in caso di scrittura riuscita, quindi
+    // e' l'unico punto in cui si puo' ancora sapere se c'era davvero una
+    // modifica da mandare al dispositivo remoto (vedi blocco Box Remoto sotto).
+    bool hadChanges = save_.isLoaded() && save_.isDirty();
     // Niente guard qui: vive dentro persistGameSaveIfDirty (choke point
     // unico, evita doppi dialoghi). False (B) = resta nel gioco, niente
     // save, niente unmount: memoria intatta e si continua da dove si era.
@@ -2026,6 +2042,43 @@ void UI::returnToGameSelector() {
         return;
     // Backup all'uscita se modificato (prima dell'unmount: serve il mount).
     backupOnExitIfNeeded();
+    // Box Remoto: questo save veniva da un dispositivo remoto (vedi
+    // UI::openRemoteBox/UI::selectGame) -- se e' stato davvero modificato,
+    // chiede sempre conferma prima di rispedirlo (mai un invio automatico
+    // silenzioso, per scelta esplicita: remoteSyncUpload() non e' ancora
+    // stato verificato su hardware reale).
+    if (activeSaveIsRemote_) {
+        if (hadChanges) {
+            if (showConfirmDialog(i18n::get(StrKey::RemoteBoxSendTitle),
+                                   i18n::get(StrKey::RemoteBoxSendBody))) {
+                std::string upErr;
+                if (remoteSyncUpload(activeRemoteHost_, activeRemoteToken_, savePath_,
+                                      activeRemoteSavePath_, upErr)) {
+                    DebugLog::line("box remoto: invio OK (%s)", savePath_.c_str());
+                    // Aggiorna l'istantanea in remoteBoxEntries_ (vedi
+                    // RemoteBoxEntry) cosi' UI::closeRemoteBox() non lo
+                    // consideri di nuovo "da rispedire" alla chiusura del
+                    // box, chiedendo una seconda volta per lo stesso save.
+                    for (auto& e : remoteBoxEntries_) {
+                        if (e.tmpPath != savePath_) continue;
+                        struct stat st;
+                        if (stat(savePath_.c_str(), &st) == 0) {
+                            e.snapSize = (long long)st.st_size;
+                            e.snapMtime = (long long)st.st_mtime;
+                        }
+                        break;
+                    }
+                } else {
+                    showMessageAndWait(i18n::get(StrKey::RemoteBoxTitle),
+                                        i18n::fmt(StrKey::RemoteBoxSendFailed, upErr));
+                    DebugLog::line("box remoto: invio FALLITO (%s): %s", savePath_.c_str(), upErr.c_str());
+                }
+            } else {
+                DebugLog::line("box remoto: invio rifiutato dall'utente, modifiche solo locali (%s)", savePath_.c_str());
+            }
+        }
+        activeSaveIsRemote_ = false;
+    }
     // Unmount regardless — leaving the game, so release the save mount even
     // when nothing was written.
     if (!isDualBankMode() && save_.isLoaded())

@@ -9,6 +9,7 @@
 #include "import_scan.h"
 #include "autocheck_usb.h"
 #include "backpack.h"
+#include "remote_sync.h"
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_ttf.h>
 #include <SDL2/SDL_image.h>
@@ -34,7 +35,7 @@ enum class TextInputPurpose {
 // Rows of the "+" game-selector menu. A single list drives both the popup's
 // draw order and its input handling — the old parallel hardcoded row-count
 // arithmetic (see v0.1.37's alignment bug) drifts every time a row is added.
-enum class GameSelMenuAction { SwitchCore, DebugLog, ClearLog, SendLog, SendSave, CrashReport, ImportSettings, CheckUpdate, OpenSettings, ToggleDock, ReorderDock, Exit };
+enum class GameSelMenuAction { SwitchCore, DebugLog, ClearLog, SendLog, SendSave, CrashReport, ImportSettings, CheckUpdate, OpenSettings, ToggleDock, ReorderDock, RemoteBox, Exit };
 
 // Search filter enums
 enum class GenderFilter { Any, Male, Female, Genderless };
@@ -189,6 +190,9 @@ private:
     SDL_Texture* iconRocket_       = nullptr; // "Avvia" nel menu radiale (48px 1:1)
     SDL_Texture* iconFloppy_       = nullptr; // "Salvataggi" nel menu radiale (48px 1:1)
     SDL_Texture* iconTrade_        = nullptr; // "Scambio": asset pronto, non ancora in radialItems_ (48px 1:1)
+    SDL_Texture* iconDevBox_       = nullptr; // "Box remoto" in dock: apre openRemoteBox() (48px 1:1)
+    SDL_Texture* iconDevSync_      = nullptr; // "DevSync" in dock: apre remoteSyncTestRow() (48px 1:1)
+    SDL_Texture* iconDevLink_      = nullptr; // device remoto trovato: barra di stato accanto a wifi/lan (36px 1:1)
 
     // Menu radiale (solo layout Classico, dietro Settings::radialMenu()):
     // alla conferma di una tile apre un piccolo arco di scorciatoie sopra
@@ -209,7 +213,7 @@ private:
     // zone tap sono guidati da dockLayout(); la navigazione D-pad usa
     // dockMoveFocus() cosi' l'ordine utente non desincronizza mai i flag.
     struct DockState {
-        enum class Item { Backpack, Banks, SaveMenu, Trade, Eject };
+        enum class Item { Backpack, Banks, SaveMenu, Trade, RemoteBox, DevSync, Eject };
 
         std::vector<Item> customOrder; // ordine utente (default: factory)
         bool visible = true;           // mostra/nascondi dock
@@ -374,6 +378,29 @@ private:
     // (profile selection, applet-mode entry, USB hotplug) and consumed by
     // selectGame() to bypass AccountManager::mountSave() for these GameTypes.
     std::vector<ImportedGame> importedGames_;
+
+    // Box Remoto: apre save gia' presenti sul dispositivo remoto (R36S/
+    // Filebrowser) dentro lo stesso selettore giochi, scaricati in un file
+    // temporaneo che si comporta come un ImportedGame qualunque. Attivo solo
+    // mentre remoteBoxActive_ e' true; in uscita il save (se modificato)
+    // torna al dispositivo remoto previa conferma (vedi UI::returnToGameSelector).
+    struct RemoteBoxEntry {
+        GameType type = GameType::EMERALD;
+        std::string tmpPath;
+        std::string host, token, remoteSavePath;
+        // Istantanea dimensione+mtime del tmp file appena scaricato (o
+        // appena rispedito con successo, vedi UI::returnToGameSelector):
+        // permette a UI::closeRemoteBox() di scoprire un save modificato
+        // mai rispedito al device, senza un flag "dirty" a parte da tenere
+        // sincronizzato a mano in ogni punto che tocca il save.
+        long long snapSize = -1;
+        long long snapMtime = 0;
+    };
+    bool remoteBoxActive_ = false;
+    std::vector<RemoteBoxEntry> remoteBoxEntries_;
+    std::vector<GameType> savedAvailableGames_;
+    std::vector<ImportedGame> savedImportedGames_;
+
     void appendImportedGames();               // scans importPaths_, extends availableGames_
     void rescanImportedGames();      // re-scan in place + popup on newly found games
     std::string importedSavePath(GameType game, int occurrence = 0) const;
@@ -403,6 +430,20 @@ private:
     std::string settingsRowLabel(int cat, int row) const;
     std::string settingsRowValue(int cat, int row);
     void settingsRowActivate(int cat, int row, int dir, bool& running);
+    // Impostazioni -> Sviluppatore -> Ricerca dispositivi (stage 1: login +
+    // test di lista sul Filebrowser web di ArkOS/JELOS/ROCKNIX via LAN).
+    void remoteSyncTestRow();
+    // Helpers per il nuovo flusso picker + 3 bottoni (evita spam di dialog per ogni gioco)
+    int pickRemoteSyncGame(const std::vector<SyncCandidate>& candidates);
+    int pickRemoteSyncAction(const SyncCandidate& c);
+    // Login comune a remoteSyncTestRow() e openRemoteBox(): stesso device
+    // gia' noto -> scansione LAN -> IP a mano -> credenziali a mano. Ritorna
+    // false (con messaggio gia' mostrato) se l'utente annulla o il login fallisce.
+    bool remoteSyncEnsureLogin(const std::string& title, std::string& host,
+                                std::string& user, std::string& pass, std::string& token);
+    void openRemoteBox();
+    void closeRemoteBox();
+    std::string promptTextBlocking(const std::string& header, const std::string& initial, int maxLen);
 
     // Debug save popup (Switch X sul gioco con debug on): Backup save /
     // Restore latest backup / Send save. Opera sullo stesso occurrence che
@@ -687,6 +728,19 @@ private:
     bool appletMode_ = false;
     std::string basePath_;
     std::string savePath_;
+    // Box Remoto: true quando savePath_ punta a un file temporaneo scaricato
+    // da un dispositivo remoto (vedi RemoteBoxEntry sopra). Letto da
+    // UI::returnToGameSelector() per rispedire il save al device all'uscita.
+    bool activeSaveIsRemote_ = false;
+    std::string activeRemoteHost_, activeRemoteToken_, activeRemoteSavePath_;
+
+    // Scoperta automatica in background del device remoto (vedi
+    // remoteSyncWorkerPoll in remote_sync.h): true dal momento in cui il
+    // worker trova un host valido. Per ora solo loggato/consumato in
+    // UI::run() -- l'icona in dock che lo mostra all'utente e' un passo
+    // successivo, non ancora implementato.
+    bool remoteDeviceAvailable_ = false;
+    std::string remoteDeviceHost_, remoteDeviceToken_;
 
     // Account manager
     AccountManager account_;
