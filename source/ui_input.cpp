@@ -1195,8 +1195,18 @@ void UI::setPokemonAt(int box, int slot, Panel panel, const Pokemon& pkm) {
                 save_.gameType() == bankLeft_.gameType()) {
                 Pokedex::registerPokemon(save_, pkm);
             }
-        } else
+        } else {
             save_.setBoxSlot(box, slot, pkm);
+            // Assicura che il Pokedex venga aggiornato anche per i trasferimenti
+            // da banca cross-gen (dove pkm potrebbe avere solo OHPKM e non
+            // passare per il normale setBoxSlot con register). Per RSE il dex
+            // deve segnare il possesso subito, senza dover rivedere il save.
+            if (save_.isLoaded() && !pkm.isEmpty() && !pkm.isEgg()) {
+                // setBoxSlot ha già chiamato register, ma per sicurezza (cross-gen
+                // con blob) richiamiamo esplicitamente — è idempotente.
+                Pokedex::registerPokemon(save_, pkm);
+            }
+        }
     } else if (bank_.isCrossGen()) {
         // prepareForPlacement() has already put the OHPKM on pkm.ohpkmBlob_ (or
         // refused). Only write when we actually have a record — never clear a
