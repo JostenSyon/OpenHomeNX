@@ -5217,12 +5217,6 @@ int UI::pickRemoteSyncGame(const std::vector<SyncCandidate>& candidates) {
                 drawRoundRectOutline(popX + 12, rowY, POP_W - 24, ROW_H - 6, 8, T().cursor, 2);
             }
             std::string label = gi.displayName;
-            // Distingue versione Switch (save:/) da ROM/file (sdmc:/roms) quando entrambe esistono
-            bool isSwitchLocal = c.hasLocal && c.localPath.rfind("save:/", 0) == 0;
-            std::string locTag = isSwitchLocal ? "Switch" : "ROM";
-            if (c.hasLocal && c.hasRemoteSave) label += "  [L:" + locTag + "+R]";
-            else if (c.hasLocal) label += "  [L:" + locTag + "]";
-            else label += "  [R]";
             drawText(label, popX + 28, rowY + 10, T().text, font_);
         }
         drawTextCentered(i18n::get(StrKey::DevSyncPickerHint), popX + POP_W / 2, popY + POP_H - 24, T().textDim, fontSmall_);
@@ -5385,8 +5379,21 @@ void UI::remoteSyncTestRow() {
     int sent = 0, received = 0, skipped = 0, failed = 0;
 
     auto doUpload = [&](const std::string& localPath, const std::string& remotePath) -> bool {
+        std::string usePath = localPath;
+        std::string tmpSwitch;
+        // Switch save (save:/) non è un file regolare leggibile via fopen se non è
+        // il save attualmente caricato. Se un save è caricato in memoria, esportalo
+        // in un file temporaneo e invia quello (formato identico, compatibile).
+        if (localPath.rfind("save:/", 0) == 0 && save_.isLoaded()) {
+            tmpSwitch = tmpDir + std::string(gameInfo(save_.gameType()).gameTag) + "_switch_upload.tmp";
+            if (save_.save(tmpSwitch)) {
+                usePath = tmpSwitch;
+                DebugLog::line("remote sync: Switch save esportato in tmp per invio: %s", tmpSwitch.c_str());
+            }
+        }
         std::string opErr;
-        bool okUp = remoteSyncUpload(host, token, localPath, remotePath, opErr);
+        bool okUp = remoteSyncUpload(host, token, usePath, remotePath, opErr);
+        if (!tmpSwitch.empty()) std::remove(tmpSwitch.c_str());
         if (okUp) sent++; else failed++;
         DebugLog::line("remote sync: invia %s -> %s (%s)", localPath.c_str(),
                        okUp ? "OK" : "FALLITO", opErr.c_str());
@@ -5421,16 +5428,16 @@ void UI::remoteSyncTestRow() {
     };
 
     // Nuovo flusso: picker gioco + 3 bottoni (evita spam di dialog per ogni candidato)
+    // Picker già mostra [B per annullare] e i bottoni hanno B annulla — se l'utente
+    // preme B qui torniamo subito alla schermata precedente senza summary spam.
     int pickedIdx = pickRemoteSyncGame(candidates);
     if (pickedIdx < 0) {
-        showMessageAndWait(title, i18n::fmt(StrKey::DevSyncFlowSummary, "0", "0", std::to_string(candidates.size()), "0"));
         return;
     }
     SyncCandidate c = candidates[pickedIdx];
     const GameInfo& gi = gameInfo(c.type);
     int action = pickRemoteSyncAction(c);
     if (action < 0) {
-        showMessageAndWait(title, i18n::fmt(StrKey::DevSyncFlowSummary, "0", "0", "1", "0"));
         return;
     }
 
@@ -5724,17 +5731,12 @@ void UI::remoteSyncTestRow() {
         }
     }
 
-    // Summary per singola azione (coerente con prima ma con 1 candidato)
+    // Summary per singola azione: non mostrare popup "inviato/saltati" se l'utente ha
+    // appena premuto B per annullare — con B deve tornare subito alla schermata
+    // precedente (giochi / dock sync save), senza spam. Logga solo, mostra solo se fallito.
     skipped = didSomething ? 0 : 1;
-    // failed già aggiornato dalle lambda, ma se didSomething=false e failed==0 è uno skip pulito
-    if (didSomething) {
-        showMessageAndWait(title, i18n::fmt(StrKey::DevSyncFlowSummary, std::to_string(sent), std::to_string(received), "0", std::to_string(failed)));
-    } else {
-        // Se failed>0 (upload/download fallito) mostra falliti, altrimenti skip
-        if (failed > 0)
-            showMessageAndWait(title, i18n::fmt(StrKey::DevSyncFlowSummary, "0", "0", "0", std::to_string(failed)));
-        else
-            showMessageAndWait(title, i18n::fmt(StrKey::DevSyncFlowSummary, "0", "0", "1", "0"));
+    if (failed > 0) {
+        showMessageAndWait(title, i18n::fmt(StrKey::DevSyncFlowSummary, std::to_string(sent), std::to_string(received), std::to_string(skipped), std::to_string(failed)));
     }
     DebugLog::line("remote sync: flusso completato su %s (inviati=%d ricevuti=%d saltati=%d falliti=%d)",
                    host.c_str(), sent, received, skipped, failed);
