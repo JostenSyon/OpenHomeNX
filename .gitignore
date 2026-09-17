@@ -9,6 +9,7 @@ OpenHomeNX.nacp
 
 # OS / editor
 .DS_Store
+dev_preview/
 
 # Runtime / logs / scratch
 debug.log
