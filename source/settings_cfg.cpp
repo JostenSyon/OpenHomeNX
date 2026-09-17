@@ -167,5 +167,29 @@ void setDockOrder(const std::string& v) {
 }
 bool dockVisible() { return getInt("dock_visible", 1) != 0; }
 void setDockVisible(bool v) { setInt("dock_visible", v ? 1 : 0); }
+std::string remoteSyncHost() {
+    auto it = g_kv.find("remotesync_host");
+    return (it == g_kv.end()) ? "" : it->second;
+}
+void setRemoteSyncHost(const std::string& v) {
+    g_kv["remotesync_host"] = v;
+    save();
+}
+std::string remoteSyncUser() {
+    auto it = g_kv.find("remotesync_user");
+    return (it == g_kv.end()) ? "ark" : it->second;
+}
+void setRemoteSyncUser(const std::string& v) {
+    g_kv["remotesync_user"] = v;
+    save();
+}
+std::string remoteSyncPass() {
+    auto it = g_kv.find("remotesync_pass");
+    return (it == g_kv.end()) ? "ark" : it->second;
+}
+void setRemoteSyncPass(const std::string& v) {
+    g_kv["remotesync_pass"] = v;
+    save();
+}
 
 } // namespace Settings

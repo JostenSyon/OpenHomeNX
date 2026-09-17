@@ -114,6 +114,10 @@ bool autoUpdateFinishedWithoutUpdate() {
     return s_state.load(std::memory_order_acquire) == 2 && s_version[0] == '\0';
 }
 
+bool autoUpdateSettled() {
+    return s_state.load(std::memory_order_acquire) != 1; // 1 = worker al lavoro
+}
+
 // Atteso in main() prima di smontare rete/USB: evita che il worker usi
 // socket/stringhe statiche a metà teardown (crash in uscita). Ritorna in
 // ~ms se idle/finito o in attesa link (stop a granularità 2s); nel peggiore

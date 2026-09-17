@@ -114,8 +114,21 @@ bool gift(SaveFile& sf, const std::string& basePath, const ItemDef& d,
           int qty, bool baseMode, std::string& msg) {
     if (!sf.gbaBagSupported()) { msg = "Borsa non supportata per questo gioco (solo RSE/FRLG)."; return false; }
     if (!gameOk(sf.gameType(), d)) { msg = d.name + " non valido per questo gioco."; return false; }
-    if (d.flag) {
-        msg = d.name + ": richiede anche il flag evento (non ancora implementato).";
+    // FRLG Aurora/Mistico: oltre all'oggetto in borsa serve anche il flag nave.
+    // SaveBlock1+0xEE0, 1 bit per flag. Per FRLG:
+    //  Aurora (371) -> 0x2A7 RECEIVED + 0x84B SHIP_BIRTH_ISLAND
+    //  Mistico (370) -> 0x2A8 RECEIVED + 0x84A SHIP_NAVEL_ROCK
+    // La Switch mette entrambi, facciamo uguale. Per Smeraldo/Rubino ecc. vedi docs.
+    bool needFlag = d.flag;
+    if (needFlag) {
+        // Flag gestiti: FRLG Aurora/Mistico, RSE Aurora/Mistico/OldSeaMap/Eon, National Dex
+        if (isFRLG(sf.gameType()) && (d.id == 371 || d.id == 370)) needFlag = false;
+        else if (sf.gameType() == GameType::EMERALD && (d.id == 371 || d.id == 370 || d.id == 376 || d.id == 1000)) needFlag = false;
+        else if ((sf.gameType() == GameType::RUBY || sf.gameType() == GameType::SAPPHIRE) && d.id == 275) needFlag = false;
+        else if (d.id == 1001) needFlag = false; // National Dex per tutti i Gen3
+    }
+    if (needFlag) {
+        msg = d.name + ": richiede anche il flag evento (non ancora implementato per questo gioco/oggetto).";
         return false;
     }
     SaveFile::GbaBagPocket target = baseMode ? SaveFile::GbaBagPocket::Key : canonPocket(d);
@@ -161,6 +174,55 @@ bool gift(SaveFile& sf, const std::string& basePath, const ItemDef& d,
         if (!sf.writeGbaBagSlot(slots[p.idx].pocket, slots[p.idx].slot, (uint16_t)d.id, p.setQty)) {
             msg = "Scrittura slot fallita (abortito, ricontrolla).";
             return false;
+        }
+    }
+    // Eventi puri senza oggetto (non vanno in borsa, solo flag): Mystery Event e National Dex
+    // Per questi non scrivere nulla in borsa, solo il flag e il giornale.
+    if (d.id == 1000 || d.id == 1001) {
+        if (d.id == 1000 && sf.gameType() == GameType::EMERALD) {
+            sf.setGbaFlag(0x8B3);
+            DebugLog::line("backpack: Mystery Event flag 0x8B3 impostato (Emerald)");
+        } else if (d.id == 1001) {
+            sf.setNationalDexEnabled();
+            DebugLog::line("backpack: National Dex sbloccato (evento puro, no oggetto in borsa)");
+        } else {
+            msg = d.name + " non valido per questo gioco.";
+            return false;
+        }
+        // Giornale anche per gli eventi puri (tracciabilità)
+        auto jl2 = journalLoad(basePath);
+        JournalEntry je2; je2.game = gameKey(sf.gameType()); je2.item = d.id; je2.qty = 1;
+        je2.pocket = pocketToStr(target); je2.ts = (long)std::time(nullptr);
+        jl2.push_back(je2); journalSave(basePath, jl2);
+        msg = std::string(d.name) + " sbloccato (solo flag, nessun oggetto in borsa).";
+        sf.markDirty(); // assicura persistenza anche senza scrittura borsa
+        return true;
+    }
+    // Flag nave/evento per FRLG e RSE/Smeraldo (SaveBlock1+0xEE0, 1 bit per flag).
+    // FRLG: Aurora 371 -> 0x2A7+0x84B, Mistico 370 -> 0x2A8+0x84A (entrambi insieme)
+    // Smeraldo: Aurora 371 0x13A+0x8D5, Mistico 370 0x13B+0x8E0, Old Sea Map/Mew 376 0x13C+0x8D6, Eone 0x8B3 (Mystery Event 1000)
+    // Rubino/Zaffiro: Eone Ticket 275 -> 0x853
+    // National Dex 1001 -> SaveBlock2+0x19 (gestito sopra come evento puro)
+    if (d.id == 371 || d.id == 370 || d.id == 376 || d.id == 275) {
+        if (isFRLG(sf.gameType())) {
+            if (d.id == 371) { sf.setGbaFlag(0x2A7); sf.setGbaFlag(0x84B); }
+            else if (d.id == 370) { sf.setGbaFlag(0x2A8); sf.setGbaFlag(0x84A); }
+            // FRLG non ha 376/275 come evento nave, ma se regalati li mettiamo comunque in borsa
+            DebugLog::line("backpack: flag FRLG impostati per %s (%d)", d.name.c_str(), d.id);
+        } else if (sf.gameType() == GameType::EMERALD) {
+            if (d.id == 371) { sf.setGbaFlag(0x13A); sf.setGbaFlag(0x8D5); }
+            else if (d.id == 370) { sf.setGbaFlag(0x13B); sf.setGbaFlag(0x8E0); }
+            else if (d.id == 376) { sf.setGbaFlag(0x13C); sf.setGbaFlag(0x8D6); }
+            else if (d.id == 1000) { sf.setGbaFlag(0x8B3); }
+            else if (d.id == 275) { /* Eon Ticket su Smeraldo è via Mystery Event, non 275 */ }
+            if (d.id == 371 || d.id == 370 || d.id == 376 || d.id == 1000) DebugLog::line("backpack: flag Smeraldo impostati per %s (%d)", d.name.c_str(), d.id);
+        } else if (sf.gameType() == GameType::RUBY || sf.gameType() == GameType::SAPPHIRE) {
+            if (d.id == 275) { sf.setGbaFlag(0x853); DebugLog::line("backpack: flag Rubino/Zaffiro Eone impostato"); }
+        }
+        // National Dex (1001) — valido per tutti i Gen3, sblocca il Dex Nazionale (SaveBlock2+0x19)
+        if (d.id == 1001) {
+            sf.setNationalDexEnabled();
+            DebugLog::line("backpack: National Dex sbloccato per %s", gameKey(sf.gameType()).c_str());
         }
     }
     // Giornale (best-effort: il regalo è già scritto, logga l'esito)

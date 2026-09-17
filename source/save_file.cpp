@@ -1978,13 +1978,39 @@ bool SaveFile::loadGBC(const std::string& path) {
         return false;
 
     auto fileSize = static_cast<size_t>(file.tellg());
-    if (fileSize != GB2_SAVE_SIZE)
+    // Alcuni emulatori/handheld aggiungono 48 byte RTC in coda (es. TGB Dual, alcuni core RetroArch)
+    // rendendo il file 32816 invece di 32768. Gestiamo entrambi, come per GBA Delta 16B.
+    constexpr size_t RTC_EXTRA = 48;
+    if (fileSize != GB2_SAVE_SIZE && fileSize != GB2_SAVE_SIZE + RTC_EXTRA)
         return false;
 
     file.seekg(0);
-    rawData_.resize(GB2_SAVE_SIZE);
-    file.read(reinterpret_cast<char*>(rawData_.data()), GB2_SAVE_SIZE);
+    std::vector<uint8_t> buf(fileSize);
+    file.read(reinterpret_cast<char*>(buf.data()), fileSize);
     file.close();
+    // Se 32816, trova la finestra valida (head o tail) provando i checksum
+    if (fileSize == GB2_SAVE_SIZE + RTC_EXTRA) {
+        // Prova head (primi 32768)
+        bool headOk = false, tailOk = false;
+        {
+            bool isCrystalTmp = (gameType_ == GameType::CRYSTAL);
+            const GbcLayout& LTmp = isCrystalTmp ? GBC_C : GBC_GS;
+            headOk = gbcChecksumValid(buf.data(), LTmp);
+            tailOk = gbcChecksumValid(buf.data() + RTC_EXTRA, LTmp);
+        }
+        if (headOk) {
+            rawData_.assign(buf.data(), buf.data() + GB2_SAVE_SIZE);
+        } else if (tailOk) {
+            rawData_.assign(buf.data() + RTC_EXTRA, buf.data() + RTC_EXTRA + GB2_SAVE_SIZE);
+            DebugLog::line("loadGBC: %s 32816 RTC tail window used", path.c_str());
+        } else {
+            // Nessuna finestra valida, prova comunque head (verrà scartato dal checksum sotto)
+            rawData_.assign(buf.data(), buf.data() + GB2_SAVE_SIZE);
+            DebugLog::line("loadGBC: %s 32816 no valid window, using head", path.c_str());
+        }
+    } else {
+        rawData_.assign(buf.data(), buf.data() + GB2_SAVE_SIZE);
+    }
 
     // Version from the caller's game type (scan detects via checksums first,
     // so a mismatch here fails closed on the checksum below instead of
@@ -2678,6 +2704,28 @@ bool SaveFile::writeGbaBagSlot(GbaBagPocket p, int slot, uint16_t id, uint16_t c
     writeU16LE(sec1 + off, id);
     writeU16LE(sec1 + off + 2, static_cast<uint16_t>(count ^ key));
     dirty_ = true; // saveGBA specchia gli slot + ricalcola i checksum
+    return true;
+}
+
+bool SaveFile::isGbaFlagSet(uint16_t flag) const {
+    if (!gbaBagSupported()) return false;
+    uint8_t* sec1 = const_cast<SaveFile*>(this)->findGbaSectorData(1);
+    if (!sec1) return false;
+    constexpr int FLAGS_OFF = 0xEE0;
+    size_t off = FLAGS_OFF + (flag >> 3);
+    if (off >= GBA_SECTOR_USED) return false;
+    return (sec1[off] >> (flag & 7)) & 1;
+}
+
+bool SaveFile::setGbaFlag(uint16_t flag) {
+    if (!gbaBagSupported()) return false;
+    uint8_t* sec1 = findGbaSectorData(1);
+    if (!sec1) return false;
+    constexpr int FLAGS_OFF = 0xEE0;
+    size_t off = FLAGS_OFF + (flag >> 3);
+    if (off >= GBA_SECTOR_USED) return false;
+    sec1[off] |= (1u << (flag & 7));
+    dirty_ = true;
     return true;
 }
 
