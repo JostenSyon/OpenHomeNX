@@ -789,9 +789,14 @@ std::vector<SyncCandidate> remoteSyncBuildCandidates(
     return out;
 }
 
-bool remoteSyncDownload(const std::string& host, const std::string& token,
-                         const std::string& remotePath, const std::string& outLocalPath,
-                         std::string& err) {
+// GET grezzo di un file remoto in un path locale -- ESATTAMENTE la stessa
+// logica che remoteSyncDownload() aveva prima di questo commit, estratta
+// cosi' com'era per essere richiamabile due volte (download reale +
+// riscarico di verifica) senza duplicare la parte curl. Nessun controllo
+// di checksum qui: lo fa il chiamante.
+static bool downloadRawToFile(const std::string& host, const std::string& token,
+                               const std::string& remotePath, const std::string& outLocalPath,
+                               std::string& err) {
     std::string p = remotePath;
     while (!p.empty() && p.front() == '/')
         p.erase(p.begin());
@@ -831,6 +836,37 @@ bool remoteSyncDownload(const std::string& host, const std::string& token,
         err = "HTTP " + std::to_string(http);
         return false;
     }
+    return true;
+}
+
+bool remoteSyncDownload(const std::string& host, const std::string& token,
+                        const std::string& remotePath, const std::string& outLocalPath,
+                        std::string& err) {
+    if (!downloadRawToFile(host, token, remotePath, outLocalPath, err))
+        return false;
+
+    // Checksum sempre attivo (richiesto esplicitamente, vedi il commento
+    // esteso sopra downloadRawToFile): nessun endpoint di checksum lato
+    // server su Filebrowser (verificato prima di scrivere questo codice),
+    // quindi la verifica reale e' un secondo GET indipendente dello stesso
+    // file e il confronto degli hash locali -- se non coincidono, il
+    // trasferimento e' stato tagliato/corrotto in rete.
+    std::string hash1 = sha256HexFile(outLocalPath);
+    if (hash1.empty()) {
+        std::remove(outLocalPath.c_str());
+        err = "impossibile calcolare checksum del file ricevuto";
+        return false;
+    }
+    std::string verifyPath = outLocalPath + ".vrfy";
+    std::string verifyErr;
+    bool verifyOk = downloadRawToFile(host, token, remotePath, verifyPath, verifyErr);
+    std::string hash2 = verifyOk ? sha256HexFile(verifyPath) : std::string();
+    std::remove(verifyPath.c_str());
+    if (!verifyOk || hash2.empty() || hash1 != hash2) {
+        std::remove(outLocalPath.c_str());
+        err = "verifica checksum fallita dopo la ricezione (doppio controllo discorde)";
+        return false;
+    }
     g_lastContactAt = wallSecondsRS();
     return true;
 }
@@ -844,6 +880,13 @@ bool remoteSyncUpload(const std::string& host, const std::string& token,
     f.seekg(0);
     std::vector<char> buf(static_cast<size_t>(size > 0 ? size : 0));
     if (size > 0 && !f.read(buf.data(), size)) { err = "lettura file locale fallita"; return false; }
+
+    // Checksum sempre attivo (richiesto esplicitamente): calcolato PRIMA
+    // dell'invio sul file locale, confrontato dopo l'upload con lo stesso
+    // file riscaricato dal remoto (vedi sotto) -- verifica end-to-end reale,
+    // non solo lo stato HTTP 200/201.
+    std::string localHash = sha256HexFile(localPath);
+    if (localHash.empty()) { err = "impossibile calcolare checksum locale"; return false; }
 
     std::string p = remotePath;
     while (!p.empty() && p.front() == '/')
@@ -879,10 +922,24 @@ bool remoteSyncUpload(const std::string& host, const std::string& token,
 
     if (rc != CURLE_OK) { err = std::string("rete: ") + curl_easy_strerror(rc); return false; }
     if (http != 200 && http != 201) { err = "HTTP " + std::to_string(http); return false; }
+
+    // Verifica: riscarica lo stesso file appena inviato (GET indipendente,
+    // stessa funzione grezza usata da remoteSyncDownload, non la versione
+    // con doppio controllo -- eviterebbe un terzo GET inutile) e confronta
+    // l'hash con quello calcolato sul locale prima dell'invio.
+    std::string verifyPath = localPath + ".vrfy";
+    std::string verifyErr;
+    bool verifyOk = downloadRawToFile(host, token, remotePath, verifyPath, verifyErr);
+    std::string remoteHash = verifyOk ? sha256HexFile(verifyPath) : std::string();
+    std::remove(verifyPath.c_str());
+    if (!verifyOk || remoteHash.empty() || remoteHash != localHash) {
+        err = "verifica checksum fallita dopo l'invio";
+        return false;
+    }
+
     g_lastContactAt = wallSecondsRS();
     return true;
 }
-
 // Controllo periodico "e' ancora vivo?" per il device gia' trovato (dal
 // worker in background o dallo scan manuale): senza questo, spegnere/
 // riaccendere il device remoto (o solo spostarlo di rete) lo lascia
