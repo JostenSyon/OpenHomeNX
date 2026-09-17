@@ -170,11 +170,12 @@ std::string sha256HexFile(const std::string& path) {
     mbedtls_sha256_context ctx;
     mbedtls_sha256_init(&ctx);
     mbedtls_sha256_starts_ret(&ctx, 0);
-    unsigned char buf[65536];
+    // Buffer su heap (non stack): chiamato anche da thread con stack limitato
+    std::vector<unsigned char> buf(65536);
     size_t n = 0;
     bool ok = true;
-    while ((n = std::fread(buf, 1, sizeof(buf), f)) > 0) {
-        if (mbedtls_sha256_update_ret(&ctx, buf, n) != 0) { ok = false; break; }
+    while ((n = std::fread(buf.data(), 1, buf.size(), f)) > 0) {
+        if (mbedtls_sha256_update_ret(&ctx, buf.data(), n) != 0) { ok = false; break; }
     }
     if (std::ferror(f)) ok = false;
     std::fclose(f);
