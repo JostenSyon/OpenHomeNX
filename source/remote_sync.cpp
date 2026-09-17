@@ -382,7 +382,14 @@ bool remoteSyncScanLan(const std::string& user, const std::string& pass,
     }
     if (preferred != -1) {
         std::string host = std::string(prefix) + std::to_string(preferred);
-        if (probeTcpOpen(host, 80, 150)) {
+        double probeT0 = wallSecondsRS();
+        bool open = probeTcpOpen(host, 80, 150);
+        if (open) {
+            // Solo diagnostica (vedi il commento sopra "int preferred"):
+            // quanto ci ha messo DAVVERO a rispondere, in ms, cosi' non
+            // dobbiamo indovinare quanto margine c'e' sotto i 150ms attuali.
+            DebugLog::line("remote sync: scorciatoia host noto %s risponde in %.0fms",
+                           host.c_str(), (wallSecondsRS() - probeT0) * 1000.0);
             foundOpenPort = true;
             std::string body;
             if (fetchFingerprintBody(host, body) && body.find("window.FileBrowser") != std::string::npos) {
@@ -393,6 +400,8 @@ bool remoteSyncScanLan(const std::string& user, const std::string& pass,
                     return true;
                 }
             }
+        } else {
+            DebugLog::line("remote sync: scorciatoia host noto %s non risponde entro 150ms", host.c_str());
         }
     }
 
@@ -429,7 +438,14 @@ bool remoteSyncScanLan(const std::string& user, const std::string& pass,
             }
         }
         std::string host = std::string(prefix) + std::to_string(h);
-        if (!probeTcpOpen(host, 80, 150)) continue;
+        double probeT0 = wallSecondsRS();
+        bool open = probeTcpOpen(host, 80, 150);
+        if (!open) continue;
+        // Solo diagnostica, stesso motivo della scorciatoia sopra: tempo di
+        // risposta reale in ms per un host che ha davvero la porta aperta,
+        // per sapere quanto margine c'e' sotto i 150ms attuali senza
+        // indovinare.
+        DebugLog::line("remote sync: %s risponde in %.0fms", host.c_str(), (wallSecondsRS() - probeT0) * 1000.0);
         foundOpenPort = true;
         std::string body;
         if (!fetchFingerprintBody(host, body) || body.find("window.FileBrowser") == std::string::npos) {
