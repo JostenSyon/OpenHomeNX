@@ -5522,12 +5522,17 @@ void UI::remoteSyncTestRow() {
             } else {
                 std::string src = mnt + saveFileNameOf(c.type);
                 std::string dst = tmpDir + std::string(gi.gameTag) + "_switch_native.tmp";
-                std::ifstream in(src, std::ios::binary);
-                if (in.is_open()) {
-                    std::ofstream out(dst, std::ios::binary | std::ios::trunc);
-                    if (out.is_open()) {
-                        out << in.rdbuf();
-                        if (out.good()) switchSaveRealPath = dst;
+                // Chiudi gli stream PRIMA di unmountSave(): distruggere un
+                // ifstream ancora aperto su un device smontato ("save")
+                // abortisce in _close_r (Data Abort su null, visto su HW).
+                {
+                    std::ifstream in(src, std::ios::binary);
+                    if (in.is_open()) {
+                        std::ofstream out(dst, std::ios::binary | std::ios::trunc);
+                        if (out.is_open()) {
+                            out << in.rdbuf();
+                            if (out.good()) switchSaveRealPath = dst;
+                        }
                     }
                 }
                 account_.unmountSave();
