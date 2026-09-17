@@ -85,6 +85,7 @@ public:
     // True once a mutator has changed persistent content since the last
     // load()/save(). Lets the UI skip rewriting an untouched save on B.
     bool isDirty() const { return dirty_; }
+    void markDirty() { dirty_ = true; invalidateAllBoxCache(); }
     GameType gameType() const { return gameType_; }
 
     // Access SCBlock by key (for SCBlock-based games: ZA/SV/SwSh/LA) — via FFI wrapper M3a
@@ -97,6 +98,32 @@ public:
     // Find GBA sector data by section ID in the active save slot.
     // Returns pointer to the sector's 0x1000-byte region, or nullptr.
     uint8_t* findGbaSectorData(int sectionId);
+
+    // National Dex flag for R/S/E (SaveBlock2+0x19, byte 0/1, entrambe le slot)
+    bool isNationalDexEnabled() const;
+    void setNationalDexEnabled();
+
+    // Borsa Gen3 GBA (RSE/FRLG, settore 1 = SaveBlock1). Slot da 4B
+    // {id u16 LE, count u16 LE}. Layout verificato: pret global.h di
+    // pokeruby/pokeemerald/pokefirered + span PKHeX SAV3* + Bulbapedia:
+    // RS(20/20/16/64/46) E(30/30/16/64/46) FRLG(42/30/13/58/43).
+    enum class GbaBagPocket { Items = 0, Key, Balls, TmHm, Berries, Count };
+    struct GbaBagSlot { GbaBagPocket pocket; int slot; uint16_t id; uint16_t count; };
+    bool gbaBagSupported() const;
+    int gbaBagPocketSlots(GbaBagPocket p) const; // 0 se non supportato
+    // Tutti gli slot (anche vuoti id==0) per lettura/scansione.
+    std::vector<GbaBagSlot> readGbaBag() const;
+    // Scrive uno slot (set dirty). False se pocket/slot fuori range.
+    bool writeGbaBagSlot(GbaBagPocket p, int slot, uint16_t id, uint16_t count);
+    // Flag evento Gen3 (FRLG/RSE) a SaveBlock1+0xEE0, 1 bit per flag (flag/8, flag%8).
+    // Per FRLG Aurora/Mistico imposta 0x2A7/0x84B e 0x2A8/0x84A, per Smeraldo ecc. vedi docs.
+    bool setGbaFlag(uint16_t flag);
+    bool isGbaFlagSet(uint16_t flag) const;
+    // Chiave di sicurezza Gen3 (settore 0, trainer info): RS non la usa
+    // (conteggi in chiaro), Emerald/FRLG la XORano su monete/gettoni/
+    // conteggi zaino (Bulbapedia "Save data structure (Generation III)").
+    // Ritorna solo i 16 bit bassi (quelli usati per gli item), 0 se non serve.
+    uint16_t gbaSecurityKeyLow16() const;
 
     // Get trainer info from save file (SV/ZA only, SCBlock-based)
     TrainerInfo getTrainerInfo() const;

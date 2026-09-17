@@ -227,6 +227,7 @@
     "left": "Izquierda",
     "right": "Derecha",
     "status_game_eject": "  X: Expulsar USB",
+    "dock_eject": "Expulsar USB",
     "no_boxes_title": "Sin cajas todavia",
     "menu_import_pk": "Importar archivos PK",
     "set_title": "Ajustes",

@@ -24,6 +24,7 @@ static std::atomic<bool> s_running{false}; // thread vivo: solo allora join ha s
 static char s_version[32] = {0};
 static char s_err[160] = {0};
 static std::string s_url, s_token, s_cur;
+static bool s_beta = false;
 
 void workerMain(void*) {
     RemoteUpdateInfo info;
@@ -45,7 +46,22 @@ void workerMain(void*) {
         return; // uscita in corso: niente fetch a metà teardown
     }
     s_stage.store(2, std::memory_order_release);
-    bool ok = updateNetFetchInfo(s_url, s_token, info, err);
+    std::string fetchUrl = s_url;
+    if (s_beta && fetchUrl.empty()) {
+        // Canale beta senza custom url: risolvi la pre-release corrente.
+        // Fallimento = niente prompt (mai fallback silenzioso sullo stabile).
+        std::string base, tag, berr;
+        if (updateNetFetchBetaBase("JostenSyon", "OpenHomeNX", s_token, base, tag, berr))
+            fetchUrl = base;
+        else {
+            if (!berr.empty() && berr != "none")
+                std::snprintf(s_err, sizeof(s_err), "beta: %s", berr.substr(0, sizeof(s_err) - 8).c_str());
+            s_stage.store(4, std::memory_order_release);
+            s_state.store(2, std::memory_order_release);
+            return;
+        }
+    }
+    bool ok = updateNetFetchInfo(fetchUrl, s_token, info, err);
     s_stage.store(2, std::memory_order_release);
     if (ok) {
         if (compareVersionStrings(info.version, s_cur) > 0)
@@ -60,13 +76,14 @@ void workerMain(void*) {
 } // namespace
 
 void autoUpdateStart(const std::string& url, const std::string& token,
-                     const std::string& curVer) {
+                     const std::string& curVer, bool beta) {
     bool expected = false;
     if (!s_started.compare_exchange_strong(expected, true))
         return; // una sola partenza per boot
     s_url = url;
     s_token = token;
     s_cur = curVer;
+    s_beta = beta && url.empty(); // custom url vince sempre sul canale
     s_state.store(1, std::memory_order_release);
     Result rcCreate = threadCreate(&s_thread, workerMain, nullptr, nullptr,
                                    kStackSize, 0x2C, -2);
@@ -91,6 +108,14 @@ bool autoUpdateTakeResult(std::string& outVersion) {
         return false; // fetch fallita o niente di nuovo (loggato da LogOnceDone)
     outVersion = s_version;
     return true;
+}
+
+bool autoUpdateFinishedWithoutUpdate() {
+    return s_state.load(std::memory_order_acquire) == 2 && s_version[0] == '\0';
+}
+
+bool autoUpdateSettled() {
+    return s_state.load(std::memory_order_acquire) != 1; // 1 = worker al lavoro
 }
 
 // Atteso in main() prima di smontare rete/USB: evita che il worker usi
@@ -124,7 +149,8 @@ void autoUpdateLogOnceDone() {
 }
 
 bool readUpdateAutoCfg(const std::string& basePath, std::string& urlOut,
-                       std::string& tokenOut) {
+                       std::string& tokenOut, std::string& channelOut) {
+    channelOut.clear();
     // Stessi path di readUpdateCfg in ui_selectors.cpp (duplicato a posta:
     // quello è statico in un anonymous namespace).
     const std::string paths[] = { basePath + "update.cfg",
@@ -147,6 +173,7 @@ bool readUpdateAutoCfg(const std::string& basePath, std::string& urlOut,
             trim(k); trim(v);
             if (k == "url") urlOut = v;
             else if (k == "token") tokenOut = v;
+            else if (k == "channel") channelOut = v;
             else if (k == "auto" && (v == "1" || v == "on" || v == "yes")) autoOn = true;
         }
         if (autoOn) return true;

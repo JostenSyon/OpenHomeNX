@@ -124,6 +124,8 @@ communities maintaining them:
   Rust backend (cross-gen conversions, formats, crypto)
 - **[PKHeX](https://github.com/kwsch/PKHeX)** by kwsch — reference for
   save-format specifications
+- **[Sphaira](https://github.com/ITotalJustice/sphaira)** by ITotalJustice —
+  on-device forwarder design (NCA/PFS0/IVFC builder + ncm/ns install flow) adapted for the built-in launcher
 - [libnx](https://github.com/switchbrew/libnx) / devkitPro — Switch toolchain
 
 ## License
@@ -266,6 +268,8 @@ community che li mantengono:
   backend Rust (conversioni cross-gen, formati, crittografia)
 - **[PKHeX](https://github.com/kwsch/PKHeX)** di kwsch — riferimento per le
   specifiche dei formati di salvataggio
+- **[Sphaira](https://github.com/ITotalJustice/sphaira)** di ITotalJustice —
+  design del forwarder on-device (builder NCA/PFS0/IVFC + flusso install ncm/ns) adattato per il launcher integrato
 - [libnx](https://github.com/switchbrew/libnx) / devkitPro — toolchain Switch
 
 ## Licenza

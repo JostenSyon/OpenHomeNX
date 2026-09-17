@@ -244,9 +244,12 @@ void AccountManager::unmountSave() {
     }
 }
 
-void AccountManager::commitSave() {
-    if (mounted_)
-        fsdevCommitDevice("save");
+bool AccountManager::commitSave() {
+    if (!mounted_) return false;
+    int rc = fsdevCommitDevice("save");
+    if (rc < 0)
+        DebugLog::line("account: commitSave FALLITO (rc=%d) - scrittura non persistita su Horizon", rc);
+    return rc >= 0;
 }
 
 bool AccountManager::backupSaveDir(const std::string& srcDir, const std::string& dstDir) {

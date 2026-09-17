@@ -1,6 +1,7 @@
 #pragma once
 #include <string>
 #include <functional>
+#include <mutex>
 
 // Callback di avanzamento download: riceve una riga pronta da mostrare, es.
 // "Downloading v0.1.21…  47%  ·  2.1 MB/s". Throttlata a ~4 volte/s.
@@ -24,6 +25,24 @@ void updateNetSetReady(bool ready);
 // true se rete usabile. Chiamato dai gate update prima di dichiararla off.
 bool updateNetEnsureReady();
 
+// Inizializza nifm:u una sola volta (idempotente, mai bloccante): usata sia
+// da updateNetLinkStr() qui sotto sia da chi altro (es. remote_sync.cpp, per
+// l'IP locale durante la scansione LAN) ha bisogno di nifm senza duplicarne
+// l'init.
+bool updateNetEnsureNifm();
+
+// Lock condiviso per QUALSIASI chiamata nifm*, init compreso: nifm:u e' una
+// singola sessione IPC ora condivisa fra piu' thread (autoupdate.cpp, il
+// worker di scoperta in remote_sync.cpp, e il main thread) -- le chiamate
+// IPC di libnx non sono garantite sicure se lanciate in concorrenza sulla
+// stessa sessione da thread diversi: il rischio concreto e' un hang, non
+// solo un dato letto storto (causa esatta del blocco segnalato dopo
+// l'introduzione del worker in background). updateNetEnsureNifm() e
+// updateNetLinkStr() prendono gia' questo lock da sole; chi chiama una
+// nifm* direttamente altrove (remoteSyncScanLan in remote_sync.cpp, per
+// nifmGetCurrentIpAddress) deve prenderlo per tutta la chiamata.
+std::mutex& updateNetNifmMutex();
+
 // Stato reale del link (WiFi/LAN/OFF) via nifm, throttled (~1 query ogni 2s,
 // risultato cachato). updateNetAvailable() dice solo "socket pronti" — vero
 // anche senza connessione — quindi la label usava quello e restava fissa.
@@ -39,6 +58,16 @@ inline std::string githubReleasesUrl(const std::string& owner, const std::string
 // false + `err` su qualunque problema (rete, HTTP != 200, JSON senza i campi).
 bool updateNetFetchInfo(const std::string& baseUrl, const std::string& token,
                         RemoteUpdateInfo& out, std::string& err);
+
+// Canale beta: interroga la GitHub API releases, prende la prima
+// pre-release (la più recente) e ne restituisce la base download
+// (".../releases/download/<tag>") + tag. Da lì updateNetFetchInfo()
+// legge il latest.json allegato alla pre-release. Nessuna pre-release
+// → false con err "none" (non un errore di rete: il chiamante lo dice
+// esplicito invece di ricadere silenzioso sullo stabile).
+bool updateNetFetchBetaBase(const std::string& owner, const std::string& repo,
+                            const std::string& token, std::string& outBase,
+                            std::string& outTag, std::string& err);
 
 // SHA256 hex di un file (streaming, per NRO grandi). "" se illeggibile.
 std::string sha256HexFile(const std::string& path);

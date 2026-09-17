@@ -6,23 +6,36 @@
 #include "nro_version.h"
 #include "app_version.h"
 #include "update_net.h"
+#include "remote_sync.h"
+#include "forwarder.h"
+#include "settings_cfg.h"
+#include "emulator.h"
+#include "trade_evo.h"
 
 #include <algorithm>
 #include <cerrno>
 #include <cmath>
+#include <cstdio>
 #include <ctime>
 #include <dirent.h>
 #include <fstream>
 #include <sys/stat.h>
+#ifdef OH_USB_UPDATE
+#include <usbhsfs.h>
+#endif
 
 namespace {
 // update.cfg accanto all'NRO (o in sdmc:/switch/OpenHomeNX/). Righe key=value:
 //   url=http://192.168.1.50:8000            (radice con latest.json + il .nro)
 //   token=<PAT>                             (solo repo privati, header Bearer)
 //   auto=1                                  (check update in parallelo al boot)
+//   channel=stable|beta                     (canale update, default stable)
 // Senza `url=` il check update usa le GitHub releases pubbliche
 // (githubReleasesUrl sotto); Send log/save richiedono comunque `url=`
 // (GitHub non riceve upload).
+// REGOLA HOME (bug 2026-09-12): url+channel+backup vivono in UN solo file,
+// quello con url= (attivo o .off che sia). Scrivere altrove crea un'esca
+// che lo switch GitHub/Custom sovrascrive perdendo l'url per sempre.
 // Etichetta corta per la sorgente update nei popup: l'URL intero sborda
 // dalle card (github.../download = 60+ caratteri). Il fetch usa sempre
 // l'URL completo, qui solo display.
@@ -49,54 +62,277 @@ static std::string updateSourceLabel(const std::string& url) {    auto gh = url.
 }
 struct UpdateCfg {
     std::string url, token;
+    std::string channel;   // "" o "stable" = release stabili, "beta" = pre-release
     long backupMb = 256;   // tetto CUMULATIVO auto-backup titoli installati
     long backupMbSd = 32;  // tetto cumulativo save file-backed (SD, piccoli)
 };
 
-bool readUpdateCfg(const std::string& basePath, UpdateCfg& out) {
-    const std::string paths[] = { basePath + "update.cfg",
-                                  "sdmc:/switch/OpenHomeNX/update.cfg" };
-    for (const auto& p : paths) {
-        std::ifstream f(p);
-        if (!f.good()) continue;
-        std::string line;
-        while (std::getline(f, line)) {
-            if (!line.empty() && line.back() == '\r') line.pop_back();
-            if (line.empty() || line[0] == '#') continue;
-            auto eq = line.find('=');
-            if (eq == std::string::npos) continue;
-            std::string k = line.substr(0, eq), v = line.substr(eq + 1);
-            auto trim = [](std::string& s) {
-                while (!s.empty() && (s.front() == ' ' || s.front() == '\t')) s.erase(s.begin());
-                while (!s.empty() && (s.back()  == ' ' || s.back()  == '\t')) s.pop_back();
-            };
-            trim(k); trim(v);
-            if (k == "url") out.url = v;
-            else if (k == "token") out.token = v;
-            else if (k == "backup_mb") out.backupMb = std::atol(v.c_str());
-            else if (k == "backup_mb_sd") out.backupMbSd = std::atol(v.c_str());
-        }
-        if (!out.url.empty()) return true;
+// Cerca update.cfg/.off nelle due dir note (duplica findUpdateCfgFiles,
+// che è membro UI definito più sotto e qui non visibile come free).
+static void updateCfgPaths(const std::string& basePath, std::string& cfg, std::string& off) {
+    cfg.clear();
+    off.clear();
+    const std::string dirs[] = { basePath, "sdmc:/switch/OpenHomeNX/" };
+    for (const auto& d : dirs) {
+        struct stat st;
+        if (cfg.empty() && stat((d + "update.cfg").c_str(), &st) == 0) cfg = d + "update.cfg";
+        if (off.empty() && stat((d + "update.cfg.off").c_str(), &st) == 0) off = d + "update.cfg.off";
+    }
+}
+
+// true se il file contiene una riga url= (anche vuota? no: chiave presente).
+static bool fileHasKey(const std::string& path, const std::string& want) {
+    std::ifstream f(path);
+    if (!f.good()) return false;
+    std::string line;
+    while (std::getline(f, line)) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        auto eq = line.find('=');
+        std::string k = (eq == std::string::npos) ? line : line.substr(0, eq);
+        while (!k.empty() && (k.front() == ' ' || k.front() == '\t')) k.erase(k.begin());
+        while (!k.empty() && (k.back() == ' ' || k.back() == '\t')) k.pop_back();
+        if (k == want) return true;
     }
     return false;
 }
+
+// Il file home della config (vedi REGOLA HOME sopra): quello con url=,
+// attivo o spento che sia; altrimenti l'attivo; altrimenti path da creare.
+static std::string updateCfgHome(const std::string& basePath) {
+    std::string cfg, off;
+    updateCfgPaths(basePath, cfg, off);
+    if (!off.empty() && fileHasKey(off, "url") && (cfg.empty() || !fileHasKey(cfg, "url")))
+        return off;
+    if (!cfg.empty())
+        return cfg;
+    if (!off.empty())
+        return off;
+    return basePath + "update.cfg";
+}
+
+// Parsa un file cfg in out; se keysOnlyChannel, prende solo channel
+// (per l'altro file: non deve mai sovrascrivere la home).
+static void parseUpdateCfgFile(const std::string& path, UpdateCfg& out, bool channelOnly) {
+    std::ifstream f(path);
+    if (!f.good()) return;
+    std::string line;
+    while (std::getline(f, line)) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        if (line.empty() || line[0] == '#') continue;
+        auto eq = line.find('=');
+        if (eq == std::string::npos) continue;
+        std::string k = line.substr(0, eq), v = line.substr(eq + 1);
+        auto trim = [](std::string& s) {
+            while (!s.empty() && (s.front() == ' ' || s.front() == '\t')) s.erase(s.begin());
+            while (!s.empty() && (s.back()  == ' ' || s.back()  == '\t')) s.pop_back();
+        };
+        trim(k); trim(v);
+        if (channelOnly) {
+            if (k == "channel" && out.channel.empty()) out.channel = v;
+            continue;
+        }
+        if (k == "url") out.url = v;
+        else if (k == "token") out.token = v;
+        else if (k == "channel") out.channel = v;
+        else if (k == "backup_mb") out.backupMb = std::atol(v.c_str());
+        else if (k == "backup_mb_sd") out.backupMbSd = std::atol(v.c_str());
+    }
+}
+
+bool readUpdateCfg(const std::string& basePath, UpdateCfg& out) {
+    // Precedenza: prima il file ATTIVO per intero (solo lui decide url e
+    // modalità GitHub/custom: l'url di un .off non deve mai riattivarsi da
+    // solo), poi l'altro file SOLO per il channel mancante. Un'esca senza
+    // url non sovrascrive mai nulla (bug 2026-09-12).
+    std::string cfg, off;
+    updateCfgPaths(basePath, cfg, off);
+    if (!cfg.empty()) parseUpdateCfgFile(cfg, out, false);
+    if (!off.empty()) parseUpdateCfgFile(off, out, true);
+    return !out.url.empty();
+}
 } // namespace
+
+// Forward: definita piu' sotto accanto agli altri helper backup.
+static bool removeRecursive(const std::string& p);
+
+// ==================== Dock inferiore (riga bassa selettore giochi) ====================
+// Stato persistito in settings.cfg (dock_order CSV + dock_visible). Disegno,
+// tap e navigazione sono tutti guidati da dockLayout(), cosi' l'ordine utente
+// non desincronizza mai le tre cose (era il bug del menu popup v0.1.37).
+static constexpr int DOCK_ROW_DX = 104; // spaziatura icone dock (condivisa con la molla)
+
+void UI::dockStateLoad() {
+    dockState_.customOrder.clear();
+    std::string orderStr = Settings::dockOrder();
+    size_t start = 0;
+    while (start < orderStr.size()) {
+        size_t end = orderStr.find(',', start);
+        if (end == std::string::npos) end = orderStr.size();
+        std::string token = orderStr.substr(start, end - start);
+        if (token == "Backpack") dockState_.customOrder.push_back(DockState::Item::Backpack);
+        else if (token == "Banks") dockState_.customOrder.push_back(DockState::Item::Banks);
+        else if (token == "SaveMenu") dockState_.customOrder.push_back(DockState::Item::SaveMenu);
+        else if (token == "Trade") dockState_.customOrder.push_back(DockState::Item::Trade);
+        else if (token == "RemoteBox") dockState_.customOrder.push_back(DockState::Item::RemoteBox);
+        else if (token == "DevSync") dockState_.customOrder.push_back(DockState::Item::DevSync);
+        else if (token == "Eject") dockState_.customOrder.push_back(DockState::Item::Eject);
+        if (end == std::string::npos) break;
+        start = end + 1;
+    }
+    if (dockState_.customOrder.empty()) {
+        dockStateResetToDefault();
+    } else {
+        // Migrazione: chi aveva gia' un ordine salvato da prima che
+        // RemoteBox/DevSync esistessero non le troverebbe mai (il parse qui
+        // sopra ignora semplicemente i token che non riconosce) -- le
+        // inseriamo appena prima di Eject (o in fondo se Eject non c'e', es.
+        // find() arriva a end()), cosi' compaiono anche per chi ha gia'
+        // personalizzato la dock, senza toccare l'ordine del resto scelto
+        // dall'utente.
+        auto hasItem = [&](DockState::Item it) {
+            for (auto x : dockState_.customOrder)
+                if (x == it) return true;
+            return false;
+        };
+        auto insertBeforeEjectOrAppend = [&](DockState::Item it) {
+            auto pos = std::find(dockState_.customOrder.begin(), dockState_.customOrder.end(),
+                                  DockState::Item::Eject);
+            dockState_.customOrder.insert(pos, it);
+        };
+        if (!hasItem(DockState::Item::RemoteBox)) insertBeforeEjectOrAppend(DockState::Item::RemoteBox);
+        if (!hasItem(DockState::Item::DevSync)) insertBeforeEjectOrAppend(DockState::Item::DevSync);
+    }
+    dockState_.visible = Settings::dockVisible();
+    dockLoaded_ = true;
+}
+
+void UI::dockStateSave() const {
+    std::string orderStr;
+    for (size_t i = 0; i < dockState_.customOrder.size(); ++i) {
+        if (i > 0) orderStr += ",";
+        switch (dockState_.customOrder[i]) {
+            case DockState::Item::Backpack: orderStr += "Backpack"; break;
+            case DockState::Item::Banks: orderStr += "Banks"; break;
+            case DockState::Item::SaveMenu: orderStr += "SaveMenu"; break;
+            case DockState::Item::Trade: orderStr += "Trade"; break;
+            case DockState::Item::RemoteBox: orderStr += "RemoteBox"; break;
+            case DockState::Item::DevSync: orderStr += "DevSync"; break;
+            case DockState::Item::Eject: orderStr += "Eject"; break;
+        }
+    }
+    Settings::setDockOrder(orderStr);
+    Settings::setDockVisible(dockState_.visible);
+}
+
+void UI::dockStateResetToDefault() {
+    dockState_.customOrder = { DockState::Item::Backpack, DockState::Item::Banks,
+        DockState::Item::SaveMenu, DockState::Item::Trade, DockState::Item::RemoteBox,
+        DockState::Item::DevSync, DockState::Item::Eject };
+    dockState_.visible = true;
+    dockState_.reorderMode = false;
+    dockState_.reorderFocusIdx = 0;
+    dockState_.reorderEnterTime = 0;
+}
+
+bool UI::dockStateCanReorder() const {
+    return dockLayout().size() >= 2 && !dockState_.reorderMode;
+}
+
+void UI::dockStateEnterReorderMode(int startIdx) {
+    if (!dockLoaded_) dockStateLoad();
+    auto slots = dockLayout();
+    if (slots.size() < 2) return;
+    dockState_.reorderMode = true;
+    if (startIdx < 0 || startIdx >= (int)slots.size()) startIdx = 0;
+    dockState_.reorderFocusIdx = startIdx;
+    dockState_.reorderEnterTime = SDL_GetTicks();
+    dockFocusItem(slots[startIdx].item);
+    // Azzera molla: le icone partono tutte dalle loro posizioni target.
+    for (int i = 0; i < MAX_DOCK_SLOTS; i++) { dockSlide_[i] = 0.0f; dockSlideVel_[i] = 0.0f; }
+}
+
+void UI::dockStateExitReorderMode(bool save) {
+    dockState_.reorderMode = false;
+    dockState_.reorderFocusIdx = 0;
+    dockState_.reorderEnterTime = 0;
+    if (save) dockStateSave();
+}
+
+// Effetto molla/budino sulle icone dock: ogni slot ha un offset x che
+// parte dalla posizione "altra" dello swap e ritorna a 0 con overshoot.
+// Chiamato ogni frame da drawDock().  K=0.35 stiffness, D=0.65 damping:
+// producing ~1 overshoot before settling (budino).
+void UI::dockSpringStep(std::vector<DockSlot>& slots) {
+    constexpr float K = 0.35f;
+    constexpr float D = 0.65f;
+    bool anyMoving = false;
+    for (int i = 0; i < MAX_DOCK_SLOTS && i < (int)slots.size(); i++) {
+        if (dockSlide_[i] == 0.0f && dockSlideVel_[i] == 0.0f) continue;
+        float force = -dockSlide_[i] * K - dockSlideVel_[i] * D;
+        dockSlideVel_[i] += force;
+        dockSlide_[i] += dockSlideVel_[i];
+        if (std::fabs(dockSlide_[i]) < 0.3f && std::fabs(dockSlideVel_[i]) < 0.3f) {
+            dockSlide_[i] = 0.0f;
+            dockSlideVel_[i] = 0.0f;
+        } else {
+            anyMoving = true;
+        }
+    }
+    if (anyMoving) markDirty();
+}
+
+void UI::dockStateSwapItems(int i, int j) {
+    if (i >= 0 && i < (int)dockState_.customOrder.size() && j >= 0 && j < (int)dockState_.customOrder.size())
+        std::swap(dockState_.customOrder[i], dockState_.customOrder[j]);
+}
+
+bool UI::dockStateItemVisible(DockState::Item item) const {
+    switch (item) {
+        case DockState::Item::SaveMenu:
+            return true; // opera sul gioco evidenziato (come la voce radiale)
+        case DockState::Item::Trade: {
+            if (isDualBankMode()) return false;
+            if (gameSelectorLayout_ == GameSelectorLayout::Gallery) {
+                if (gameSelCursor_ < 0 || gameSelCursor_ >= (int)availableGames_.size()) return false;
+                return TradeEvo::supported(availableGames_[gameSelCursor_]);
+            }
+            // Classica: la dock apre una lista giochi -> visibile se almeno
+            // UN gioco usabile supporta lo scambio (non solo il cursore).
+            for (int i = 0; i < (int)availableGames_.size(); i++) {
+                if (!tileHasUsableSave(i)) continue;
+                if (TradeEvo::supported(availableGames_[i])) return true;
+            }
+            return false;
+        }
+        case DockState::Item::RemoteBox:
+            // Come UI::openRemoteBox(): niente in dual-bank mode, e solo
+            // quando il worker in background ha davvero trovato un device.
+            return remoteDeviceAvailable_ && !isDualBankMode();
+        case DockState::Item::DevSync:
+            return remoteDeviceAvailable_;
+        case DockState::Item::Eject:
+#ifdef OH_USB_UPDATE
+            return usbHsFsGetMountedDeviceCount() > 0;
+#else
+            return false;
+#endif
+        default:
+            return true; // Backpack, Banks sempre visibili
+    }
+}
 
 static bool readQuickMenu(const std::string& basePath);
 static void writeQuickMenu(const std::string& basePath, bool on);
 
-// Righe popup save (X con debug): Normalize solo per GBA (RSE/FRLG, anche
-// via USB se con +16B) — per gli altri giochi non serve e resta nascosta.
+// Righe popup save (X con debug): invio save, backup, browse, clean.
+// Normalize e' ora in Impostazioni -> Sviluppatore (analizza tutti i save).
+static std::string normalizeRowLabel() { return i18n::get(StrKey::SetNormalizeSave); }
 static std::vector<std::string> saveMenuRows(GameType g) {
     std::vector<std::string> r = { "Backup save", "Browse backups", "Clean old backups" };
-    if (isImportedFile(g) || isFRLG(g)) r.push_back("Normalize save");
     r.push_back("Send save");
     r.push_back("Close");
     return r;
 }
-#ifdef OH_USB_UPDATE
-#include <usbhsfs.h>
-#endif
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
@@ -272,12 +508,7 @@ void UI::selectProfile(int index) {
     selSlide_ = 0.0f;
     galSelShown_ = -1;
     galSlide_ = 0.0f;
-    gameSelOnAllBanks_ = false;
-    gameSelOnSettings_ = false;
-    gameSelOnEject_ = false;
-    gameSelOnAvatar_ = false;
-    gameSelOnPack_ = false;
-    gameSelOnChevron_ = 0;
+    gsSetFocus(GSFocus::Grid); // reset focus periferico (vedi GSFocus)
     showWorking(i18n::get(StrKey::LoadingGameIcons));
     loadGameIcons();
     screen_ = AppScreen::GameSelector;
@@ -789,37 +1020,34 @@ void UI::drawGameArt(int i, int iconX, int iconY, int size, bool scaleInner) {
                         SDL_RenderCopy(renderer_, artIt->second, &src, &dst);
                     } else {
                         // Base +15% di dimensione, a destra del 15% e in basso
-                        // del 5% (coordinate tunate a mano per ogni gioco:
-                        // NON scalarle col grow, si rompe il framing).
-                        // Ruby: Groudon centrato orizzontalmente.
-                        // Sapphire: Kyogre centrato, +10% dimensione e +5pp in
-                        // basso rispetto alla base. Logo identico per tutti.
-                        const int SPR = (117 * UU) / 128;
-                        const int SHIFT_X = (UU * 15) / 100;
-                        const int SHIFT_Y = (UU * 5) / 100;
+                        // del 5% (coordinate tunate a mano per ogni gioco).
+                        // Ruby: Groudon centrato, Sapphire: Kyogre +10% e +5pp.
+                        // Prima era fisso su 128 (non seguiva lo zoom) → ora
+                        // scala con IS così sfondo + scritta + pokemon
+                        // ingrandiscono insieme della stessa quantità (zoomGrow).
+                        float z = (float)IS / 128.0f;
+                        const int SPR = (int)(117 * z);
+                        const int SHIFT_X = (int)(15 * z);
+                        const int SHIFT_Y = (int)(5 * z);
                     int shiftX = SHIFT_X;
                     int spr = SPR;
                     int shiftY = SHIFT_Y;
                     if (availableGames_[i] == GameType::RUBY) {
-                        // Come all'inizio: nessuno shift custom.
                         shiftX = 0;
                     }
                     if (availableGames_[i] == GameType::SAPPHIRE) {
-                        shiftX = (UU * 5) / 100;
+                        shiftX = (int)(5 * z);
                         spr = (SPR * 110) / 100;
-                        shiftY = (UU * 15) / 100;
+                        shiftY = (int)(15 * z);
                     }
-                    // Scala sulle dimensioni della texture (intera per RSE).
                     float scale = std::min((float)spr / texW, (float)spr / texH);
                     int dstW = (int)(texW * scale);
                     int dstH = (int)(texH * scale);
-                    // Overlay RSE fisso come tunato (non segue il grow):
-                    // box 128 originale centrato nell'icona ingrandita.
-                    int oX = iconX + (IS - UU) / 2;
-                    int oY = iconY + (IS - UU) / 2;
-                    SDL_Rect dst = {oX + (UU - dstW) / 2 + shiftX,
-                                    oY + UU - dstH + shiftY, dstW, dstH};
-                    SDL_Rect clip = {oX, oY, UU, UU};
+                    int oX = iconX;
+                    int oY = iconY;
+                    SDL_Rect dst = {oX + (IS - dstW) / 2 + shiftX,
+                                    oY + IS - dstH + shiftY, dstW, dstH};
+                    SDL_Rect clip = {oX, oY, IS, IS};
                     SDL_RenderSetClipRect(renderer_, &clip);
                     SDL_RenderCopy(renderer_, artIt->second, nullptr, &dst);
                     SDL_RenderSetClipRect(renderer_, nullptr);
@@ -831,12 +1059,13 @@ void UI::drawGameArt(int i, int iconX, int iconY, int size, bool scaleInner) {
                 int texW = 0, texH = 0;
                 SDL_QueryTexture(logoIt->second, nullptr, nullptr, &texW, &texH);
                     if (texW > 0 && texH > 0) {
-                        const int LOGO_H = (54 * UU) / 128;
+                        float zLogo = (float)IS / 128.0f;
+                        const int LOGO_H = (int)(54 * zLogo);
                         int dstW = (int)(texW * ((float)LOGO_H / texH));
-                        if (dstW > UU) dstW = UU;
-                        int oX = iconX + (IS - UU) / 2;
-                        int oY = iconY + (IS - UU) / 2;
-                        SDL_Rect dst = {oX + (UU - dstW) / 2, oY, dstW, LOGO_H};
+                        if (dstW > IS) dstW = IS;
+                        int oX = iconX;
+                        int oY = iconY;
+                        SDL_Rect dst = {oX + (IS - dstW) / 2, oY, dstW, LOGO_H};
                     SDL_RenderCopy(renderer_, logoIt->second, nullptr, &dst);
                 }
             }
@@ -906,6 +1135,294 @@ void UI::drawGameArt(int i, int iconX, int iconY, int size, bool scaleInner) {
     }
 }
 
+// Voci visibili nell'ordine utente + posizioni x centrate (stesso stile
+// della vecchia riga fissa: con 3 voci le posizioni coincidono con le
+// vecchie PCX/VCX/eject, cosi' tap e memoria muscolare non cambiano).
+std::vector<UI::DockSlot> UI::dockLayout() const {
+    std::vector<DockSlot> out;
+    if (!dockState_.visible) return out;
+    std::vector<DockState::Item> vis;
+    for (auto it : dockState_.customOrder)
+        if (dockStateItemVisible(it)) vis.push_back(it);
+    int n = (int)vis.size();
+    int x0 = SCREEN_W / 2 - (n - 1) * DOCK_ROW_DX / 2;
+    for (int i = 0; i < n; i++) out.push_back({ vis[i], x0 + i * DOCK_ROW_DX });
+    return out;
+}
+
+void UI::gsSetFocus(GSFocus f, DockState::Item dockItem) {
+    gsFocus_ = f;
+    if (f == GSFocus::Dock) gsDockItem_ = dockItem;
+}
+
+void UI::gsUnfocus(GSFocus f) {
+    if (gsFocus_ == f) gsFocus_ = GSFocus::Grid;
+}
+
+bool UI::gsDockIs(DockState::Item it) const {
+    return gsFocus_ == GSFocus::Dock && gsDockItem_ == it;
+}
+
+bool UI::gsChevronActive() const {
+    return gsFocus_ == GSFocus::ChevLeft || gsFocus_ == GSFocus::ChevRight;
+}
+
+void UI::dockClearFocus() {
+    gsUnfocus(GSFocus::Dock);
+}
+
+void UI::dockFocusItem(DockState::Item item) {
+    gsSetFocus(GSFocus::Dock, item);
+}
+
+bool UI::dockFocusedItem(DockState::Item& out) const {
+    if (gsFocus_ != GSFocus::Dock) return false;
+    out = gsDockItem_;
+    return true;
+}
+
+bool UI::dockHasFocus() const {
+    DockState::Item it;
+    return dockFocusedItem(it);
+}
+
+bool UI::dockMoveFocus(int dir) {
+    auto slots = dockLayout();
+    if (slots.empty()) return false;
+    DockState::Item cur;
+    int idx = -1;
+    if (dockFocusedItem(cur)) {
+        for (int i = 0; i < (int)slots.size(); i++)
+            if (slots[i].item == cur) { idx = i; break; }
+    } else {
+        // Nessuna voce a fuoco: atterra all'estremo verso cui si va.
+        dockFocusItem(slots[dir > 0 ? 0 : (int)slots.size() - 1].item);
+        return true;
+    }
+    // La voce a fuoco e' sparita dal layout (es. chiavetta rimossa):
+    // riparti dall'estremo.
+    if (idx < 0) {
+        dockFocusItem(slots[dir > 0 ? 0 : (int)slots.size() - 1].item);
+        return true;
+    }
+    int nxt = idx + dir;
+    if (nxt < 0 || nxt >= (int)slots.size()) return false;
+    dockFocusItem(slots[nxt].item);
+    return true;
+}
+
+bool UI::dockFocusFirst() {
+    auto slots = dockLayout();
+    if (slots.empty()) return false;
+    dockFocusItem(slots[0].item);
+    return true;
+}
+
+bool UI::dockFocusBanksOrFirst() {
+    return dockFocusFirst();
+}
+
+bool UI::dockFocusLast() {
+    auto slots = dockLayout();
+    if (slots.empty()) return false;
+    dockFocusItem(slots.back().item);
+    return true;
+}
+
+// Stesse azioni del tap/conferma sulle vecchie icone fisse (pack -> zaino,
+// vault -> tutte le banche, eject -> espelli) + SaveMenu/Trade come il menu
+// radiale (openSaveMenu / selectGame+openTradeList).
+void UI::dockActivateFocused(bool& running) {
+    DockState::Item it;
+    if (!dockFocusedItem(it)) return;
+    switch (it) {
+        case DockState::Item::Backpack:
+            openBackpackOn(gameSelCursor_);
+            break;
+        case DockState::Item::Banks:
+            enterAllBanksMode();
+            break;
+        case DockState::Item::SaveMenu:
+            if (gameSelectorLayout_ == GameSelectorLayout::Classic) {
+                // Classico: niente gioco evidenziato -> lista popup.
+                openGamePick(GamePickTarget::SaveMenu);
+            } else if (gameSelCursor_ >= 0 && gameSelCursor_ < (int)availableGames_.size()) {
+                openSaveMenu(availableGames_[gameSelCursor_],
+                             importedOccurrence(gameSelCursor_));
+            }
+            break;
+        case DockState::Item::Trade: {
+            if (gameSelectorLayout_ == GameSelectorLayout::Classic) {
+                // Classico: niente gioco evidenziato -> lista popup.
+                openGamePick(GamePickTarget::Trade);
+                break;
+            }
+            if (gameSelCursor_ < 0 || gameSelCursor_ >= (int)availableGames_.size()) break;
+            AppScreen prevScreen = screen_;
+            selectGame(availableGames_[gameSelCursor_], importedOccurrence(gameSelCursor_));
+            screen_ = prevScreen;
+            openTradeList();
+            break;
+        }
+        case DockState::Item::RemoteBox:
+            openRemoteBox();
+            break;
+        case DockState::Item::DevSync:
+            remoteSyncTestRow();
+            break;
+        case DockState::Item::Eject:
+            ejectUsbDevices();
+            break;
+    }
+    (void)running;
+}
+
+void UI::drawDock() {
+    if (!dockLoaded_) dockStateLoad();
+    // Timeout auto-uscita dal riordino (20 s senza tocchi): esce senza salvare.
+    if (dockState_.reorderMode && SDL_GetTicks() - dockState_.reorderEnterTime > 20000)
+        dockStateExitReorderMode(false);
+    if (!dockState_.visible) {
+        dockClearFocus();
+        for (int i = 0; i < MAX_DOCK_SLOTS; i++) { dockSlide_[i] = 0.0f; dockSlideVel_[i] = 0.0f; }
+        return;
+    }
+    constexpr int R = 34;
+    constexpr int ICON_R = 24;
+    constexpr int BTN_Y = SCREEN_H - 110;
+    auto slots = dockLayout();
+    if (slots.empty()) {
+        dockClearFocus();
+        return;
+    }
+    // Animazione espelli (come la vecchia riga fissa): il target e' la
+    // posizione della voce Eject nel layout, o fuori schermo se nascosta.
+    int ejectTarget = SCREEN_W / 2 + 104;
+    for (auto& s : slots)
+        if (s.item == DockState::Item::Eject) ejectTarget = s.cx;
+    float ejectAlphaT =
+#ifdef OH_USB_UPDATE
+        (dockStateItemVisible(DockState::Item::Eject) ? 255.0f : 0.0f);
+#else
+        0.0f;
+#endif
+    if (ejectBtnX_ < 0) ejectBtnX_ = (float)ejectTarget;
+    if (ejectAnimStage_ == 1) {
+        // Appena espulso: prima sparisce l'eject.
+        ejectAlphaT = 0.0f;
+        if (ejectBtnA_ == 0.0f) ejectAnimStage_ = 2;
+    } else if (ejectAnimStage_ == 2) {
+        ejectAlphaT = 0.0f;
+        ejectAnimStage_ = 0;
+    } else if (ejectAlphaT > 0.0f) {
+        ejectAnimStage_ = 0;
+    }
+    if (ejectBtnA_ == 0 && ejectAlphaT > 0.0f) ejectBtnX_ = (float)ejectTarget + 60.0f; // entra da destra
+    auto approach = [](float cur, float tgt) {
+        float d = tgt - cur;
+        if (d > -1.0f && d < 1.0f) return tgt;
+        return cur + d * 0.25f;
+    };
+    float ne = approach(ejectBtnX_, (float)ejectTarget);
+    float na = approach(ejectBtnA_, ejectAlphaT);
+    if (ne != ejectBtnX_ || na != ejectBtnA_) markDirty();
+    ejectBtnX_ = ne; ejectBtnA_ = na;
+    // Effetto molla/budino del riordino: slot inseguono il target.
+    dockSpringStep(slots);
+    auto drawIcon = [&](SDL_Texture* tex, int cx) {
+        SDL_SetTextureColorMod(tex, T().text.r, T().text.g, T().text.b);
+        SDL_Rect dst = {cx - ICON_R, BTN_Y - ICON_R, ICON_R * 2, ICON_R * 2};
+        SDL_RenderCopy(renderer_, tex, nullptr, &dst);
+        SDL_SetTextureColorMod(tex, 255, 255, 255);
+    };
+    auto iconFor = [&](DockState::Item it) -> SDL_Texture* {
+        switch (it) {
+            case DockState::Item::Backpack: return iconPack_;
+            case DockState::Item::Banks: return iconVault_;
+            case DockState::Item::SaveMenu: return iconFloppy_;
+            case DockState::Item::Trade: return iconTrade_;
+            case DockState::Item::RemoteBox: return iconDevBox_;
+            case DockState::Item::DevSync: return iconDevSync_;
+            case DockState::Item::Eject: return iconEject_;
+        }
+        return nullptr;
+    };
+    auto focusedFor = [&](DockState::Item it) {
+        return gsDockIs(it);
+    };
+    for (auto& s : slots) {
+        int si = (int)(&s - &slots[0]);
+        float slideOff = (si < MAX_DOCK_SLOTS) ? dockSlide_[si] : 0.0f;
+        int cx = (s.item == DockState::Item::Eject) ? (int)(ejectBtnX_ + 0.5f) : s.cx;
+        if (s.item != DockState::Item::Eject)
+            cx += (int)(slideOff + 0.5f); // molla/budino sul riordino
+        bool focused = focusedFor(s.item);
+        // In riordino evidenzia la voce che si sta spostando.
+        if (dockState_.reorderMode && (int)(&s - &slots[0]) == dockState_.reorderFocusIdx)
+            focused = true;
+        if (s.item == DockState::Item::Eject && ejectBtnA_ <= 1.0f) {
+            if (gsDockIs(DockState::Item::Eject) && !dockStateItemVisible(DockState::Item::Eject))
+                gsUnfocus(GSFocus::Dock); // voce sparita in fade: torna in griglia
+            continue; // fade-out: non disegnabile (come prima)
+        }
+        drawRoundSelect(cx, BTN_Y, R + 1, focused);
+        if (s.item == DockState::Item::Backpack) {
+            // Zaino: texture gia' a misura (48px), blit 1:1 senza scaling.
+            if (iconPack_) {
+                SDL_SetTextureColorMod(iconPack_, T().text.r, T().text.g, T().text.b);
+                SDL_Rect dst = {cx - ICON_R, BTN_Y - ICON_R, ICON_R * 2, ICON_R * 2};
+                SDL_RenderCopy(renderer_, iconPack_, nullptr, &dst);
+                SDL_SetTextureColorMod(iconPack_, 255, 255, 255);
+            }
+        } else if (SDL_Texture* tex = iconFor(s.item)) {
+            if (s.item == DockState::Item::Eject) {
+                SDL_SetTextureAlphaMod(tex, (Uint8)ejectBtnA_);
+                SDL_SetTextureColorMod(tex, T().text.r, T().text.g, T().text.b);
+                SDL_Rect dst = {cx - ICON_R, BTN_Y - ICON_R, ICON_R * 2, ICON_R * 2};
+                SDL_RenderCopy(renderer_, tex, nullptr, &dst);
+                SDL_SetTextureAlphaMod(tex, 255);
+                SDL_SetTextureColorMod(tex, 255, 255, 255);
+            } else {
+                drawIcon(tex, cx);
+            }
+        }
+        if (focused && !dockState_.reorderMode) {
+            const char* lblKey = nullptr;
+            switch (s.item) {
+                case DockState::Item::Backpack: lblKey = StrKey::BackpackTitle; break;
+                case DockState::Item::Banks: lblKey = StrKey::ViewAllBanks; break;
+                case DockState::Item::SaveMenu: lblKey = StrKey::RadialSaveMenu; break;
+                case DockState::Item::Trade: lblKey = StrKey::RadialTrade; break;
+                case DockState::Item::RemoteBox: lblKey = StrKey::RemoteBoxMenuLabel; break;
+                case DockState::Item::DevSync: lblKey = StrKey::DockDevSync; break;
+                case DockState::Item::Eject: lblKey = StrKey::DockEject; break;
+            }
+            if (lblKey) {
+                std::string lbl = i18n::get(lblKey);
+                int ly = BTN_Y + R + 19; // un paio di px sotto l'icona, come nel radial
+                SDL_Color sh = {0, 0, 0, 220};
+                // ombra rinforzata: alone 8 direzioni + leggero offset per staccare dal fondo
+                drawTextCentered(lbl, cx + 1, ly + 1, sh, font_);
+                drawTextCentered(lbl, cx - 1, ly + 1, sh, font_);
+                drawTextCentered(lbl, cx + 1, ly - 1, sh, font_);
+                drawTextCentered(lbl, cx - 1, ly - 1, sh, font_);
+                drawTextCentered(lbl, cx, ly + 1, sh, font_);
+                drawTextCentered(lbl, cx, ly - 1, sh, font_);
+                drawTextCentered(lbl, cx + 1, ly, sh, font_);
+                drawTextCentered(lbl, cx - 1, ly, sh, font_);
+                SDL_Color sh2 = {0, 0, 0, 140};
+                drawTextCentered(lbl, cx + 2, ly + 2, sh2, font_);
+                drawTextCentered(lbl, cx - 2, ly + 2, sh2, font_);
+                drawTextCentered(lbl, cx, ly, T().text, font_);
+            }
+        }
+    }
+    if (dockState_.reorderMode) {
+        drawTextCentered("Sposta: L/R  Conferma: A  Annulla: B", SCREEN_W / 2,
+                         BTN_Y + R + 17, T().textDim, fontSmall_);
+    }
+}
+
 void UI::drawGameSelectorFrame() {
     SDL_SetRenderDrawColor(renderer_, T().bg.r, T().bg.g, T().bg.b, 255);
     SDL_RenderClear(renderer_);
@@ -922,7 +1439,7 @@ void UI::drawGameSelectorFrame() {
     if (selectedProfile_ >= 0 && selectedProfile_ < account_.profileCount()) {
         constexpr int AV = 56;
         constexpr int AVX = 36, AVY = 30;
-        if (gameSelOnAvatar_) {
+        if (gsFocus_ == GSFocus::Avatar) {
             drawRoundSelect(AVX + AV / 2, AVY + AV / 2, AV / 2 + 1, true);
         }
         SDL_Texture* av = account_.profiles()[selectedProfile_].iconTextureRound;
@@ -954,6 +1471,16 @@ void UI::drawGameSelectorFrame() {
             SDL_Rect ddst = {SCREEN_W - 36 - 36 - 8 - 36, 34, 36, 36};
             SDL_RenderCopy(renderer_, iconDebug_, nullptr, &ddst);
             SDL_SetTextureColorMod(iconDebug_, 255, 255, 255);
+        }
+        // Device remoto trovato (worker in background): un altro posto a
+        // sinistra del primo libero fra wifi e il bug debug.
+        if (remoteDeviceAvailable_ && iconDevLink_) {
+            int dlx = SCREEN_W - 36 - 36 - 8 - 36;
+            if (DebugLog::enabled() && iconDebug_) dlx -= 8 + 36;
+            SDL_SetTextureColorMod(iconDevLink_, T().text.r, T().text.g, T().text.b);
+            SDL_Rect rdst = {dlx, 34, 36, 36};
+            SDL_RenderCopy(renderer_, iconDevLink_, nullptr, &rdst);
+            SDL_SetTextureColorMod(iconDevLink_, 255, 255, 255);
         }
     }
     }
@@ -1022,7 +1549,7 @@ void UI::drawGameSelectorFrame() {
 
         // Card selezionata ingrandita (zoom animato intero): sfondo e icona
         // crescono, i testi restano centrati (il centro non si sposta).
-        bool sel = (i == gameSelCursor_ && !gameSelOnAllBanks_ && !gameSelOnSettings_ && !gameSelOnEject_ && !gameSelOnAvatar_ && !gameSelOnPack_ && gameSelOnChevron_ == 0);
+        bool sel = (i == gameSelCursor_ && gsFocus_ == GSFocus::Grid);
         if (gameSelCursor_ != zoomCard_) {
             zoomPrev_ = zoomCard_;
             zoomCard_ = gameSelCursor_;
@@ -1055,99 +1582,31 @@ void UI::drawGameSelectorFrame() {
 
         // Game name below icon (RSE show the logo on top too, but the
         // text label below stays for readability at a glance).
+        // Con lo zoom la card cresce (cx0/cw/cy0/IS): anche scritta e
+        // conteggio banche devono scalare/centrarsi sulla card ingrandita,
+        // non restare fissi sull'impronta originale.
         {
             std::string name = gameDisplayNameOf(availableGames_[i]);
-            // Strip "Pokemon " prefix for brevity
             if (name.substr(0, 8) == "Pokemon ")
                 name = name.substr(8);
             if (name.length() > 20) name = name.substr(0, 19) + ".";
-            drawTextCentered(name, cardX + CARD_W / 2, cardY + ICON_SIZE + 30,
+            drawTextCentered(name, cx0 + cw / 2, cy0 + IS + 30,
                              T().text, fontSmall_);
         }
 
-        // Bank count under game name
         auto bc = gameBankCounts_.find(availableGames_[i]);
         int bankCount = (bc != gameBankCounts_.end()) ? bc->second : 0;
         std::string bankStr = "(" + std::to_string(bankCount) + ")";
-        drawTextCentered(bankStr, cardX + CARD_W / 2, cardY + ICON_SIZE + 50,
+        drawTextCentered(bankStr, cx0 + cw / 2, cy0 + IS + 50,
                          T().textDim, fontSmall_);
     }
 
     }
 
-    // Riga bassa: zaino (sx, fisso) + banche (centro, fisso) + espelli USB
-    // (dx, animato). Etichetta banche solo quando evidenziata.
-    {
-        constexpr int R = 34;
-        constexpr int ICON_R = 24;
-        constexpr int BTN_Y = SCREEN_H - 110;
-        constexpr int ROW_DX = 104; // distanza fissa tra i pulsanti
-        constexpr int VCX = SCREEN_W / 2;
-        constexpr int PCX = SCREEN_W / 2 - ROW_DX;
-#ifdef OH_USB_UPDATE
-        bool ejectVisible = usbHsFsGetMountedDeviceCount() > 0;
-#else
-        bool ejectVisible = false;
-#endif
-        float ejectTarget = (float)SCREEN_W / 2 + ROW_DX;
-        float ejectAlphaT = ejectVisible ? 255.0f : 0.0f;
-        if (ejectBtnX_ < 0) ejectBtnX_ = ejectTarget;
-        if (ejectVisible) ejectAnimStage_ = 0; // chiavetta tornata: annulla sequenza
-        if (ejectAnimStage_ == 1) {
-            // Appena espulso: prima sparisce l'eject.
-            ejectAlphaT = 0.0f;
-            if (ejectBtnA_ == 0.0f) ejectAnimStage_ = 2;
-        } else if (ejectAnimStage_ == 2) {
-            ejectAlphaT = 0.0f;
-            ejectAnimStage_ = 0;
-        } else if (ejectVisible) {
-            ejectAnimStage_ = 0;
-        }
-        if (ejectBtnA_ == 0 && ejectVisible) ejectBtnX_ = ejectTarget + 60.0f; // entra da destra
-        auto approach = [](float cur, float tgt) {
-            float d = tgt - cur;
-            if (d > -1.0f && d < 1.0f) return tgt;
-            return cur + d * 0.25f;
-        };
-        float ne = approach(ejectBtnX_, ejectTarget);
-        float na = approach(ejectBtnA_, ejectAlphaT);
-        if (ne != ejectBtnX_ || na != ejectBtnA_) markDirty();
-        ejectBtnX_ = ne; ejectBtnA_ = na;
-        auto drawIcon = [&](SDL_Texture* tex, int cx) {
-            SDL_SetTextureColorMod(tex, T().text.r, T().text.g, T().text.b);
-            SDL_Rect dst = {cx - ICON_R, BTN_Y - ICON_R, ICON_R * 2, ICON_R * 2};
-            SDL_RenderCopy(renderer_, tex, nullptr, &dst);
-            SDL_SetTextureColorMod(tex, 255, 255, 255);
-        };
-        // Zaino (WIP: messaggio finche non c'e l'injector eventi/strumenti).
-        // Texture gia a misura (48px): blit 1:1, niente scaling = niente aliasing.
-        drawRoundSelect(PCX, BTN_Y, R + 1, gameSelOnPack_);
-        if (iconPack_) {
-            SDL_SetTextureColorMod(iconPack_, T().text.r, T().text.g, T().text.b);
-            SDL_Rect dst = {PCX - ICON_R, BTN_Y - ICON_R, ICON_R * 2, ICON_R * 2};
-            SDL_RenderCopy(renderer_, iconPack_, nullptr, &dst);
-            SDL_SetTextureColorMod(iconPack_, 255, 255, 255);
-        }
-        // Banche
-        drawRoundSelect(VCX, BTN_Y, R + 1, gameSelOnAllBanks_);
-        if (iconVault_) drawIcon(iconVault_, VCX);
-        if (gameSelOnAllBanks_) {
-            drawTextCentered(i18n::get(StrKey::ViewAllBanks), SCREEN_W / 2,
-                             BTN_Y + R + 17, T().text, font_);
-        }
-        if (ejectBtnA_ > 1.0f && iconEject_) {
-            int ecx = (int)(ejectBtnX_ + 0.5f);
-            drawRoundSelect(ecx, BTN_Y, R + 1, gameSelOnEject_);
-            SDL_SetTextureAlphaMod(iconEject_, (Uint8)ejectBtnA_);
-            SDL_SetTextureColorMod(iconEject_, T().text.r, T().text.g, T().text.b);
-            SDL_Rect dst = {ecx - ICON_R, BTN_Y - ICON_R, ICON_R * 2, ICON_R * 2};
-            SDL_RenderCopy(renderer_, iconEject_, nullptr, &dst);
-            SDL_SetTextureAlphaMod(iconEject_, 255);
-            SDL_SetTextureColorMod(iconEject_, 255, 255, 255);
-        } else if (!ejectVisible) {
-            gameSelOnEject_ = false;
-        }
-    }
+    // Riga bassa: dock guidato da dockLayout() (ordine utente, voci
+    // condizionali). Con l'ordine di fabbrica coincide con la vecchia riga
+    // fissa zaino/banche/eject.
+    drawDock();
 
     // Ingranaggio impostazioni in basso a destra, stessa riga delle banche.
     // Apre lo stesso menu del tasto + (menu dedicato in futuro).
@@ -1155,7 +1614,7 @@ void UI::drawGameSelectorFrame() {
         constexpr int GR = 26;
         int gcx = SCREEN_W - 64;
         int gcy = SCREEN_H - 110;
-        drawRoundSelect(gcx, gcy, GR + 1, gameSelOnSettings_);
+        drawRoundSelect(gcx, gcy, GR + 1, gsFocus_ == GSFocus::Settings);
         if (iconSettings_) {
             constexpr int SET_R = 20;
             SDL_SetTextureColorMod(iconSettings_, T().text.r, T().text.g, T().text.b);
@@ -1184,8 +1643,8 @@ void UI::drawGameSelectorFrame() {
             SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "0");
             SDL_SetTextureColorMod(iconArrow_, 255, 255, 255);
         };
-        bool leftFocused = gameSelOnChevron_ == -1;
-        bool rightFocused = gameSelOnChevron_ == 1;
+        bool leftFocused = gsFocus_ == GSFocus::ChevLeft;
+        bool rightFocused = gsFocus_ == GSFocus::ChevRight;
         arrow(34, false, gameSelPage_ > 0, leftFocused);
         arrow(SCREEN_W - 34, true, gameSelPage_ < totalPages - 1, rightFocused);
     }
@@ -1200,9 +1659,18 @@ void UI::drawGameSelectorFrame() {
     std::string saveHint;
     if (DebugLog::enabled())
         saveHint = " | X: save";
+    // "ZL: Avvia" solo in Galleria e solo se il gioco evidenziato e'
+    // davvero lanciabile ora -- titolo Switch nativo, oppure emulato con
+    // mGBA rilevato e rom trovata accanto al save. Stessa filosofia di
+    // ejectHint: compare solo quando il tasto avrebbe un effetto reale.
+    std::string launchHint;
+    if (gameSelectorLayout_ == GameSelectorLayout::Gallery && !appletMode_ &&
+        isGameLaunchableAt(gameSelCursor_)) {
+        launchHint = i18n::get(StrKey::StatusGameLaunch);
+    }
     if (selectedProfile_ >= 0) {
         drawStatusBar((totalPages > 1 ? i18n::get(StrKey::StatusGameBackPage)
-                                      : i18n::get(StrKey::StatusGameBack)) + ejectHint + saveHint);
+                                      : i18n::get(StrKey::StatusGameBack)) + ejectHint + saveHint + launchHint);
         std::string profileLabel = account_.profiles()[selectedProfile_].nickname;
         profileLabel += " | ";
         profileLabel += useOpenHome() ? "OH" : "PK";
@@ -1213,7 +1681,7 @@ void UI::drawGameSelectorFrame() {
         if (e.tex) drawText(profileLabel, SCREEN_W - e.w - 15, SCREEN_H - 26, T().goldLabel, fontSmall_);
     } else {
         drawStatusBar((totalPages > 1 ? i18n::get(StrKey::StatusGameQuitPage)
-                                      : i18n::get(StrKey::StatusGameQuit)) + ejectHint + saveHint);
+                                      : i18n::get(StrKey::StatusGameQuit)) + ejectHint + saveHint + launchHint);
         // Show core even without profile so feedback is always visible
         std::string coreLabel = useOpenHome() ? "OH" : "PK";
         if (DebugLog::enabled())
@@ -1245,28 +1713,21 @@ void UI::selectorTap(float px, float py, bool& running) {
         markDirty();
         return;
     }
-    // Vault / eject / gear (riga bassa fissa)
+    // Dock (riga bassa guidata da dockLayout()) / gear.
+    // In riordino il tap non attiva nulla: esce senza salvare.
+    if (dockState_.reorderMode) {
+        dockStateExitReorderMode(false);
+        markDirty();
+        return;
+    }
     constexpr float BTN_Y = SCREEN_H - 110;
-    if (dist2(px, py, SCREEN_W / 2, BTN_Y) < 45 * 45) {
-        gameSelOnAllBanks_ = true;
-        gameSelOnAvatar_ = gameSelOnPack_ = false;
-        gameSelOnEject_ = gameSelOnSettings_ = false;
-        gameSelOnChevron_ = 0;
-        enterAllBanksMode();
-        return;
-    }
-    if (dist2(px, py, SCREEN_W / 2 - 104, BTN_Y) < 45 * 45) {
-        gameSelOnPack_ = true;
-        gameSelOnAvatar_ = gameSelOnAllBanks_ = false;
-        gameSelOnEject_ = gameSelOnSettings_ = false;
-        gameSelOnChevron_ = 0;
-        showMessageAndWait(i18n::get(StrKey::SetTitle),
-            i18n::get(StrKey::BagSoon)); // WIP: injector eventi/strumenti
-        return;
-    }
-    if (ejectBtnA_ > 128 && dist2(px, py, ejectBtnX_, BTN_Y) < 45 * 45) {
-        ejectUsbDevices();
-        return;
+    for (auto& s : dockLayout()) {
+        if (s.item == DockState::Item::Eject && ejectBtnA_ <= 128) continue; // in fade: non cliccabile
+        if (dist2(px, py, (float)s.cx, BTN_Y) < 45 * 45) {
+            dockFocusItem(s.item); // setter unico: azzera avatar/gear/launch/chevron
+            dockActivateFocused(running);
+            return;
+        }
     }
     if (dist2(px, py, SCREEN_W - 64, BTN_Y) < 40 * 40) {
         openSettings(); // il gear apre SEMPRE le impostazioni
@@ -1281,18 +1742,14 @@ void UI::selectorTap(float px, float py, bool& running) {
         if (dist2(px, py, 34, SCREEN_H / 2) < 34 * 34 && gameSelPage_ > 0) {
             gameSelPage_--;
             gameSelCursor_ = gameSelPage_ * 12;
-            gameSelOnAllBanks_ = gameSelOnAvatar_ = false;
-            gameSelOnEject_ = gameSelOnSettings_ = false;
-            gameSelOnChevron_ = 0;
+            gsSetFocus(GSFocus::Grid);
             markDirty();
             return;
         }
         if (dist2(px, py, SCREEN_W - 34, SCREEN_H / 2) < 34 * 34 && gameSelPage_ < totalPages - 1) {
             gameSelPage_++;
             gameSelCursor_ = gameSelPage_ * 12;
-            gameSelOnAllBanks_ = gameSelOnAvatar_ = false;
-            gameSelOnEject_ = gameSelOnSettings_ = false;
-            gameSelOnChevron_ = 0;
+            gsSetFocus(GSFocus::Grid);
             markDirty();
             return;
         }
@@ -1318,10 +1775,12 @@ void UI::selectorTap(float px, float py, bool& running) {
         int cardY = gridStartY + r * (CARD_H + CARD_GAP);
         if (px >= cardX && px <= cardX + CARD_W && py >= cardY && py <= cardY + CARD_H) {
             gameSelCursor_ = i;
-            gameSelOnAllBanks_ = gameSelOnAvatar_ = false;
-            gameSelOnEject_ = gameSelOnSettings_ = false;
-            gameSelOnChevron_ = 0;
-            selectGame(availableGames_[i], importedOccurrence(i));
+            gsSetFocus(GSFocus::Grid);
+            if (Settings::radialMenu()) {
+                openRadialMenu(i);
+            } else {
+                selectGame(availableGames_[i], importedOccurrence(i));
+            }
             markDirty();
             return;
         }
@@ -1340,7 +1799,7 @@ void UI::ejectUsbDevices() {
         if (usbHsFsUnmountDevice(&devs[i], true)) ok++;
     DebugLog::line("usb eject: unmounted %d/%u device(s)", ok, got);
     rescanImportedGames();
-    gameSelOnEject_ = false;
+    if (gsDockIs(DockState::Item::Eject)) gsUnfocus(GSFocus::Dock); // l'eject sparisce
     if (ok > 0) ejectAnimStage_ = 1; // sequenza: fade eject, poi rientro vault
     markDirty();
 #else
@@ -1405,14 +1864,14 @@ void UI::handleGameSelectorInput(bool& running) {
         int pageCount = pageEnd - pageStart;
 
         // On a chevron button
-        if (gameSelOnChevron_ != 0) {
+        if (gsChevronActive()) {
             if (dx != 0) {
-                if (gameSelOnChevron_ == -1 && dx > 0) {
+                if (gsFocus_ == GSFocus::ChevLeft && dx > 0) {
                     // Right from left chevron → back to grid col 0
-                    gameSelOnChevron_ = 0;
-                } else if (gameSelOnChevron_ == 1 && dx < 0) {
+                    gsUnfocus(GSFocus::ChevLeft);
+                } else if (gsFocus_ == GSFocus::ChevRight && dx < 0) {
                     // Left from right chevron → back to grid last col
-                    gameSelOnChevron_ = 0;
+                    gsUnfocus(GSFocus::ChevRight);
                     int localIdx = gameSelCursor_ - pageStart;
                     int row = localIdx / COLS;
                     int rowItems = std::min(COLS, pageCount - row * COLS);
@@ -1420,35 +1879,91 @@ void UI::handleGameSelectorInput(bool& running) {
                 }
             }
             if (dy > 0) {
-                gameSelOnChevron_ = 0;
-                gameSelOnSettings_ = false;
-                gameSelOnEject_ = false;
-                gameSelOnAvatar_ = false;
-                gameSelOnAllBanks_ = true;
-                gameSelOnPack_ = false;
+                gsSetFocus(GSFocus::Grid);
+                dockFocusBanksOrFirst(); // giu' dai chevron: banche o prima voce
             }
             if (dy < 0) {
-                gameSelOnChevron_ = 0;
+                gsUnfocus(GSFocus::ChevLeft);
+                gsUnfocus(GSFocus::ChevRight);
             }
             return;
         }
 
-        if (gameSelOnPack_) {
-            // Sullo zaino (prima icona a sx della dock): destra torna alle
-            // banche, sinistra torna alla lista/griglia (posizione
-            // invariata), su torna in griglia (ultima riga).
+        if (gsFocus_ == GSFocus::Launch) {
+            // Sul tastino "Avvia" del pannello anteprima: sinistra torna
+            // alla lista (cursore invariato), destra o giu' continuano
+            // verso la prima icona della dock -- "giu'" e' lo stesso gesto
+            // che dalla dock riporta su qui (vedi dy < 0 nel blocco dock).
+            if (dx < 0) {
+                gsUnfocus(GSFocus::Launch);
+            } else if (dx > 0 || dy > 0) {
+                dockFocusFirst(); // verso la prima icona della dock (azzera Launch)
+            }
+            return;
+        }
+
+        // Dock: navigazione guidata dal layout (l'ordine utente non conta,
+        // i gesti restano quelli di sempre). In riordino sx/dx scambiano
+        // le voci, su/giu' annullano.
+        if (dockHasFocus()) {
+            if (dockState_.reorderMode) {
+                if (dx != 0) {
+                    DockState::Item cur;
+                    if (dockFocusedItem(cur)) {
+                        auto slots = dockLayout();
+                        int idx = -1;
+                        for (int i = 0; i < (int)slots.size(); i++)
+                            if (slots[i].item == cur) { idx = i; break; }
+                        int nxt = idx + dx;
+                        if (idx >= 0 && nxt >= 0 && nxt < (int)slots.size()) {
+                            // Scambia nell'ordine utente (il layout e'
+                            // filtrato per visibilita': gli indici non
+                            // coincidono), poi riaggancia il focus.
+                            int pi = -1, pj = -1;
+                            for (int i = 0; i < (int)dockState_.customOrder.size(); i++) {
+                                if (dockState_.customOrder[i] == slots[idx].item) pi = i;
+                                if (dockState_.customOrder[i] == slots[nxt].item) pj = i;
+                            }
+                            if (pi >= 0 && pj >= 0) {
+                                // Effetto molla/budino: le due icone partono
+                                // dalla posizione dell'altra e ritornano a posto.
+                                if (idx < MAX_DOCK_SLOTS && nxt < MAX_DOCK_SLOTS) {
+                                    dockSlide_[idx] = (float)((nxt - idx) * DOCK_ROW_DX);
+                                    dockSlideVel_[idx] = 0.0f;
+                                    dockSlide_[nxt] = (float)((idx - nxt) * DOCK_ROW_DX);
+                                    dockSlideVel_[nxt] = 0.0f;
+                                }
+                                dockStateSwapItems(pi, pj);
+                                dockState_.reorderFocusIdx = nxt;
+                                // L'icona spostata resta a fuoco sulla sua nuova
+                                // posizione (destinazione): mai quella di partenza.
+                                dockFocusItem(cur);
+                            }
+                        }
+                    }
+                } else if (dy != 0) {
+                    dockStateExitReorderMode(false);
+                }
+                return;
+            }
             if (dx > 0) {
-                gameSelOnPack_ = false;
-                gameSelOnAllBanks_ = true;
+                if (!dockMoveFocus(1)) {
+                    // Oltre l'ultima voce: ingranaggio (come il vecchio eject->gear).
+                    gsSetFocus(GSFocus::Settings);
+                }
             } else if (dx < 0) {
-                gameSelOnPack_ = false;
+                if (!dockMoveFocus(-1)) dockClearFocus(); // prima voce: torna alla lista
             } else if (dy < 0) {
-                gameSelOnPack_ = false;
-                if (!gallerySel_) {
+                dockClearFocus();
+                if (gallerySel_ && isGameLaunchableAt(gameSelCursor_)) {
+                    // Galleria, gioco lanciabile: "su" dalla dock torna al
+                    // tastino "Avvia" del pannello anteprima (stesso gesto
+                    // simmetrico del "giu'" dal tastino).
+                    gsSetFocus(GSFocus::Launch);
+                } else if (!gallerySel_) {
                     // Solo Classica: la griglia ha piu' righe, "su" atterra
                     // sull'ultima riga mantenendo la colonna. In Galleria e'
-                    // una lista sola: il cursore resta dov'era (il
-                    // "segnalino" non deve saltare all'ultimo gioco).
+                    // una lista sola: il cursore resta dov'era.
                     int totalRows = (pageCount + COLS - 1) / COLS;
                     int lastRowStart = (totalRows - 1) * COLS;
                     int lastRowItems = pageCount - lastRowStart;
@@ -1460,83 +1975,15 @@ void UI::handleGameSelectorInput(bool& running) {
             return;
         }
 
-        if (gameSelOnAllBanks_) {
-            // Riga bassa: sinistra = zaino, destra = eject/gear, su = griglia
+        if (gsFocus_ == GSFocus::Settings) {
+            // Sull'ingranaggio (fuori dock, regole proprie): sinistra torna
+            // all'ultima voce visibile della dock, su in griglia.
             if (dx < 0) {
-                gameSelOnAllBanks_ = false;
-                gameSelOnPack_ = true;
-                return;
-            }
-            if (dx > 0) {
-                gameSelOnAllBanks_ = false;
-#ifdef OH_USB_UPDATE
-                if (usbHsFsGetMountedDeviceCount() > 0)
-                    gameSelOnEject_ = true;
-                else
-                    gameSelOnSettings_ = true;
-#else
-                gameSelOnSettings_ = true;
-#endif
-                return;
-            }
-            if (dy < 0) {
-                gameSelOnAllBanks_ = false;
-                if (!gallerySel_) {
-                    // Place cursor on bottom row of current page
-                    // (Galleria: cursore invariato, vedi commento sopra su onPack_)
-                    int totalRows = (pageCount + COLS - 1) / COLS;
-                    int lastRowStart = (totalRows - 1) * COLS;
-                    int lastRowItems = pageCount - lastRowStart;
-                    int col = (gameSelCursor_ - pageStart) % COLS;
-                    if (col >= lastRowItems) col = lastRowItems - 1;
-                    gameSelCursor_ = pageStart + lastRowStart + col;
-                }
-            }
-            return;
-        }
-
-        if (gameSelOnEject_) {
-            // Sull'espelli: sinistra torna alle banche, destra al gear, su in griglia
-            if (dx < 0) {
-                gameSelOnEject_ = false;
-                gameSelOnAllBanks_ = true;
-                gameSelOnPack_ = false;
-            } else if (dx > 0) {
-                gameSelOnEject_ = false;
-                gameSelOnSettings_ = true;
+                if (!dockFocusLast()) gsSetFocus(GSFocus::Grid);
             } else if (dy < 0) {
-                gameSelOnEject_ = false;
+                gsUnfocus(GSFocus::Settings);
                 if (!gallerySel_) {
-                    // (Galleria: cursore invariato, vedi commento sopra su onPack_)
-                    int totalRows = (pageCount + COLS - 1) / COLS;
-                    int lastRowStart = (totalRows - 1) * COLS;
-                    int lastRowItems = pageCount - lastRowStart;
-                    int col = (gameSelCursor_ - pageStart) % COLS;
-                    if (col >= lastRowItems) col = lastRowItems - 1;
-                    gameSelCursor_ = pageStart + lastRowStart + col;
-                }
-            }
-            return;
-        }
-
-        if (gameSelOnSettings_) {
-            // Sull'ingranaggio: sinistra torna a eject (se c'e) o banche
-            if (dx < 0) {
-                gameSelOnSettings_ = false;
-#ifdef OH_USB_UPDATE
-                if (usbHsFsGetMountedDeviceCount() > 0)
-                    gameSelOnEject_ = true;
-                else
-                    gameSelOnAllBanks_ = true;
-                gameSelOnPack_ = false;
-#else
-                gameSelOnAllBanks_ = true;
-                gameSelOnPack_ = false;
-#endif
-            } else if (dy < 0) {
-                gameSelOnSettings_ = false;
-                if (!gallerySel_) {
-                    // (Galleria: cursore invariato, vedi commento sopra su onPack_)
+                    // (Galleria: cursore invariato, vedi blocco dock sopra)
                     int totalRows = (pageCount + COLS - 1) / COLS;
                     int lastRowStart = (totalRows - 1) * COLS;
                     int lastRowItems = pageCount - lastRowStart;
@@ -1554,23 +2001,22 @@ void UI::handleGameSelectorInput(bool& running) {
         // quando il cursore e' nella lista stessa: l'avatar (unico
         // elemento periferico non gia' filtrato dai return sopra) ha
         // la sua gestione dx piu' sotto (nessun effetto), invariata.
-        if (gallerySel_ && dx != 0 && !gameSelOnAvatar_) {
+        if (gallerySel_ && dx != 0 && gsFocus_ != GSFocus::Avatar) {
             if (dx < 0) {
                 if (selectedProfile_ >= 0) {
-                    gameSelOnAvatar_ = true;
+                    gsSetFocus(GSFocus::Avatar);
                 } else {
-                    gameSelOnSettings_ = false;
-                    gameSelOnEject_ = false;
-                    gameSelOnAllBanks_ = true;
-                    gameSelOnPack_ = false;
+                    dockFocusBanksOrFirst();
                 }
             } else {
-                // Destra: prima icona della dock (zaino/pack), non banche.
-                gameSelOnSettings_ = false;
-                gameSelOnEject_ = false;
-                gameSelOnAvatar_ = false;
-                gameSelOnAllBanks_ = false;
-                gameSelOnPack_ = true;
+                // Destra: se il gioco evidenziato e' lanciabile, prima il
+                // tastino "Avvia" del pannello anteprima; altrimenti dritti
+                // alla prima icona della dock, come prima.
+                if (isGameLaunchableAt(gameSelCursor_)) {
+                    gsSetFocus(GSFocus::Launch);
+                } else {
+                    dockFocusFirst();
+                }
             }
             return;
         }
@@ -1587,15 +2033,11 @@ void UI::handleGameSelectorInput(bool& running) {
         // in Galleria va invece alla prima icona della dock (lo zaino),
         // coerente con "destra" dalla lista (vedi blocco piu' sotto).
         if (row >= totalRows) {
-            gameSelOnSettings_ = false;
-            gameSelOnEject_ = false;
-            gameSelOnAvatar_ = false;
+            gsUnfocus(GSFocus::Avatar);
             if (gallerySel_) {
-                gameSelOnAllBanks_ = false;
-                gameSelOnPack_ = true;
+                dockFocusFirst();
             } else {
-                gameSelOnAllBanks_ = true;
-                gameSelOnPack_ = false;
+                dockFocusBanksOrFirst();
             }
             return;
         }
@@ -1603,12 +2045,12 @@ void UI::handleGameSelectorInput(bool& running) {
         // Navigate to chevrons when going past grid edges (only if page exists)
         if (totalPages > 1) {
             if (col < 0 && gameSelPage_ > 0) {
-                gameSelOnChevron_ = -1;
+                gsSetFocus(GSFocus::ChevLeft);
                 return;
             }
             int rowItems = std::min(COLS, pageCount - row * COLS);
             if (col >= rowItems && gameSelPage_ < totalPages - 1) {
-                gameSelOnChevron_ = 1;
+                gsSetFocus(GSFocus::ChevRight);
                 return;
             }
         }
@@ -1620,19 +2062,16 @@ void UI::handleGameSelectorInput(bool& running) {
         if (col >= rowItems) col = 0;
 
         // Wrap rows (up from top goes to avatar, down from avatar to grid)
-        if (gameSelOnAvatar_) {
+        if (gsFocus_ == GSFocus::Avatar) {
             // Giu' o destra tornano alla lista/griglia (posizione invariata).
-            if (dy > 0 || dx > 0) gameSelOnAvatar_ = false;
+            if (dy > 0 || dx > 0) gsUnfocus(GSFocus::Avatar);
             return;
         }
         if (row < 0) {
             if (selectedProfile_ >= 0) {
-                gameSelOnAvatar_ = true;
+                gsSetFocus(GSFocus::Avatar);
             } else {
-                gameSelOnSettings_ = false;
-                gameSelOnEject_ = false;
-                gameSelOnAllBanks_ = true;
-                gameSelOnPack_ = false;
+                dockFocusBanksOrFirst();
             }
             return;
         }
@@ -1669,29 +2108,35 @@ void UI::handleGameSelectorInput(bool& running) {
             float px = event.tfinger.x * SCREEN_W;
             float py = event.tfinger.y * SCREEN_H;
             float dx = px - touchStartX_, dy = py - touchStartY_;
-            if (!showBackupList_ && !showSaveMenu_ && !showGameSelMenu_ && !showSettings_) {
+            if (showTradeList_) {
+                // popup trade sopra il selettore: tap non deve arrivare al selector
+            } else if (showRadialMenu_) {
+                if (!touchMoved_) radialMenuTap(px, py, running);
+            } else if (!showBackupList_ && !showCrashList_ && !showSaveMenu_ && !showGameSelMenu_ && !showSettings_ && !showBackpack_) {
                 if (dx < -120 && std::fabs(dy) < 200) {
                     if (totalPages > 1 && gameSelPage_ < totalPages - 1) {
                         gameSelPage_++;
                         gameSelCursor_ = gameSelPage_ * GAMES_PER_PAGE;
-                        gameSelOnAllBanks_ = gameSelOnAvatar_ = false;
-                        gameSelOnEject_ = gameSelOnSettings_ = false;
-                        gameSelOnChevron_ = 0;
+                        gsSetFocus(GSFocus::Grid);
                         markDirty();
                     }
                 } else if (dx > 120 && std::fabs(dy) < 200) {
                     if (totalPages > 1 && gameSelPage_ > 0) {
                         gameSelPage_--;
                         gameSelCursor_ = gameSelPage_ * GAMES_PER_PAGE;
-                        gameSelOnAllBanks_ = gameSelOnAvatar_ = false;
-                        gameSelOnEject_ = gameSelOnSettings_ = false;
-                        gameSelOnChevron_ = 0;
+                        gsSetFocus(GSFocus::Grid);
                         markDirty();
                     }
                 } else if (!touchMoved_) {
                     selectorTap(px, py, running);
                 }
             }
+            continue;
+        }
+
+        // Trade popup sopra il selettore: intercetta tutto prima degli altri
+        if (showTradeList_) {
+            handleTradeListInput(event);
             continue;
         }
 
@@ -1723,12 +2168,14 @@ void UI::handleGameSelectorInput(bool& running) {
                         }
                         break;
                     case SDL_CONTROLLER_BUTTON_LEFTSHOULDER:
+                        // L = pagina su (-10), mai delete (ZL+ZR è solo trigger)
                         if (count > 0) {
                             backupListCursor_ = std::max(0, backupListCursor_ - 10);
                             scrollIntoView();
                         }
                         break;
                     case SDL_CONTROLLER_BUTTON_RIGHTSHOULDER:
+                        // R = pagina giu (+10), mai delete
                         if (count > 0) {
                             backupListCursor_ = std::min(count - 1, backupListCursor_ + 10);
                             scrollIntoView();
@@ -1752,9 +2199,140 @@ void UI::handleGameSelectorInput(bool& running) {
                     case SDL_CONTROLLER_BUTTON_X:
                     case SDL_CONTROLLER_BUTTON_BACK:
                     case SDL_CONTROLLER_BUTTON_START:
+                        backupListZlHeld_ = backupListZrHeld_ = false;
                         showBackupList_ = false;
                         break;
                 }
+            } else if (event.type == SDL_CONTROLLERAXISMOTION) {
+                if (event.caxis.axis == SDL_CONTROLLER_AXIS_TRIGGERLEFT) {
+                    bool pressed = event.caxis.value > TRIGGER_DEADZONE;
+                    bool was = backupListZlHeld_;
+                    backupListZlHeld_ = pressed;
+                    if (pressed && !was && backupListZrHeld_) {
+                        backupListZlHeld_ = backupListZrHeld_ = false;
+                        tryDeleteHighlightedBackup();
+                    }
+                } else if (event.caxis.axis == SDL_CONTROLLER_AXIS_TRIGGERRIGHT) {
+                    bool pressed = event.caxis.value > TRIGGER_DEADZONE;
+                    bool was = backupListZrHeld_;
+                    backupListZrHeld_ = pressed;
+                    if (pressed && !was && backupListZlHeld_) {
+                        backupListZlHeld_ = backupListZrHeld_ = false;
+                        tryDeleteHighlightedBackup();
+                    }
+                } else if (event.caxis.axis == SDL_CONTROLLER_AXIS_LEFTX ||
+                    event.caxis.axis == SDL_CONTROLLER_AXIS_LEFTY) {
+                    int16_t lx = SDL_GameControllerGetAxis(pad_, SDL_CONTROLLER_AXIS_LEFTX);
+                    int16_t ly = SDL_GameControllerGetAxis(pad_, SDL_CONTROLLER_AXIS_LEFTY);
+                    updateStick(lx, ly);
+                }
+            }
+            continue;
+        }
+
+        // Debug crash-report list intercepts input (stesso livello della
+        // lista backup: aperta dal menu +, sopra save/backpack/settings)
+        if (showCrashList_) {
+            int count = (int)crashListEntries_.size();
+            auto scrollIntoView = [&]() {
+                constexpr int VISIBLE = 12;
+                if (crashListCursor_ < crashListScroll_)
+                    crashListScroll_ = crashListCursor_;
+                else if (crashListCursor_ >= crashListScroll_ + VISIBLE)
+                    crashListScroll_ = crashListCursor_ - VISIBLE + 1;
+            };
+            if (event.type == SDL_CONTROLLERBUTTONDOWN) {
+                markDirty();
+                switch (event.cbutton.button) {
+                    case SDL_CONTROLLER_BUTTON_DPAD_UP:
+                        if (count > 0) {
+                            if (crashListCursor_ > 0) crashListCursor_--;
+                            else crashListCursor_ = count - 1;
+                            scrollIntoView();
+                        }
+                        break;
+                    case SDL_CONTROLLER_BUTTON_DPAD_DOWN:
+                        if (count > 0) {
+                            if (crashListCursor_ < count - 1) crashListCursor_++;
+                            else crashListCursor_ = 0;
+                            scrollIntoView();
+                        }
+                        break;
+                    case SDL_CONTROLLER_BUTTON_LEFTSHOULDER:
+                        if (count > 0) {
+                            crashListCursor_ = std::max(0, crashListCursor_ - 10);
+                            scrollIntoView();
+                        }
+                        break;
+                    case SDL_CONTROLLER_BUTTON_RIGHTSHOULDER:
+                        if (count > 0) {
+                            crashListCursor_ = std::min(count - 1, crashListCursor_ + 10);
+                            scrollIntoView();
+                        }
+                        break;
+                    case SDL_CONTROLLER_BUTTON_B: // Switch A = invia il selezionato
+                        if (count > 0)
+                            sendCrashReportNow(crashListEntries_[crashListCursor_].path);
+                        break;
+                    case SDL_CONTROLLER_BUTTON_A: // Switch B = indietro
+                    case SDL_CONTROLLER_BUTTON_X:
+                    case SDL_CONTROLLER_BUTTON_BACK:
+                    case SDL_CONTROLLER_BUTTON_START:
+                        showCrashList_ = false;
+                        break;
+                }
+            } else if (event.type == SDL_CONTROLLERAXISMOTION) {
+                if (event.caxis.axis == SDL_CONTROLLER_AXIS_LEFTX ||
+                    event.caxis.axis == SDL_CONTROLLER_AXIS_LEFTY) {
+                    int16_t lx = SDL_GameControllerGetAxis(pad_, SDL_CONTROLLER_AXIS_LEFTX);
+                    int16_t ly = SDL_GameControllerGetAxis(pad_, SDL_CONTROLLER_AXIS_LEFTY);
+                    updateStick(lx, ly);
+                }
+            }
+            continue;
+        }
+
+        // Game picker popup (Classica da dock: Scambio/Salvataggi). Intercetta
+        // input sopra il save-menu: aperto solo con layout Classic.
+        if (showGamePick_) {
+            if (event.type == SDL_CONTROLLERBUTTONDOWN) {
+                markDirty();
+                int count = (int)gamePickAvail_.size();
+                constexpr int VISIBLE = 12;
+                if (event.cbutton.button == SDL_CONTROLLER_BUTTON_DPAD_UP ||
+                    event.cbutton.button == SDL_CONTROLLER_BUTTON_DPAD_LEFT) {
+                    if (count > 0) gamePickCursor_ = (gamePickCursor_ + count - 1) % count;
+                } else if (event.cbutton.button == SDL_CONTROLLER_BUTTON_DPAD_DOWN ||
+                           event.cbutton.button == SDL_CONTROLLER_BUTTON_DPAD_RIGHT) {
+                    if (count > 0) gamePickCursor_ = (gamePickCursor_ + 1) % count;
+                } else if (event.cbutton.button == SDL_CONTROLLER_BUTTON_B) {
+                    // Switch A = conferma: agisci sul gioco scelto.
+                    if (count > 0 && gamePickCursor_ < count) {
+                        GamePickTarget t = gamePickTarget_;
+                        int idx = gamePickAvail_[gamePickCursor_];
+                        GameType g = availableGames_[idx];
+                        int occ = importedOccurrence(idx);
+                        showGamePick_ = false;
+                        if (t == GamePickTarget::SaveMenu) {
+                            openSaveMenu(g, occ);
+                        } else {
+                            AppScreen prevScreen = screen_;
+                            selectGame(g, occ);
+                            screen_ = prevScreen;
+                            openTradeList();
+                        }
+                    }
+                } else if (event.cbutton.button == SDL_CONTROLLER_BUTTON_A ||
+                           event.cbutton.button == SDL_CONTROLLER_BUTTON_X ||
+                           event.cbutton.button == SDL_CONTROLLER_BUTTON_BACK ||
+                           event.cbutton.button == SDL_CONTROLLER_BUTTON_START) {
+                    // Switch B = indietro
+                    showGamePick_ = false;
+                }
+                // Keep scroll visible.
+                if (gamePickCursor_ < gamePickScroll_) gamePickScroll_ = gamePickCursor_;
+                else if (gamePickCursor_ >= gamePickScroll_ + VISIBLE)
+                    gamePickScroll_ = gamePickCursor_ - VISIBLE + 1;
             } else if (event.type == SDL_CONTROLLERAXISMOTION) {
                 if (event.caxis.axis == SDL_CONTROLLER_AXIS_LEFTX ||
                     event.caxis.axis == SDL_CONTROLLER_AXIS_LEFTY) {
@@ -1800,17 +2378,6 @@ void UI::handleGameSelectorInput(bool& running) {
                             std::snprintf(msg, sizeof(msg), "Liberati %.1f MB di auto-backup.",
                                           freed / 1048576.0);
                             showMessageAndWait("Clean old backups", msg);
-                        } else if (sel == "Normalize save") {
-                            // Normalizza Delta: via i 16B extra, file raw 128K.
-                            std::string p = importedSavePath(saveMenuGame_, saveMenuOcc_);
-                            showSaveMenu_ = false;
-                            if (p.empty()) {
-                                showMessageAndWait("Normalize save", "Solo save SD (niente titoli installati).");
-                            } else {
-                                std::string info;
-                                SaveFile::normalizeDeltaSave(p, info);
-                                showMessageAndWait("Normalize save", info);
-                            }
                         } else if (sel == "Send save") {
                             showSaveMenu_ = false;
                             sendSaveFor(saveMenuGame_, saveMenuOcc_);
@@ -1834,6 +2401,18 @@ void UI::handleGameSelectorInput(bool& running) {
                     updateStick(lx, ly);
                 }
             }
+            continue;
+        }
+
+        // Radial menu (Classica) intercepts input (above backpack/settings)
+        if (showRadialMenu_) {
+            handleRadialMenuInput(event, running);
+            continue;
+        }
+
+        // Backpack popup intercepts input (above settings/menu)
+        if (showBackpack_) {
+            handleBackpackInput(event);
             continue;
         }
 
@@ -1879,16 +2458,33 @@ void UI::handleGameSelectorInput(bool& running) {
                                 if (gameSelMenuCursor_ >= ms) gameSelMenuCursor_ = ms - 1;
                                 break;
                             }
+                            case GameSelMenuAction::ClearLog: {
+                                // Tiene solo le ultime righe: libera spazio SD e
+                                // sblocca l'invio quando il log accumulato e'
+                                // troppo grande per l'upload (richiesto esplicitamente).
+                                constexpr int KEEP_LINES = 200;
+                                if (DebugLog::clearLog(KEEP_LINES))
+                                    showMessageAndWait(i18n::get(StrKey::ClearLogTitle),
+                                        i18n::fmt(StrKey::ClearLogDone, std::to_string(KEEP_LINES)));
+                                else
+                                    showMessageAndWait(i18n::get(StrKey::ClearLogTitle),
+                                        i18n::get(StrKey::ClearLogFailed));
+                                break;
+                            }
                             case GameSelMenuAction::SendLog:
                                 sendLogNow();
                                 break;
                             case GameSelMenuAction::SendSave:
-                                if (gameSelOnAllBanks_ || gameSelOnChevron_ != 0 ||
+                                if (gsDockIs(DockState::Item::Banks) || gsChevronActive() ||
                                     gameSelCursor_ < 0 || gameSelCursor_ >= (int)availableGames_.size())
                                     showMessageAndWait(i18n::get(StrKey::SendSaveTitle), i18n::get(StrKey::SendSaveNoGame));
                                 else
                                     sendSaveFor(availableGames_[gameSelCursor_],
                                                 importedOccurrence(gameSelCursor_));
+                                break;
+                            case GameSelMenuAction::CrashReport:
+                                showGameSelMenu_ = false;
+                                openCrashList();
                                 break;
                             case GameSelMenuAction::ImportSettings:
                                 showGameSelMenu_ = false;
@@ -1906,6 +2502,29 @@ void UI::handleGameSelectorInput(bool& running) {
                             case GameSelMenuAction::OpenSettings:
                                 showGameSelMenu_ = false;
                                 openSettings();
+                                break;
+                            case GameSelMenuAction::RemoteBox:
+                                showGameSelMenu_ = false;
+                                openRemoteBox();
+                                break;
+                            case GameSelMenuAction::ToggleDock: {
+                                if (!dockLoaded_) dockStateLoad();
+                                dockState_.visible = !dockState_.visible;
+                                if (!dockState_.visible) dockClearFocus();
+                                dockStateSave();
+                                showGameSelMenu_ = false;
+                                markDirty();
+                                break;
+                            }
+                            case GameSelMenuAction::ReorderDock:
+                                showGameSelMenu_ = false;
+                                if (!dockLoaded_) dockStateLoad();
+                                if (!dockState_.visible) {
+                                    dockState_.visible = true;
+                                    dockStateSave();
+                                }
+                                dockStateEnterReorderMode(0);
+                                markDirty();
                                 break;
                             case GameSelMenuAction::Exit:
                                 DebugLog::line("nav: menu Exit -> QUIT");
@@ -1938,13 +2557,20 @@ void UI::handleGameSelectorInput(bool& running) {
         if (event.type == SDL_CONTROLLERAXISMOTION) {
             if (event.caxis.axis == SDL_CONTROLLER_AXIS_TRIGGERRIGHT) {
                 bool pressed = event.caxis.value > TRIGGER_DEADZONE;
-                if (pressed && !favTriggerHeld_ && gallerySel_ && !showGameSelMenu_ && !showSaveMenu_ && !showBackupList_ && !showSettings_ && !showAbout_ && !showThemeSelector_ && !showLanguageSelector_ && !gameSelOnAllBanks_ && !gameSelOnAvatar_ && !gameSelOnPack_ && !gameSelOnEject_ && !gameSelOnSettings_ && gameSelOnChevron_ == 0) {
+                if (pressed && !favTriggerHeld_ && gallerySel_ && !showGameSelMenu_ && !showSaveMenu_ && !showBackupList_ && !showCrashList_ && !showSettings_ && !showBackpack_ && !showAbout_ && !showThemeSelector_ && !showLanguageSelector_ && gsFocus_ == GSFocus::Grid) {
                     if (gameSelCursor_ >= 0 && gameSelCursor_ < (int)availableGames_.size()) {
                         GameType g = availableGames_[gameSelCursor_];
                         toggleFavorite(g);
                     }
                 }
                 favTriggerHeld_ = pressed;
+            }
+            if (event.caxis.axis == SDL_CONTROLLER_AXIS_TRIGGERLEFT) {
+                bool pressed = event.caxis.value > TRIGGER_DEADZONE;
+                if (pressed && !launchTriggerHeld_ && gallerySel_ && !showGameSelMenu_ && !showSaveMenu_ && !showBackupList_ && !showCrashList_ && !showSettings_ && !showBackpack_ && !showAbout_ && !showThemeSelector_ && !showLanguageSelector_ && gsFocus_ == GSFocus::Grid) {
+                    requestLaunchGame(running);
+                }
+                launchTriggerHeld_ = pressed;
             }
             if (event.caxis.axis == SDL_CONTROLLER_AXIS_LEFTX ||
                 event.caxis.axis == SDL_CONTROLLER_AXIS_LEFTY) {
@@ -1969,35 +2595,37 @@ void UI::handleGameSelectorInput(bool& running) {
                     moveGrid(0, 1);
                     break;
                 case SDL_CONTROLLER_BUTTON_B: // Switch A = select
-                    if (gameSelOnChevron_ == -1 && gameSelPage_ > 0) {
+                    if (dockState_.reorderMode) { dockStateExitReorderMode(true); break; } // A conferma il riordino
+                    if (gsFocus_ == GSFocus::ChevLeft && gameSelPage_ > 0) {
                         gameSelPage_--;
                         gameSelCursor_ = gameSelPage_ * GAMES_PER_PAGE;
-                        gameSelOnChevron_ = 0;
-                    } else if (gameSelOnChevron_ == 1 && gameSelPage_ < totalPages - 1) {
+                        gsUnfocus(GSFocus::ChevLeft);
+                    } else if (gsFocus_ == GSFocus::ChevRight && gameSelPage_ < totalPages - 1) {
                         gameSelPage_++;
                         gameSelCursor_ = gameSelPage_ * GAMES_PER_PAGE;
-                        gameSelOnChevron_ = 0;
-                    } else if (gameSelOnAllBanks_)
-                        enterAllBanksMode();
-                    else if (gameSelOnPack_)
-                        showMessageAndWait(i18n::get(StrKey::SetTitle),
-                            i18n::get(StrKey::BagSoon)); // WIP: injector eventi/strumenti
-                    else if (gameSelOnAvatar_) {
-                        gameSelOnAvatar_ = false;
+                        gsUnfocus(GSFocus::ChevRight);
+                    } else if (dockHasFocus()) {
+                        dockActivateFocused(running); // stessa azione del tap
+                    } else if (gsFocus_ == GSFocus::Launch) {
+                        requestLaunchGame(running);
+                    } else if (gsFocus_ == GSFocus::Avatar) {
+                        gsUnfocus(GSFocus::Avatar);
                         freeGameIcons();
                         account_.unmountSave();
                         screen_ = AppScreen::ProfileSelector;
                     }
-                    else if (gameSelOnEject_)
-                        ejectUsbDevices();
-                    else if (gameSelOnSettings_) {
+                    else if (gsFocus_ == GSFocus::Settings) {
                         openSettings(); // il gear apre SEMPRE le impostazioni
                     }
+                    else if (!gallerySel_ && Settings::radialMenu())
+                        openRadialMenu(gameSelCursor_);
                     else
                         selectGame(availableGames_[gameSelCursor_], importedOccurrence(gameSelCursor_));
                     break;
                 case SDL_CONTROLLER_BUTTON_A: // Switch B = back
-                    if (gameSelOnAvatar_) { gameSelOnAvatar_ = false; break; }
+                    if (dockState_.reorderMode) { dockStateExitReorderMode(false); break; } // B annulla il riordino
+                    if (gsFocus_ == GSFocus::Avatar) { gsUnfocus(GSFocus::Avatar); break; }
+                    if (remoteBoxActive_) { closeRemoteBox(); break; } // B esce dal box remoto, torna alla lista locale
                     DebugLog::line("nav: B in games profile=%d -> %s", selectedProfile_,
                         selectedProfile_ >= 0 ? "ProfileSelector" : "QUIT");
                     if (selectedProfile_ >= 0) {
@@ -2011,12 +2639,27 @@ void UI::handleGameSelectorInput(bool& running) {
                     }
                     break;
                 case SDL_CONTROLLER_BUTTON_X: // Switch Y = theme
+                    if (dockState_.reorderMode) { dockStateExitReorderMode(false); break; }
                     showThemeSelector_ = true;
                     themeSelCursor_ = themeIndex_;
                     themeSelOriginal_ = themeIndex_;
                     break;
-                case SDL_CONTROLLER_BUTTON_Y: // Switch X = save menu (debug) / eject USB
-                    if (DebugLog::enabled() && !gameSelOnAllBanks_ && !gameSelOnSettings_ && !gameSelOnEject_ && !gameSelOnAvatar_ && !gameSelOnPack_ && gameSelOnChevron_ == 0 &&
+                case SDL_CONTROLLER_BUTTON_Y: // Switch X = riordino dock (se icona dock) / save menu (debug) / eject
+                    if (dockState_.reorderMode) { dockStateExitReorderMode(false); break; }
+                    if (dockHasFocus() && dockState_.visible) {
+                        DockState::Item cur;
+                        if (dockFocusedItem(cur)) {
+                            auto slots = dockLayout();
+                            for (int i = 0; i < (int)slots.size(); i++)
+                                if (slots[i].item == cur) {
+                                    dockStateEnterReorderMode(i);
+                                    markDirty();
+                                    break;
+                                }
+                        }
+                        break;
+                    }
+                    if (DebugLog::enabled() && gsFocus_ == GSFocus::Grid &&
                         gameSelCursor_ >= 0 && gameSelCursor_ < (int)availableGames_.size()) {
                         openSaveMenu(availableGames_[gameSelCursor_],
                                      importedOccurrence(gameSelCursor_));
@@ -2028,8 +2671,7 @@ void UI::handleGameSelectorInput(bool& running) {
                     if (totalPages > 1 && gameSelPage_ > 0) {
                         gameSelPage_--;
                         gameSelCursor_ = gameSelPage_ * GAMES_PER_PAGE;
-                        gameSelOnAllBanks_ = false;
-                        gameSelOnChevron_ = 0;
+                        gsSetFocus(GSFocus::Grid);
                     }
                     break;
                 }
@@ -2037,15 +2679,16 @@ void UI::handleGameSelectorInput(bool& running) {
                     if (totalPages > 1 && gameSelPage_ < totalPages - 1) {
                         gameSelPage_++;
                         gameSelCursor_ = gameSelPage_ * GAMES_PER_PAGE;
-                        gameSelOnAllBanks_ = false;
-                        gameSelOnChevron_ = 0;
+                        gsSetFocus(GSFocus::Grid);
                     }
                     break;
                 }
                 case SDL_CONTROLLER_BUTTON_BACK: // - = about
+                    if (dockState_.reorderMode) { dockStateExitReorderMode(false); break; }
                     showAbout_ = true;
                     break;
                 case SDL_CONTROLLER_BUTTON_START: // + : menu rapido se ON, impostazioni se OFF
+                    if (dockState_.reorderMode) { dockStateExitReorderMode(false); break; }
                     if (readQuickMenu(basePath_)) {
                         showGameSelMenu_ = true;
                         gameSelMenuCursor_ = 0;
@@ -2079,12 +2722,75 @@ void UI::handleGameSelectorInput(bool& running) {
             stickMoved_ = true;
             markDirty();
         }
-    } else     if (showSaveMenu_ && stickDirY_ != 0) {
+    } else if (showCrashList_ && stickDirY_ != 0 && !crashListEntries_.empty()) {
+        uint32_t now = SDL_GetTicks();
+        uint32_t delay = stickMoved_ ? STICK_REPEAT_DELAY : STICK_INITIAL_DELAY;
+        if (now - stickMoveTime_ >= delay) {
+            int count = (int)crashListEntries_.size();
+            if (stickDirY_ > 0) {
+                if (crashListCursor_ < count - 1) crashListCursor_++;
+                else crashListCursor_ = 0;
+            } else {
+                if (crashListCursor_ > 0) crashListCursor_--;
+                else crashListCursor_ = count - 1;
+            }
+            constexpr int VISIBLE = 12;
+            if (crashListCursor_ < crashListScroll_)
+                crashListScroll_ = crashListCursor_;
+            else if (crashListCursor_ >= crashListScroll_ + VISIBLE)
+                crashListScroll_ = crashListCursor_ - VISIBLE + 1;
+            stickMoveTime_ = now;
+            stickMoved_ = true;
+            markDirty();
+        }
+} else if (showSaveMenu_ && stickDirY_ != 0) {
         uint32_t now = SDL_GetTicks();
         uint32_t delay = stickMoved_ ? STICK_REPEAT_DELAY : STICK_INITIAL_DELAY;
         if (now - stickMoveTime_ >= delay) {
             int smN = (int)saveMenuRows(saveMenuGame_).size();
             saveMenuCursor_ = (saveMenuCursor_ + (stickDirY_ > 0 ? 1 : smN - 1)) % smN;
+            stickMoveTime_ = now;
+            stickMoved_ = true;
+            markDirty();
+        }
+    } else if (showGamePick_ && stickDirY_ != 0 && !gamePickAvail_.empty()) {
+        uint32_t now = SDL_GetTicks();
+        uint32_t delay = stickMoved_ ? STICK_REPEAT_DELAY : STICK_INITIAL_DELAY;
+        if (now - stickMoveTime_ >= delay) {
+            int count = (int)gamePickAvail_.size();
+            if (stickDirY_ > 0) {
+                if (gamePickCursor_ < count - 1) gamePickCursor_++;
+                else gamePickCursor_ = 0;
+            } else {
+                if (gamePickCursor_ > 0) gamePickCursor_--;
+                else gamePickCursor_ = count - 1;
+            }
+            constexpr int VISIBLE = 12;
+            if (gamePickCursor_ < gamePickScroll_)
+                gamePickScroll_ = gamePickCursor_;
+            else if (gamePickCursor_ >= gamePickScroll_ + VISIBLE)
+                gamePickScroll_ = gamePickCursor_ - VISIBLE + 1;
+            stickMoveTime_ = now;
+            stickMoved_ = true;
+            markDirty();
+        }
+    } else if (showTradeList_ && stickDirY_ != 0) {
+        uint32_t now = SDL_GetTicks();
+        uint32_t delay = stickMoved_ ? STICK_REPEAT_DELAY : STICK_INITIAL_DELAY;
+        if (now - stickMoveTime_ >= delay) {
+            int count = (int)tradeCandidates_.size();
+            constexpr int VISIBLE = 6;
+            if (count > 0) {
+                if (stickDirY_ > 0) {
+                    if (tradeCursor_ < count - 1) tradeCursor_++;
+                    else tradeCursor_ = 0;
+                } else {
+                    if (tradeCursor_ > 0) tradeCursor_--;
+                    else tradeCursor_ = count - 1;
+                }
+                if (tradeCursor_ < tradeScroll_) tradeScroll_ = tradeCursor_;
+                else if (tradeCursor_ >= tradeScroll_ + VISIBLE) tradeScroll_ = tradeCursor_ - VISIBLE + 1;
+            }
             stickMoveTime_ = now;
             stickMoved_ = true;
             markDirty();
@@ -2099,7 +2805,31 @@ void UI::handleGameSelectorInput(bool& running) {
             stickMoved_ = true;
             markDirty();
         }
-    } else if (!showGameSelMenu_ && !showSaveMenu_ && !showBackupList_ && !showSettings_ && (stickDirX_ != 0 || stickDirY_ != 0)) {
+    } else if (showBackpack_ && (stickDirX_ != 0 || stickDirY_ != 0)) {
+        // Mancava del tutto: la levetta ferma non genera nuovi eventi SDL,
+        // quindi senza questo tick per-frame lo zaino non scorreva mai a
+        // levetta (il d-pad funzionava perche' ogni pressione e' un evento).
+        // Verticale: accelera tenendola ferma, stesso schema gia' validato
+        // per la lista Galleria (liste lunghe altrimenti lentissime da
+        // scorrere). Orizzontale: cambia fuoco catalogo/zaino tramite
+        // backpackFocusStep, che e' idempotente quindi il repeat non
+        // fa "sbattere" avanti e indietro se la levetta resta inclinata.
+        uint32_t now = SDL_GetTicks();
+        uint32_t delay = stickMoved_ ? STICK_REPEAT_DELAY : STICK_INITIAL_DELAY;
+        if (stickDirY_ != 0 && stickMoved_) {
+            uint32_t held = now - stickHoldStart_;
+            if (held > 1500) delay = 40;
+            else if (held > 800) delay = 80;
+            else if (held > 400) delay = 130;
+        }
+        if (now - stickMoveTime_ >= delay) {
+            if (stickDirY_ != 0) backpackStickStep(stickDirY_ > 0 ? 1 : -1);
+            if (stickDirX_ != 0) backpackFocusStep(stickDirX_);
+            stickMoveTime_ = now;
+            stickMoved_ = true;
+            markDirty();
+        }
+    } else if (!showTradeList_ && !showGameSelMenu_ && !showSaveMenu_ && !showBackupList_ && !showCrashList_ && !showSettings_ && !showBackpack_ && !showRadialMenu_ && !showGamePick_ && (stickDirX_ != 0 || stickDirY_ != 0)) {
         uint32_t now = SDL_GetTicks();
         uint32_t delay = stickMoved_ ? STICK_REPEAT_DELAY : STICK_INITIAL_DELAY;
         // Galleria: lista verticale una voce alla volta. Con lo stesso passo
@@ -2119,6 +2849,69 @@ void UI::handleGameSelectorInput(bool& running) {
             stickMoved_ = true;
             markDirty();
         }
+    }
+}
+
+// --- Popup di scoperta "Installa launcher" (categoria Sistema): mostrato
+// una sola volta. Stesso schema di noled.cfg -- esistenza file = flag true,
+// niente contenuto da leggere/scrivere (a differenza di favorites.cfg qui
+// sotto, che invece serializza una lista).
+bool UI::hasSeenLauncherPrompt() const {
+    return Settings::launcherSeen();
+}
+void UI::markLauncherPromptSeen() const {
+    Settings::setLauncherSeen();
+}
+
+// --- Riga "Installa launcher" (categoria Sistema) -----------------------
+// Crea davvero il forwarder sul Menu Home (vendor/sphaira/owo.cpp, vedi
+// source/forwarder.cpp per il collante). Nessun controllo su appletMode_:
+// Sphaira stessa lo crea anche avviata da Album (R su un gioco), quindi
+// non e' un prerequisito reale -- coerente con showLauncherPromptPopup(),
+// che infatti non lo controlla piu' nemmeno lei (vedi ui.cpp).
+void UI::installLauncherForwarder() {
+    if (!showConfirmDialog(i18n::get(StrKey::SetInstallLauncher),
+                            i18n::get(StrKey::LauncherInstallConfirm))) {
+        return;
+    }
+    attemptLauncherForwarderInstall();
+}
+
+// Tentativo vero e proprio: chi chiama ha gia' ottenuto un si (conferma
+// esplicita in Impostazioni, oppure A premuto direttamente nel popup di
+// scoperta -- li' la domanda e' gia' nel testo del popup stesso, niente
+// doppia conferma).
+//
+void UI::attemptLauncherForwarderInstall() {
+    std::string nroPath = basePath_ + "OpenHomeNX.nro";
+    struct stat st;
+    if (stat(nroPath.c_str(), &st) != 0)
+        nroPath = "sdmc:/switch/OpenHomeNX/OpenHomeNX.nro";
+
+    // Chiamata sincrona e potenzialmente lunga (costruzione NCA/RomFS +
+    // scrittura su ncm) -- senza showWorking() lo schermo resterebbe fermo
+    // come se fosse bloccato, a differenza di ogni altra operazione lunga
+    // del programma. Il callback di owo.cpp (via lo shim ProgressBox) puo'
+    // aggiornare il messaggio durante l'operazione; se non chiama nulla,
+    // resta visibile la label iniziale.
+    const std::string title = i18n::get(StrKey::SetInstallLauncher);
+    showWorking(title);
+    std::string err;
+    bool ok = forwarderInstall(nroPath, err,
+        [this, &title](const std::string& msg) {
+            showWorking(msg.empty() ? title : msg);
+        });
+
+    if (ok) {
+        showMessageAndWait(i18n::get(StrKey::SetInstallLauncher),
+            i18n::get(StrKey::LauncherInstallOk));
+    } else {
+        // `err` resta un promemoria tecnico minimo: il dettaglio vero
+        // (rc/desc/mod) e' gia' nel debug.log, scritto da forwarderInstall()
+        // stesso -- niente da ripetere qui. All'utente va sempre e solo il
+        // testo gentile.
+        showMessageAndWait(i18n::get(StrKey::SetInstallLauncher),
+            i18n::get(StrKey::LauncherInstallUnavail));
     }
 }
 
@@ -2159,6 +2952,416 @@ void UI::applyFavoritesOrder() {
     std::stable_partition(availableGames_.begin(), availableGames_.end(),
         [&](GameType g){ return isFavorite(g); });
 }
+// Rilevamento mGBA (v1): una tantum, non ogni frame. Vedi Emulator::findMgba().
+void UI::ensureMgbaChecked() {
+    if (mgbaChecked_) return;
+    mgbaChecked_ = true;
+    mgbaPath_ = Emulator::findMgba();
+}
+
+// Vero se availableGames_[idx] e' lanciabile ora: stessa logica a due strade
+// di requestLaunchGame() (titolo nativo vs emulato via mGBA) ma senza alcun
+// effetto -- solo lettura/rilevamento, nessun dialogo, nessun avvio. Usata
+// sia dall'hint "ZL: Avvia" sia dal tastino "Avvia" del pannello anteprima
+// Galleria, cosi' i due non possano disallinearsi.
+bool UI::isGameLaunchableAt(int idx) {
+    if (idx < 0 || idx >= (int)availableGames_.size()) return false;
+    GameType g = availableGames_[idx];
+    bool isTitle = selectedProfile_ >= 0 && titleIdOf(g) >= 0x0100000000010000ULL &&
+                   saveFileNameOf(g)[0] != '\0';
+    if (isTitle) return true;
+    ensureMgbaChecked();
+    if (mgbaPath_.empty()) return false;
+    std::string sp = importedSavePath(g, importedOccurrence(idx));
+    if (sp.empty()) return false;
+    return !Emulator::findRomForSave(sp, g).empty();
+}
+
+// ---------------------------------------------------------------------------
+// Menu radiale (Classica, dietro Settings::radialMenu()). Vedi enum
+// RadialAction / membri radial*_ in ui.h. Angoli e raggio-in-funzione-del-
+// numero-di-voci ripresi dal mockup HTML validato con l'utente (arco
+// 200-340 gradi sopra l'ancora, si allarga aggiungendo voci) -- cosi' e'
+// spontaneo aggiungere una quinta icona in futuro: basta una entry in piu'
+// in openRadialMenu() e un case in radialMenuActivate(), la geometria si
+// aggiusta da sola.
+// ---------------------------------------------------------------------------
+
+// Angolo (gradi, convenzione schermo y-down: 0=destra, 90=giu', 180=sinistra,
+// 270=su) della voce j su n lungo l'arco. Condivisa fra radialItemCenter()
+// (dove disegnare i bottoni) e il puntamento analogico in
+// handleRadialMenuInput() (quale voce "punta" lo stick) cosi' restano
+// sempre coerenti fra loro.
+static float radialItemAngleDeg(int j, int n) {
+    // Passo fisso fra voci adiacenti: l'arco totale cresce con n invece di
+    // restare fisso, cosi' le icone non si stringono mai fra loro (vedi nota
+    // sopra radialItemCenter). Sempre centrato in alto (270).
+    constexpr float ANGLE_STEP = 45.0f;
+    if (n <= 1) return 270.0f;
+    float span = ANGLE_STEP * (n - 1);
+    return (270.0f - span / 2.0f) + ANGLE_STEP * j;
+}
+
+// Centro del bottone j su n intorno all'ancora (ax, ay). Clampata a
+// restare a schermo (le tile di riga 0 altrimenti sforerebbero in alto,
+// stesso problema/fix del mockup). TENERE IN SYNC fra draw e tap-hit-test:
+// entrambi passano da qui.
+static void radialItemCenter(int ax, int ay, int j, int n, int& cx, int& cy) {
+    // SCREEN_W/H ridichiarati localmente (sono private in UI, non
+    // raggiungibili da una funzione libera) -- stessa convenzione delle
+    // altre costanti di layout duplicate per funzione in questo file.
+    constexpr int SCREEN_W = 1280, SCREEN_H = 720;
+    constexpr int EDGE = 12, HALF = 42; // 42 ~= raggio bottone (34) + alone fuoco
+    float R = 112.0f; // fisso, un po' piu' distante ora che l'ancora e' il centro vero della card (era 99)
+    float rad = radialItemAngleDeg(j, n) * 3.14159265f / 180.0f;
+    int x = ax + (int)(R * std::cos(rad));
+    int y = ay + (int)(R * std::sin(rad));
+    if (x < EDGE + HALF) x = EDGE + HALF;
+    if (x > SCREEN_W - EDGE - HALF) x = SCREEN_W - EDGE - HALF;
+    if (y < EDGE + HALF) y = EDGE + HALF;
+    if (y > SCREEN_H - EDGE - HALF) y = SCREEN_H - EDGE - HALF;
+    cx = x; cy = y;
+}
+
+void UI::openRadialMenu(int idx) {
+    if (idx < 0 || idx >= (int)availableGames_.size()) return;
+    constexpr int COLS = 6, CARD_W = 160, CARD_H = 200, CARD_GAP = 20, GAMES_PER_PAGE = 12;
+    int numGames = (int)availableGames_.size();
+    int pageStart = selPageShown_ * GAMES_PER_PAGE;
+    int pageEnd = std::min(pageStart + GAMES_PER_PAGE, numGames);
+    int pageCount = pageEnd - pageStart;
+    if (pageCount <= 0) return;
+    int rows = (pageCount + COLS - 1) / COLS;
+    int totalH = rows * CARD_H + (rows - 1) * CARD_GAP;
+    int gridStartY = (SCREEN_H - totalH) / 2 - 20;
+    int rel = idx - pageStart;
+    if (rel < 0 || rel >= pageCount) return; // tile non nella pagina mostrata (difensivo)
+    int r = rel / COLS, c = rel % COLS;
+    int rowItems = std::min(COLS, pageCount - r * COLS);
+    int rowW = rowItems * CARD_W + (rowItems - 1) * CARD_GAP;
+    int cardX = (SCREEN_W - rowW) / 2 + c * (CARD_W + CARD_GAP);
+    int cardY = gridStartY + r * (CARD_H + CARD_GAP);
+    radialAnchorX_ = cardX + CARD_W / 2;
+    radialAnchorY_ = cardY + CARD_H / 2; // centro vero della card (non il bordo alto): il menu deve apparire centrato sull'icona e piu' in basso, non sbattere in alto
+
+    radialItems_.clear();
+    if (isGameLaunchableAt(idx)) radialItems_.push_back((int)RadialAction::Launch);
+    radialItems_.push_back((int)RadialAction::Backpack);
+    radialItems_.push_back((int)RadialAction::Bank);
+    radialItems_.push_back((int)RadialAction::SaveMenu);
+    if (!isDualBankMode() && TradeEvo::supported(availableGames_[idx]))
+        radialItems_.push_back((int)RadialAction::Trade);
+
+    radialGameIdx_ = idx;
+    radialCursor_ = -1; // nessuna voce a fuoco finche' D-pad o stick non puntano da qualche parte
+    radialAnim_ = 0.0f;
+    radialClosing_ = false;
+    showRadialMenu_ = true;
+    markDirty();
+}
+
+void UI::closeRadialMenu() {
+    if (!showRadialMenu_ || radialClosing_) return;
+    radialClosing_ = true; // drawRadialMenu() anima radialAnim_ verso 0
+    markDirty();
+}
+
+void UI::radialMenuActivate(bool& running) {
+    int n = (int)radialItems_.size();
+    if (n <= 0) { closeRadialMenu(); return; }
+    if (radialCursor_ < 0) return; // niente puntato (analogico al centro): A non fa nulla
+    if (radialCursor_ >= n) radialCursor_ = n - 1;
+    RadialAction action = (RadialAction)radialItems_[radialCursor_];
+    int idx = radialGameIdx_;
+    // Chiusura immediata (senza animazione): si passa a un'altra schermata/
+    // popup, non ha senso animare la chiusura sotto quello che segue.
+    showRadialMenu_ = false;
+    radialClosing_ = false;
+    radialAnim_ = 0.0f;
+    if (idx < 0 || idx >= (int)availableGames_.size()) return;
+    switch (action) {
+        case RadialAction::Launch:
+            gameSelCursor_ = idx;
+            requestLaunchGame(running);
+            break;
+        case RadialAction::Bank:
+            selectGame(availableGames_[idx], importedOccurrence(idx));
+            break;
+        case RadialAction::Backpack:
+            openBackpackOn(idx);
+            break;
+        case RadialAction::SaveMenu:
+            openSaveMenu(availableGames_[idx], importedOccurrence(idx));
+            break;
+        case RadialAction::Trade: {
+            // selectGame() naviga anche alla schermata Banca (screen_ =
+            // BankSelector) come side-effect del "seleziona questo gioco":
+            // per il badge Scambio basta il popup sopra il selettore,
+            // senza passare dalla Banca -- ripristino la schermata subito
+            // dopo (nei percorsi di errore di selectGame() screen_ non e'
+            // mai stato toccato, quindi il ripristino e' innocuo anche li').
+            AppScreen prevScreen = screen_;
+            selectGame(availableGames_[idx], importedOccurrence(idx));
+            screen_ = prevScreen;
+            openTradeList();
+            break;
+        }
+    }
+    markDirty();
+}
+
+void UI::handleRadialMenuInput(const SDL_Event& event, bool& running) {
+    if (radialClosing_) return; // lascia finire l'animazione, ignora l'input
+    int n = (int)radialItems_.size();
+    if (event.type == SDL_CONTROLLERBUTTONDOWN) {
+        markDirty();
+        if (n <= 0) { closeRadialMenu(); return; }
+        switch (event.cbutton.button) {
+            case SDL_CONTROLLER_BUTTON_DPAD_LEFT:
+                radialCursor_ = (radialCursor_ < 0) ? (n - 1) : (radialCursor_ + n - 1) % n;
+                break;
+            case SDL_CONTROLLER_BUTTON_DPAD_RIGHT:
+                radialCursor_ = (radialCursor_ < 0) ? 0 : (radialCursor_ + 1) % n;
+                break;
+            case SDL_CONTROLLER_BUTTON_B: // Switch A = conferma
+                radialMenuActivate(running);
+                break;
+            case SDL_CONTROLLER_BUTTON_A: // Switch B = chiudi
+            case SDL_CONTROLLER_BUTTON_BACK:
+            case SDL_CONTROLLER_BUTTON_START:
+                closeRadialMenu();
+                break;
+        }
+    } else if (event.type == SDL_CONTROLLERAXISMOTION) {
+        // Puntamento analogico vero: la voce evidenziata segue l'angolo
+        // dello stick (stessa convenzione di radialItemAngleDeg), non
+        // scatta a sinistra/destra come un tasto digitale. Leggo entrambi
+        // gli assi da SDL_GameControllerGetAxis (non solo quello che ha
+        // generato l'evento) per avere sempre il vettore 2D completo.
+        if (event.caxis.axis != SDL_CONTROLLER_AXIS_LEFTX &&
+            event.caxis.axis != SDL_CONTROLLER_AXIS_LEFTY) return;
+        if (n <= 0) return;
+        float lx = (float)SDL_GameControllerGetAxis(pad_, SDL_CONTROLLER_AXIS_LEFTX);
+        float ly = (float)SDL_GameControllerGetAxis(pad_, SDL_CONTROLLER_AXIS_LEFTY);
+        constexpr float DEADZONE = 8000.0f;
+        if (lx * lx + ly * ly < DEADZONE * DEADZONE) {
+            // Al centro: nessuna voce evidenziata.
+            if (radialCursor_ != -1) { radialCursor_ = -1; markDirty(); }
+            return;
+        }
+        float ang = std::atan2(ly, lx) * 180.0f / 3.14159265f;
+        if (ang < 0.0f) ang += 360.0f;
+        int best = 0;
+        float bestDiff = 1e9f;
+        for (int j = 0; j < n; j++) {
+            float diff = std::fabs(ang - radialItemAngleDeg(j, n));
+            if (diff > 180.0f) diff = 360.0f - diff;
+            if (diff < bestDiff) { bestDiff = diff; best = j; }
+        }
+        if (radialCursor_ != best) { radialCursor_ = best; markDirty(); }
+    }
+}
+
+void UI::radialMenuTap(float px, float py, bool& running) {
+    if (radialClosing_) return;
+    int n = (int)radialItems_.size();
+    for (int j = 0; j < n; j++) {
+        int cx, cy;
+        radialItemCenter(radialAnchorX_, radialAnchorY_, j, n, cx, cy);
+        // dist2 qui e' una lambda locale di un'altra funzione (selectorTap),
+        // non un helper condiviso: calcolo la distanza al quadrato inline.
+        float ddx = px - (float)cx, ddy = py - (float)cy;
+        if (ddx * ddx + ddy * ddy < 42.0f * 42.0f) {
+            radialCursor_ = j;
+            radialMenuActivate(running);
+            markDirty();
+            return;
+        }
+    }
+    // Tap fuori da qualunque voce: chiudi, come toccare "fuori" nel mockup.
+    closeRadialMenu();
+    markDirty();
+}
+
+void UI::drawRadialMenu() {
+    // Anima l'apertura/chiusura un passo per frame (stesso schema di
+    // selSlide_ nel draw della griglia: nessun timer, un incremento fisso
+    // a ogni draw finche' non arriva a destinazione).
+    if (radialClosing_) {
+        radialAnim_ -= 0.16f;
+        if (radialAnim_ <= 0.0f) {
+            radialAnim_ = 0.0f;
+            showRadialMenu_ = false;
+            radialClosing_ = false;
+            return;
+        }
+        markDirty();
+    } else if (radialAnim_ < 1.0f) {
+        radialAnim_ += 0.16f;
+        if (radialAnim_ >= 1.0f) radialAnim_ = 1.0f;
+        else markDirty();
+    }
+
+    // Velo scuro dietro al menu, dosato con l'animazione (niente blur
+    // disponibile in SDL2 -- stesso "overlay" di tema usato dagli altri
+    // popup, qui pero' sfuma insieme all'apertura invece di essere fisso).
+    // La tile aperta resta illuminata (spotlight): il velo si disegna in
+    // 4 strisce che la circondano, non su tutto lo schermo.
+    //
+    // Il buco deve combaciare con la card COME VIENE DISEGNATA DAVVERO dal
+    // grid draw: stessa crescita per lo zoom della card selezionata (grow,
+    // dal valore Settings Zoom via zoomGrow_, con la stessa easing) e stessi
+    // angoli arrotondati (raggio 12, identico a drawRoundRect(...,12,...)
+    // nel grid draw) -- non un rettangolo fisso a spigoli vivi.
+    constexpr int CARD_W = 160, CARD_H = 200, CARD_R = 12;
+    float zEase = zoomT_ * zoomT_ * (3 - 2 * zoomT_); // smoothstep, stessa curva del grid draw
+    int grow = 0;
+    if (radialGameIdx_ == zoomCard_) grow = (int)(zoomGrow_ * zEase);
+    else if (radialGameIdx_ == zoomPrev_) grow = (int)(zoomGrow_ * (1.0f - zEase));
+    int cw = CARD_W + 2 * grow, ch = CARD_H + 2 * grow;
+    int tileX = radialAnchorX_ - cw / 2;
+    int tileY = radialAnchorY_ - CARD_H / 2 - grow; // radialAnchorY_ e' il centro della card, non il suo bordo alto
+    if (tileX < 0) tileX = 0;
+    if (tileY < 0) tileY = 0;
+    SDL_Color ov = T().overlay;
+    ov.a = (Uint8)(ov.a * radialAnim_);
+    if (tileY > 0) drawRect(0, 0, SCREEN_W, tileY, ov);
+    int belowY = tileY + ch;
+    if (belowY < SCREEN_H) drawRect(0, belowY, SCREEN_W, SCREEN_H - belowY, ov);
+    if (tileX > 0) drawRect(0, tileY, tileX, ch, ov);
+    int rightX = tileX + cw;
+    if (rightX < SCREEN_W) drawRect(rightX, tileY, SCREEN_W - rightX, ch, ov);
+    // Angoli: la card e' arrotondata ma il buco sopra e' ancora un
+    // rettangolo a spigoli vivi -- tinteggia nei 4 angoli la parte FUORI dal
+    // cerchio di raggio CARD_R (stessa equazione usata da drawRoundRect, qui
+    // invertita: coloriamo il di fuori invece del dentro).
+    int rr = CARD_R;
+    if (rr * 2 > cw) rr = cw / 2;
+    if (rr * 2 > ch) rr = ch / 2;
+    for (int k = 0; k < rr; k++) {
+        int dv = rr - k;
+        int dh = (int)std::sqrt((double)(rr * rr - dv * dv));
+        int dimW = rr - dh;
+        if (dimW <= 0) continue;
+        drawRect(tileX, tileY + k, dimW, 1, ov);                      // angolo alto-sinistra
+        drawRect(tileX + cw - dimW, tileY + k, dimW, 1, ov);           // angolo alto-destra
+        drawRect(tileX, tileY + ch - 1 - k, dimW, 1, ov);              // angolo basso-sinistra
+        drawRect(tileX + cw - dimW, tileY + ch - 1 - k, dimW, 1, ov);  // angolo basso-destra
+    }
+
+    int n = (int)radialItems_.size();
+    if (n <= 0) return;
+    float ease = 1.0f - (1.0f - radialAnim_) * (1.0f - radialAnim_) * (1.0f - radialAnim_); // ease-out cubic
+    constexpr int BTN_R = 34, ICON_R = 24;
+    for (int j = 0; j < n; j++) {
+        int tx, ty;
+        radialItemCenter(radialAnchorX_, radialAnchorY_, j, n, tx, ty);
+        // Parte dal centro della tile (radialAnchorY_ e' il suo bordo alto,
+        // ma va benissimo come "centro" apparente per l'effetto zoom) e
+        // arriva alla posizione sull'arco.
+        int cx = radialAnchorX_ + (int)((tx - radialAnchorX_) * ease);
+        int cy = radialAnchorY_ + (int)((ty - radialAnchorY_) * ease);
+        int r = (int)(BTN_R * ease);
+        int ir = (int)(ICON_R * ease);
+        if (r < 1) continue;
+        bool focused = (j == radialCursor_);
+        drawRoundSelect(cx, cy, r + 1, focused);
+        SDL_Texture* tex = nullptr;
+        const char* labelKey = nullptr;
+        switch ((RadialAction)radialItems_[j]) {
+            case RadialAction::Launch:   tex = iconRocket_; labelKey = StrKey::LaunchGameButton; break;
+            case RadialAction::Bank:     tex = iconVault_;  labelKey = StrKey::LocBank; break;
+            case RadialAction::Backpack: tex = iconPack_;   labelKey = StrKey::BackpackTitle; break;
+            case RadialAction::SaveMenu: tex = iconFloppy_; labelKey = StrKey::RadialSaveMenu; break;
+            case RadialAction::Trade:    tex = iconTrade_;  labelKey = StrKey::RadialTrade; break;
+        }
+        if (tex && ir > 0) {
+            SDL_SetTextureColorMod(tex, T().text.r, T().text.g, T().text.b);
+            SDL_Rect dst = {cx - ir, cy - ir, ir * 2, ir * 2};
+            SDL_RenderCopy(renderer_, tex, nullptr, &dst);
+            SDL_SetTextureColorMod(tex, 255, 255, 255);
+        }
+        if (focused && radialAnim_ >= 1.0f && labelKey) {
+            std::string lbl = i18n::get(labelKey);
+            bool below = (labelKey == StrKey::LaunchGameButton || labelKey == StrKey::RadialTrade);
+            int ly = below ? cy + BTN_R + 26 : cy - BTN_R - 24;
+            SDL_Color sh = {0, 0, 0, 220};
+            // ombra rinforzata: alone 8 direzioni + leggero offset per staccare dal fondo
+            drawTextCentered(lbl, cx + 1, ly + 1, sh, font_);
+            drawTextCentered(lbl, cx - 1, ly + 1, sh, font_);
+            drawTextCentered(lbl, cx + 1, ly - 1, sh, font_);
+            drawTextCentered(lbl, cx - 1, ly - 1, sh, font_);
+            drawTextCentered(lbl, cx, ly + 1, sh, font_);
+            drawTextCentered(lbl, cx, ly - 1, sh, font_);
+            drawTextCentered(lbl, cx + 1, ly, sh, font_);
+            drawTextCentered(lbl, cx - 1, ly, sh, font_);
+            SDL_Color sh2 = {0, 0, 0, 140};
+            drawTextCentered(lbl, cx + 2, ly + 2, sh2, font_);
+            drawTextCentered(lbl, cx - 2, ly + 2, sh2, font_);
+            drawTextCentered(lbl, cx, ly, T().text, font_);
+        }
+    }
+}
+
+// Tasto rapido ZL in Galleria: avvia il gioco evidenziato, con conferma
+// esplicita. Due strade, mutuamente esclusive per costruzione (un GameType
+// e' o titleId-bound o file-backed, mai entrambi -- vedi game_type.h):
+//
+// - Titolo Switch nativo (titleId reale, es. l'app GBA di Nintendo Switch
+//   Online): appletRequestLaunchApplication() e' l'API sanzionata per
+//   "avvia questo titolo" (libnx applet.h) -- nessun rilevamento necessario,
+//   se c'e' il titleId il sistema sa gia' dove si trova sul disco.
+// - Emulato (file-backed, rom scansionata dall'import): invariato, mGBA se
+//   rilevato + rom trovata accanto al save (vedi Emulator::findRomForSave).
+//
+// V1: niente in appletMode_ (salto Album/Library Applet). Per il titolo
+// nativo, application_id=0 significa li' "rilancia il titolo corrente"
+// (doc libnx) -- un id diverso non e' garantito con certezza in quel
+// contesto. Per l'emulato, e' lo stesso limite del chainload mGBA (niente
+// nextLoad da un Library Applet). Meglio verificare prima su hardware vero
+// che restringere subito: nessun popup per i casi che non si applicano,
+// il tasto resta semplicemente muto (stessa filosofia della riga
+// "Emulatore predefinito").
+void UI::requestLaunchGame(bool& running) {
+    if (appletMode_) return;
+    if (gameSelCursor_ < 0 || gameSelCursor_ >= (int)availableGames_.size()) return;
+    GameType g = availableGames_[gameSelCursor_];
+
+    bool isTitle = selectedProfile_ >= 0 && titleIdOf(g) >= 0x0100000000010000ULL &&
+                   saveFileNameOf(g)[0] != '\0';
+    if (isTitle) {
+        if (!showConfirmDialog(i18n::get(StrKey::LaunchGameTitle),
+                                i18n::fmt(StrKey::LaunchGameConfirm, gameDisplayNameOf(g))))
+            return;
+        Result rc = appletRequestLaunchApplication(titleIdOf(g), nullptr);
+        if (R_SUCCEEDED(rc)) {
+            running = false;
+        } else {
+            DebugLog::line("launch: appletRequestLaunchApplication(%016lX) fallita rc=0x%x",
+                           titleIdOf(g), rc);
+            showMessageAndWait(i18n::get(StrKey::LaunchGameTitle), i18n::get(StrKey::LaunchGameFailed));
+        }
+        return;
+    }
+
+    ensureMgbaChecked();
+    if (mgbaPath_.empty()) return;
+    int occ = importedOccurrence(gameSelCursor_);
+    std::string savePath = importedSavePath(g, occ);
+    if (savePath.empty()) return;
+    std::string romPath = Emulator::findRomForSave(savePath, g);
+    if (romPath.empty()) return; // rom non trovata accanto al save
+    if (!showConfirmDialog(i18n::get(StrKey::LaunchGameTitle),
+                            i18n::fmt(StrKey::LaunchGameConfirm, gameDisplayNameOf(g))))
+        return;
+    if (Emulator::launchInMgba(mgbaPath_, romPath))
+        running = false;
+    else
+        showMessageAndWait(i18n::get(StrKey::LaunchGameTitle), i18n::get(StrKey::LaunchGameFailed));
+    launchTriggerHeld_ = false;
+    favTriggerHeld_ = false;
+}
+
 void UI::toggleFavorite(GameType g) {
     int v = static_cast<int>(g);
     if (favorites_.count(v)) favorites_.erase(v);
@@ -2445,9 +3648,35 @@ bool UI::checkForUpdate(bool usbOnly) {
     if (!usbOnly && foundCmp <= 0) {
         UpdateCfg cfg;
         readUpdateCfg(basePath_, cfg);
-        const std::string netUrl = cfg.url.empty()
-            ? githubReleasesUrl("JostenSyon", "OpenHomeNX")
-            : cfg.url;
+        std::string netUrl;
+        if (!cfg.url.empty()) {
+            netUrl = cfg.url; // custom vince sempre (anche in beta)
+        } else if (cfg.channel == "beta") {
+            // Canale beta: prima risolvi la pre-release corrente via API.
+            // Mai fallback silenzioso sullo stabile: se fallisce lo dici.
+            std::string betaBase, betaTag, betaErr;
+            if (!updateNetEnsureReady()) {
+                showMessageAndWait(i18n::get(StrKey::UpdateTitle),
+                    i18n::fmt(StrKey::UpdateNetOff, "GitHub beta"));
+                return false;
+            }
+            showWorking(i18n::fmt(StrKey::UpdateContacting, "GitHub beta"));
+            if (!updateNetFetchBetaBase("JostenSyon", "OpenHomeNX", cfg.token,
+                                        betaBase, betaTag, betaErr)) {
+                if (betaErr == "none") {
+                    showMessageAndWait(i18n::get(StrKey::UpdateTitle),
+                        i18n::fmt(StrKey::UpdateBetaNone, curVer));
+                } else {
+                    DebugLog::line("update: beta resolve fallito: %s", betaErr.c_str());
+                    showMessageAndWait(i18n::get(StrKey::UpdateTitle),
+                        i18n::fmt(StrKey::UpdateUnreachable, betaErr, "GitHub beta"));
+                }
+                return false;
+            }
+            netUrl = betaBase;
+        } else {
+            netUrl = githubReleasesUrl("JostenSyon", "OpenHomeNX");
+        }
         {
             DebugLog::line("update: net url=%s token=%s", netUrl.c_str(),
                            cfg.token.empty() ? "no" : "yes");
@@ -2662,6 +3891,68 @@ void UI::openSaveMenu(GameType g, int occ) {
     showSaveMenu_ = true;
 }
 
+bool UI::tileHasUsableSave(int i) const {
+    if (i < 0 || i >= (int)availableGames_.size()) return false;
+    GameType g = availableGames_[i];
+    int occ = importedOccurrence(i);
+    bool fileBacked = !importedSavePath(g, occ).empty();
+    bool title = !fileBacked && selectedProfile_ >= 0 && !appletMode_ &&
+                 titleIdOf(g) >= 0x0100000000010000ULL && saveFileNameOf(g)[0] != '\0';
+    return fileBacked || title;
+}
+
+void UI::openGamePick(GamePickTarget t) {
+    gamePickTarget_ = t;
+    gamePickAvail_.clear();
+    for (int i = 0; i < (int)availableGames_.size(); i++) {
+        if (!tileHasUsableSave(i)) continue;
+        // Trade esposto solo sui giochi che lo supportano davvero.
+        if (t == GamePickTarget::Trade && !TradeEvo::supported(availableGames_[i])) continue;
+        gamePickAvail_.push_back(i);
+    }
+    if (gamePickAvail_.empty()) {
+        showMessageAndWait(i18n::get(StrKey::Error),
+                           t == GamePickTarget::Trade
+                               ? "Nessun gioco supporta lo scambio."
+                               : "Nessun save disponibile.");
+        return;
+    }
+    gamePickCursor_ = 0;
+    gamePickScroll_ = 0;
+    showGamePick_ = true;
+    markDirty();
+}
+
+void UI::drawGamePickPopup() {
+    drawRect(0, 0, SCREEN_W, SCREEN_H, T().overlay);
+    constexpr int POP_W = 360;
+    constexpr int MAX_VIS = 12;
+    int count = (int)gamePickAvail_.size();
+    int vis = std::min(count, MAX_VIS);
+    int rowH = 36;
+    int POP_H = 50 + vis * rowH + 30;
+    int popX = (SCREEN_W - POP_W) / 2;
+    int popY = (SCREEN_H - POP_H) / 2;
+    drawRect(popX, popY, POP_W, POP_H, T().panelBg);
+    drawRectOutline(popX, popY, POP_W, POP_H, T().cursor, 2);
+    std::string title = std::string(gamePickTarget_ == GamePickTarget::Trade ? "Trade: " : "Save: ") +
+                        i18n::get(StrKey::SelectGame);
+    drawTextCentered(title, popX + POP_W / 2, popY + 22, T().text, font_);
+    int startY = popY + 50;
+    for (int i = 0; i < vis; i++) {
+        int rowY = startY + i * rowH;
+        if (gamePickScroll_ + i == gamePickCursor_) {
+            drawRect(popX + 20, rowY, POP_W - 40, rowH - 4, T().menuHighlight);
+            drawRectOutline(popX + 20, rowY, POP_W - 40, rowH - 4, T().cursor, 2);
+        }
+        int idx = gamePickAvail_[gamePickScroll_ + i];
+        std::string nm = gameDisplayNameOf(availableGames_[idx]);
+        if (nm.substr(0, 8) == "Pokemon ") nm = nm.substr(8);
+        drawTextCentered(nm, popX + POP_W / 2, rowY + (rowH - 4) / 2, T().text, font_);
+    }
+    drawTextCentered(i18n::get(StrKey::ASelectBCancel), popX + POP_W / 2, popY + POP_H - 18, T().textDim, fontSmall_);
+}
+
 std::string UI::manualBackupDir(GameType g) const {
     return basePath_ + "backups/manual/" + gamePathNameOf(g) + "/";
 }
@@ -2762,8 +4053,45 @@ void UI::openBackupList(GameType g) {
     backupListEntries_ = collectBackupEntries(g);
     backupListCursor_ = 0;
     backupListScroll_ = 0;
+    backupListZlHeld_ = backupListZrHeld_ = false;
     showBackupList_ = true;
     showSaveMenu_ = false;
+}
+
+// ZL+ZR: elimina il backup evidenziato (con conferma), poi ricarica la
+// lista e riaggancia cursore/scroll. Mai silenzioso (vedi deleteBackupEntry).
+void UI::tryDeleteHighlightedBackup() {
+    int count = (int)backupListEntries_.size();
+    if (count <= 0) return;
+    if (backupListCursor_ < 0 || backupListCursor_ >= count) return;
+    std::string e = backupListEntries_[backupListCursor_].path;
+    auto slash = e.find_last_of('/');
+    std::string base = (slash == std::string::npos) ? e : e.substr(slash + 1);
+    if (!showConfirmDialog("Delete backup", base + "\nElimino definitivamente. Procedo?")) return;
+    if (deleteBackupEntry(e)) {
+        backupListEntries_ = collectBackupEntries(backupListGame_);
+        count = (int)backupListEntries_.size();
+        if (backupListCursor_ >= count)
+            backupListCursor_ = count > 0 ? count - 1 : 0;
+        if (backupListScroll_ > backupListCursor_)
+            backupListScroll_ = backupListCursor_;
+        showMessageAndWait("Delete backup", "OK, backup eliminato.");
+    } else {
+        showMessageAndWait("Delete backup", "FAILED (vedi debug.log)");
+    }
+}
+
+// Elimina un backup (file o dir, speculare al restore). Mai silenzioso:
+// ogni fallimento torna false e il chiamante mostra FAILED.
+bool UI::deleteBackupEntry(const std::string& entry) {
+    struct stat st;
+    if (stat(entry.c_str(), &st) != 0) {
+        DebugLog::line("backup delete FAILED (stat): %s", entry.c_str());
+        return false;
+    }
+    bool ok = removeRecursive(entry);
+    DebugLog::line("backup delete: %s (%s)", entry.c_str(), ok ? "ok" : "FAIL");
+    return ok;
 }
 
 void UI::drawBackupListPopup() {
@@ -2798,7 +4126,108 @@ void UI::drawBackupListPopup() {
             drawText(base, popX + 30, rowY + 6, T().text, fontSmall_);
         }
     }
-    drawTextCentered("A: restore  B: back", popX + POP_W / 2, popY + POP_H - 18, T().textDim, fontSmall_);
+    drawTextCentered("A: restore  B: back  ZL+ZR: delete", popX + POP_W / 2, popY + POP_H - 18, T().textDim, fontSmall_);
+}
+
+// Legge sdmc:/atmosphere/crash_reports/ (+ il vecchio fatal_errors/ come
+// fallback) e ordina per data di modifica, piu' recente in cima: un crash
+// "brutto" in uscita dal gioco non lascia traccia nel nostro debug.log
+// (finisce dopo "exit: shutdown complete", quando il nostro processo ha
+// gia' fatto return) ma Atmosphere lo scrive li' per conto suo.
+std::vector<UI::BackupListEntry> UI::collectCrashReportEntries() {
+    struct Item { std::string path; std::string label; long mtime; };
+    std::vector<Item> items;
+    static const char* kDirs[] = {
+        "sdmc:/atmosphere/crash_reports/",
+        "sdmc:/atmosphere/fatal_errors/",
+    };
+    for (const char* dir : kDirs) {
+        for (auto& n : listDirNames(dir)) {
+            std::string full = std::string(dir) + n;
+            struct stat st;
+            if (stat(full.c_str(), &st) != 0 || S_ISDIR(st.st_mode)) continue;
+            struct tm tmv;
+            localtime_r(&st.st_mtime, &tmv);
+            char dt[32];
+            std::snprintf(dt, sizeof(dt), "%04d-%02d-%02d %02d:%02d",
+                          tmv.tm_year + 1900, tmv.tm_mon + 1, tmv.tm_mday,
+                          tmv.tm_hour, tmv.tm_min);
+            std::string nm = n;
+            if (nm.size() > 40) nm = nm.substr(0, 39) + "~";
+            char label[160];
+            std::snprintf(label, sizeof(label), "%s  %s", dt, nm.c_str());
+            items.push_back({ full, label, (long)st.st_mtime });
+        }
+    }
+    std::sort(items.begin(), items.end(),
+              [](const Item& a, const Item& b) { return a.mtime > b.mtime; });
+    std::vector<BackupListEntry> out;
+    out.reserve(items.size());
+    for (auto& it : items) out.push_back({ it.path, it.label });
+    return out;
+}
+
+void UI::openCrashList() {
+    crashListEntries_ = collectCrashReportEntries();
+    crashListCursor_ = 0;
+    crashListScroll_ = 0;
+    showCrashList_ = true;
+}
+
+void UI::drawCrashListPopup() {
+    drawRect(0, 0, SCREEN_W, SCREEN_H, T().overlay);
+    std::string title = "Crash report (Atmosphere)";
+    constexpr int POP_W = 560;
+    constexpr int ROW_H = 36;
+    constexpr int VISIBLE = 12;
+    int count = (int)crashListEntries_.size();
+    int rows = count > 0 ? std::min(count, VISIBLE) : 1;
+    int POP_H = 50 + rows * ROW_H + 30;
+    int popX = (SCREEN_W - POP_W) / 2;
+    int popY = (SCREEN_H - POP_H) / 2;
+    drawRect(popX, popY, POP_W, POP_H, T().panelBg);
+    drawRectOutline(popX, popY, POP_W, POP_H, T().cursor, 2);
+    drawTextCentered(title, popX + POP_W / 2, popY + 22, T().text, font_);
+    int startY = popY + 50;
+    if (count == 0) {
+        drawTextCentered("No crash reports found on the SD card.", popX + POP_W / 2,
+                         startY + (ROW_H - 4) / 2, T().textDim, font_);
+    } else {
+        for (int r = 0; r < rows; r++) {
+            int i = crashListScroll_ + r;
+            if (i >= count) break;
+            int rowY = startY + r * ROW_H;
+            if (i == crashListCursor_) {
+                drawRect(popX + 20, rowY, POP_W - 40, ROW_H - 4, T().menuHighlight);
+                drawRectOutline(popX + 20, rowY, POP_W - 40, ROW_H - 4, T().cursor, 2);
+            }
+            std::string base = crashListEntries_[i].label;
+            if (base.size() > 52) base = base.substr(0, 51) + "~";
+            drawText(base, popX + 30, rowY + 6, T().text, fontSmall_);
+        }
+    }
+    drawTextCentered("A: send  B: back", popX + POP_W / 2, popY + POP_H - 18, T().textDim, fontSmall_);
+}
+
+// Riusa lo stesso upload dei save (endpoint /upload-save, tetto 128MB: un
+// .bin di crash report e' comunque minuscolo rispetto a quel limite) con
+// tag "crash" cosi' sul server finisce in dist/uploads/saves/ come
+// crash_<timestamp>_<ip>.sav (estensione del server, il contenuto resta
+// quello originale del file scelto).
+void UI::sendCrashReportNow(const std::string& path) {
+    UpdateCfg cfg;
+    std::string err;
+    if (!readUpdateCfg(basePath_, cfg) || cfg.url.empty()) {
+        showMessageAndWait(i18n::get(StrKey::CrashReportTitle), i18n::get(StrKey::CrashReportNoUrl));
+    } else if (!updateNetEnsureReady()) {
+        showMessageAndWait(i18n::get(StrKey::CrashReportTitle), i18n::get(StrKey::CrashReportNetOff));
+    } else {
+        showWorking(i18n::fmt(StrKey::CrashReportUploading, cfg.url));
+        if (updateNetUploadSave(cfg.url, cfg.token, path, "crash", err))
+            showMessageAndWait(i18n::get(StrKey::CrashReportTitle), i18n::get(StrKey::CrashReportSent));
+        else
+            showMessageAndWait(i18n::get(StrKey::CrashReportTitle), i18n::fmt(StrKey::CrashReportFailed, err));
+    }
 }
 
 void UI::autoBackupFileSave(GameType g, const std::string& path) {
@@ -3034,8 +4463,8 @@ void UI::sendSaveFor(GameType g, int occ) {
     }
 }
 
-bool UI::backupGameSave(GameType g, std::string& out) {
-    std::string dir = manualBackupDir(g);
+bool UI::backupGameSave(GameType g, std::string& out, const std::string& alreadyMounted, bool manual) {
+    std::string dir = manual ? manualBackupDir(g) : autoBackupDir(g);
     ensureDirRecursive(dir);
     std::string path = importedSavePath(g, saveMenuOcc_);
     if (!path.empty()) {
@@ -3050,10 +4479,14 @@ bool UI::backupGameSave(GameType g, std::string& out) {
         && titleIdOf(g) >= 0x0100000000010000ULL && saveFileNameOf(g)[0] != '\0') {
         std::string dst = dir + backupTimestamp() + "/";
         ensureDirRecursive(dst);
-        std::string mnt = account_.mountSave(selectedProfile_, g);
+        // Se il chiamante ha gia' un mount attivo per questo gioco (zaino),
+        // riusalo: mountSave() qui smonterebbe il suo, valido solo finche'
+        // resta montato lui (vedi commento in ui.h).
+        bool ownMount = alreadyMounted.empty();
+        std::string mnt = ownMount ? account_.mountSave(selectedProfile_, g) : alreadyMounted;
         if (mnt.empty()) return false;
         bool ok = AccountManager::backupSaveDir(mnt, dst);
-        account_.unmountSave();
+        if (ownMount) account_.unmountSave();
         if (!ok) return false;
         out = dst;
         DebugLog::line("save backup (account): %s -> %s", gameInfo(g).gameTag, dst.c_str());
@@ -3079,7 +4512,12 @@ bool UI::restoreBackupEntry(GameType g, const std::string& entry) {
         bool ok = AccountManager::backupSaveDir(entry + "/", mnt);
         // Senza commit l'unmount scarta le scritture (Horizon): restore
         // fantasma che dice ok ma non cambia niente (Violetto 2026-09-09).
-        if (ok) account_.commitSave();
+        // Il risultato del commit ora e' controllato davvero (prima veniva
+        // ignorato: poteva dire "ok" anche se il commit falliva).
+        if (ok && !account_.commitSave()) {
+            DebugLog::line("save restore (account): commitSave FALLITO dopo copia ok");
+            ok = false;
+        }
         account_.unmountSave();
         DebugLog::line("save restore (account): %s (%s)", entry.c_str(), ok ? "ok" : "FAIL");
         return ok;
@@ -3113,7 +4551,8 @@ void UI::drawSaveMenuPopup() {
 }
 
 std::vector<GameSelMenuAction> UI::gameSelMenuActions() const {
-    std::vector<GameSelMenuAction> v = { GameSelMenuAction::SwitchCore, GameSelMenuAction::DebugLog };
+    std::vector<GameSelMenuAction> v = { GameSelMenuAction::SwitchCore, GameSelMenuAction::DebugLog,
+                                          GameSelMenuAction::ClearLog };
     // Invio log/save solo con override rete attivo (GitHub non riceve upload).
     if (DebugLog::enabled()) {
         UpdateCfg cfg;
@@ -3121,11 +4560,15 @@ std::vector<GameSelMenuAction> UI::gameSelMenuActions() const {
         if (!cfg.url.empty()) {
             v.push_back(GameSelMenuAction::SendLog);
             v.push_back(GameSelMenuAction::SendSave);
+            // Niente CrashReport nel menu rapido +: resta solo in
+            // Impostazioni -> Sviluppatore (richiesto esplicitamente,
+            // il + doveva restare corto).
         }
     }
     v.push_back(GameSelMenuAction::ImportSettings);
     v.push_back(GameSelMenuAction::CheckUpdate);
     v.push_back(GameSelMenuAction::OpenSettings);
+    v.push_back(GameSelMenuAction::RemoteBox);
     v.push_back(GameSelMenuAction::Exit);
     return v;
 }
@@ -3162,11 +4605,16 @@ void UI::drawGameSelMenuPopup() {
         switch (actions[i]) {
             case GameSelMenuAction::SwitchCore:      label = std::string("Switch Core") + (useOpenHome() ? " (OH)" : " (PK)"); break;
             case GameSelMenuAction::DebugLog:        label = std::string("Debug log") + (DebugLog::enabled() ? " (on)" : " (off)"); break;
+            case GameSelMenuAction::ClearLog:         label = "Clear log"; break;
             case GameSelMenuAction::SendLog:         label = "Send log"; break;
             case GameSelMenuAction::SendSave:        label = "Send save"; break;
+            case GameSelMenuAction::CrashReport:     label = "Crash report"; break;
             case GameSelMenuAction::ImportSettings:  label = "Import settings"; break;
             case GameSelMenuAction::CheckUpdate:     label = "Check for update"; break;
             case GameSelMenuAction::OpenSettings:     label = i18n::get(StrKey::SetTitle); break;
+            case GameSelMenuAction::ToggleDock:        label = std::string("Dock: ") + (dockState_.visible ? "on" : "off"); break;
+            case GameSelMenuAction::ReorderDock:       label = "Reorder dock"; break;
+            case GameSelMenuAction::RemoteBox:         label = i18n::get(StrKey::RemoteBoxMenuLabel); break;
             case GameSelMenuAction::Exit:             label = "Exit"; break;
         }
         // drawTextCentered() takes the text's vertical CENTRE; match it to the
@@ -3190,8 +4638,15 @@ void UI::openSettings() {
     setCat_ = 0;
     setRow_ = 0;
     setFocusLeft_ = true;
+    // Aspetto: niente animazione fantasma alla prima apertura -- la molla
+    // parte solo se il layout cambia mentre le impostazioni sono aperte.
+    appearanceCollapse_ = (gameSelectorLayout_ == GameSelectorLayout::Gallery) ? 1.0f : 0.0f;
+    appearanceCollapseVel_ = 0.0f;
     showGameSelMenu_ = false;
     if (langList_.empty()) langList_ = i18n::availableLangs();
+    // Rilevamento emulatore (v1: solo mGBA): idempotente, gia' fatto al
+    // boot (vedi ui.cpp) -- qui e' solo un fallback difensivo.
+    ensureMgbaChecked();
     markDirty();
 }
 
@@ -3250,14 +4705,7 @@ bool UI::hasCustomUrlFile(const std::string& basePath) {
 
 // Trova update.cfg attivo (suo path) ed eventuale .off. "" se assenti.
 void UI::findUpdateCfgFiles(const std::string& basePath, std::string& cfg, std::string& off) {
-    cfg.clear();
-    off.clear();
-    const std::string dirs[] = { basePath, "sdmc:/switch/OpenHomeNX/" };
-    for (auto& d : dirs) {
-        struct stat st;
-        if (cfg.empty() && stat((d + "update.cfg").c_str(), &st) == 0) cfg = d + "update.cfg";
-        if (off.empty() && stat((d + "update.cfg.off").c_str(), &st) == 0) off = d + "update.cfg.off";
-    }
+    updateCfgPaths(basePath, cfg, off); // unica implementazione (vedi sopra)
 }
 
 // URL custom da update.cfg o .off (per precompilare l'edit).
@@ -3276,20 +4724,84 @@ std::string UI::customUrlAny(const std::string& basePath) {
     return "";
 }
 
+// Scrive key= a path esplicito preservando le altre righe.
+static bool setKeyInFile(const std::string& dst, const std::string& key,
+                         const std::string& value) {
+    std::vector<std::string> lines;
+    std::string line;
+    bool found = false;
+    {
+        // Lo stream di lettura va CHIUSO prima di aprire in scrittura:
+        // su FatFs tenere entrambi aperti sullo stesso file esistente
+        // fa fallire l'open in truncate (bug 2026-09-12: 46 scritture
+        // .off fallite, solo creazioni riuscite).
+        std::ifstream f(dst);
+        if (f.good()) {
+            while (std::getline(f, line)) {
+                if (!line.empty() && line.back() == '\r') line.pop_back();
+                auto eq = line.find('=');
+                std::string k = (eq == std::string::npos) ? line : line.substr(0, eq);
+                if (k == key) { line = key + "=" + value; found = true; }
+                lines.push_back(line);
+            }
+        }
+    }
+    if (!found) lines.push_back(key + "=" + value);
+    std::ofstream o(dst, std::ios::trunc);
+    if (!o.good()) {
+        DebugLog::line("updatecfg: scrittura %s fallita", dst.c_str());
+        return false;
+    }
+    for (auto& l : lines) o << l << "\n";
+    return true;
+}
+
+// Dopo ogni scrittura: se esiste un secondo file senza url, è un'esca
+// di un write passato — ripiega il channel nella home (se manca) e
+// rimuovila, così lo split-brain si autoripara al primo toggle.
+static void updateCfgFoldDecoys(const std::string& basePath, const std::string& home) {
+    std::string cfg, off;
+    updateCfgPaths(basePath, cfg, off);
+    for (const auto& other : {cfg, off}) {
+        if (other.empty() || other == home) continue;
+        if (fileHasKey(other, "url")) continue; // vero config, non esca
+        if (!fileHasKey(home, "channel")) {
+            UpdateCfg tmp;
+            parseUpdateCfgFile(other, tmp, true);
+            if (!tmp.channel.empty()) setKeyInFile(home, "channel", tmp.channel);
+        }
+        std::remove(other.c_str());
+        DebugLog::line("updatecfg: esca %s ripiegata", other.c_str());
+    }
+}
+
+// Scrive una chiave key= nel file home (mai esche, vedi REGOLA HOME).
+bool UI::writeUpdateCfgKey(const std::string& basePath, const std::string& key,
+                            const std::string& value) {
+    std::string home = updateCfgHome(basePath);
+    if (!setKeyInFile(home, key, value)) return false;
+    updateCfgFoldDecoys(basePath, home);
+    return true;
+}
+
 // Scrive url= in update.cfg preservando le altre chiavi; attiva (toglie .off).
 bool UI::writeUpdateCfgUrl(const std::string& basePath, const std::string& url) {
     std::string cfg, off;
     findUpdateCfgFiles(basePath, cfg, off);
     std::string dst = cfg.empty() ? basePath + "update.cfg" : cfg;
-    std::ifstream f(dst);
     std::vector<std::string> lines;
     std::string line;
     bool found = false;
-    if (f.good()) {
-        while (std::getline(f, line)) {
-            if (!line.empty() && line.back() == '\r') line.pop_back();
-            if (line.rfind("url=", 0) == 0) { line = "url=" + url; found = true; }
-            lines.push_back(line);
+    {
+        // Vedi setKeyInFile: chiudere la lettura prima del truncate,
+        // altrimenti su FatFs l'open fallisce a file esistente.
+        std::ifstream f(dst);
+        if (f.good()) {
+            while (std::getline(f, line)) {
+                if (!line.empty() && line.back() == '\r') line.pop_back();
+                if (line.rfind("url=", 0) == 0) { line = "url=" + url; found = true; }
+                lines.push_back(line);
+            }
         }
     }
     if (!found) lines.push_back("url=" + url);
@@ -3305,30 +4817,58 @@ bool UI::writeUpdateCfgUrl(const std::string& basePath, const std::string& url) 
 int UI::settingsRowCount(int cat) const {
     switch (cat) {
         case 0: return 1; // Utente predefinito
-        case 1: return 4; // Tema, Lingua, Zoom, Layout selettore
-        case 2: return 1; // Core
+        case 1: // Tema, Lingua, Layout selettore, [Zoom, Menu radiale,] Animazione scambio, Dock, Reset dock
+            // Zoom e Menu radiale sono voci morte in Galleria (la vedi non li usa):
+            // con il layout Galleria la lista si accorcia di 2 righe.
+            return (gameSelectorLayout_ == GameSelectorLayout::Gallery) ? 6 : 8;
+        case 2: return mgbaPath_.empty() ? 2 : 3; // Sistema: Core + Installa launcher [+ Emulatore predefinito]
         case 3: return 4; // Cartelle, Scansiona, Max, Pulisci
         case 4: {
             // Sorgente/edit custom solo con debug: l'utente normale resta su GitHub.
-            int n = 2;
-            if (DebugLog::enabled() && hasCustomUrlFile(basePath_)) n = 3;
-            return n; // Update, Sorgente [, Modifica]
+            int n = 3;
+            if (DebugLog::enabled() && hasCustomUrlFile(basePath_)) n = 4;
+            return n; // Update, Sorgente, Canale [, Modifica]
         }
-        case 5: return sendAvailable() ? 3 : 2; // Debug, Menu + [, Invia log]
+        case 5: {
+            // Debug, Menu + [, Pulisci cronologia zaino] [, Normalize save] [, Invia log, Crash report], Ricerca dispositivi
+            int n = 2;
+            if (DebugLog::enabled()) n += 1 + 1; // + ClearBp, + Normalize
+            if (sendAvailable()) n += 2;
+            n += 1; // + Ricerca dispositivi (sempre ultima riga, vedi remoteSyncTestRow)
+            return n;
+        }
         default: return 2; // Versione, Crediti
     }
+}
+
+// Riga cat 1 visualizzata -> riga logica. Solo in Galleria le voci Zoom (3) e
+// Menu radiale (4) sono nascoste: le righe visualizzate dopo "Layout" (2)
+// puntano alle righe logiche 5/6/7. In Classico l'identita'.
+// Da usare in LABEL/VALUE/ACTIVATE: MAI indicizzare row grezza nel cat 1.
+static int appearanceRow(int row, bool gallery) {
+    if (gallery && row >= 3) return row + 2;
+    return row;
 }
 
 static std::string readDefaultUser(const std::string& basePath);
 std::string UI::settingsRowLabel(int cat, int row) const {
     if (cat == 0) return i18n::get(StrKey::SetDefaultUser);
     if (cat == 1) {
-        if (row == 0) return i18n::get(StrKey::SetTheme);
-        if (row == 1) return i18n::get(StrKey::SetLanguage);
-        if (row == 2) return i18n::get(StrKey::SetGalleryLayout);
-        return i18n::get(StrKey::SetZoom);
+        int r = appearanceRow(row, gameSelectorLayout_ == GameSelectorLayout::Gallery);
+        if (r == 0) return i18n::get(StrKey::SetTheme);
+        if (r == 1) return i18n::get(StrKey::SetLanguage);
+        if (r == 2) return i18n::get(StrKey::SetGalleryLayout);
+        if (r == 3) return i18n::get(StrKey::SetZoom);
+        if (r == 4) return i18n::get(StrKey::SetRadialMenu);
+        if (r == 5) return i18n::get(StrKey::SetTradeAnim);
+        if (r == 6) return i18n::get(StrKey::SetDockVisible);
+        return i18n::get(StrKey::SetDockReset);
     }
-    if (cat == 2) return i18n::get(StrKey::SetCore);
+    if (cat == 2) {
+        if (row == 0) return i18n::get(StrKey::SetCore);
+        if (row == 1) return i18n::get(StrKey::SetInstallLauncher);
+        return i18n::get(StrKey::SetDefaultEmulator);
+    }
     if (cat == 3) {
         if (row == 0) return i18n::get(StrKey::SetSavePaths);
         if (row == 1) return i18n::get(StrKey::SetScan);
@@ -3338,12 +4878,22 @@ std::string UI::settingsRowLabel(int cat, int row) const {
     if (cat == 4) {
         if (row == 0) return i18n::get(StrKey::SetCheckUpdate);
         if (row == 1) return i18n::get(StrKey::SetSource);
+        if (row == 2) return i18n::get(StrKey::SetChannel);
         return i18n::get(StrKey::SetEditUrl);
     }
     if (cat == 5) {
+        // Ricerca dispositivi e' sempre l'ultima riga della categoria,
+        // qualunque sia il numero di righe extra sbloccate da debug/rete
+        // (vedi settingsRowCount): va controllata per prima o finirebbe per
+        // combaciare con uno degli indici fissi sotto quando le righe extra
+        // non ci sono tutte.
+        if (row == settingsRowCount(5) - 1) return i18n::get(StrKey::DevSyncTitle);
         if (row == 0) return i18n::get(StrKey::SetDebugToggle);
         if (row == 1) return i18n::get(StrKey::SetDbgMenu);
-        return i18n::get(StrKey::SendLogTitle);
+        if (row == 2) return i18n::get(StrKey::ClearBpHistTitle);
+        if (row == 3) return normalizeRowLabel();
+        if (row == 4) return i18n::get(StrKey::SendLogTitle);
+        return i18n::get(StrKey::CrashReportTitle);
     }
     if (row == 0) return i18n::get(StrKey::SetVersion);
     return i18n::get(StrKey::SetCredits);
@@ -3355,15 +4905,27 @@ std::string UI::settingsRowValue(int cat, int row) {
         return want;
     }
     if (cat == 1) {
-        if (row == 0) return getThemeName(themeIndex_);
-        if (row == 1) return langDisplayName(i18n::currentLang());
-        if (row == 2)
+        int r = appearanceRow(row, gameSelectorLayout_ == GameSelectorLayout::Gallery);
+        if (r == 0) return getThemeName(themeIndex_);
+        if (r == 1) return langDisplayName(i18n::currentLang());
+        if (r == 2)
             return (gameSelectorLayout_ == GameSelectorLayout::Gallery)
                  ? i18n::get(StrKey::LayoutGallery) : i18n::get(StrKey::LayoutClassic);
-        return std::to_string(zoomGrow_) + "px";
+        if (r == 3) return std::to_string(zoomGrow_) + "px";
+        if (r == 4) return Settings::radialMenu() ? i18n::get(StrKey::SetOn) : i18n::get(StrKey::SetOff);
+        if (r == 5) return Settings::tradeAnim() ? i18n::get(StrKey::SetOn) : i18n::get(StrKey::SetOff);
+        if (r == 6) {
+            if (!dockLoaded_) dockStateLoad();
+            return dockState_.visible ? i18n::get(StrKey::SetOn) : i18n::get(StrKey::SetOff);
+        }
+        return ""; // Reset dock: riga azione, niente valore
     }
-    if (cat == 2)
-        return useOpenHome() ? i18n::get(StrKey::SetCoreOh) : i18n::get(StrKey::SetCorePk);
+    if (cat == 2) {
+        if (row == 0)
+            return useOpenHome() ? i18n::get(StrKey::SetCoreOh) : i18n::get(StrKey::SetCorePk);
+        if (row == 1) return ""; // riga azione, come "Scansiona": niente valore a destra
+        return "mGBA"; // riga info: unico emulatore supportato per ora
+    }
     if (cat == 3) {
         if (row == 0) {
             int on = 0;
@@ -3385,6 +4947,12 @@ std::string UI::settingsRowValue(int cat, int row) {
             UpdateCfg cfg;
             readUpdateCfg(basePath_, cfg);
             return cfg.url.empty() ? "GitHub" : "Custom";
+        }
+        if (row == 2) {
+            UpdateCfg cfg;
+            readUpdateCfg(basePath_, cfg);
+            return cfg.channel == "beta" ? i18n::get(StrKey::ChannelBeta)
+                                         : i18n::get(StrKey::ChannelStable);
         }
         // Modifica: mostra l'indirizzo custom a destra (come un tempo).
         std::string cu = customUrlAny(basePath_);
@@ -3413,51 +4981,905 @@ std::string UI::settingsRowValue(int cat, int row) {
 }
 
 static std::string readDefaultUser(const std::string& basePath) {
-    std::ifstream f(basePath + "defaultuser.txt");
-    std::string nick;
-    if (f.good() && std::getline(f, nick)) {
-        if (!nick.empty() && nick.back() == '\r') nick.pop_back();
-        return nick;
-    }
-    return "";
+    (void)basePath;
+    return Settings::defaultUser();
 }
 
 // Menu debug rapido: ON = il gear apre il menu + classico, OFF = le impostazioni.
 static bool readQuickMenu(const std::string& basePath) {
-    std::ifstream f(basePath + "quickmenu.txt");
-    std::string v;
-    if (f.good() && std::getline(f, v)) return v == "1";
-    return false;
+    (void)basePath;
+    return Settings::quickMenu();
 }
 
 static void writeQuickMenu(const std::string& basePath, bool on) {
-    if (!on) {
-        std::remove((basePath + "quickmenu.txt").c_str());
-        return;
-    }
-    FILE* f = std::fopen((basePath + "quickmenu.txt").c_str(), "w");
-    if (f) { std::fputs("1", f); std::fclose(f); }
+    (void)basePath;
+    Settings::setQuickMenu(on);
 }
 
-static bool writeBackupMb(const std::string& basePath, long mb) {    std::string path = basePath + "update.cfg";
-    std::ifstream f(path);
+static bool writeBackupMb(const std::string& basePath, long mb) {    std::string path = updateCfgHome(basePath);
     std::vector<std::string> lines;
     std::string line;
     bool found = false;
-    if (f.good()) {
-        while (std::getline(f, line)) {
-            if (!line.empty() && line.back() == '\r') line.pop_back();
-            auto eq = line.find('=');
-            std::string k = (eq == std::string::npos) ? line : line.substr(0, eq);
-            if (k == "backup_mb") { line = "backup_mb=" + std::to_string(mb); found = true; }
-            lines.push_back(line);
+    {
+        // Vedi setKeyInFile: chiudere la lettura prima del truncate.
+        std::ifstream f(path);
+        if (f.good()) {
+            while (std::getline(f, line)) {
+                if (!line.empty() && line.back() == '\r') line.pop_back();
+                auto eq = line.find('=');
+                std::string k = (eq == std::string::npos) ? line : line.substr(0, eq);
+                if (k == "backup_mb") { line = "backup_mb=" + std::to_string(mb); found = true; }
+                lines.push_back(line);
+            }
         }
     }
     if (!found) lines.push_back("backup_mb=" + std::to_string(mb));
     std::ofstream o(path, std::ios::trunc);
-    if (!o.good()) return false;
+    if (!o.good()) {
+        DebugLog::line("updatecfg: scrittura %s fallita", path.c_str());
+        return false;
+    }
     for (auto& l : lines) o << l << "\n";
+    updateCfgFoldDecoys(basePath, path);
     return true;
+}
+
+// Impostazioni -> Sviluppatore -> Ricerca dispositivi (stage 1): prova
+// login + lista della cartella radice sul Filebrowser web di ArkOS/JELOS/
+// ROCKNIX (vedi remote_sync.h). Flusso a blocchi (come lo swkbd stesso):
+// primo l'IP salvato (chiesto una sola volta, poi riusato da Settings::),
+// poi le credenziali di default ArkOS "ark"/"ark", chieste a mano solo se
+// il login con quelle fallisce. Nessun browser di cartelle qui (quello e'
+// lo stage 2): questo test conferma solo che si riesce a raggiungere il
+// device e autenticarsi, utile anche per debug quando qualcosa non va.
+std::string UI::promptTextBlocking(const std::string& header, const std::string& initial, int maxLen) {
+    SwkbdConfig kbd;
+    swkbdCreate(&kbd, 0);
+    swkbdConfigMakePresetDefault(&kbd);
+    swkbdConfigSetStringLenMax(&kbd, maxLen);
+    swkbdConfigSetHeaderText(&kbd, header.c_str());
+    if (!initial.empty()) swkbdConfigSetInitialText(&kbd, initial.c_str());
+    char result[160] = {};
+    Result rc = swkbdShow(&kbd, result, sizeof(result));
+    swkbdClose(&kbd);
+    if (R_SUCCEEDED(rc)) return std::string(result);
+    return std::string(); // annullato dall'utente
+}
+
+bool UI::remoteSyncEnsureLogin(const std::string& title, std::string& host,
+                                std::string& user, std::string& pass, std::string& token) {
+    host = Settings::remoteSyncHost();
+    user = Settings::remoteSyncUser();
+    pass = Settings::remoteSyncPass();
+    std::string err;
+    bool ok = false;
+
+    // 1) Host gia' noto (stesso device di prima): riprova diretto, e' il
+    //    caso comune -- zero attesa di scansione. Se il token è ancora valido
+    //    (JWT 2h) lo riusiamo senza rifare login.
+    if (!host.empty()) {
+        if (remoteSyncGetCachedToken(host, token)) {
+            ok = true;
+            DebugLog::line("remote sync: token cached riusato per %s (no login)", host.c_str());
+        } else {
+            ok = remoteSyncLogin(host, user, pass, token, err);
+            if (!ok) {
+                DebugLog::line("remote sync: login FALLITO su host noto %s: %s", host.c_str(), err.c_str());
+            }
+        }
+        if (ok) {
+            // Login ok (o token riusato) ma potrebbe essere un altro device (router che risponde
+            // 200 con token fake) -- verifico subito che la root sia listabile,
+            // altrimenti invalido e passo alla scansione (gestisce IP cambiato
+            // es. 192.168.4.5 → 192.168.4.28).
+            std::vector<RemoteEntry> probeEntries;
+            std::string probeErr;
+            if (!remoteSyncListPath(host, token, "", probeEntries, probeErr)) {
+                DebugLog::line("remote sync: host noto %s login ok ma root non listabile (%s) → invalido, provo scansione", host.c_str(), probeErr.c_str());
+                ok = false;
+            }
+        }
+    }
+
+    // 2) Host sconosciuto o non risponde piu' (es. IP cambiato via DHCP):
+    //    scansione automatica della LAN che prova il login vero su OGNI
+    //    host che risponde sulla porta 80, non solo il primo -- su una rete
+    //    con piu' web-server (router, NAS, ecc.) il primo a rispondere e'
+    //    quasi sempre il router e non e' un Filebrowser: fermarsi li' era
+    //    il bug segnalato (login sempre rifiutato, nessun modo di andare
+    //    oltre). Si ferma solo al primo che risponde 200 al login.
+    //    Annullabile con B (vedi remote_sync.cpp).
+    std::string lastScanErr;
+    if (!ok) {
+        std::string scanErr, foundHost, foundToken;
+        // Popup con barra di avanzamento durante lo scan (che resta
+        // sincrono -- nessun thread nuovo, vedi il commento su onProgress
+        // in remote_sync.h): stesso schema gia' usato per il progresso di
+        // download degli aggiornamenti (vedi le chiamate a showWorking nel
+        // flusso di UpdateNetDownload piu' sotto in questo file), cosi'
+        // l'utente vede la ricerca avanzare invece di uno schermo fermo
+        // per i secondi che dura.
+        if (remoteSyncScanLan(user, pass, foundHost, foundToken, scanErr,
+                               [this](const std::string& s) { showWorking(s); })) {
+            host = foundHost;
+            token = foundToken;
+            ok = true;
+        } else {
+            DebugLog::line("remote sync: scansione LAN senza esito: %s", scanErr.c_str());
+            lastScanErr = scanErr;
+        }
+    }
+
+    // 3) Ancora niente: si chiede l'host a mano -- ma solo se l'utente vuole.
+    //    Prima la scansione spammava subito IP/user/pass anche se l'utente
+    //    aveva appena premuto B per annullare. Ora chiediamo conferma.
+    if (!ok) {
+        // Se la scansione è stata annullata con B, torna subito senza chiedere altro
+        if (lastScanErr.find("annullato") != std::string::npos) {
+            showMessageAndWait(title, i18n::get(StrKey::DevSyncCancelled));
+            return false;
+        }
+        if (!showConfirmDialog(title, "Scansione non ha trovato dispositivi.\nVuoi inserire un IP fisso manualmente?")) {
+            showMessageAndWait(title, i18n::get(StrKey::DevSyncCancelled));
+            return false;
+        }
+        std::string typed = promptTextBlocking(i18n::get(StrKey::DevSyncHostPrompt), host, 63);
+        if (typed.empty()) { showMessageAndWait(title, i18n::get(StrKey::DevSyncCancelled)); return false; }
+        host = typed;
+        ok = remoteSyncLogin(host, user, pass, token, err);
+    }
+
+    // 4) ...poi le credenziali, solo se anche l'host appena confermato (che
+    //    sia quello scansionato o quello digitato) rifiuta user/pass default.
+    if (!ok) {
+        user = promptTextBlocking(i18n::get(StrKey::DevSyncUserPrompt), user, 31);
+        if (user.empty()) { showMessageAndWait(title, i18n::get(StrKey::DevSyncCancelled)); return false; }
+        pass = promptTextBlocking(i18n::get(StrKey::DevSyncPassPrompt), "", 31);
+        ok = remoteSyncLogin(host, user, pass, token, err);
+    }
+
+    if (!ok) {
+        showMessageAndWait(title, i18n::fmt(StrKey::DevSyncLoginFailed, err));
+        DebugLog::line("remote sync: login FALLITO (host=%s): %s", host.c_str(), err.c_str());
+        return false;
+    }
+
+    // Login riuscito: salva sempre host/credenziali che hanno funzionato --
+    // che fossero gia' salvati, trovati dalla scansione o appena digitati --
+    // cosi' la prossima volta si riparte dal passo 1 (istantaneo).
+    Settings::setRemoteSyncHost(host);
+    Settings::setRemoteSyncUser(user);
+    Settings::setRemoteSyncPass(pass);
+    return true;
+}
+
+// Picker per scegliere il gioco tra i candidati trovati sul R36S.
+// Ritorna indice del candidato scelto o -1 se annullato. Popup bloccante
+// con lista + highlight, stesso stile dei menu impostazioni (round rect).
+int UI::pickRemoteSyncGame(const std::vector<SyncCandidate>& candidates) {
+    if (!renderer_ || candidates.empty()) return -1;
+    markDirty();
+    int sel = 0;
+    int result = -2; // -2 = picking, -1 = cancel, >=0 = picked
+    const int POP_W = 640, POP_H = 420;
+    int popX = (SCREEN_W - POP_W) / 2;
+    int popY = (SCREEN_H - POP_H) / 2;
+    // Analog stick debounce
+    uint32_t lastStickMs = 0;
+    while (result == -2) {
+        SDL_Event event;
+        while (SDL_PollEvent(&event)) {
+            if (event.type == SDL_QUIT) result = -1;
+            if (event.type == SDL_CONTROLLERBUTTONDOWN) {
+                if (event.cbutton.button == SDL_CONTROLLER_BUTTON_DPAD_UP)
+                    sel = (sel - 1 + (int)candidates.size()) % (int)candidates.size();
+                else if (event.cbutton.button == SDL_CONTROLLER_BUTTON_DPAD_DOWN)
+                    sel = (sel + 1) % (int)candidates.size();
+                else if (event.cbutton.button == SDL_CONTROLLER_BUTTON_B) // Switch A = conferma
+                    result = sel;
+                else if (event.cbutton.button == SDL_CONTROLLER_BUTTON_A) // Switch B = annulla
+                    result = -1;
+            } else if (event.type == SDL_CONTROLLERAXISMOTION) {
+                if (event.caxis.axis == SDL_CONTROLLER_AXIS_LEFTY) {
+                    uint32_t now = SDL_GetTicks();
+                    if (now - lastStickMs > 180) {
+                        if (event.caxis.value < -12000) {
+                            sel = (sel - 1 + (int)candidates.size()) % (int)candidates.size();
+                            lastStickMs = now;
+                        } else if (event.caxis.value > 12000) {
+                            sel = (sel + 1) % (int)candidates.size();
+                            lastStickMs = now;
+                        }
+                    }
+                }
+            }
+        }
+        // Popup overlay (non full-screen) come drawSaveMenuPopup
+        drawRect(0, 0, SCREEN_W, SCREEN_H, T().overlay);
+        drawRect(popX, popY, POP_W, POP_H, T().panelBg);
+        drawRectOutline(popX, popY, POP_W, POP_H, T().cursor, 2);
+        drawTextCentered(i18n::get(StrKey::DevSyncPickerTitle), popX + POP_W / 2, popY + 18, T().text, fontLarge_);
+        const int ROW_H = 44, listY = popY + 60;
+        int vis = std::min<int>((int)candidates.size(), 7);
+        for (int i = 0; i < vis; i++) {
+            int idx = i;
+            // Se ci sono più di 7, centra la selezione (semplice windowing)
+            if ((int)candidates.size() > 7) {
+                int start = std::clamp(sel - 3, 0, (int)candidates.size() - 7);
+                idx = start + i;
+                if (idx >= (int)candidates.size()) break;
+            }
+            const auto& c = candidates[idx];
+            const GameInfo& gi = gameInfo(c.type);
+            int rowY = listY + i * ROW_H;
+            if (idx == sel) {
+                drawRoundRect(popX + 12, rowY, POP_W - 24, ROW_H - 6, 8, T().menuHighlight);
+                drawRoundRectOutline(popX + 12, rowY, POP_W - 24, ROW_H - 6, 8, T().cursor, 2);
+            }
+            std::string label = gi.displayName;
+            if (c.hasLocal && c.hasRemoteSave) label += "  [L+R]";
+            else if (c.hasLocal) label += "  [L]";
+            else label += "  [R]";
+            drawText(label, popX + 28, rowY + 10, T().text, font_);
+        }
+        drawTextCentered(i18n::get(StrKey::DevSyncPickerHint), popX + POP_W / 2, popY + POP_H - 24, T().textDim, fontSmall_);
+        SDL_RenderPresent(renderer_);
+        SDL_Delay(16);
+    }
+    markDirty();
+    return result;
+}
+
+// Overlay con 3 grossi bottoni arrotondati (stesso stile Trade/Bank).
+// Ritorna 0=Invia, 1=Ricevi, 2=Sincronizza, -1=annulla. Blocca con loop eventi.
+int UI::pickRemoteSyncAction(const SyncCandidate& c) {
+    if (!renderer_) return -1;
+    markDirty();
+    const GameInfo& gi = gameInfo(c.type);
+    int sel = 0;
+    // Determina quali azioni sono sensate (per disabilitare visivamente)
+    bool canSend = c.hasLocal;
+    bool canReceive = c.hasRemoteSave;
+    // Sincronizza ha senso solo se entrambi presenti (check identità fatto dopo)
+    bool canSync = c.hasLocal && c.hasRemoteSave;
+    int result = -2;
+    const int POP_W = 520, POP_H = 360;
+    int popX = (SCREEN_W - POP_W) / 2;
+    int popY = (SCREEN_H - POP_H) / 2;
+    const int BTN_W = 340, BTN_H = 56, BTN_R = 12;
+    const int BTN_X = popX + (POP_W - BTN_W) / 2;
+    // Label brevi (senza {0}) per i bottoni
+    const char* labels[3] = { StrKey::DevSyncActionSend, StrKey::DevSyncActionReceive, StrKey::DevSyncActionSync };
+    bool enabled[3] = { canSend, canReceive, canSync };
+    // Parti dal primo abilitato (se "Invia" è disabilitato vai su "Ricevi")
+    for (int k = 0; k < 3; k++) if (enabled[k]) { sel = k; break; }
+    auto nextSel = [&](int dir) {
+        for (int step = 1; step <= 3; step++) {
+            int cand = (sel + dir * step + 3) % 3;
+            if (enabled[cand]) { sel = cand; break; }
+        }
+    };
+    uint32_t lastStickMs = 0;
+    while (result == -2) {
+        SDL_Event event;
+        while (SDL_PollEvent(&event)) {
+            if (event.type == SDL_QUIT) result = -1;
+            if (event.type == SDL_CONTROLLERBUTTONDOWN) {
+                if (event.cbutton.button == SDL_CONTROLLER_BUTTON_DPAD_UP)
+                    nextSel(-1);
+                else if (event.cbutton.button == SDL_CONTROLLER_BUTTON_DPAD_DOWN)
+                    nextSel(1);
+                else if (event.cbutton.button == SDL_CONTROLLER_BUTTON_B) { // Switch A
+                    if (enabled[sel]) result = sel;
+                } else if (event.cbutton.button == SDL_CONTROLLER_BUTTON_A) // Switch B
+                    result = -1;
+            } else if (event.type == SDL_CONTROLLERAXISMOTION) {
+                if (event.caxis.axis == SDL_CONTROLLER_AXIS_LEFTY) {
+                    uint32_t now = SDL_GetTicks();
+                    if (now - lastStickMs > 180) {
+                        if (event.caxis.value < -12000) { nextSel(-1); lastStickMs = now; }
+                        else if (event.caxis.value > 12000) { nextSel(1); lastStickMs = now; }
+                    }
+                }
+            }
+        }
+        drawRect(0, 0, SCREEN_W, SCREEN_H, T().overlay);
+        drawRect(popX, popY, POP_W, POP_H, T().panelBg);
+        drawRectOutline(popX, popY, POP_W, POP_H, T().cursor, 2);
+        drawTextCentered(i18n::fmt(StrKey::DevSyncActionTitle, gi.displayName), popX + POP_W / 2, popY + 18, T().text, font_);
+        for (int i = 0; i < 3; i++) {
+            int y = popY + 70 + i * (BTN_H + 18);
+            bool focused = (i == sel);
+            SDL_Color bg = focused ? T().menuHighlight : T().bg;
+            SDL_Color fg = enabled[i] ? T().text : T().textDim;
+            if (!enabled[i] && focused) bg = T().panelBg;
+            drawRoundRect(BTN_X, y, BTN_W, BTN_H, BTN_R, bg);
+            drawRoundRectOutline(BTN_X, y, BTN_W, BTN_H, BTN_R, focused ? T().cursor : T().textDim, focused ? 2 : 1);
+            std::string txt = i18n::get(labels[i]);
+            if (!enabled[i]) txt += " (--)";
+            // Centra testo nel bottone
+            auto e = getTextEntry(txt, font_, fg);
+            drawText(txt, BTN_X + (BTN_W - e.w) / 2, y + (BTN_H - e.h) / 2, fg, font_);
+        }
+        drawTextCentered("A: scegli  B: annulla", popX + POP_W / 2, popY + POP_H - 22, T().textDim, fontSmall_);
+        SDL_RenderPresent(renderer_);
+        SDL_Delay(16);
+    }
+    markDirty();
+    return result;
+}
+
+void UI::remoteSyncTestRow() {
+    std::string title = i18n::get(StrKey::DevSyncTitle);
+    if (!updateNetEnsureReady()) {
+        showMessageAndWait(title, i18n::get(StrKey::SendLogNetOff));
+        return;
+    }
+
+    std::string host, user, pass, token;
+    if (!remoteSyncEnsureLogin(title, host, user, pass, token))
+        return;
+
+    // "Monta" il device per il resto della UI (icona barra di stato, icone
+    // dock RemoteBox/DevSync via dockStateItemVisible): senza questo, la
+    // scansione manuale da qui trova il device e lo usa per la sync ma lo
+    // lascia "invisibile" altrove, perche' quei campi li scrive solo il
+    // worker in background al boot (vedi ui.cpp). Stesso aggiornamento,
+    // solo replicato qui.
+    remoteDeviceAvailable_ = true;
+    remoteDeviceHost_ = host;
+    remoteDeviceToken_ = token;
+    markDirty();
+
+    // Elenco locale (bank/import) da confrontare con quello remoto -- stessa
+    // scansione gia' usata dal selettore giochi, nessuna logica duplicata.
+    std::vector<ImportedGame> localGames = scanImportPaths(importPaths_, autoCheckUsb_);
+
+    std::string buildErr;
+    std::vector<SyncCandidate> candidates = remoteSyncBuildCandidates(host, token, localGames, buildErr);
+    if (candidates.empty()) {
+        showMessageAndWait(title, i18n::get(StrKey::DevSyncNoCandidates));
+        DebugLog::line("remote sync: nessun candidato su %s", host.c_str());
+        return;
+    }
+
+    // Cartella per gli eventuali download di controllo/ricezione -- creata al
+    // volo, mai fatale se fallisce (i download successivi falliranno da soli
+    // e verranno segnalati normalmente).
+    std::string tmpDir = basePath_ + "remote_sync_tmp/";
+    mkdir(tmpDir.c_str(), 0755);
+
+    int sent = 0, received = 0, skipped = 0, failed = 0;
+
+    auto doUpload = [&](const std::string& localPath, const std::string& remotePath) -> bool {
+        std::string opErr;
+        bool okUp = remoteSyncUpload(host, token, localPath, remotePath, opErr);
+        if (okUp) sent++; else failed++;
+        DebugLog::line("remote sync: invia %s -> %s (%s)", localPath.c_str(),
+                       okUp ? "OK" : "FALLITO", opErr.c_str());
+        return okUp;
+    };
+    auto doDownload = [&](const std::string& remotePath, const std::string& localPath) -> bool {
+        std::string opErr;
+        bool okDown = remoteSyncDownload(host, token, remotePath, localPath, opErr);
+        if (okDown) received++; else failed++;
+        DebugLog::line("remote sync: ricevi %s -> %s (%s)", remotePath.c_str(),
+                       okDown ? "OK" : "FALLITO", opErr.c_str());
+        return okDown;
+    };
+    // Copia locale pura (nessuna rete): usata quando il file remoto e' gia'
+    // stato scaricato per il controllo allenatore/TID (tmpPath) e la
+    // sincronizzazione lo conferma come la copia da tenere -- riscaricarlo
+    // sarebbe una richiesta di rete identica e inutile.
+    auto copyLocalAsReceived = [&](const std::string& srcTmp, const std::string& dstLocal) -> bool {
+        std::ifstream in(srcTmp, std::ios::binary);
+        bool okCopy = false;
+        if (in.is_open()) {
+            std::ofstream out(dstLocal, std::ios::binary | std::ios::trunc);
+            if (out.is_open()) {
+                out << in.rdbuf();
+                okCopy = out.good();
+            }
+        }
+        if (okCopy) received++; else failed++;
+        DebugLog::line("remote sync: sincronizza (copia da verifica gia' scaricata) %s -> %s (%s)",
+                       srcTmp.c_str(), dstLocal.c_str(), okCopy ? "OK" : "FALLITO");
+        return okCopy;
+    };
+
+    // Nuovo flusso: picker gioco + 3 bottoni (evita spam di dialog per ogni candidato)
+    int pickedIdx = pickRemoteSyncGame(candidates);
+    if (pickedIdx < 0) {
+        showMessageAndWait(title, i18n::fmt(StrKey::DevSyncFlowSummary, "0", "0", std::to_string(candidates.size()), "0"));
+        return;
+    }
+    SyncCandidate c = candidates[pickedIdx];
+    const GameInfo& gi = gameInfo(c.type);
+    int action = pickRemoteSyncAction(c);
+    if (action < 0) {
+        showMessageAndWait(title, i18n::fmt(StrKey::DevSyncFlowSummary, "0", "0", "1", "0"));
+        return;
+    }
+
+    // Logica centralizzata per le 3 azioni — il save deve avere esattamente lo stesso base della ROM
+    auto getExtLocal = [](const std::string& p) -> std::string {
+        size_t dot = p.find_last_of('.');
+        return (dot == std::string::npos) ? std::string(".sav") : p.substr(dot);
+    };
+    auto getBaseLocal = [](const std::string& p) -> std::string {
+        size_t slash = p.find_last_of('/');
+        std::string f = (slash == std::string::npos) ? p : p.substr(slash + 1);
+        size_t dot = f.find_last_of('.');
+        return (dot == std::string::npos) ? f : f.substr(0, dot);
+    };
+    // Helper per trovare la ROM locale corrispondente al save (solo per file-backed gb/gbc/gba/nds + FRLG)
+    auto findLocalRom = [&](const std::string& savePath, GameType type) -> std::string {
+        if (!(isFRLG(type) || isImportedFile(type) || isGen1File(type) || isGen2File(type) || isGen4File(type) || isGen5File(type)))
+            return std::string();
+        size_t slash = savePath.find_last_of('/');
+        std::string dir = (slash == std::string::npos) ? "" : savePath.substr(0, slash + 1);
+        std::string file = (slash == std::string::npos) ? savePath : savePath.substr(slash + 1);
+        size_t dot = file.find_last_of('.');
+        std::string base = (dot == std::string::npos) ? file : file.substr(0, dot);
+        const char* exts[] = {".gba",".gbc",".gb",".nds"};
+        for (auto ext : exts) {
+            std::string cand = dir + base + ext;
+            struct stat st2;
+            if (stat(cand.c_str(), &st2) == 0 && S_ISREG(st2.st_mode)) return cand;
+        }
+        return std::string();
+    };
+    // Costruisci il path remoto del save facendo combaciare esattamente il base con la ROM
+    std::string wantRomBase;
+    if (!c.remoteRomBaseName.empty()) wantRomBase = c.remoteRomBaseName;
+    else {
+        std::string lr = findLocalRom(c.localPath, c.type);
+        if (!lr.empty()) wantRomBase = getBaseLocal(lr);
+        else if (!c.localPath.empty()) wantRomBase = getBaseLocal(c.localPath);
+        else wantRomBase = std::string(gameInfo(c.type).gameTag);
+    }
+    for (char& ch : wantRomBase) if (ch == '/' || ch == '\\') ch = '_';
+    // Estensioni corrette: Switch (locale) usa .sav per file-backed, R36S (remoto) usa .srm/.dsv
+    auto getLocalSaveExtFor = [&](GameType t) -> std::string {
+        if (isGen4File(t) || isGen5File(t)) return ".sav"; // NDS su Switch
+        if (isFRLG(t) || isImportedFile(t) || isGen1File(t) || isGen2File(t)) return ".sav";
+        return ".sav";
+    };
+    auto getRemoteSaveExtFor = [&](GameType t) -> std::string {
+        if (isGen4File(t) || isGen5File(t)) return ".dsv"; // DraStic su R36S
+        if (isFRLG(t) || isImportedFile(t) || isGen1File(t) || isGen2File(t)) return ".srm";
+        return ".sav";
+    };
+    std::string localExtWanted = getLocalSaveExtFor(c.type);
+    std::string remoteExtWanted = getRemoteSaveExtFor(c.type);
+    // Se il save remoto esistente ha base diversa dalla ROM, usa il base della ROM per far combaciare
+    std::string remoteTargetPath;
+    if (c.hasRemoteSave) {
+        std::string curSaveBase = getBaseLocal(c.remoteSavePath);
+        std::string curLower = curSaveBase, wantLower = wantRomBase;
+        for (char& ch : curLower) ch = (char)std::tolower((unsigned char)ch);
+        for (char& ch : wantLower) ch = (char)std::tolower((unsigned char)ch);
+        if (curLower != wantLower && !wantRomBase.empty()) {
+            size_t slash = c.remoteSavePath.find_last_of('/');
+            std::string dir = (slash == std::string::npos) ? c.remoteDir : c.remoteSavePath.substr(0, slash + 1);
+            if (dir.empty()) dir = c.remoteDir;
+            remoteTargetPath = dir + wantRomBase + remoteExtWanted;
+        } else {
+            // Mantieni il path esistente ma assicurati l'estensione sia quella corretta per il remoto (.srm/.dsv)
+            std::string curExt = getExtLocal(c.remoteSavePath);
+            if (curExt != remoteExtWanted) {
+                size_t slash = c.remoteSavePath.find_last_of('/');
+                std::string dir = (slash == std::string::npos) ? "" : c.remoteSavePath.substr(0, slash + 1);
+                remoteTargetPath = dir + curSaveBase + remoteExtWanted;
+            } else {
+                remoteTargetPath = c.remoteSavePath;
+            }
+        }
+        } else {
+            remoteTargetPath = c.remoteDir + wantRomBase + remoteExtWanted;
+        }
+    bool didSomething = false;
+    if (action == 0) { // Invia
+        if (!c.hasLocal) {
+            showMessageAndWait(title, i18n::get(StrKey::DevSyncSyncNoLocalOrRemote));
+        } else if (showConfirmDialog(i18n::fmt(StrKey::DevSyncSendTitle, gi.displayName), i18n::get(StrKey::DevSyncSendOnlyLocalBody))) {
+            bool ok = doUpload(c.localPath, remoteTargetPath);
+            // Se sul remoto manca la ROM e il gioco è file-backed, invia anche la ROM
+            if (ok && !c.hasRemoteRom) {
+                std::string localRom = findLocalRom(c.localPath, c.type);
+                if (!localRom.empty()) {
+                    size_t dot = localRom.find_last_of('.');
+                    std::string ext = (dot == std::string::npos) ? ".gba" : localRom.substr(dot);
+                    std::string romBase = c.remoteRomBaseName.empty() ? std::string(gi.gameTag) : c.remoteRomBaseName;
+                    // Pulisci romBase
+                    for (char& ch : romBase) if (ch == '/' || ch == '\\') ch = '_';
+                    std::string remoteRomPath = c.remoteDir + romBase + ext;
+                    std::string romErr;
+                    if (remoteSyncUpload(host, token, localRom, remoteRomPath, romErr)) {
+                        DebugLog::line("remote sync: ROM inviata %s -> %s", localRom.c_str(), remoteRomPath.c_str());
+                    } else {
+                        DebugLog::line("remote sync: ROM non inviata %s: %s", localRom.c_str(), romErr.c_str());
+                    }
+                }
+            }
+            didSomething = ok;
+        }
+    } else if (action == 1) { // Ricevi
+        if (!c.hasRemoteSave) {
+            showMessageAndWait(title, i18n::get(StrKey::DevSyncSyncNoLocalOrRemote));
+        } else {
+            std::string body = c.hasLocal ? i18n::get(StrKey::DevSyncChooseReceiveBody) : i18n::get(StrKey::DevSyncReceiveOnlyRemoteBody);
+            if (showConfirmDialog(i18n::fmt(StrKey::DevSyncReceiveTitle, gi.displayName), body)) {
+                bool ok = false;
+                // Helper per estrarre estensione da un path (include punto)
+                auto getExt = [](const std::string& p) -> std::string {
+                    size_t dot = p.find_last_of('.');
+                    if (dot == std::string::npos) return std::string(".sav");
+                    return p.substr(dot);
+                };
+                if (c.hasLocal) {
+                    // Quando ricevi su un save esistente, assicurati che il nome del save
+                    // corrisponda esattamente al nome della ROM (stessa base). Se differiscono,
+                    // rinomina il save locale per far combaciare con la ROM.
+                    std::string localRom = findLocalRom(c.localPath, c.type);
+                    std::string wantBase;
+                    if (!localRom.empty()) {
+                        size_t slash = localRom.find_last_of('/');
+                        std::string romFile = (slash == std::string::npos) ? localRom : localRom.substr(slash + 1);
+                        size_t dot = romFile.find_last_of('.');
+                        wantBase = (dot == std::string::npos) ? romFile : romFile.substr(0, dot);
+                    } else if (!c.remoteRomBaseName.empty()) {
+                        wantBase = c.remoteRomBaseName;
+                    }
+                    std::string destPath = c.localPath;
+                    if (!wantBase.empty()) {
+                        size_t slash = destPath.find_last_of('/');
+                        std::string dir = (slash == std::string::npos) ? "" : destPath.substr(0, slash + 1);
+                        std::string ext = getLocalSaveExtFor(c.type);
+                        std::string curBase;
+                        {
+                            std::string file = (slash == std::string::npos) ? destPath : destPath.substr(slash + 1);
+                            size_t dot = file.find_last_of('.');
+                            curBase = (dot == std::string::npos) ? file : file.substr(0, dot);
+                        }
+                        if (curBase != wantBase) {
+                            destPath = dir + wantBase + ext;
+                            DebugLog::line("remote sync: rinomino save locale per match ROM: %s -> %s", c.localPath.c_str(), destPath.c_str());
+                        } else {
+                            // Usa estensione corretta per Switch (.sav) anche se remoto era .srm
+                            size_t dot2 = destPath.find_last_of('.');
+                            std::string curExt = (dot2 == std::string::npos) ? "" : destPath.substr(dot2);
+                            if (curExt != ext) destPath = dir + wantBase + ext;
+                        }
+                    }
+                    ok = doDownload(c.remoteSavePath, destPath);
+                    // Se il destPath è diverso dal vecchio c.localPath e il download è ok, rimuovi il vecchio file orfano
+                    if (ok && destPath != c.localPath) {
+                        std::remove(c.localPath.c_str());
+                        DebugLog::line("remote sync: vecchio save rimosso %s", c.localPath.c_str());
+                    }
+                    if (ok) { rescanImportedGames(); markDirty(); }
+                } else {
+                    // Per file-backed (gba/gbc/gb/nds + FRLG) salva in sdmc:/roms/ insieme alla ROM,
+                    // non nella cartella dell'app. Per gli altri usa il primo import path.
+                    std::string localDest;
+                    bool fileBacked = isFRLG(c.type) || isImportedFile(c.type) || isGen1File(c.type) || isGen2File(c.type) || isGen4File(c.type) || isGen5File(c.type);
+                    if (fileBacked) localDest = "sdmc:/roms/";
+                    else localDest = importPaths_.empty() ? (basePath_ + "import/") : importPaths_.front().path;
+                    if (!localDest.empty() && localDest.back() != '/') localDest += "/";
+                    mkdir(localDest.c_str(), 0755);
+                    std::string baseName = c.remoteRomBaseName.empty() ? std::string(gi.gameTag) : c.remoteRomBaseName;
+                    // Pulisci baseName da caratteri non validi per filesystem locale se serve
+                    std::string safeBase = baseName;
+                    for (char& ch : safeBase) if (ch == '/' || ch == '\\') ch = '_';
+                    std::string ext = getLocalSaveExtFor(c.type);
+                    std::string saveDest = localDest + safeBase + ext;
+                    ok = doDownload(c.remoteSavePath, saveDest);
+                    // Se manca il gioco (hasLocal==false) e c'è una ROM remota, chiedi se scaricare anche la ROM
+                    // così il save diventa subito utilizzabile. Il save deve avere esattamente lo stesso base della ROM.
+                    if (ok && c.hasRemoteRom) {
+                        // Controlla se la ROM locale già esiste (con lo stesso base)
+                        std::string romCheckPath = localDest + safeBase + ".gba";
+                        bool romExists = false;
+                        {
+                            // Prova le estensioni note per vedere se una ROM con quel base esiste già
+                            const char* tryExts[] = {".gba",".gbc",".gb",".nds"};
+                            for (auto ext : tryExts) {
+                                std::string cand = localDest + safeBase + ext;
+                                struct stat st2;
+                                if (stat(cand.c_str(), &st2) == 0) { romExists = true; break; }
+                            }
+                        }
+                        if (!romExists) {
+                            if (showConfirmDialog(i18n::get(StrKey::DevSyncAskRomTitle), i18n::fmt(StrKey::DevSyncAskRomBody, safeBase))) {
+                                std::vector<RemoteEntry> dirEntries;
+                                std::string listErr;
+                                if (remoteSyncListPath(host, token, c.remoteDir, dirEntries, listErr)) {
+                                    std::string romFile;
+                                    std::string wantBaseLower = safeBase;
+                                    for (char& ch : wantBaseLower) ch = (char)std::tolower((unsigned char)ch);
+                                    for (auto& e : dirEntries) {
+                                        if (e.isDir) continue;
+                                        if (!remoteSyncIsRomFileName(e.name)) continue;
+                                        std::string baseLower = e.name;
+                                        for (char& ch : baseLower) ch = (char)std::tolower((unsigned char)ch);
+                                        size_t dot = baseLower.find_last_of('.');
+                                        std::string baseOnly = (dot == std::string::npos) ? baseLower : baseLower.substr(0, dot);
+                                        if (baseOnly == wantBaseLower) { romFile = e.name; break; }
+                                    }
+                                    if (!romFile.empty()) {
+                                        std::string romDest = localDest + safeBase + romFile.substr(romFile.find_last_of('.'));
+                                        std::string romErr;
+                                        if (remoteSyncDownload(host, token, c.remoteDir + romFile, romDest, romErr)) {
+                                            DebugLog::line("remote sync: ROM ricevuta %s -> %s", (c.remoteDir + romFile).c_str(), romDest.c_str());
+                                        } else {
+                                            DebugLog::line("remote sync: ROM non ricevuta %s: %s", romFile.c_str(), romErr.c_str());
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                didSomething = ok;
+                if (ok) {
+                    // Aggiorna subito la lista giochi senza dover riavviare l'app
+                    rescanImportedGames();
+                    markDirty();
+                }
+                if (!ok) failed = 1; // assicurati che il riepilogo mostri fallito
+            }
+        }
+    } else if (action == 2) { // Sincronizza
+        if (!c.hasLocal || !c.hasRemoteSave) {
+            showMessageAndWait(title, i18n::get(StrKey::DevSyncSyncNoLocalOrRemote));
+        } else {
+            // Verifica identità allenatore prima di confrontare date (come prima)
+            std::string tmpPath = tmpDir + gi.gameTag + "_check.tmp";
+            std::string dlErr;
+            bool tmpOk = remoteSyncDownload(host, token, c.remoteSavePath, tmpPath, dlErr);
+            std::string localOt;
+            bool sameIdentity = false;
+            if (tmpOk) {
+                SaveFile localProbe, remoteProbe;
+                localProbe.setGameType(c.type);
+                remoteProbe.setGameType(c.type);
+                if (localProbe.load(c.localPath) && remoteProbe.load(tmpPath)) {
+                    localOt = localProbe.dsOtName();
+                    sameIdentity = !localOt.empty() && localOt == remoteProbe.dsOtName() && localProbe.dsTid() == remoteProbe.dsTid();
+                }
+            } else {
+                DebugLog::line("remote sync: download di controllo fallito per %s: %s", gi.gameTag, dlErr.c_str());
+            }
+            if (!sameIdentity) {
+                showMessageAndWait(title, i18n::get(StrKey::DevSyncSyncNoIdentity));
+                std::remove(tmpPath.c_str());
+            } else {
+                struct stat st;
+                long long localModified = 0;
+                long long localBefore = 0;
+                if (stat(c.localPath.c_str(), &st) == 0) localModified = localBefore = (long long)st.st_mtime;
+                bool remoteNewer = c.remoteSaveModifiedUnix > localModified;
+                std::string dir = i18n::get(remoteNewer ? StrKey::DevSyncDirRemoteToLocal : StrKey::DevSyncDirLocalToRemote);
+                if (showConfirmDialog(i18n::fmt(StrKey::DevSyncSyncTitle, gi.displayName), i18n::fmt(StrKey::DevSyncSyncBody, localOt, dir))) {
+                    if (remoteNewer) {
+                        // Usa copia già scaricata (tmpPath) — evita seconda richiesta di rete
+                        // e soprattutto non confrontare più dopo: il mtime locale va sovrascritto ora
+                        copyLocalAsReceived(tmpPath, c.localPath);
+                    } else {
+                        bool ok = doUpload(c.localPath, remoteTargetPath);
+                        if (ok && !c.hasRemoteRom) {
+                            std::string localRom = findLocalRom(c.localPath, c.type);
+                            if (!localRom.empty()) {
+                                size_t dot = localRom.find_last_of('.');
+                                std::string ext = (dot == std::string::npos) ? ".gba" : localRom.substr(dot);
+                                std::string romBase = c.remoteRomBaseName.empty() ? std::string(gi.gameTag) : c.remoteRomBaseName;
+                                for (char& ch : romBase) if (ch == '/' || ch == '\\') ch = '_';
+                                std::string remoteRomPath = c.remoteDir + romBase + ext;
+                                std::string romErr;
+                                if (remoteSyncUpload(host, token, localRom, remoteRomPath, romErr))
+                                    DebugLog::line("remote sync: ROM sincronizzata %s -> %s", localRom.c_str(), remoteRomPath.c_str());
+                            }
+                        }
+                    }
+                    didSomething = true;
+                }
+                std::remove(tmpPath.c_str());
+                // Nota mtime: confrontiamo i valori originali prima del transfer (localBefore vs remoteModified).
+                // Dopo il transfer il file locale avrà mtime = now, non va usato per decisioni future nello stesso flusso.
+            }
+        }
+    }
+
+    // Summary per singola azione (coerente con prima ma con 1 candidato)
+    skipped = didSomething ? 0 : 1;
+    // failed già aggiornato dalle lambda, ma se didSomething=false e failed==0 è uno skip pulito
+    if (didSomething) {
+        showMessageAndWait(title, i18n::fmt(StrKey::DevSyncFlowSummary, std::to_string(sent), std::to_string(received), "0", std::to_string(failed)));
+    } else {
+        // Se failed>0 (upload/download fallito) mostra falliti, altrimenti skip
+        if (failed > 0)
+            showMessageAndWait(title, i18n::fmt(StrKey::DevSyncFlowSummary, "0", "0", "0", std::to_string(failed)));
+        else
+            showMessageAndWait(title, i18n::fmt(StrKey::DevSyncFlowSummary, "0", "0", "1", "0"));
+    }
+    DebugLog::line("remote sync: flusso completato su %s (inviati=%d ricevuti=%d saltati=%d falliti=%d)",
+                   host.c_str(), sent, received, skipped, failed);
+}
+
+// --- Box Remoto: apre save gia' presenti sul dispositivo remoto dentro lo
+// stesso selettore giochi/banca locale. Il save scelto si scarica in un
+// file temporaneo che si comporta come un ImportedGame qualunque (stessa
+// UI::selectGame(), stesso bank/edit di sempre); in uscita dal gioco (non
+// dal box) UI::returnToGameSelector() chiede conferma e rispedisce il file
+// al dispositivo remoto solo se e' stato davvero modificato.
+
+void UI::openRemoteBox() {
+    std::string title = i18n::get(StrKey::RemoteBoxTitle);
+    if (!updateNetEnsureReady()) {
+        showMessageAndWait(title, i18n::get(StrKey::SendLogNetOff));
+        return;
+    }
+    if (isDualBankMode()) {
+        showMessageAndWait(title, i18n::get(StrKey::RemoteBoxNotInDualMode));
+        return;
+    }
+
+    std::string host, user, pass, token;
+    if (!remoteSyncEnsureLogin(title, host, user, pass, token))
+        return;
+
+    // Stesso motivo di remoteSyncTestRow() sopra: tiene "montato" il device
+    // per icona barra di stato/dock anche qui (in pratica il Box Remoto e'
+    // raggiungibile solo quando gia' visibile, ma un token rinnovato da
+    // remoteSyncEnsureLogin() va comunque ripubblicato).
+    remoteDeviceAvailable_ = true;
+    remoteDeviceHost_ = host;
+    remoteDeviceToken_ = token;
+
+    std::vector<ImportedGame> localGames = scanImportPaths(importPaths_, autoCheckUsb_);
+    std::string buildErr;
+    std::vector<SyncCandidate> candidates = remoteSyncBuildCandidates(host, token, localGames, buildErr);
+
+    // Cartella per i save remoti scaricati mentre il box e' aperto -- ripulita
+    // (i singoli file) alla chiusura in closeRemoteBox().
+    std::string tmpDir = basePath_ + "remote_box_tmp/";
+    mkdir(tmpDir.c_str(), 0755);
+
+    remoteBoxEntries_.clear();
+    std::vector<ImportedGame> boxGames;
+    for (auto& c : candidates) {
+        // Solo save che esistono gia' sul dispositivo remoto: il box apre
+        // partite esistenti, non ne crea di nuove da una sola ROM (per
+        // quello c'e' "Invia" nel flusso Invia/Ricevi/Sincronizza).
+        if (!c.hasRemoteSave) continue;
+        const GameInfo& gi = gameInfo(c.type);
+        std::string tmpPath = tmpDir + gi.gameTag + "_box.tmp";
+        std::string dlErr;
+        if (!remoteSyncDownload(host, token, c.remoteSavePath, tmpPath, dlErr)) {
+            DebugLog::line("box remoto: download fallito per %s: %s", gi.gameTag, dlErr.c_str());
+            continue;
+        }
+        RemoteBoxEntry entry;
+        entry.type = c.type;
+        entry.tmpPath = tmpPath;
+        entry.host = host;
+        entry.token = token;
+        entry.remoteSavePath = c.remoteSavePath;
+        {
+            struct stat st;
+            if (stat(tmpPath.c_str(), &st) == 0) {
+                entry.snapSize = (long long)st.st_size;
+                entry.snapMtime = (long long)st.st_mtime;
+            }
+        }
+        remoteBoxEntries_.push_back(entry);
+
+        ImportedGame ig;
+        ig.type = c.type;
+        ig.filePath = tmpPath;
+        ig.sourceTag = "R36S";
+        boxGames.push_back(ig);
+    }
+
+    if (boxGames.empty()) {
+        showMessageAndWait(title, i18n::get(StrKey::RemoteBoxNoSaves));
+        return;
+    }
+
+    // Salva lo stato locale della griglia -- si ripristina alla chiusura del
+    // box (closeRemoteBox), esattamente come si trovava prima di entrare.
+    savedAvailableGames_ = availableGames_;
+    savedImportedGames_ = importedGames_;
+
+    importedGames_ = boxGames;
+    availableGames_.clear();
+    for (auto& ig : importedGames_)
+        availableGames_.push_back(ig.type);
+
+    remoteBoxActive_ = true;
+
+    gameSelCursor_ = 0;
+    gameSelPage_ = 0;
+    selPageShown_ = 0;
+    selSlide_ = 0.0f;
+    galSelShown_ = -1;
+    galSlide_ = 0.0f;
+    gsSetFocus(GSFocus::Grid);
+    showWorking(i18n::get(StrKey::LoadingGameIcons));
+    loadGameIcons();
+    screen_ = AppScreen::GameSelector;
+
+    showMessageAndWait(title, i18n::fmt(StrKey::RemoteBoxEntered, std::to_string((int)boxGames.size())));
+    DebugLog::line("box remoto: aperto, %d save da %s", (int)boxGames.size(), host.c_str());
+}
+
+void UI::closeRemoteBox() {
+    availableGames_ = savedAvailableGames_;
+    importedGames_ = savedImportedGames_;
+    savedAvailableGames_.clear();
+    savedImportedGames_.clear();
+
+    // Save modificati (dimensione/mtime diversi dall'istantanea presa al
+    // download, vedi RemoteBoxEntry) che nessuno ha ancora rispedito al
+    // device remoto -- capita normalmente uscendo dal save con B, che porta
+    // alla lista banche (UI::actionCancel) e NON passa da
+    // UI::returnToGameSelector() a meno di usare il menu "Cambia gioco":
+    // senza questo controllo, chiudere il box li scartava in silenzio (bug
+    // segnalato: il save modificato viene scritto in locale correttamente,
+    // solo mai rispedito -- "i pokemon inviati non appaiono poi nel
+    // dispositivo"). Stessa policy di UI::returnToGameSelector(): mai un
+    // invio automatico silenzioso, sempre una conferma prima -- qui
+    // aggregata in un solo popup invece di uno per save.
+    std::vector<size_t> pending;
+    for (size_t i = 0; i < remoteBoxEntries_.size(); i++) {
+        struct stat st;
+        if (stat(remoteBoxEntries_[i].tmpPath.c_str(), &st) != 0) continue;
+        if ((long long)st.st_size != remoteBoxEntries_[i].snapSize ||
+            (long long)st.st_mtime != remoteBoxEntries_[i].snapMtime)
+            pending.push_back(i);
+    }
+    if (!pending.empty()) {
+        std::string title = i18n::get(StrKey::RemoteBoxSendTitle);
+        if (showConfirmDialog(title, i18n::fmt(StrKey::RemoteBoxCloseSendBody,
+                                               std::to_string(pending.size())))) {
+            int sent = 0, failed = 0;
+            for (size_t idx : pending) {
+                auto& e = remoteBoxEntries_[idx];
+                std::string upErr;
+                if (remoteSyncUpload(e.host, e.token, e.tmpPath, e.remoteSavePath, upErr)) {
+                    sent++;
+                    DebugLog::line("box remoto: invio OK alla chiusura (%s)", e.tmpPath.c_str());
+                } else {
+                    failed++;
+                    DebugLog::line("box remoto: invio FALLITO alla chiusura (%s): %s",
+                                   e.tmpPath.c_str(), upErr.c_str());
+                }
+            }
+            showMessageAndWait(title, i18n::fmt(StrKey::RemoteBoxCloseSendResult,
+                                                std::to_string(sent), std::to_string(failed)));
+        } else {
+            DebugLog::line("box remoto: invio alla chiusura rifiutato dall'utente (%d save), modifiche solo locali",
+                           (int)pending.size());
+        }
+    }
+
+    for (auto& e : remoteBoxEntries_)
+        std::remove(e.tmpPath.c_str());
+    remoteBoxEntries_.clear();
+    remoteBoxActive_ = false;
+
+    gameSelCursor_ = 0;
+    gameSelPage_ = 0;
+    selPageShown_ = 0;
+    selSlide_ = 0.0f;
+    galSelShown_ = -1;
+    galSlide_ = 0.0f;
+    gsSetFocus(GSFocus::Grid);
+    showWorking(i18n::get(StrKey::LoadingGameIcons));
+    loadGameIcons();
+
+    DebugLog::line("box remoto: chiuso, ripristinata lista locale");
 }
 
 void UI::settingsRowActivate(int cat, int row, int dir, bool& running) {
@@ -3475,19 +5897,15 @@ void UI::settingsRowActivate(int cat, int row, int dir, bool& running) {
             if (opts[i] == cur) break;
         if (i >= (int)opts.size()) i = 0;
         std::string next = opts[(i + dir + (int)opts.size()) % (int)opts.size()];
-        if (next.empty()) {
-            std::remove((basePath_ + "defaultuser.txt").c_str());
-        } else {
-            FILE* f = std::fopen((basePath_ + "defaultuser.txt").c_str(), "w");
-            if (f) { std::fputs(next.c_str(), f); std::fclose(f); }
-        }
+        Settings::setDefaultUser(next); // "" = chiedi
     } else if (cat == 1) {
-        if (row == 0) {
+        int r = appearanceRow(row, gameSelectorLayout_ == GameSelectorLayout::Gallery);
+        if (r == 0) {
             themeIndex_ = (themeIndex_ + dir + THEME_COUNT) % THEME_COUNT;
             theme_ = &getTheme(themeIndex_);
             saveThemeIndex(basePath_, themeIndex_);
             clearTextCache();
-        } else if (row == 1) {
+        } else if (r == 1) {
             int n = (int)langList_.size();
             if (n > 0) {
                 int cur = 0;
@@ -3496,10 +5914,9 @@ void UI::settingsRowActivate(int cat, int row, int dir, bool& running) {
                 std::string nl = langList_[(cur + dir + n) % n];
                 i18n::init(nl);
                 clearTextCache();
-                FILE* f = std::fopen((basePath_ + "language.txt").c_str(), "w");
-                if (f) { std::fputs(nl.c_str(), f); std::fclose(f); }
+                Settings::setLanguage(nl);
             }
-        } else if (row == 2) {
+        } else if (r == 2) {
             // Layout selettore giochi: solo 2 valori, qualunque dir alterna.
             gameSelectorLayout_ = (gameSelectorLayout_ == GameSelectorLayout::Classic)
                 ? GameSelectorLayout::Gallery : GameSelectorLayout::Classic;
@@ -3509,14 +5926,19 @@ void UI::settingsRowActivate(int cat, int row, int dir, bool& running) {
             gameSelPage_ = 0;
             selPageShown_ = 0;
             selSlide_ = 0.0f;
-            gameSelOnChevron_ = 0;
+            gsSetFocus(GSFocus::Grid); // cambio layout: focus in griglia
             // Stessa ragione per l'anteprima Galleria: senza reset, al
             // prossimo ingresso in Galleria galSelShown_ punterebbe a un
             // indice della sessione precedente e farebbe partire uno slide
             // enorme dal nulla verso la selezione corrente.
             galSelShown_ = -1;
             galSlide_ = 0.0f;
-        } else {
+            // Zoom/Menu radiale spariscono in Galleria: se il cursore era lì
+            // riportalo sull'ultima riga visibile (il clamp in testa serve al
+            // prossimo giro, qui setRow_ va corretto subito per il draw).
+            int newCount = settingsRowCount(cat);
+            if (setRow_ >= newCount) setRow_ = newCount - 1;
+        } else if (r == 3) {
             static const int STEPS[] = {0, 4, 8, 12, 16};
             int i = 0;
             for (; i < 5; i++)
@@ -3527,9 +5949,32 @@ void UI::settingsRowActivate(int cat, int row, int dir, bool& running) {
             if (ni > 4) ni = 4;
             zoomGrow_ = STEPS[ni];
             saveZoomGrow(basePath_, zoomGrow_);
+        } else if (r == 4) {
+            // Menu radiale: solo 2 valori, qualunque dir alterna (come Layout).
+            Settings::setRadialMenu(!Settings::radialMenu());
+        } else if (r == 5) {
+            // Animazione scambio: idem, solo on/off.
+            Settings::setTradeAnim(!Settings::tradeAnim());
+        } else if (r == 6) {
+            // Dock inferiore: mostra/nascondi (sincronizza lo stato live).
+            if (!dockLoaded_) dockStateLoad();
+            dockState_.visible = !dockState_.visible;
+            if (!dockState_.visible) dockClearFocus();
+            dockStateSave();
+        } else {
+            // Reset ordine dock: torna al factory e salva.
+            if (!dockLoaded_) dockStateLoad();
+            dockStateResetToDefault();
+            dockStateSave();
+            dockFocusFirst();
+            showMessageAndWait(i18n::get(StrKey::SetDockReset), "OK");
         }
     } else if (cat == 2) {
-        setCryptoEngine(useOpenHome() ? CryptoEngine::PK : CryptoEngine::OH);
+        if (row == 0) {
+            setCryptoEngine(useOpenHome() ? CryptoEngine::PK : CryptoEngine::OH);
+        } else if (row == 1) {
+            installLauncherForwarder();
+        } // row 2 (Emulatore predefinito): riga info, nessuna azione
     } else if (cat == 3) {
         if (row == 0) {
             // Stessa lista del menu + (Import): toggle/rimuovi percorsi.
@@ -3576,11 +6021,23 @@ void UI::settingsRowActivate(int cat, int row, int dir, bool& running) {
             if (cfg.empty() && off.empty()) {
                 beginTextInput(TextInputPurpose::EditUpdateUrl);
             } else if (!cfg.empty()) {
-                std::string dst = cfg + ".off";
-                if (std::rename(cfg.c_str(), dst.c_str()) == 0)
-                    DebugLog::line("settings: sorgente -> GitHub (%s disattivato)", cfg.c_str());
-                else
-                    showMessageAndWait(i18n::get(StrKey::SetTitle), std::string("rename FAIL:\n") + cfg);
+                // Se l'attivo non ha url ma l'off sì, cfg è un'esca di un
+                // write passato: ripiega channel/backup nell'off e rimuovila
+                // invece di sovrascrivere l'off perdendo l'url (bug 2026-09-12).
+                if (!off.empty() && !fileHasKey(cfg, "url") && fileHasKey(off, "url")) {
+                    UpdateCfg decoy;
+                    readUpdateCfg(basePath_, decoy); // mergia già entrambi
+                    if (!decoy.channel.empty() && !fileHasKey(off, "channel"))
+                        setKeyInFile(off, "channel", decoy.channel);
+                    std::remove(cfg.c_str());
+                    DebugLog::line("settings: sorgente -> GitHub (esca %s ripiegata)", cfg.c_str());
+                } else {
+                    std::string dst = cfg + ".off";
+                    if (std::rename(cfg.c_str(), dst.c_str()) == 0)
+                        DebugLog::line("settings: sorgente -> GitHub (%s disattivato)", cfg.c_str());
+                    else
+                        showMessageAndWait(i18n::get(StrKey::SetTitle), std::string("rename FAIL:\n") + cfg);
+                }
             } else {
                 std::string dst = off.substr(0, off.size() - 4);
                 if (std::rename(off.c_str(), dst.c_str()) == 0)
@@ -3588,11 +6045,22 @@ void UI::settingsRowActivate(int cat, int row, int dir, bool& running) {
                 else
                     showMessageAndWait(i18n::get(StrKey::SetTitle), std::string("rename FAIL:\n") + off);
             }
+        } else if (row == 2) {
+            // Canale stabile/beta: solo 2 valori, qualunque dir alterna.
+            UpdateCfg cfg;
+            readUpdateCfg(basePath_, cfg);
+            std::string next = (cfg.channel == "beta") ? "stable" : "beta";
+            if (writeUpdateCfgKey(basePath_, "channel", next))
+                DebugLog::line("settings: channel=%s", next.c_str());
         } else {
             beginTextInput(TextInputPurpose::EditUpdateUrl);
         }
     } else if (cat == 5) {
-        if (row == 0) {
+        if (row == settingsRowCount(5) - 1) {
+            // Ricerca dispositivi: sempre l'ultima riga, va controllata per
+            // prima per lo stesso motivo spiegato in settingsRowLabel.
+            remoteSyncTestRow();
+        } else if (row == 0) {
             bool on = !DebugLog::enabled();
             DebugLog::setEnabled(on);
             std::string flag = basePath_ + "debug.enable";
@@ -3606,8 +6074,34 @@ void UI::settingsRowActivate(int cat, int row, int dir, bool& running) {
         } else if (row == 1) {
             // Menu debug rapido: ON = gear apre il + classico, OFF = impostazioni.
             writeQuickMenu(basePath_, !readQuickMenu(basePath_));
-        } else {
+        } else if (row == 2) {
+            if (showConfirmDialog(i18n::get(StrKey::ClearBpHistTitle), i18n::get(StrKey::ClearBpHistBody))) {
+                if (Backpack::clearJournal(basePath_))
+                    showMessageAndWait(i18n::get(StrKey::ClearBpHistTitle), i18n::get(StrKey::ClearBpHistDone));
+                else
+                    showMessageAndWait(i18n::get(StrKey::ClearBpHistTitle), i18n::get(StrKey::ClearBpHistFailed));
+            }
+        } else if (row == 3) {
+            // Normalize save: analizza tutti i save salvati in sdmc e
+            // corregge i Delta GBA con i 16B extra.  TODO: estendere a
+            // scan cartelle ROM per corruzione/normalizzazione.
+            int count = 0, fixed = 0;
+            for (GameType g : availableGames_) {
+                std::string p = importedSavePath(g, 0);
+                if (p.empty()) continue;
+                std::string info;
+                if (SaveFile::normalizeDeltaSave(p, info)) fixed++;
+                count++;
+            }
+            char buf[128];
+            std::snprintf(buf, sizeof(buf), "%s: %d/%d %s",
+                normalizeRowLabel().c_str(), fixed, count,
+                fixed > 0 ? "corretti" : "tutto OK");
+            showMessageAndWait(normalizeRowLabel(), buf);
+        } else if (row == 4) {
             sendLogNow();
+        } else {
+            openCrashList();
         }
     } else {
         if (row == 1) {
@@ -3646,43 +6140,122 @@ void UI::drawSettingsPopup() {
     int divX = popX + CAT_W + 10;
     SDL_RenderDrawLine(renderer_, divX, listY, divX, popY + POP_H - 50);
     int rx = divX + 24;
-    int n = settingsRowCount(setCat_);
-    for (int r = 0; r < n; r++) {
-        int rowY = listY + r * ROW_H;
-        if (r == setRow_ && !setFocusLeft_) {
-            drawRect(rx - 8, rowY, POP_W - (rx - popX) - 28, ROW_H - 4, T().menuHighlight);
-            drawRectOutline(rx - 8, rowY, POP_W - (rx - popX) - 28, ROW_H - 4, T().cursor, 2);
-        }
-        drawText(settingsRowLabel(setCat_, r), rx, rowY + 8, T().text, font_);
-        std::string v = settingsRowValue(setCat_, r);
-        if (!v.empty()) {
-            const auto& e = getTextEntry(v, font_, T().selected);
-            drawText(v, popX + POP_W - 36 - e.w, rowY + 8, T().selected, font_);
-        }
-        if (setCat_ == 1 && r == 3) {
-            // Slider zoom 0..16px con pallino, accanto al valore (stessa riga).
-            // Larghezza riservata fissa su "16px" così la barra non balla quando passa da 1 a 2 cifre.
-            static int maxVw = -1;
-            if (maxVw < 0) maxVw = getTextEntry("16px", font_, T().selected).w;
-            int bw = 100, bh = 8;
-            int bx = popX + POP_W - 36 - maxVw - 14 - bw;
-            int by = rowY + (ROW_H - 4) / 2 - bh / 2;
-            drawRect(bx, by, bw, bh, T().textDim);
-            int dx = bx + (int)(bw * zoomGrow_ / 16.0);
-            if (dx < bx) dx = bx;
-            if (dx > bx + bw) dx = bx + bw;
-            auto dot = [&](int cx, int cy, int rr, SDL_Color c) {
-                SDL_SetRenderDrawColor(renderer_, c.r, c.g, c.b, c.a);
-                for (int dy = -rr; dy <= rr; dy++) {
-                    int ddx = static_cast<int>(std::sqrt((double)(rr * rr - dy * dy)));
-                    SDL_RenderDrawLine(renderer_, cx - ddx, cy + dy, cx + ddx, cy + dy);
+    if (setCat_ == 1) {
+        // Aspetto: le voci "Zoom giochi" (3) e "Menu radiale" (4) sono voci
+        // morte in layout Galleria (vedi settingsRowCount/appearanceRow).
+        // Anziche' farle sparire di colpo, qui si anima con la stessa molla
+        // usata per il riordino dock (dockSpringStep, K/D uguali) un fattore
+        // di collasso 0..1: le due righe sfumano scivolando a destra, le
+        // righe sotto risalgono a riempire lo spazio con un filo di
+        // overshoot (budino) prima di fermarsi. Il layout logico/nav resta
+        // quello istantaneo di sempre (appearanceRow) -- qui e' solo il
+        // disegno a interpolare.
+        float target = (gameSelectorLayout_ == GameSelectorLayout::Gallery) ? 1.0f : 0.0f;
+        {
+            constexpr float K = 0.35f, D = 0.65f;
+            float disp = appearanceCollapse_ - target;
+            if (disp != 0.0f || appearanceCollapseVel_ != 0.0f) {
+                float force = -disp * K - appearanceCollapseVel_ * D;
+                appearanceCollapseVel_ += force;
+                appearanceCollapse_ += appearanceCollapseVel_;
+                if (std::fabs(appearanceCollapse_ - target) < 0.01f && std::fabs(appearanceCollapseVel_) < 0.01f) {
+                    appearanceCollapse_ = target;
+                    appearanceCollapseVel_ = 0.0f;
+                } else {
+                    markDirty();
                 }
-            };
-            dot(dx, by + bh / 2, 7, T().selected);
+            }
+        }
+        float collapse = appearanceCollapse_;
+        int selectedLogical = appearanceRow(setRow_, gameSelectorLayout_ == GameSelectorLayout::Gallery);
+        for (int r = 0; r < 8; r++) {
+            bool hideable = (r == 3 || r == 4);
+            float localCollapse = hideable ? appearanceCollapse_ : 0.0f;
+            if (localCollapse < 0.0f) localCollapse = 0.0f;
+            if (localCollapse > 1.3f) localCollapse = 1.3f; // margine per l'overshoot della molla
+            float alphaCollapse = localCollapse > 1.0f ? 1.0f : localCollapse;
+            Uint8 alphaMul = hideable ? (Uint8)(((int)(255.0f * (1.0f - alphaCollapse)) / 16) * 16) : 255;
+            if (hideable && alphaMul == 0) continue; // completamente nascosta: niente da disegnare
+            float rowShift = 2.0f * ROW_H * collapse; // le righe sotto risalgono seguendo la molla (con overshoot)
+            int rowY = listY + (int)(r * ROW_H - (r >= 5 ? rowShift : 0.0f) + 0.5f);
+            std::string label, value;
+            switch (r) {
+                case 0: label = i18n::get(StrKey::SetTheme); value = getThemeName(themeIndex_); break;
+                case 1: label = i18n::get(StrKey::SetLanguage); value = langDisplayName(i18n::currentLang()); break;
+                case 2:
+                    label = i18n::get(StrKey::SetGalleryLayout);
+                    value = (gameSelectorLayout_ == GameSelectorLayout::Gallery)
+                          ? i18n::get(StrKey::LayoutGallery) : i18n::get(StrKey::LayoutClassic);
+                    break;
+                case 3: label = i18n::get(StrKey::SetZoom); value = std::to_string(zoomGrow_) + "px"; break;
+                case 4:
+                    label = i18n::get(StrKey::SetRadialMenu);
+                    value = Settings::radialMenu() ? i18n::get(StrKey::SetOn) : i18n::get(StrKey::SetOff);
+                    break;
+                case 5:
+                    label = i18n::get(StrKey::SetTradeAnim);
+                    value = Settings::tradeAnim() ? i18n::get(StrKey::SetOn) : i18n::get(StrKey::SetOff);
+                    break;
+                case 6:
+                    label = i18n::get(StrKey::SetDockVisible);
+                    if (!dockLoaded_) dockStateLoad();
+                    value = dockState_.visible ? i18n::get(StrKey::SetOn) : i18n::get(StrKey::SetOff);
+                    break;
+                default: label = i18n::get(StrKey::SetDockReset); value = ""; break;
+            }
+            int rowX = rx + (hideable ? (int)(30.0f * localCollapse) : 0); // scivolano a destra mentre sfumano
+            SDL_Color textCol = T().text; textCol.a = (Uint8)((int)textCol.a * alphaMul / 255);
+            SDL_Color valCol = T().selected; valCol.a = (Uint8)((int)valCol.a * alphaMul / 255);
+            if (r == selectedLogical && !setFocusLeft_) {
+                drawRect(rx - 8, rowY, POP_W - (rx - popX) - 28, ROW_H - 4, T().menuHighlight);
+                drawRectOutline(rx - 8, rowY, POP_W - (rx - popX) - 28, ROW_H - 4, T().cursor, 2);
+            }
+            drawText(label, rowX, rowY + 8, textCol, font_);
+            if (!value.empty()) {
+                const auto& e = getTextEntry(value, font_, valCol);
+                drawText(value, popX + POP_W - 36 - e.w, rowY + 8, valCol, font_);
+            }
+            if (r == 3) {
+                // Slider zoom 0..16px con pallino, accanto al valore (stessa riga).
+                // Larghezza riservata fissa su "16px" così la barra non balla quando passa da 1 a 2 cifre.
+                static int maxVw = -1;
+                if (maxVw < 0) maxVw = getTextEntry("16px", font_, T().selected).w;
+                int bw = 100, bh = 8;
+                int bx = popX + POP_W - 36 - maxVw - 14 - bw;
+                int by = rowY + (ROW_H - 4) / 2 - bh / 2;
+                SDL_Color barCol = T().textDim; barCol.a = (Uint8)((int)barCol.a * alphaMul / 255);
+                drawRect(bx, by, bw, bh, barCol);
+                int dxp = bx + (int)(bw * zoomGrow_ / 16.0);
+                if (dxp < bx) dxp = bx;
+                if (dxp > bx + bw) dxp = bx + bw;
+                auto dot = [&](int cx, int cy, int rr, SDL_Color c) {
+                    SDL_SetRenderDrawColor(renderer_, c.r, c.g, c.b, c.a);
+                    for (int ddy = -rr; ddy <= rr; ddy++) {
+                        int ddx = static_cast<int>(std::sqrt((double)(rr * rr - ddy * ddy)));
+                        SDL_RenderDrawLine(renderer_, cx - ddx, cy + ddy, cx + ddx, cy + ddy);
+                    }
+                };
+                dot(dxp, by + bh / 2, 7, valCol);
+            }
+        }
+    } else {
+        int n = settingsRowCount(setCat_);
+        for (int r = 0; r < n; r++) {
+            int rowY = listY + r * ROW_H;
+            if (r == setRow_ && !setFocusLeft_) {
+                drawRect(rx - 8, rowY, POP_W - (rx - popX) - 28, ROW_H - 4, T().menuHighlight);
+                drawRectOutline(rx - 8, rowY, POP_W - (rx - popX) - 28, ROW_H - 4, T().cursor, 2);
+            }
+            drawText(settingsRowLabel(setCat_, r), rx, rowY + 8, T().text, font_);
+            std::string v = settingsRowValue(setCat_, r);
+            if (!v.empty()) {
+                const auto& e = getTextEntry(v, font_, T().selected);
+                drawText(v, popX + POP_W - 36 - e.w, rowY + 8, T().selected, font_);
+            }
         }
     }
     // Footer contestuale: se la riga focalizzata è uno slider, mostra hint con Stick ←/→
-    bool _isSlider = !setFocusLeft_ && ((setCat_ == 1 && setRow_ == 3) || (setCat_ == 3 && setRow_ == 2));
+    bool _isSlider = !setFocusLeft_ && ((setCat_ == 1 && appearanceRow(setRow_, gameSelectorLayout_ == GameSelectorLayout::Gallery) == 3) || (setCat_ == 3 && setRow_ == 2));
     const char* _footKey = _isSlider ? StrKey::SetFooterSlider : StrKey::SetFooter;
     std::string _foot = i18n::get(_footKey);
     if (_isSlider && _foot == _footKey) _foot = i18n::get(StrKey::SetFooter); // fallback se traduzione manca
@@ -3691,7 +6264,7 @@ void UI::drawSettingsPopup() {
 
 void UI::handleSettingsInput(const SDL_Event& event, bool& running) {
     auto _isSliderRow = [&](int cat, int row) -> bool {
-        return (cat == 1 && row == 3) || (cat == 3 && row == 2);
+        return (cat == 1 && appearanceRow(row, gameSelectorLayout_ == GameSelectorLayout::Gallery) == 3) || (cat == 3 && row == 2);
     };
     // Stick analogico: su/giu come il D-pad (con repeat), sulla colonna attiva.
     // In impostazioni usiamo anche LEFTX per regolare gli slider (zoom / backup).
