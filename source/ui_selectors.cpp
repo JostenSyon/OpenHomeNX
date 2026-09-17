@@ -5217,6 +5217,8 @@ int UI::pickRemoteSyncGame(const std::vector<SyncCandidate>& candidates) {
                 drawRoundRectOutline(popX + 12, rowY, POP_W - 24, ROW_H - 6, 8, T().cursor, 2);
             }
             std::string label = gi.displayName;
+            bool isSwitchLocal = c.hasLocal && c.localPath.rfind("save:/", 0) == 0;
+            label += isSwitchLocal ? " [SW]" : (c.hasLocal ? " [ROM]" : " [R36S]");
             drawText(label, popX + 28, rowY + 10, T().text, font_);
         }
         drawTextCentered(i18n::get(StrKey::DevSyncPickerHint), popX + POP_W / 2, popY + POP_H - 24, T().textDim, fontSmall_);
@@ -5381,14 +5383,15 @@ void UI::remoteSyncTestRow() {
     auto doUpload = [&](const std::string& localPath, const std::string& remotePath) -> bool {
         std::string usePath = localPath;
         std::string tmpSwitch;
-        // Switch save (save:/) non è un file regolare leggibile via fopen se non è
-        // il save attualmente caricato. Se un save è caricato in memoria, esportalo
-        // in un file temporaneo e invia quello (formato identico, compatibile).
+        // Switch save (save:/) - se non è un file regolare, esporta il save caricato in tmp
         if (localPath.rfind("save:/", 0) == 0 && save_.isLoaded()) {
-            tmpSwitch = tmpDir + std::string(gameInfo(save_.gameType()).gameTag) + "_switch_upload.tmp";
+            // Usa il save caricato in memoria (se il gioco è quello giusto o anche se diverso,
+            // il formato save è compatibile per FRLG). Meglio usare il save caricato che è già validato.
+            std::string tag = std::string(gameInfo(save_.gameType()).gameTag);
+            tmpSwitch = tmpDir + tag + "_switch_upload.tmp";
             if (save_.save(tmpSwitch)) {
                 usePath = tmpSwitch;
-                DebugLog::line("remote sync: Switch save esportato in tmp per invio: %s", tmpSwitch.c_str());
+                DebugLog::line("remote sync: Switch save (caricato %s) esportato in tmp: %s", tag.c_str(), tmpSwitch.c_str());
             }
         }
         std::string opErr;
@@ -5427,19 +5430,21 @@ void UI::remoteSyncTestRow() {
         return okCopy;
     };
 
-    // Nuovo flusso: picker gioco + 3 bottoni (evita spam di dialog per ogni candidato)
-    // Picker già mostra [B per annullare] e i bottoni hanno B annulla — se l'utente
-    // preme B qui torniamo subito alla schermata precedente senza summary spam.
-    int pickedIdx = pickRemoteSyncGame(candidates);
-    if (pickedIdx < 0) {
-        return;
+    // Nuovo flusso: picker gioco + 3 bottoni (evita spam). B nel picker torna
+    // alla schermata precedente, B nei 3 bottoni torna al picker (1 passo indietro).
+    SyncCandidate c;
+    const GameInfo* giPtr = nullptr;
+    int action = -1;
+    while (true) {
+        int pickedIdx = pickRemoteSyncGame(candidates);
+        if (pickedIdx < 0) return;
+        c = candidates[pickedIdx];
+        giPtr = &gameInfo(c.type);
+        action = pickRemoteSyncAction(c);
+        if (action < 0) continue; // B nei bottoni -> torna al picker
+        break;
     }
-    SyncCandidate c = candidates[pickedIdx];
-    const GameInfo& gi = gameInfo(c.type);
-    int action = pickRemoteSyncAction(c);
-    if (action < 0) {
-        return;
-    }
+    const GameInfo& gi = *giPtr;
 
     // Logica centralizzata per le 3 azioni — il save deve avere esattamente lo stesso base della ROM
     auto getExtLocal = [](const std::string& p) -> std::string {
