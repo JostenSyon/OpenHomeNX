@@ -8,6 +8,8 @@
 #include "import_paths.h"
 #include "import_scan.h"
 #include "autocheck_usb.h"
+#include "backpack.h"
+#include "remote_sync.h"
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_ttf.h>
 #include <SDL2/SDL_image.h>
@@ -33,7 +35,7 @@ enum class TextInputPurpose {
 // Rows of the "+" game-selector menu. A single list drives both the popup's
 // draw order and its input handling — the old parallel hardcoded row-count
 // arithmetic (see v0.1.37's alignment bug) drifts every time a row is added.
-enum class GameSelMenuAction { SwitchCore, DebugLog, SendLog, SendSave, ImportSettings, CheckUpdate, OpenSettings, Exit };
+enum class GameSelMenuAction { SwitchCore, DebugLog, ClearLog, SendLog, SendSave, CrashReport, ImportSettings, CheckUpdate, OpenSettings, ToggleDock, ReorderDock, RemoteBox, Exit };
 
 // Search filter enums
 enum class GenderFilter { Any, Male, Female, Genderless };
@@ -94,7 +96,18 @@ public:
     std::vector<std::string> wrapText(const std::string& line, TTF_Font* f, int maxW);
     void showMessageAndWait(const std::string& title, const std::string& body);
     bool showConfirmDialog(const std::string& title, const std::string& body);
+    // Popup di scoperta "Installa launcher" (icona app + testo), mostrato
+    // una sola volta in vita: solo informativo (il pulsante vero sta in
+    // Impostazioni > Sistema, non ancora costruito), quindi niente scelta
+    // Si/No qui -- stesso schema single-dismiss di showMessageAndWait.
+    void showLauncherPromptPopup();
     void showWorking(const std::string& msg);
+    // Percorso mGBA rilevato (vuoto = non trovato/non ricontrollato). V1:
+    // solo rilevamento automatico, controllato una tantum -- vedi
+    // ensureMgbaChecked()/Emulator::findMgba() (mai ogni frame).
+    std::string mgbaPath_;
+    bool mgbaChecked_ = false;
+    void ensureMgbaChecked();
     void setAppletMode(bool mode) { appletMode_ = mode; }
     bool isDualBankMode() const { return appletMode_ || allBanksMode_; }
     void run(const std::string& basePath, const std::string& savePath);
@@ -174,7 +187,92 @@ private:
     SDL_Texture* iconDebug_        = nullptr; // bug accanto al wifi con debug on
     SDL_Texture* iconArrow_        = nullptr; // frecce pagine (dx ruotata 180)
     SDL_Texture* iconPack_         = nullptr; // zaino eventi/strumenti (48px 1:1)
-    bool gameSelOnPack_ = false;      // cursore sullo zaino a sx delle banche
+    SDL_Texture* iconRocket_       = nullptr; // "Avvia" nel menu radiale (48px 1:1)
+    SDL_Texture* iconFloppy_       = nullptr; // "Salvataggi" nel menu radiale (48px 1:1)
+    SDL_Texture* iconTrade_        = nullptr; // "Scambio": asset pronto, non ancora in radialItems_ (48px 1:1)
+    SDL_Texture* iconDevBox_       = nullptr; // "Box remoto" in dock: apre openRemoteBox() (48px 1:1)
+    SDL_Texture* iconDevSync_      = nullptr; // "DevSync" in dock: apre remoteSyncTestRow() (48px 1:1)
+    SDL_Texture* iconDevLink_      = nullptr; // device remoto trovato: barra di stato accanto a wifi/lan (36px 1:1)
+
+    // Menu radiale (solo layout Classico, dietro Settings::radialMenu()):
+    // alla conferma di una tile apre un piccolo arco di scorciatoie sopra
+    // la tile stessa, al posto di andare dritti in banca. Elenco voci in
+    // radialItems_ (RadialAction) cosi' aggiungerne una nuova in futuro e'
+    // solo una entry in piu' + un case nello switch di radialMenuActivate().
+    enum class RadialAction { Launch, Bank, Backpack, SaveMenu, Trade };
+    bool showRadialMenu_ = false;
+    bool radialClosing_ = false;   // true durante l'animazione di chiusura
+    int radialGameIdx_ = -1;       // indice in availableGames_ della tile aperta
+    int radialCursor_ = 0;         // voce a fuoco in radialItems_
+    float radialAnim_ = 0.0f;      // 0..1, apertura/chiusura (easing per-frame)
+    int radialAnchorX_ = 0, radialAnchorY_ = 0; // centro-alto della tile, fissato all'apertura
+    std::vector<int> radialItems_; // RadialAction disponibili per la tile aperta
+
+    // Dock inferiore (riga bassa del selettore giochi): ordine persistente e
+    // personalizzabile via Settings::dockOrder/dockVisible. Il disegno e le
+    // zone tap sono guidati da dockLayout(); la navigazione D-pad usa
+    // dockMoveFocus() cosi' l'ordine utente non desincronizza mai i flag.
+    struct DockState {
+        enum class Item { Backpack, Banks, SaveMenu, Trade, RemoteBox, DevSync, Eject };
+
+        std::vector<Item> customOrder; // ordine utente (default: factory)
+        bool visible = true;           // mostra/nascondi dock
+        bool reorderMode = false;      // modalita' riordino attiva
+        int reorderFocusIdx = 0;       // indice in customOrder in riordino
+        uint32_t reorderEnterTime = 0; // per timeout auto-uscita
+    };
+
+    DockState dockState_;
+    bool dockLoaded_ = false; // dockStateLoad() lazy al primo draw (Settings pronto)
+
+    // Focus unificato del selettore giochi (Classica + Galleria).
+    // Sostituisce i vecchi flag sparsi gameSelOn*: un solo setter azzera
+    // gli altri, cosi' aggiungere una voce dock non richiede di toccare
+    // ogni transizione. L'ingranaggio (Settings) resta fuori dock con
+    // regole proprie, ma condivide il modello per l'esclusivita'.
+    enum class GSFocus : uint8_t {
+        Grid = 0, // cursore su lista/griglia giochi
+        Avatar,   // avatar profilo in alto a sx
+        ChevLeft, // freccia pagina sx
+        ChevRight,// freccia pagina dx
+        Launch,   // tastino Avvia anteprima Galleria
+        Dock,     // voce dock (gsDockItem_)
+        Settings  // ingranaggio in basso a dx (fuori dock)
+    };
+    GSFocus gsFocus_ = GSFocus::Grid;
+    DockState::Item gsDockItem_ = DockState::Item::Backpack; // se focus == Dock
+
+    // Setter unico (azzera tutto il resto) + rimozione mirata.
+    void gsSetFocus(GSFocus f, DockState::Item dockItem = DockState::Item::Backpack);
+    void gsUnfocus(GSFocus f); // a Grid solo se il focus corrente e' f
+    bool gsDockIs(DockState::Item it) const; // focus == Dock && voce == it
+    bool gsChevronActive() const; // focus su uno dei due chevron
+
+    void dockStateLoad();
+    void dockStateSave() const;
+    void dockStateResetToDefault();
+    bool dockStateCanReorder() const;
+    void dockStateEnterReorderMode(int startIdx);
+    void dockStateExitReorderMode(bool save);
+    void dockStateSwapItems(int i, int j);
+    bool dockStateItemVisible(DockState::Item item) const;
+    // Voci visibili nell'ordine utente + posizioni x centrate (stile riga bassa).
+    struct DockSlot { DockState::Item item; int cx; };
+    std::vector<DockSlot> dockLayout() const;
+    void drawDock();
+    // Focus esclusivo su una voce (azzera tutti gli altri flag dock).
+    void dockFocusItem(DockState::Item item);
+    void dockClearFocus();
+    bool dockFocusedItem(DockState::Item& out) const;
+    bool dockHasFocus() const;
+    // Sposta il focus alla voce visibile precedente/successiva; true se mosso.
+    bool dockMoveFocus(int dir);
+    // Prima/ultima voce visibile (atterraggi e ripartenza gear).
+    bool dockFocusFirst();
+    bool dockFocusLast();
+    bool dockFocusBanksOrFirst();
+    // Attiva la voce puntata (stesse azioni del tap/conferma).
+    void dockActivateFocused(bool& running);
 
     // Game-selector logos for imported (titleId-less) games — see init()'s
     // loadLogo(). Keyed by GameType since there are only a handful of these.
@@ -280,6 +378,29 @@ private:
     // (profile selection, applet-mode entry, USB hotplug) and consumed by
     // selectGame() to bypass AccountManager::mountSave() for these GameTypes.
     std::vector<ImportedGame> importedGames_;
+
+    // Box Remoto: apre save gia' presenti sul dispositivo remoto (R36S/
+    // Filebrowser) dentro lo stesso selettore giochi, scaricati in un file
+    // temporaneo che si comporta come un ImportedGame qualunque. Attivo solo
+    // mentre remoteBoxActive_ e' true; in uscita il save (se modificato)
+    // torna al dispositivo remoto previa conferma (vedi UI::returnToGameSelector).
+    struct RemoteBoxEntry {
+        GameType type = GameType::EMERALD;
+        std::string tmpPath;
+        std::string host, token, remoteSavePath;
+        // Istantanea dimensione+mtime del tmp file appena scaricato (o
+        // appena rispedito con successo, vedi UI::returnToGameSelector):
+        // permette a UI::closeRemoteBox() di scoprire un save modificato
+        // mai rispedito al device, senza un flag "dirty" a parte da tenere
+        // sincronizzato a mano in ogni punto che tocca il save.
+        long long snapSize = -1;
+        long long snapMtime = 0;
+    };
+    bool remoteBoxActive_ = false;
+    std::vector<RemoteBoxEntry> remoteBoxEntries_;
+    std::vector<GameType> savedAvailableGames_;
+    std::vector<ImportedGame> savedImportedGames_;
+
     void appendImportedGames();               // scans importPaths_, extends availableGames_
     void rescanImportedGames();      // re-scan in place + popup on newly found games
     std::string importedSavePath(GameType game, int occurrence = 0) const;
@@ -309,6 +430,20 @@ private:
     std::string settingsRowLabel(int cat, int row) const;
     std::string settingsRowValue(int cat, int row);
     void settingsRowActivate(int cat, int row, int dir, bool& running);
+    // Impostazioni -> Sviluppatore -> Ricerca dispositivi (stage 1: login +
+    // test di lista sul Filebrowser web di ArkOS/JELOS/ROCKNIX via LAN).
+    void remoteSyncTestRow();
+    // Helpers per il nuovo flusso picker + 3 bottoni (evita spam di dialog per ogni gioco)
+    int pickRemoteSyncGame(const std::vector<SyncCandidate>& candidates);
+    int pickRemoteSyncAction(const SyncCandidate& c);
+    // Login comune a remoteSyncTestRow() e openRemoteBox(): stesso device
+    // gia' noto -> scansione LAN -> IP a mano -> credenziali a mano. Ritorna
+    // false (con messaggio gia' mostrato) se l'utente annulla o il login fallisce.
+    bool remoteSyncEnsureLogin(const std::string& title, std::string& host,
+                                std::string& user, std::string& pass, std::string& token);
+    void openRemoteBox();
+    void closeRemoteBox();
+    std::string promptTextBlocking(const std::string& header, const std::string& initial, int maxLen);
 
     // Debug save popup (Switch X sul gioco con debug on): Backup save /
     // Restore latest backup / Send save. Opera sullo stesso occurrence che
@@ -320,12 +455,43 @@ private:
     void openSaveMenu(GameType g, int occ);
     void drawSaveMenuPopup();
     void sendSaveFor(GameType g, int occ);
+
+    // Game picker popup (layout Classica): a differenza della Galleria (che
+    // evidenzia un gioco) la dock non sa su quale gioco agire, quindi
+    // SaveMenu/Trade aprono una lista popup per scegliere. Galleria agisce
+    // direttamente sul gioco evidenziato.
+    enum class GamePickTarget { SaveMenu, Trade };
+    bool showGamePick_ = false;
+    GamePickTarget gamePickTarget_ = GamePickTarget::SaveMenu;
+    std::vector<int> gamePickAvail_; // indici in availableGames_ selezionabili
+    int gamePickCursor_ = 0;
+    int gamePickScroll_ = 0;
+    void openGamePick(GamePickTarget t);
+    void drawGamePickPopup();
+    // availableGames_[i] ha un save raggiungibile ora (file importato o
+    // titolo installato con nome di save noto)? Stessa regola dello zaino.
+    bool tileHasUsableSave(int i) const;
     std::string manualBackupDir(GameType g) const;
     std::string autoBackupDir(GameType g) const;
-    bool backupGameSave(GameType g, std::string& out);
+    // alreadyMounted: se il chiamante ha gia' "save:/" montato per questo
+    // stesso gioco (es. lo zaino con backpackSaveMnt_), passarlo qui evita
+    // di richiamare account_.mountSave(), che smonterebbe quello attivo
+    // (AccountManager ha un solo slot di mount) lasciando il chiamante con
+    // un mount ormai fantasma -> scritture successive fallite in silenzio
+    // (bug 2026-09-13: regalo fossile ok in memoria ma mai salvato).
+    // manual=true -> manualBackupDir() (tag "MAN", mai potato): backup
+    // chiesto esplicitamente dall'utente (menu debug "Backup save").
+    // manual=false -> autoBackupDir() (tag "AUTO", soggetto al tetto/pruning
+    // come tutti gli auto): backup scattato da un'azione automatica (es. lo
+    // zaino prima di un regalo) -- per definizione NON e' manuale anche se
+    // il chiamante lo fa "una tantum per sessione".
+    bool backupGameSave(GameType g, std::string& out, const std::string& alreadyMounted = "",
+                         bool manual = true);
     struct BackupListEntry { std::string path; std::string label; };
     std::vector<BackupListEntry> collectBackupEntries(GameType g);
     bool restoreBackupEntry(GameType g, const std::string& entry);
+    bool deleteBackupEntry(const std::string& entry); // ZL+ZR nella lista backup, con conferma
+    void tryDeleteHighlightedBackup(); // ZL+ZR: conferma + elimina + ricarica lista
     // Voce lista backup: solo unita ripristinabili (file per i save
     // file-backed, dir con file dentro per i titoli installati) + etichetta
     // "[AUTO]/[MAN] data-ora" cosi i file sciolti tipo "main" non compaiono.
@@ -335,8 +501,22 @@ private:
     int  backupListScroll_ = 0;
     std::vector<BackupListEntry> backupListEntries_;
     GameType backupListGame_ = GameType::EMERALD;
+    bool backupListZlHeld_ = false, backupListZrHeld_ = false; // edge-detect ZL+ZR: elimina backup evidenziato
     void openBackupList(GameType g);
     void drawBackupListPopup();
+    // Lista crash report scritti da Atmosphere (sdmc:/atmosphere/crash_reports/,
+    // fallback fatal_errors/): sfogliabile come i backup, ordinata per data
+    // di modifica (piu recente in cima) cosi' l'ultimo crash e' subito
+    // selezionato senza dover cercare a mano. A invia col solito upload
+    // save (stesso endpoint/URL di update.cfg), B torna indietro.
+    bool showCrashList_ = false;
+    int  crashListCursor_ = 0;
+    int  crashListScroll_ = 0;
+    std::vector<BackupListEntry> crashListEntries_;
+    std::vector<BackupListEntry> collectCrashReportEntries();
+    void openCrashList();
+    void drawCrashListPopup();
+    void sendCrashReportNow(const std::string& path);
     // Auto-backup best-effort all'apertura dei save file-backed (cap 10).
     void autoBackupFileSave(GameType g, const std::string& path);
     // Tetto spazio auto-backup per gioco da update.cfg (backup_mb[_sd],
@@ -352,6 +532,89 @@ private:
     int  wcListScroll_  = 0;
     std::vector<WCInfo> wcList_;
 
+    // Zaino Gen3: sinistra = catalogo trasferibili (sempre visibile),
+    // destra = lista giochi finche' non ne scegli uno, poi al suo posto
+    // lo zaino VERO del gioco scelto (B torna alla lista giochi, come le
+    // banche). Opera su scratch SaveFile del gioco evidenziato
+    // (load/gift/save con backup), mai sul save_ della main view.
+    // (vista audit: righe = anomalie + voci di giornale, vedi backpackJournal_)
+    bool showBackpack_ = false;
+    bool backpackFocusItems_ = true; // false = pannello giochi/zaino a destra
+    bool backpackAudit_ = false;     // vista verifica invece della lista voci
+    std::vector<GameType> backpackGames_;
+    std::vector<int> backpackOcc_;   // occurrence in availableGames_ per voce
+    int backpackGameCursor_ = 0, backpackGameScroll_ = 0;
+    std::vector<Backpack::ItemDef> backpackDefs_;
+    std::vector<Backpack::ItemDef> backpackItems_; // filtrate per gioco
+    // Righe sinistra: catalogo trasferibili (mai header, sempre voci di
+    // indice idx). La stessa struct e' riusata per backpackBag_ (destra,
+    // zaino VERO), dove i pocket hanno header non selezionabili (cursore
+    // li salta) - vedi backpackLeftStep/backpackBagStep.
+    struct BackpackLeftRow { bool header = false; int idx = 0; int pocket = -1; };
+    std::vector<BackpackLeftRow> backpackLeft_;
+    std::vector<SaveFile::GbaBagSlot> backpackGameBag_; // slot non vuoti dello scratch
+    int backpackLeftCursor_ = 0, backpackLeftScroll_ = 0;
+    // Tab categoria del catalogo (0=Sfere,1=MN,2=MT,3=Consumabili,
+    // 4=Speciali,5=Bacche): con ~300 voci per gioco (es. Emerald)
+    // un'unica lista era impraticabile da scorrere, richiesta esplicita
+    // di dividerla come nel gioco vero. MN prima di MT (nel gioco le
+    // Macchine Nascoste vengono prima). ZL/ZR la cambiano (vedi
+    // handleBackpackInput), sempre attiva a prescindere dal fuoco
+    // visto che il catalogo e' sempre visibile.
+    int backpackCatTab_ = 0;
+    bool backpackZlHeld_ = false, backpackZrHeld_ = false; // edge-detect ZL/ZR
+    // Destra a gioco scelto: righe dello zaino VERO (al posto della
+    // lista giochi), stesso tipo di riga ma cursore/scroll propri.
+    std::vector<BackpackLeftRow> backpackBag_;
+    int backpackBagCursor_ = 0, backpackBagScroll_ = 0;
+    int backpackQty_ = 1;
+    bool backpackBaseMode_ = false;
+    std::vector<Backpack::Anomaly> backpackAnoms_;
+    std::vector<Backpack::JournalRow> backpackJournal_; // regali (audit): una riga per {item, pocket}
+    int backpackAuditCursor_ = 0, backpackAuditScroll_ = 0;
+    SaveFile backpackSave_;          // scratch
+    std::string backpackSavePath_, backpackSaveMnt_;
+    GameType backpackGame_ = GameType::EMERALD;
+    bool backpackLoaded_ = false;
+    bool backpackGameChosen_ = false; // gioco scelto esplicito con A (prima le voci sono solo lista)
+    std::unordered_map<int, int> backpackOwned_; // itemId -> count totale
+    std::unordered_set<int> backpackBackedUp_;   // GameType già backuppati qui
+    void openBackpack();
+    // Come sopra ma, se selIdx punta un gioco borsa valido, lo apre subito
+    // (zaino di destinazione già scelto, focus alle voci).
+    void openBackpackOn(int selIdx);
+    void closeBackpack();
+    void backpackLoadGame(GameType g, int occ);
+    void backpackReloadItems();
+    void backpackRefreshAudit();
+    void drawBackpackPopup();
+    void handleBackpackInput(const SDL_Event& event);
+    void backpackDoGift();
+    void backpackDoTake();
+    void backpackLeftStep(int& cursor, int dir);
+    void backpackBagStep(int& cursor, int dir);
+    // Tiene la quantita' dentro il max della voce sotto cursore: senza
+    // questo, impostata su un oggetto a max 99, spostandoti su uno a max
+    // 5 la barra mostrava "x99 (max 5)" (il dono lo clampava comunque,
+    // ma era ingannevole - bug 2026-09-13). Va chiamato a ogni cambio
+    // di cursore/ricarica del catalogo.
+    void backpackClampQty();
+    // Cambia la tab categoria del catalogo (dir=+-1, wrap) e ricarica
+    // le righe di sinistra filtrate sulla nuova tab.
+    void backpackCatTabStep(int dir);
+    // Passo levetta orizzontale: sposta il fuoco tra catalogo
+    // (sinistra) e zaino vero/lista giochi (destra). Idempotente
+    // (nessun rimbalzo se richiamato piu' volte gia' a destinazione),
+    // quindi e' sicuro chiamarlo anche dal repeat per-frame.
+    void backpackFocusStep(int dir);
+    // Un passo (dir=+-1) su gioco o voce a fuoco: chiamato dal tick
+    // per-frame in ui_selectors.cpp per il repeat levetta (vedi
+    // "Joystick repeat navigation"), mai da dentro handleBackpackInput
+    // (a levetta ferma puo' non arrivare mai un altro evento SDL).
+    void backpackStickStep(int dir);
+    void backpackDoFixSelected();
+    bool backpackPersist(const std::string& why);
+
     // PK file import list state (.pk1/.pk2 picker, mirrors wondercards)
     struct PkFileInfo {
         std::string filename;  // bare name for display
@@ -366,6 +629,20 @@ private:
     int  pkImportCursor_  = 0;
     int  pkImportScroll_  = 0;
     std::vector<PkFileInfo> pkImportList_;
+
+    // Self-trade (menu Scambio): lista scorrevole su party + TUTTI i box,
+    // filtrata alle sole specie che possono evolvere per scambio (pronte o
+    // in attesa dello strumento). Eleggibilità ricalcolata dal save ogni
+    // volta che si apre (rebuildTradeCandidates).
+    bool showTradeList_ = false;
+    int  tradeCursor_  = 0;
+    int  tradeScroll_  = 0;
+    struct TradeCandidate { int box; int slot; }; // box == -1 -> party
+    std::vector<TradeCandidate> tradeCandidates_;
+    void openTradeList();
+    void rebuildTradeCandidates();
+    void doTradeEvolve(int candidateIdx);
+    void playTradeEvolveAnim(uint16_t fromSpecies, uint16_t toSpecies);
 
     // Debug test-mon generator (menu Generate, solo debug): segnalini
     // on-demand per i test HW. Tabella estendibile in genMonTable().
@@ -451,6 +728,19 @@ private:
     bool appletMode_ = false;
     std::string basePath_;
     std::string savePath_;
+    // Box Remoto: true quando savePath_ punta a un file temporaneo scaricato
+    // da un dispositivo remoto (vedi RemoteBoxEntry sopra). Letto da
+    // UI::returnToGameSelector() per rispedire il save al device all'uscita.
+    bool activeSaveIsRemote_ = false;
+    std::string activeRemoteHost_, activeRemoteToken_, activeRemoteSavePath_;
+
+    // Scoperta automatica in background del device remoto (vedi
+    // remoteSyncWorkerPoll in remote_sync.h): true dal momento in cui il
+    // worker trova un host valido. Per ora solo loggato/consumato in
+    // UI::run() -- l'icona in dock che lo mostra all'utente e' un passo
+    // successivo, non ancora implementato.
+    bool remoteDeviceAvailable_ = false;
+    std::string remoteDeviceHost_, remoteDeviceToken_;
 
     // Account manager
     AccountManager account_;
@@ -459,18 +749,25 @@ private:
     int profileSelCursor_ = 0;
     int selectedProfile_ = -1;
 
-    // Game selector state
+    // Game selector state (focus periferico: vedi GSFocus/gsSetFocus)
     GameType selectedGame_ = GameType::ZA;
     int gameSelCursor_ = 0;
     int gameSelPage_ = 0;
-    bool gameSelOnAllBanks_ = false;  // cursor is on "View All Banks" option
-    bool gameSelOnAvatar_ = false;    // cursore sull'avatar utente in alto a sx
     float touchStartX_ = 0, touchStartY_ = 0;
     bool touchDown_ = false, touchMoved_ = false;
     void selectorTap(float px, float py, bool& running);
-    int gameSelOnChevron_ = 0;        // 0=none, -1=left chevron, 1=right chevron
-    bool gameSelOnSettings_ = false;  // cursore sull'ingranaggio in basso a dx
-    bool gameSelOnEject_ = false;     // cursore sull'icona espelli USB
+    // Effetto molla/budino sul riordino dock (entry: Y su icona dock o menu +):
+    // offset x per slot, il draw lo insegue con molla smorzata (overshoot +
+    // ritorno), azzerato a riposo.
+    static constexpr int MAX_DOCK_SLOTS = 5; // dock: Backpack, Banks, SaveMenu, Trade, Eject
+    float dockSlide_[MAX_DOCK_SLOTS] = {};
+    float dockSlideVel_[MAX_DOCK_SLOTS] = {};
+    void dockSpringStep(std::vector<DockSlot>& slots); // aggiorna dockSlide_ per frame
+    // Stessa molla, applicata al collasso delle voci Zoom/Menu radiale in
+    // Impostazioni > Aspetto (nascoste in layout Galleria): 0 = visibili,
+    // 1 = nascoste, con overshoot durante la transizione (vedi drawSettingsPopup).
+    float appearanceCollapse_ = 0.0f;
+    float appearanceCollapseVel_ = 0.0f;
     // Animazione pulsanti bassi: posizioni/alpha correnti -> target per frame.
     float ejectBtnX_ = -1.0f;
     float ejectBtnA_ = 0.0f;
@@ -493,6 +790,8 @@ private:
     static void findUpdateCfgFiles(const std::string& basePath, std::string& cfg, std::string& off);
     static std::string customUrlAny(const std::string& basePath);
     static bool writeUpdateCfgUrl(const std::string& basePath, const std::string& url);
+    static bool writeUpdateCfgKey(const std::string& basePath, const std::string& key,
+                                  const std::string& value);
     bool bottomButtonsAnim(); // true mentre lerp banche/eject non a target
     bool allBanksMode_ = false;       // entered bank selector via "View All Banks"
     bool bankRightCrossGen_ = false;  // right-panel bank selector showing ALL games (cross-gen), normal mode
@@ -511,9 +810,46 @@ private:
     // Preferiti galleria: ZR toggla, stella al posto del pallino, ordine stabile in cima.
     std::unordered_set<int> favorites_;
     bool favTriggerHeld_ = false;
+    // Avvio rapido galleria: ZL sul gioco evidenziato. Titoli Switch nativi
+    // (titleId reale) -> appletRequestLaunchApplication; emulati (rom
+    // scansionata) -> mGBA se rilevato. Non disponibile in appletMode_
+    // (salto Album/Library Applet): ne' il chainload ne' un titleId diverso
+    // da 0 sono garantiti li', meglio non rischiare per ora. Chiede sempre
+    // conferma esplicita.
+    bool launchTriggerHeld_ = false;
+    void requestLaunchGame(bool& running);
+    // Vero se availableGames_[idx] e' lanciabile ora (titolo Switch nativo,
+    // oppure emulato con mGBA rilevato + rom trovata accanto al save).
+    // Stessa condizione usata sia per l'hint "ZL: Avvia" in basso sia per il
+    // tastino "Avvia" nel pannello anteprima Galleria -- unica cosi' le due
+    // non possano disallinearsi. Non const: puo' innescare ensureMgbaChecked().
+    bool isGameLaunchableAt(int idx);
+    // Menu radiale Classica -- vedi enum RadialAction e i membri radial*_
+    // sopra. idx e' un indice in availableGames_ (stessa convenzione di
+    // gameSelCursor_). Le funzioni di draw/input vivono in ui_selectors.cpp
+    // insieme al resto dell'input del selettore giochi.
+    void openRadialMenu(int idx);
+    void closeRadialMenu();
+    void radialMenuActivate(bool& running);
+    void handleRadialMenuInput(const SDL_Event& event, bool& running);
+    void radialMenuTap(float px, float py, bool& running);
+    void drawRadialMenu();
     bool isFavorite(GameType g) const { return favorites_.count(static_cast<int>(g)) != 0; }
     void loadFavorites();
     void saveFavorites() const;
+    // Popup di scoperta "Installa launcher" (categoria Sistema): mostrato
+    // una sola volta. Stesso schema di noled.cfg (source/led.cpp) --
+    // esistenza del file = flag true, nessun contenuto da leggere/scrivere.
+    bool hasSeenLauncherPrompt() const;
+    void markLauncherPromptSeen() const;
+    // Azione della riga "Installa launcher" in Sistema: vedi il commento
+    // sopra la definizione (source/ui_selectors.cpp) per lo stato attuale
+    // (solo permessi/conferma, install NSP vera e propria non ancora fatta).
+    void installLauncherForwarder();
+    // Tentativo vero e proprio (permessi gia' assunti ok da chi chiama):
+    // condiviso tra il flusso Impostazioni (dopo conferma) e la pressione
+    // diretta di A nel popup di scoperta showLauncherPromptPopup().
+    void attemptLauncherForwarderInstall();
     void toggleFavorite(GameType g);
     void applyFavoritesOrder();
 
@@ -585,6 +921,13 @@ private:
     int    bankBox_ = 0;
     bool   showDetail_ = false;
     bool   autoPrompted_ = false; // auto-update boot: prompt mostrato una sola volta
+    // Gancio popup "Installa launcher": one-shot per boot come autoPrompted_
+    // qui sopra, ma vive SOLO in RAM (mai su file) -- si valuta una volta a
+    // boot quando l'autocheck update ha finito senza trovare nulla; se
+    // questo boot trova un update invece, semplicemente salta il turno e
+    // si riprova dal boot pulito successivo. Il "gia' mostrato per sempre"
+    // vero sta su file (hasSeenLauncherPrompt()/markLauncherPromptSeen()).
+    bool   launcherPromptChecked_ = false;
     bool   showMenu_   = false;
     int    menuSelection_ = 0;
     bool   saveNow_    = false;
@@ -673,6 +1016,24 @@ private:
     std::unordered_map<GameType, PartyPreview> galPartyCache_;
     int galPreviewGame_ = -1;
     uint32_t galPreviewTick_ = 0;
+    // Un solo probe (mount+stat) per atterraggio sulla selezione: il save
+    // di un gioco puo' cambiare solo per mano di OpenHomeNX stessa (allora
+    // invalida esplicitamente via galInvalidateParty), quindi ricontrollare
+    // a ripetizione mentre resti fermo non serve -- serviva solo a
+    // rimontare/smontare a ogni frame (causa di un flicker gia' fixato).
+    // Resettato a false ad ogni nuovo "settle" (sel != galPreviewGame_) dai
+    // due call site in ui_gallery.cpp; messo a true dentro galEnsureParty()
+    // stessa dopo il primo probe per quell'atterraggio.
+    bool galSettleChecked_ = false;
+    // overrideOT.cfg (nome allenatore forzato per screenshot): letto da
+    // file ad ogni chiamata di galEnsureParty() per restare "live" mentre
+    // resti fermi su un gioco -- ma senza throttle sarebbe comunque un
+    // fopen/fread reale a 60Hz, inutile per un file che nessuno riscrive
+    // decine di volte al secondo. Diradato a un letture ogni 500ms: resta
+    // percettivamente istantaneo per chi sta preparando uno screenshot,
+    // ma taglia la spesa di ~30x.
+    uint32_t galOverrideOtTick_ = 0;
+    std::string galOverrideOtCached_;
     long galSaveMtime(GameType g);
     void galEnsureParty(GameType g);
     void galInvalidateParty(GameType g);
@@ -684,6 +1045,11 @@ private:
     // ogni save ad ogni avvio. File in basePath_ (vedi theme.cfg/gallery.cfg).
     bool galCacheLoadedFromDisk_ = false;
     void galLoadCacheFromDisk();
+    // Precarica la cache disco a boot: senza, a ogni apertura la galleria
+    // mostra "..." per 400ms sul gioco fermo (cache memoria vuota + load
+    // pigro al primo settle). Con i preferiti il gioco in cima è sempre
+    // visibile, quindi il pop-in si vedeva a ogni avvio.
+    void galPreloadCacheFromDisk();
     void galSaveCacheToDisk() const;
     // true mentre lo slide dell'anteprima Galleria (galSelShown_/
     // galSlide_) non ha ancora raggiunto il target: stesso schema di
@@ -734,6 +1100,8 @@ private:
     void drawSpeciesListPicker();
     void drawWondercardListPopup();
     void drawPkImportListPopup();
+    void drawTradeListPopup();
+    void handleTradeListInput(const SDL_Event& event);
     void drawLearnsetPopup();
     void drawHeldOverlay();
     void drawBoxViewOverlay();
@@ -756,6 +1124,11 @@ private:
     // niente rischio del doppio-alpha "pacman" agli angoli).
     void drawRoundRectGradientH(int x, int y, int w, int h, int r, SDL_Color left, SDL_Color right);
     void drawRoundRectOutline(int x, int y, int w, int h, int r, SDL_Color color, int thickness);
+    // Come drawRoundRectOutline() ma tratteggiato: dashLen/gapLen in px,
+    // pattern continuo lungo tutto il perimetro (angoli compresi), non
+    // riavviato a ogni lato/arco.
+    void drawRoundRectOutlineDashed(int x, int y, int w, int h, int r, SDL_Color color,
+                                     int thickness, int dashLen, int gapLen);
     void drawRoundSelect(int cx, int cy, int r, bool focused);
     void drawStatusBar(const std::string& msg);
 

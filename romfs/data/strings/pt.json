@@ -227,6 +227,7 @@
     "left": "Esquerda",
     "right": "Direita",
     "status_game_eject": "  X: Ejetar USB",
+    "dock_eject": "Ejetar USB",
     "no_boxes_title": "Sem caixas ainda",
     "menu_import_pk": "Importar arquivos PK",
     "set_title": "Configuracoes",

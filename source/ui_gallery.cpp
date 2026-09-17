@@ -74,6 +74,23 @@ constexpr int GAL_ROW_H = 46, GAL_VISIBLE_ROWS = 9;
 constexpr int GAL_PREVIEW_X = GAL_LIST_X + GAL_LIST_W + 40;   // 470
 constexpr int GAL_PREVIEW_Y = 100;
 constexpr int GAL_PREVIEW_H = 460;
+constexpr int GAL_BTN_W = 190, GAL_BTN_H = 50, GAL_BTN_MARGIN = 34;
+// Stessa X del blocco di testo (titolo/party/statistiche) del pannello:
+// coverX + COVER + 40, vedi textX in drawGameList_Gallery -- TENERLA IN
+// SYNC se cambia quel calcolo. Il pulsante sta sotto quel blocco, non
+// appeso al bordo destro del pannello.
+constexpr int GAL_BTN_X = GAL_PREVIEW_X + 46 + 260 + 40;
+
+// Rettangolo del pulsante "Avvia" nel pannello anteprima: stessa geometria
+// sia in drawGameList_Gallery() (disegno) sia in selectorTapGallery() (tap)
+// -- TENERLE IN SYNC se si cambia margine/misura (stessa regola di
+// GAL_LIST_*/GAL_PREVIEW_* qui sopra).
+void galButtonRect(int panelY, int& bx, int& by, int& bw, int& bh) {
+    bw = GAL_BTN_W;
+    bh = GAL_BTN_H;
+    bx = GAL_BTN_X;
+    by = panelY + GAL_PREVIEW_H - GAL_BTN_MARGIN - bh;
+}
 
 int galClampSel(int cursor, int numGames) {
     if (numGames <= 0) return 0;
@@ -130,8 +147,7 @@ void UI::drawGameList_Gallery() {
     int pixOff = (int)((galScrollX_ - scroll) * GAL_ROW_H);
     int rowEnd = std::min(scroll + GAL_VISIBLE_ROWS + 1, numGames);
 
-    bool cursorOnList = !gameSelOnAllBanks_ && !gameSelOnSettings_ && !gameSelOnEject_ &&
-                         !gameSelOnAvatar_ && !gameSelOnPack_ && gameSelOnChevron_ == 0;
+    bool cursorOnList = (gsFocus_ == GSFocus::Grid);
 
     auto dot = [&](int cx, int cy, int rr, SDL_Color col) {
         SDL_SetRenderDrawColor(renderer_, col.r, col.g, col.b, col.a);
@@ -298,8 +314,12 @@ void UI::drawGameList_Gallery() {
     if (sel != galPreviewGame_) {
         galPreviewGame_ = sel;
         galPreviewTick_ = nowT;
-        DebugLog::line("gal preview: settled %s cache=%d", gameInfo(selGame).gameTag,
-                       galPartyCache_.count(selGame));
+        galSettleChecked_ = false;
+        // Log solo su cache-miss (partirà un load): gli hit sono il 95%
+        // dei settle in scroll veloce e ogni riga è write+flush su SD
+        // nel main thread (micro-scatti). Il load logga già per sé.
+        if (galPartyCache_.find(selGame) == galPartyCache_.end())
+            DebugLog::line("gal preview: settled %s cache=0 (miss)", gameInfo(selGame).gameTag);
     } else if (nowT - galPreviewTick_ > 400) {
         galEnsureParty(selGame);
     }
@@ -371,12 +391,56 @@ void UI::drawGameList_Gallery() {
             }
         }
     }
+
+    // Pulsante "Avvia" nel pannello anteprima: contorno tratteggiato, colori
+    // del tema (T().cursor/T().text, gli stessi del bordo pannello e dei
+    // testi circostanti) -- niente riquadro pieno, solo il tastino. Visibile
+    // solo se il gioco mostrato e' davvero lanciabile ora, stessa condizione
+    // dell'hint "ZL: Avvia" in basso (vedi isGameLaunchableAt()).
+    if (isGameLaunchableAt(shown)) {
+        int bx, by, bw, bh;
+        galButtonRect(panelY, bx, by, bw, bh);
+        // Fermo: sfondo dello stesso colore dello sfondo tema, contorno
+        // pieno (il tratteggio precedente aliasava troppo a questa
+        // risoluzione, niente antialiasing sul renderer). A fuoco (cursore
+        // spostato qui col pad): stesso trattamento delle altre selezioni
+        // (righe lista/card), sfondo T().menuHighlight + contorno piu' netto.
+        if (gsFocus_ == GSFocus::Launch) {
+            drawRoundRect(bx, by, bw, bh, bh / 2, T().menuHighlight);
+            drawRoundRectOutline(bx, by, bw, bh, bh / 2, T().cursor, 2);
+        } else {
+            drawRoundRect(bx, by, bw, bh, bh / 2, T().bg);
+            drawRoundRectOutline(bx, by, bw, bh, bh / 2, T().cursor, 2);
+        }
+        std::string label = i18n::get(StrKey::LaunchGameButton) + " >";
+        TTF_SetFontStyle(font_, TTF_STYLE_BOLD);
+        drawTextCentered(label, bx + bw / 2, by + bh / 2, T().text, font_);
+        TTF_SetFontStyle(font_, TTF_STYLE_NORMAL);
+    }
 }
 
 void UI::selectorTapGallery(float px, float py, bool& running) {    int numGames = (int)availableGames_.size();
     if (numGames == 0) return;
 
     int sel = galClampSel(gameSelCursor_, numGames);
+
+    // Pulsante "Avvia" del pannello anteprima: stessa geometria del draw
+    // (galButtonRect(), TENERE IN SYNC), verificata sul gioco davvero
+    // mostrato in questo istante ("shown", non "sel": durante lo slide
+    // verticale sono transitoriamente diversi).
+    {
+        int shown = galClampSel(galSelShown_, numGames);
+        if (isGameLaunchableAt(shown)) {
+            int panelY = GAL_PREVIEW_Y + (int)(galSlide_ * GAL_PREVIEW_H);
+            int bx, by, bw, bh;
+            galButtonRect(panelY, bx, by, bw, bh);
+            if (px >= bx && px <= bx + bw && py >= by && py <= by + bh) {
+                requestLaunchGame(running);
+                markDirty();
+                return;
+            }
+        }
+    }
     // Stesso offset fluido del draw (senza avanzare l'animazione qui).
     float fx = galScrollX_ < 0 ? (float)galScrollFor(sel, numGames) : galScrollX_;
     int scroll = (int)fx;
@@ -389,9 +453,7 @@ void UI::selectorTapGallery(float px, float py, bool& running) {    int numGames
         int rowH = GAL_ROW_H - 6;
         if (py >= rowY && py <= rowY + rowH) {
             gameSelCursor_ = i;
-            gameSelOnAllBanks_ = gameSelOnAvatar_ = false;
-            gameSelOnEject_ = gameSelOnSettings_ = false;
-            gameSelOnChevron_ = 0;
+            gsSetFocus(GSFocus::Grid);
             selectGame(availableGames_[i], importedOccurrence(i));
             markDirty();
             return;
@@ -418,6 +480,7 @@ bool UI::galleryPreviewAnim() {
     if (sel != galPreviewGame_) {
         galPreviewGame_ = sel;
         galPreviewTick_ = SDL_GetTicks();
+        galSettleChecked_ = false;
         return true;
     }
     if (galSelShown_ != sel || galSlide_ != 0.0f) return true;
@@ -456,41 +519,67 @@ void UI::galEnsureParty(GameType g) {
         galLoadCacheFromDisk();
     }
     // Override OT (per screenshot/registrazioni): sdmc:/.../overrideOT.cfg
-    // accanto all'nro, stessa basePath_ di theme.cfg/gallery.cfg. Letto ad
-    // OGNI chiamata, PRIMA del controllo cache sotto -- se fosse dentro il
-    // ramo "carica da zero" soltanto, creare/rimuovere il file non avrebbe
-    // mai effetto su un gioco gia' in cache finche' il suo save non cambia
-    // davvero (l'mtime combacerebbe e la funzione uscirebbe subito, bug
-    // segnalato 2026-09-11). Pura lettura: non tocca mai il save reale.
-    std::string overrideOt;
-    {
+    // accanto all'nro, stessa basePath_ di theme.cfg/gallery.cfg. Riletto
+    // al massimo ogni 500ms (galOverrideOtTick_/galOverrideOtCached_),
+    // PRIMA del controllo cache sotto -- se fosse dentro il ramo "carica da
+    // zero" soltanto, creare/rimuovere il file non avrebbe mai effetto su
+    // un gioco gia' in cache finche' il suo save non cambia davvero
+    // (l'mtime combacerebbe e la funzione uscirebbe subito, bug segnalato
+    // 2026-09-11). 500ms resta percettivamente istantaneo per chi prepara
+    // uno screenshot, senza un fopen/fread reale a 60Hz. Pura lettura: non
+    // tocca mai il save reale.
+    uint32_t nowOt = SDL_GetTicks();
+    if (nowOt - galOverrideOtTick_ > 500) {
+        galOverrideOtTick_ = nowOt;
+        std::string fresh;
         FILE* f = std::fopen((basePath_ + "overrideOT.cfg").c_str(), "rb");
         if (f) {
             char buf[64] = {0};
             size_t n = std::fread(buf, 1, sizeof(buf) - 1, f);
             std::fclose(f);
-            overrideOt.assign(buf, n);
-            while (!overrideOt.empty() && (overrideOt.back() == '\n' || overrideOt.back() == '\r' || overrideOt.back() == ' '))
-                overrideOt.pop_back();
+            fresh.assign(buf, n);
+            while (!fresh.empty() && (fresh.back() == '\n' || fresh.back() == '\r' || fresh.back() == ' '))
+                fresh.pop_back();
         }
+        galOverrideOtCached_ = fresh;
     }
-    long mt = galSaveMtime(g);
+    std::string overrideOt = galOverrideOtCached_;
     auto it = galPartyCache_.find(g);
-    // Cache valida: esci (niente mount a ogni frame). Ricontrolla al max
-    // ogni 10s per i save cambiati fuori dall'app.
     if (it != galPartyCache_.end()) {
-        // Applica/rimuovi l'override sull'entry gia' in cache -- indipendente
-        // da quanto sotto, cosi' funziona anche restando fermi sullo stesso
-        // gioco con save invariato (il caso comune per gli screenshot).
+        // Applica/rimuovi l'override sull'entry gia' in cache SEMPRE, ad
+        // ogni chiamata: e' una lettura di file locale (nessun mount),
+        // costa nulla, e permette di vedere l'effetto dell'override in
+        // tempo reale restando fermi sullo stesso gioco (serve per
+        // screenshot/registrazioni, vedi commento sopra).
         std::string wanted = overrideOt.empty() ? it->second.otNameReal : overrideOt;
         if (it->second.otName != wanted) {
             it->second.otName = wanted;
             galSaveCacheToDisk();
             markDirty();
         }
-        if (it->second.mtime == mt) return;
-        if (SDL_GetTicks() - galPreviewTick_ < 10000) return;
     }
+    // Il probe vero e proprio (mount+stat) invece avviene al massimo una
+    // volta per atterraggio sulla selezione: nessun'altra app puo' scrivere
+    // questo save mentre restiamo fermi qui (solo OpenHomeNX puo' farlo, e
+    // allora invalida esplicitamente via galInvalidateParty), quindi
+    // ripeterlo di continuo serviva solo a rimontare/smontare a ogni frame
+    // (causa di un flicker gia' fixato). galSettleChecked_ e' resettato ad
+    // ogni nuovo atterraggio dai due call site in drawGameList_Gallery()/
+    // galleryPreviewAnim().
+    if (galSettleChecked_) return;
+    galSettleChecked_ = true;
+    // Se il probe fallisce (mt<0) NON ricaricare: una probe flaky non deve
+    // mai sovrascrivere una cache buona col vuoto (flicker party/OT/dex).
+    long mt = galSaveMtime(g);
+    if (mt < 0) {
+        if (it == galPartyCache_.end())
+            DebugLog::line("gal party: %s probe fallita, niente cache", gameInfo(g).gameTag);
+        return;
+    }
+    // Cache ancora valida (save non cambiato da quando l'abbiamo vista
+    // l'ultima volta, es. all'atterraggio precedente o al boot): esci
+    // senza ricaricare.
+    if (it != galPartyCache_.end() && it->second.mtime == mt) return;
     DebugLog::line("gal party: load %s (mt=%ld)", gameInfo(g).gameTag, mt);
     PartyPreview pv;
     pv.mtime = mt;
@@ -511,30 +600,38 @@ void UI::galEnsureParty(GameType g) {
         if (!path.empty()) {
             sf.load(path);
             int filled = 0;
-            if (sf.isLoaded()) {
-                for (int s = 0; s < 6; s++) {
-                    Pokemon pkm = sf.getPartySlot(s);
-                    if (pkm.isEmpty()) continue;
-                    PartyPreviewMon m;
-                    m.empty = false;
-                    m.species = pkm.species();
-                    m.level = pkm.level();
-                    m.form = pkm.form();
-                    m.shiny = pkm.isShiny();
-                    m.egg = pkm.isEgg();
-                    pv.mons[s] = m;
-                    filled++;
-                }
-                pv.otNameReal = sf.dsOtName();
-                Pokedex::DexStatus dex = Pokedex::getDexStatus(sf);
-                pv.dexSupported = dex.supported;
-                pv.dexCaught = dex.caught;
-                pv.dexTotal = dex.total;
-            } else {
-                DebugLog::line("gal party: %s load FALLITO path=%s", gameInfo(g).gameTag, path.c_str());
+            if (!sf.isLoaded()) {
+                // Load fallito (save illeggibile): tieni la cache vecchia,
+                // mai avvelenare col vuoto. Solo log, niente store.
+                DebugLog::line("gal party: %s load FALLITO path=%s (tengo cache)", gameInfo(g).gameTag, path.c_str());
+                return;
             }
+            for (int s = 0; s < 6; s++) {
+                Pokemon pkm = sf.getPartySlot(s);
+                if (pkm.isEmpty()) continue;
+                PartyPreviewMon m;
+                m.empty = false;
+                m.species = pkm.species();
+                m.level = pkm.level();
+                m.form = pkm.form();
+                m.shiny = pkm.isShiny();
+                m.egg = pkm.isEgg();
+                pv.mons[s] = m;
+                filled++;
+            }
+            pv.otNameReal = sf.dsOtName();
+            Pokedex::DexStatus dex = Pokedex::getDexStatus(sf);
+            pv.dexSupported = dex.supported;
+            pv.dexCaught = dex.caught;
+            pv.dexTotal = dex.total;
             DebugLog::line("gal party: %s cached %d/6", gameInfo(g).gameTag, filled);
         } else {
+            // Nessun path: scrivi il vuoto solo se non c'è già una cache
+            // (primo giro), altrimenti tienila (stesso anti-flicker sopra).
+            if (it != galPartyCache_.end()) {
+                DebugLog::line("gal party: %s nessun path (tengo cache)", gameInfo(g).gameTag);
+                return;
+            }
             DebugLog::line("gal party: %s nessun path (profilo? import?)", gameInfo(g).gameTag);
             DebugLog::line("gal party: %s cached 0/6", gameInfo(g).gameTag);
         }
@@ -552,6 +649,14 @@ void UI::galEnsureParty(GameType g) {
 void UI::galInvalidateParty(GameType g) {
     galPartyCache_.erase(g);
     galSaveCacheToDisk();
+}
+
+void UI::galPreloadCacheFromDisk() {
+    if (galCacheLoadedFromDisk_) return;
+    galCacheLoadedFromDisk_ = true;
+    galLoadCacheFromDisk();
+    if (!galPartyCache_.empty())
+        DebugLog::line("gal cache: preload %zu voci a boot", galPartyCache_.size());
 }
 
 namespace {

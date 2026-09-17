@@ -9,6 +9,7 @@
 #include <vector>
 #include <atomic>
 #include <memory>
+#include <mutex>
 
 #include <switch.h>
 #include <curl/curl.h>
@@ -18,6 +19,21 @@
 namespace {
 
 bool g_netReady = false;
+bool g_nifmReady = false; // vedi updateNetEnsureNifm()
+std::mutex g_nifmMutex; // vedi updateNetNifmMutex() in update_net.h
+
+// Assume il lock g_nifmMutex GIA' preso dal chiamante (updateNetEnsureNifm()
+// o updateNetLinkStr(), che lo tengono per tutta la funzione) -- mai da
+// chiamare direttamente altrove: stesso bug/stessa soluzione di
+// logPathUnlocked() in debug_log.cpp (mutex non ricorsivo -- richiamarla da
+// dentro una funzione che ha gia' il lock preso sarebbe un doppio lock sullo
+// stesso thread, hang garantito).
+bool ensureNifmLocked() {
+    if (g_nifmReady) return true;
+    if (R_FAILED(nifmInitialize(NifmServiceType_User))) return false;
+    g_nifmReady = true;
+    return true;
+}
 
 // romfs:/cacert.pem è opzionale. Se manca (target è un webserver HTTP locale,
 // oppure non lo abbiamo ancora impacchettato) si disattiva la verifica del
@@ -194,21 +210,30 @@ bool updateNetEnsureReady() {
     return g_netReady;
 }
 
+// Init nifm:u condivisa (idempotente): usata sia da updateNetLinkStr() qui
+// sotto sia da remoteSyncScanLan() (remote_sync.cpp) per l'IP locale. Presa
+// del lock qui -- vedi ensureNifmLocked() sopra per il perche' non e' lei
+// stessa a chiamarsi da dentro updateNetLinkStr() (che il lock lo tiene
+// gia').
+bool updateNetEnsureNifm() {
+    std::lock_guard<std::mutex> lock(g_nifmMutex);
+    return ensureNifmLocked();
+}
+
+std::mutex& updateNetNifmMutex() { return g_nifmMutex; }
+
 // Poll throttled dello stato link via nifm (nifm:u). Lazy-init: se nifm non si
 // apre, resta OFF e riprova al poll successivo. Mai fatale, mai bloccante.
 const char* updateNetLinkStr() {
+    std::lock_guard<std::mutex> lock(g_nifmMutex);
     static double lastPoll = -1e9;
     static char cached[8] = "OFF";
-    static bool nifmReady = false;
     double now = (double)armTicksToNs(armGetSystemTick()) / 1.0e9;
     if (now - lastPoll < 2.0)
         return cached;
     lastPoll = now;
-    if (!nifmReady) {
-        if (R_FAILED(nifmInitialize(NifmServiceType_User)))
-            return cached; // resta OFF, riprova tra 2s
-        nifmReady = true;
-    }
+    if (!ensureNifmLocked())
+        return cached; // resta OFF, riprova tra 2s
     NifmInternetConnectionType type = (NifmInternetConnectionType)0;
     u32 strength = 0;
     NifmInternetConnectionStatus st = (NifmInternetConnectionStatus)0;
@@ -255,6 +280,116 @@ bool updateNetFetchInfo(const std::string& baseUrl, const std::string& token,
     out.nroUrl = joinUrl(baseUrl, out.nroUrl);
     DebugLog::line("update-net: latest v%s nro=%s", out.version.c_str(), out.nroUrl.c_str());
     return true;
+}
+
+namespace {
+// Scrive con tetto (la lista releases API può crescere): oltre si abortisce.
+constexpr size_t kApiCap = 512u * 1024u;
+struct CappedSink {
+    std::string s;
+    bool over = false;
+};
+size_t writeCapped(char* ptr, size_t size, size_t nmemb, void* userdata) {
+    auto* m = static_cast<CappedSink*>(userdata);
+    size_t n = size * nmemb;
+    if (m->over || m->s.size() + n > kApiCap) { m->over = true; return 0; }
+    m->s.append(ptr, n);
+    return n;
+}
+
+// Valore stringa di "key" da pos (whitespace tollerato). "" se assente.
+std::string jsonStrAt(const std::string& body, size_t pos, const char* key) {
+    std::string needle = std::string("\"") + key + "\"";
+    size_t k = body.find(needle, pos);
+    if (k == std::string::npos) return "";
+    size_t colon = body.find(':', k + needle.size());
+    if (colon == std::string::npos) return "";
+    size_t q1 = body.find('"', colon + 1);
+    if (q1 == std::string::npos) return "";
+    size_t q2 = body.find('"', q1 + 1);
+    if (q2 == std::string::npos) return "";
+    return body.substr(q1 + 1, q2 - q1 - 1);
+}
+
+// Bool di "key" da pos (whitespace tollerato). false se assente/malformato.
+bool jsonBoolAt(const std::string& body, size_t pos, const char* key) {
+    std::string needle = std::string("\"") + key + "\"";
+    size_t k = body.find(needle, pos);
+    if (k == std::string::npos) return false;
+    size_t colon = body.find(':', k + needle.size());
+    if (colon == std::string::npos) return false;
+    size_t v = colon + 1;
+    while (v < body.size() && (body[v] == ' ' || body[v] == '\t' ||
+                               body[v] == '\n' || body[v] == '\r')) v++;
+    return body.compare(v, 4, "true") == 0;
+}
+} // namespace
+
+bool updateNetFetchBetaBase(const std::string& owner, const std::string& repo,
+                            const std::string& token, std::string& outBase,
+                            std::string& outTag, std::string& err) {
+    if (!g_netReady) { err = "rete non inizializzata"; return false; }
+    const std::string url = "https://api.github.com/repos/" + owner + "/" + repo + "/releases";
+    CURL* c = curl_easy_init();
+    if (!c) { err = "curl_easy_init fallito"; return false; }
+    CappedSink sink;
+    struct curl_slist* hdrs = nullptr;
+    // Niente applyCommonOpts: l'API vuole Accept JSON (octet-stream dà 406),
+    // ma serve comunque User-Agent (senza dà 403).
+    curl_easy_setopt(c, CURLOPT_FOLLOWLOCATION, 1L);
+    curl_easy_setopt(c, CURLOPT_MAXREDIRS, 8L);
+    curl_easy_setopt(c, CURLOPT_CONNECTTIMEOUT, 10L);
+    curl_easy_setopt(c, CURLOPT_LOW_SPEED_LIMIT, 1024L);
+    curl_easy_setopt(c, CURLOPT_LOW_SPEED_TIME, 30L);
+    curl_easy_setopt(c, CURLOPT_USERAGENT, "OpenHomeNX-updater/1");
+    curl_easy_setopt(c, CURLOPT_NOSIGNAL, 1L);
+    curl_easy_setopt(c, CURLOPT_TIMEOUT, 30L);
+    if (caBundlePresent()) {
+        curl_easy_setopt(c, CURLOPT_CAINFO, kCaBundle);
+    } else {
+        curl_easy_setopt(c, CURLOPT_SSL_VERIFYPEER, 0L);
+        curl_easy_setopt(c, CURLOPT_SSL_VERIFYHOST, 0L);
+    }
+    hdrs = curl_slist_append(hdrs, "Accept: application/vnd.github+json");
+    if (!token.empty()) {
+        std::string h = "Authorization: Bearer " + token;
+        hdrs = curl_slist_append(hdrs, h.c_str());
+    }
+    curl_easy_setopt(c, CURLOPT_HTTPHEADER, hdrs);
+    curl_easy_setopt(c, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(c, CURLOPT_WRITEFUNCTION, writeCapped);
+    curl_easy_setopt(c, CURLOPT_WRITEDATA, &sink);
+    CURLcode rc = curl_easy_perform(c);
+    long http = 0;
+    curl_easy_getinfo(c, CURLINFO_RESPONSE_CODE, &http);
+    curl_slist_free_all(hdrs);
+    curl_easy_cleanup(c);
+    if (rc != CURLE_OK) { err = std::string("GET releases: ") + curl_easy_strerror(rc); return false; }
+    if (http != 200)    { err = "releases HTTP " + std::to_string(http); return false; }
+    if (sink.over)      { err = "releases oltre il tetto 512KB"; return false; }
+    // La lista è newest-first: la prima con prerelease=true è la beta corrente.
+    size_t pos = 0;
+    for (int guard = 0; guard < 60; guard++) {
+        size_t tagPos = sink.s.find("\"tag_name\"", pos);
+        if (tagPos == std::string::npos) break;
+        size_t nextTag = sink.s.find("\"tag_name\"", tagPos + 10);
+        size_t spanEnd = (nextTag == std::string::npos) ? sink.s.size() : nextTag;
+        std::string tag = jsonStrAt(sink.s, tagPos, "tag_name");
+        // prerelease deve stare nello span di QUESTA release (non della next).
+        size_t prePos = sink.s.find("\"prerelease\"", tagPos);
+        bool isPre = (prePos != std::string::npos && prePos < spanEnd) &&
+                     jsonBoolAt(sink.s, tagPos, "prerelease");
+        if (isPre && !tag.empty()) {
+            outTag = tag;
+            outBase = "https://github.com/" + owner + "/" + repo + "/releases/download/" + tag;
+            DebugLog::line("update-net: beta %s -> %s", tag.c_str(), outBase.c_str());
+            return true;
+        }
+        pos = spanEnd;
+        if (nextTag == std::string::npos) break;
+    }
+    err = "none";
+    return false;
 }
 
 namespace {
@@ -352,6 +487,21 @@ bool updateNetDownload(const std::string& url, const std::string& token,
         DebugLog::line("update-net: %.1f MB in RAM in %.1fs (rete %.1f MB/s)",
                        mem.data.size() / (1024.0 * 1024.0),
                        dlNanos / 1.0e6, dlAvg / (1024.0 * 1024.0));
+
+    // L'ultima chiamata di curl con dlnow==dltotal (il vero 100%) quasi
+    // sempre cade dentro la finestra di throttle di dlXferInfoUI (0.1s) e
+    // viene scartata: curl_easy_perform torna subito dopo senza un'altra
+    // occasione di emetterla, quindi la barra restava ferma all'ultimo
+    // valore visto (98-99%) mentre sotto il download era gia' completo.
+    // Emissione esplicita del 100%, fuori dal throttle, prima di passare
+    // a verifica/scrittura.
+    if (progress) {
+        double mb = mem.data.size() / (1024.0 * 1024.0);
+        char line[160];
+        std::snprintf(line, sizeof(line), "Downloading\n  100%%  (%.1f / %.1f MB)  -  %.1f MB/s",
+                      mb, mb, dlAvg / (1024.0 * 1024.0));
+        progress(line);
+    }
 
     if (!expectSha256.empty()) {
         std::string got = sha256HexBuf(mem.data.data(), mem.data.size());

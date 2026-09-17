@@ -122,6 +122,7 @@ namespace StrKey {
     constexpr const char* StatusGameQuitPage   = "status_game_quit_page";
     constexpr const char* StatusGameQuit       = "status_game_quit";
     constexpr const char* StatusGameEject      = "status_game_eject";
+    constexpr const char* StatusGameLaunch     = "status_game_launch";
     constexpr const char* DualBankMode         = "dual_bank_mode";
     constexpr const char* NoBanksTitle         = "no_banks_title";
     constexpr const char* NoBanksAnyGame       = "no_banks_any_game";
@@ -198,6 +199,22 @@ namespace StrKey {
     constexpr const char* MenuWondercard       = "menu_wondercard";
     constexpr const char* MenuExportSelected   = "menu_export_selected";
     constexpr const char* MenuImportPk         = "menu_import_pk";
+    constexpr const char* MenuTrade            = "menu_trade";
+    constexpr const char* TradeTitle           = "trade_title";
+    constexpr const char* TradeNone            = "trade_none";
+    constexpr const char* TradeConfirmTitle    = "trade_confirm_title";
+    constexpr const char* TradeConfirmBody     = "trade_confirm_body";
+    constexpr const char* TradeDoneTitle       = "trade_done_title";
+    constexpr const char* TradeDoneBody        = "trade_done_body";
+    constexpr const char* TradeFailed          = "trade_failed";
+    constexpr const char* TradeNotEligible     = "trade_not_eligible";
+    constexpr const char* TradeNeedsItem       = "trade_needs_item";
+    constexpr const char* TradeOutOfRange      = "trade_out_of_range";
+    constexpr const char* TradePairedHint      = "trade_paired_hint";
+    constexpr const char* TradeDoubleConfirmBody = "trade_double_confirm_body";
+    constexpr const char* TradeDoubleDoneBody  = "trade_double_done_body";
+    constexpr const char* TradeItemWhere       = "trade_item_where";
+    constexpr const char* TradeFooter          = "trade_footer";
     constexpr const char* MenuSwitchBank       = "menu_switch_bank";
     constexpr const char* MenuChangeGame       = "menu_change_game";
     constexpr const char* MenuSaveQuit         = "menu_save_quit";
@@ -235,6 +252,14 @@ namespace StrKey {
     constexpr const char* SetLanguage     = "set_language";
     constexpr const char* SetZoom         = "set_zoom";
     constexpr const char* SetGalleryLayout = "set_gallery_layout";
+    constexpr const char* SetRadialMenu   = "set_radial_menu";
+    constexpr const char* SetTradeAnim    = "set_trade_anim";
+    constexpr const char* SetDockVisible  = "set_dock_visible";
+    constexpr const char* SetDockReset    = "set_dock_reset";
+    constexpr const char* RadialSaveMenu  = "radial_savemenu";
+    constexpr const char* RadialTrade     = "radial_trade";
+    constexpr const char* DockEject       = "dock_eject";
+    constexpr const char* DockDevSync     = "dock_devsync";
     constexpr const char* LayoutClassic    = "layout_classic";
     constexpr const char* LayoutGallery    = "layout_gallery";
     constexpr const char* SetCore         = "set_core";
@@ -251,6 +276,25 @@ namespace StrKey {
     constexpr const char* SetCleanConfirm = "set_clean_confirm";
     constexpr const char* SetCleanDone    = "set_clean_done";
     constexpr const char* SetCheckUpdate  = "set_checkupdate";
+    constexpr const char* SetChannel      = "set_channel";
+    constexpr const char* ChannelStable   = "channel_stable";
+    constexpr const char* ChannelBeta     = "channel_beta";
+    constexpr const char* UpdateBetaNone  = "update_beta_none";
+    // Popup di scoperta "Installa launcher" (mostrato una sola volta,
+    // vedi hasSeenLauncherPrompt()/markLauncherPromptSeen() in ui.h).
+    constexpr const char* LauncherPromptTitle = "launcher_prompt_title";
+    constexpr const char* LauncherPromptBody  = "launcher_prompt_body";
+    constexpr const char* LauncherPromptFooter = "launcher_prompt_footer";
+    // Riga "Installa launcher" dentro Sistema (ex Core) + suo dialogo/esiti.
+    constexpr const char* SetInstallLauncher      = "set_install_launcher";
+    constexpr const char* SetDefaultEmulator      = "set_default_emulator";
+    constexpr const char* LaunchGameTitle         = "launch_game_title";
+    constexpr const char* LaunchGameConfirm       = "launch_game_confirm";
+    constexpr const char* LaunchGameFailed        = "launch_game_failed";
+    constexpr const char* LaunchGameButton        = "launch_game_button";
+    constexpr const char* LauncherInstallConfirm  = "launcher_install_confirm";
+    constexpr const char* LauncherInstallOk       = "launcher_install_ok";
+    constexpr const char* LauncherInstallUnavail  = "launcher_install_unavail";
     constexpr const char* SetSource       = "set_source";
     constexpr const char* SetEditUrl      = "set_editurl";
     constexpr const char* SetEditUrlHdr   = "set_editurl_hdr";
@@ -261,6 +305,24 @@ namespace StrKey {
     constexpr const char* SetCredits      = "set_credits";
     constexpr const char* BagSoon         = "bag_soon";
     constexpr const char* SetFooter       = "set_footer";
+    constexpr const char* BackpackTitle   = "backpack_title";
+    constexpr const char* BackpackFooter  = "backpack_footer";
+    constexpr const char* BackpackFooterGame = "backpack_footer_game";
+    constexpr const char* BackpackAudit   = "backpack_audit";
+    constexpr const char* BackpackAuditFooter = "backpack_audit_footer";
+    constexpr const char* BackpackNoGames = "backpack_no_games";
+    constexpr const char* BackpackPickGame = "backpack_pick_game";
+    constexpr const char* BpItems         = "bp_items";
+    constexpr const char* BpKey           = "bp_key";
+    constexpr const char* BpBalls         = "bp_balls";
+    constexpr const char* BpTm            = "bp_tm";
+    constexpr const char* BpBerries       = "bp_berries";
+    constexpr const char* BpTabBalls      = "bp_tab_balls";
+    constexpr const char* BpTabMt         = "bp_tab_mt";
+    constexpr const char* BpTabMn         = "bp_tab_mn";
+    constexpr const char* BpTabCons       = "bp_tab_cons";
+    constexpr const char* BpTabSpecial    = "bp_tab_special";
+    constexpr const char* BpOwned         = "bp_owned";
     constexpr const char* SetFooterSlider = "set_footer_slider";
     constexpr const char* ImportFoundTitle     = "import_found_title";
     constexpr const char* ImportAutoCheckUsb   = "import_autocheck_usb";
@@ -345,6 +407,7 @@ namespace StrKey {
     constexpr const char* AboutBasedOn         = "about_based_on";
     constexpr const char* AboutBasedPKHouse    = "about_based_pkhouse";
     constexpr const char* AboutBasedOpenHome   = "about_based_openhome";
+    constexpr const char* AboutBasedSphaira    = "about_based_sphaira";
     constexpr const char* AboutBasedPKHeX      = "about_based_pkhex";
     constexpr const char* AboutBasedLibnx      = "about_based_libnx";
     constexpr const char* AboutBasedDevkitPro  = "about_based_devkitpro";
@@ -406,6 +469,14 @@ namespace StrKey {
     constexpr const char* SendLogSent          = "sendlog_sent";
     constexpr const char* SendLogSentBoth      = "sendlog_sent_both";
     constexpr const char* SendLogFailed        = "sendlog_failed";
+    constexpr const char* ClearLogTitle        = "clearlog_title";
+    constexpr const char* ClearBpHistTitle     = "clearbphist_title";
+    constexpr const char* ClearBpHistBody      = "clearbphist_body";
+    constexpr const char* ClearBpHistDone      = "clearbphist_done";
+    constexpr const char* ClearBpHistFailed    = "clearbphist_failed";
+    constexpr const char* SetNormalizeSave     = "set_normalize_save";
+    constexpr const char* ClearLogDone         = "clearlog_done";
+    constexpr const char* ClearLogFailed       = "clearlog_failed";
     constexpr const char* SendSaveTitle        = "sendsave_title";
     constexpr const char* SendSaveNoUrl        = "sendsave_no_url";
     constexpr const char* SendSaveNetOff       = "sendsave_net_off";
@@ -416,6 +487,57 @@ namespace StrKey {
     constexpr const char* SaveFailedBody       = "save_failed_body";
     constexpr const char* SendSaveNoGame       = "sendsave_no_game";
     constexpr const char* SendSaveOnlyImported = "sendsave_only_imported";
+    constexpr const char* CrashReportTitle     = "crashreport_title";
+    constexpr const char* CrashReportNoUrl     = "crashreport_no_url";
+    constexpr const char* CrashReportNetOff    = "crashreport_net_off";
+    constexpr const char* CrashReportUploading = "crashreport_uploading";
+    constexpr const char* CrashReportSent      = "crashreport_sent";
+    constexpr const char* CrashReportFailed    = "crashreport_failed";
+
+    // Impostazioni -> Sviluppatore -> Ricerca dispositivi (sync via LAN con
+    // il Filebrowser web di ArkOS/JELOS/ROCKNIX, vedi remote_sync.h).
+    constexpr const char* DevSyncTitle         = "devsync_title";
+    constexpr const char* DevSyncHostPrompt    = "devsync_host_prompt";
+    constexpr const char* DevSyncUserPrompt    = "devsync_user_prompt";
+    constexpr const char* DevSyncPassPrompt    = "devsync_pass_prompt";
+    constexpr const char* DevSyncCancelled     = "devsync_cancelled";
+    constexpr const char* DevSyncLoginFailed   = "devsync_login_failed";
+    constexpr const char* DevSyncListFailed    = "devsync_list_failed";
+    constexpr const char* DevSyncOk            = "devsync_ok";
+    constexpr const char* DevSyncNoCandidates  = "devsync_no_candidates";
+    constexpr const char* DevSyncSyncTitle     = "devsync_sync_title";
+    constexpr const char* DevSyncSyncBody      = "devsync_sync_body";
+    constexpr const char* DevSyncDirRemoteToLocal = "devsync_dir_remote_to_local";
+    constexpr const char* DevSyncDirLocalToRemote = "devsync_dir_local_to_remote";
+    constexpr const char* DevSyncSendTitle     = "devsync_send_title";
+    constexpr const char* DevSyncSendOnlyLocalBody = "devsync_send_only_local_body";
+    constexpr const char* DevSyncReceiveTitle  = "devsync_receive_title";
+    constexpr const char* DevSyncReceiveOnlyRemoteBody = "devsync_receive_only_remote_body";
+    constexpr const char* DevSyncChooseReceiveBody = "devsync_choose_receive_body";
+    constexpr const char* DevSyncChooseSendBody = "devsync_choose_send_body";
+    constexpr const char* DevSyncFlowSummary   = "devsync_flow_summary";
+    constexpr const char* DevSyncPickerTitle   = "devsync_picker_title";
+    constexpr const char* DevSyncPickerHint    = "devsync_picker_hint";
+    constexpr const char* DevSyncActionTitle   = "devsync_action_title";
+    constexpr const char* DevSyncActionSend    = "devsync_action_send";
+    constexpr const char* DevSyncActionReceive = "devsync_action_receive";
+    constexpr const char* DevSyncActionSync    = "devsync_action_sync";
+    constexpr const char* DevSyncSyncNoIdentity = "devsync_sync_no_identity";
+    constexpr const char* DevSyncSyncNoLocalOrRemote = "devsync_sync_no_local_or_remote";
+    constexpr const char* DevSyncAskRomTitle = "devsync_ask_rom_title";
+    constexpr const char* DevSyncAskRomBody  = "devsync_ask_rom_body";
+
+    // Box Remoto (apre un save remoto nel selettore giochi/banca locale).
+    constexpr const char* RemoteBoxMenuLabel   = "remotebox_menu_label";
+    constexpr const char* RemoteBoxTitle       = "remotebox_title";
+    constexpr const char* RemoteBoxNoSaves     = "remotebox_no_saves";
+    constexpr const char* RemoteBoxEntered     = "remotebox_entered";
+    constexpr const char* RemoteBoxNotInDualMode = "remotebox_not_in_dual_mode";
+    constexpr const char* RemoteBoxSendTitle   = "remotebox_send_title";
+    constexpr const char* RemoteBoxSendBody    = "remotebox_send_body";
+    constexpr const char* RemoteBoxSendFailed  = "remotebox_send_failed";
+    constexpr const char* RemoteBoxCloseSendBody   = "remotebox_close_send_body";
+    constexpr const char* RemoteBoxCloseSendResult = "remotebox_close_send_result";
 
     // Cross-gen transfer (ui_input.cpp prepareForPlacement + drop dialogs)
     constexpr const char* TransferTitle        = "transfer_title";

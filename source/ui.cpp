@@ -6,6 +6,8 @@
 #include "i18n.h"
 #include "debug_log.h"
 #include "autoupdate.h"
+#include "remote_sync.h"
+#include "settings_cfg.h"
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -107,6 +109,12 @@ bool UI::init() {
         iconDebug_       = loadIcon("debug.png");
         iconArrow_       = loadIcon("arrow.png");
         iconPack_        = loadIcon("backpack.png");
+        iconRocket_      = loadIcon("rocket.png");
+        iconFloppy_      = loadIcon("floppy.png");
+        iconTrade_       = loadIcon("trade.png");
+        iconDevBox_      = loadIcon("devbox.png");
+        iconDevSync_     = loadIcon("devsync.png");
+        iconDevLink_     = loadIcon("devlink.png");
     }
 
     // Game-selector logos for imported (titleId-less) games: no NS control
@@ -440,6 +448,75 @@ bool UI::showConfirmDialog(const std::string& title, const std::string& body) {
     return result == 1;
 }
 
+void UI::showLauncherPromptPopup() {
+    if (!renderer_) return;
+    markDirty();
+
+    // Icona: romfs:/splash.png e' l'intero schermo di boot (1280x720,
+    // logo + titolo + sottotitolo) -- schiacciarlo per intero in un'icona
+    // lo rende illeggibile/deformato. Ritagliamo invece solo il marchio
+    // "H" quadrato al centro (crop fisso, l'immagine di boot non cambia).
+    SDL_Surface* surf = IMG_Load("romfs:/splash.png");
+    SDL_Texture* icon = surf ? SDL_CreateTextureFromSurface(renderer_, surf) : nullptr;
+    if (surf) SDL_FreeSurface(surf);
+    SDL_Rect iconSrc = {520, 180, 240, 240};
+
+    // Popup vero e proprio (riquadro centrato, come quello Impostazioni),
+    // non piu' testo a piena pagina: tiene icona/titolo/corpo raccolti e
+    // forza il wrap del testo alla larghezza del riquadro invece che
+    // all'intero schermo.
+    constexpr int POP_W = 680;
+    constexpr int POP_H = 380;
+    constexpr int ICON_SZ = 72;
+    int popX = (SCREEN_W - POP_W) / 2;
+    int popY = (SCREEN_H - POP_H) / 2;
+    int maxTextW = POP_W - 80;
+
+    int result = -1; // -1 = in attesa, 1 = installa (A), 0 = chiudi (B)
+    while (result < 0) {
+        SDL_Event event;
+        while (SDL_PollEvent(&event)) {
+            if (event.type == SDL_QUIT) result = 0;
+            if (event.type == SDL_CONTROLLERBUTTONDOWN) {
+                if (event.cbutton.button == SDL_CONTROLLER_BUTTON_B) // Switch A = installa
+                    result = 1;
+                if (event.cbutton.button == SDL_CONTROLLER_BUTTON_A) // Switch B = chiudi
+                    result = 0;
+            }
+        }
+
+        SDL_SetRenderDrawColor(renderer_, T().bg.r, T().bg.g, T().bg.b, 255);
+        SDL_RenderClear(renderer_);
+
+        drawRect(popX, popY, POP_W, POP_H, T().panelBg);
+        drawRectOutline(popX, popY, POP_W, POP_H, T().cursor, 2);
+
+        // Piu' respiro attorno al logo (era troppo a ridosso del bordo
+        // superiore) e piu' distacco prima di titolo/corpo.
+        int y = popY + 42;
+        if (icon) {
+            SDL_Rect dst = {popX + POP_W / 2 - ICON_SZ / 2, y, ICON_SZ, ICON_SZ};
+            SDL_RenderCopy(renderer_, icon, &iconSrc, &dst);
+            y += ICON_SZ + 30;
+        }
+
+        drawTextCentered(i18n::get(StrKey::LauncherPromptTitle), popX + POP_W / 2, y, T().text, fontLarge_);
+        y += 44;
+
+        for (auto& wl : wrapText(i18n::get(StrKey::LauncherPromptBody), font_, maxTextW)) {
+            drawTextCentered(wl, popX + POP_W / 2, y, T().textDim, font_);
+            y += 24;
+        }
+
+        drawTextCentered(i18n::get(StrKey::LauncherPromptFooter), popX + POP_W / 2, popY + POP_H - 26, T().textDim, fontSmall_);
+
+        SDL_RenderPresent(renderer_);
+        SDL_Delay(16);
+    }
+    if (icon) SDL_DestroyTexture(icon);
+    if (result == 1) attemptLauncherForwarderInstall();
+}
+
 void UI::showWorking(const std::string& msg) {
     if (!renderer_) return;
     markDirty(); // Force redraw after modal returns
@@ -544,6 +621,7 @@ void UI::showWorking(const std::string& msg) {
 void UI::run(const std::string& basePath, const std::string& savePath) {
     basePath_ = basePath;
     savePath_ = savePath;
+    Settings::init(basePath_); // settings.cfg (+ migrate legacy una tantum)
     uint32_t runT0 = SDL_GetTicks();
     auto runMark = [&](const char* what) {
         DebugLog::line("boot: +%ums %s", SDL_GetTicks() - runT0, what);
@@ -569,6 +647,7 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
     gameSelectorLayout_ = (GameSelectorLayout)loadGameSelectorLayout(basePath_);
     theme_ = &getTheme(themeIndex_);
     loadFavorites();
+    galPreloadCacheFromDisk(); // party/OT/dex subito al primo draw, niente "..."
 
     // Load persisted crypto engine (PK/OH)
     int cryptoVal = loadCryptoEngine(basePath_);
@@ -649,6 +728,10 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
         }
     }
 
+    // Rilevamento mGBA una tantum (v1): fatto qui cosi' e' gia' pronto per
+    // il tasto rapido in Galleria, non solo quando si apre Impostazioni.
+    ensureMgbaChecked();
+
     bool running = true;
 
     while (running) {
@@ -657,6 +740,27 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
         // Auto-update al boot: se il thread in parallelo ha trovato una build
         // più recente, lancia il flusso update normale una sola volta quando
         // siamo nella home giochi o utenti (mai durante il boot, mai due volte).
+        // Popup di scoperta "Installa launcher": valutato PRIMA del blocco
+        // autoupdate qui sotto apposta, perche' autoUpdateTakeResult() (nel
+        // blocco successivo) consuma subito lo stato non appena lo vede a
+        // "done" -- se controllassimo autoUpdateFinishedWithoutUpdate() dopo,
+        // lo troveremmo gia' azzerato nello stesso frame. One-shot per boot
+        // (launcherPromptChecked_, solo RAM); se questo boot trova un
+        // update invece, salta il turno e si ririprova al prossimo boot
+        // pulito -- il "visto per sempre" vero resta su file.
+        if (!launcherPromptChecked_ && (screen_ == AppScreen::GameSelector ||
+                                        screen_ == AppScreen::ProfileSelector) &&
+            autoUpdateFinishedWithoutUpdate()) {
+            launcherPromptChecked_ = true;
+            // Niente controllo su appletMode_: Sphaira crea il forwarder
+            // anche avviato da Album (R su un gioco), quindi non e' un
+            // prerequisito reale -- coerente con la voce Impostazioni,
+            // che infatti non lo controlla piu' nemmeno lei.
+            if (!hasSeenLauncherPrompt()) {
+                showLauncherPromptPopup();
+                markLauncherPromptSeen();
+            }
+        }
         if (!autoPrompted_ && (screen_ == AppScreen::GameSelector ||
                                screen_ == AppScreen::ProfileSelector)) {
             std::string newVer;
@@ -667,6 +771,48 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
                 if (checkForUpdate(false)) {
                     running = false;
                     break;
+                }
+            }
+        }
+        // Scoperta automatica del device remoto (worker in background --
+        // vedi il commento sopra la sua implementazione in remote_sync.cpp).
+        // Parte SOLO dopo che l'autoupdate si e' sistemato (autoUpdateSettled:
+        // mai partito, o finito comunque vada) -- l'aggiornamento viene
+        // sempre prima e non deve mai competere per la rete con questo
+        // worker (bug reale, gia' visto: vedi il commento sul fallback
+        // rimosso in remoteSyncWorkerMain). remoteSyncWorkerStart() e' lei
+        // stessa no-op dalla seconda chiamata in poi, quindi richiamarla ogni
+        // frame una volta sistemato l'autoupdate costa solo una letture
+        // atomica in piu'. Poll non bloccante, una volta per frame, su
+        // qualsiasi schermata: costa solo una letture atomica nel caso
+        // comune (Pending). Su Found si ricorda l'host (stesso posto in cui
+        // lo salva il flusso manuale a fine login) cosi' la prossima
+        // apertura di RemoteBox/DevSync lo trova gia' pronto.
+        if (autoUpdateSettled()) {
+            remoteSyncWorkerStart();
+            std::string foundHost, foundToken;
+            RemoteSyncWorkerResult wr = remoteSyncWorkerPoll(foundHost, foundToken);
+            if (wr == RemoteSyncWorkerResult::Found) {
+                remoteDeviceAvailable_ = true;
+                remoteDeviceHost_ = foundHost;
+                remoteDeviceToken_ = foundToken;
+                Settings::setRemoteSyncHost(foundHost);
+                markDirty();
+                DebugLog::line("remote sync: device trovato in background su %s", foundHost.c_str());
+            } else if (wr == RemoteSyncWorkerResult::NotFound) {
+                DebugLog::line("remote sync: ricerca automatica in background senza esito");
+            }
+            // Il device trovato potrebbe essere sparito nel frattempo
+            // (Switch/box remoto riacceso, cambio rete, ecc.):
+            // remoteSyncWorkerStart() tenta la scoperta una sola volta per
+            // boot (vedi il commento sopra), quindi senza questo controllo
+            // l'app lo considererebbe "trovato" per sempre. Ping leggero
+            // gestito internamente da remoteSyncWatchdogCheck(): al massimo
+            // una volta ogni un paio di minuti e MAI durante un uso attivo.
+            if (remoteDeviceAvailable_ && !remoteDeviceHost_.empty()) {
+                if (!remoteSyncWatchdogCheck(remoteDeviceHost_)) {
+                    remoteDeviceAvailable_ = false;
+                    markDirty();
                 }
             }
         }
@@ -690,9 +836,12 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
                 else if (screen_ == AppScreen::GameSelector) {
                     drawGameSelectorFrame();
                     if (showGameSelMenu_) drawGameSelMenuPopup();
+                    if (showGamePick_) drawGamePickPopup();
                     if (showSettings_) drawSettingsPopup();
                 if (showSaveMenu_) drawSaveMenuPopup();
+                if (showBackpack_) drawBackpackPopup();
                 if (showBackupList_) drawBackupListPopup();
+                if (showCrashList_) drawCrashListPopup();
                 }
                 else if (screen_ == AppScreen::BankSelector) drawBankSelectorFrame();
                 else drawFrame();
@@ -764,9 +913,12 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
                 else if (screen_ == AppScreen::GameSelector) {
                     drawGameSelectorFrame();
                     if (showGameSelMenu_) drawGameSelMenuPopup();
+                    if (showGamePick_) drawGamePickPopup();
                     if (showSettings_) drawSettingsPopup();
                 if (showSaveMenu_) drawSaveMenuPopup();
+                if (showBackpack_) drawBackpackPopup();
                 if (showBackupList_) drawBackupListPopup();
+                if (showCrashList_) drawCrashListPopup();
                 }
                 else if (screen_ == AppScreen::BankSelector) drawBankSelectorFrame();
                 else drawFrame();
@@ -826,10 +978,15 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
             if (screen_ == AppScreen::ProfileSelector) drawProfileSelectorFrame();
             else if (screen_ == AppScreen::GameSelector) {
                 drawGameSelectorFrame();
+                if (showRadialMenu_) drawRadialMenu();
                 if (showGameSelMenu_) drawGameSelMenuPopup();
+                if (showGamePick_) drawGamePickPopup();
                     if (showSettings_) drawSettingsPopup();
                 if (showSaveMenu_) drawSaveMenuPopup();
+                if (showBackpack_) drawBackpackPopup();
                 if (showBackupList_) drawBackupListPopup();
+                if (showCrashList_) drawCrashListPopup();
+                if (showTradeList_) drawTradeListPopup();
             }
             else if (screen_ == AppScreen::BankSelector) drawBankSelectorFrame();
             else drawFrame();
@@ -927,9 +1084,12 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
                 else if (screen_ == AppScreen::GameSelector) {
                     drawGameSelectorFrame();
                     if (showGameSelMenu_) drawGameSelMenuPopup();
+                    if (showGamePick_) drawGamePickPopup();
                     if (showSettings_) drawSettingsPopup();
                 if (showSaveMenu_) drawSaveMenuPopup();
+                if (showBackpack_) drawBackpackPopup();
                 if (showBackupList_) drawBackupListPopup();
+                if (showCrashList_) drawCrashListPopup();
                 }
                 else if (screen_ == AppScreen::BankSelector) drawBankSelectorFrame();
                 else drawFrame();
@@ -968,9 +1128,7 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
                             i18n::init(newLang);
                             clearTextCache();
                             // Persist choice
-                            std::string path = basePath_ + "language.txt";
-                            FILE* f = std::fopen(path.c_str(), "w");
-                            if (f) { std::fputs(newLang.c_str(), f); std::fclose(f); }
+                            Settings::setLanguage(newLang);
                             showLanguageSelector_ = false;
                             showMenu_ = false;
                             break;
@@ -1002,9 +1160,12 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
                 else if (screen_ == AppScreen::GameSelector) {
                     drawGameSelectorFrame();
                     if (showGameSelMenu_) drawGameSelMenuPopup();
+                    if (showGamePick_) drawGamePickPopup();
                     if (showSettings_) drawSettingsPopup();
                 if (showSaveMenu_) drawSaveMenuPopup();
+                if (showBackpack_) drawBackpackPopup();
                 if (showBackupList_) drawBackupListPopup();
+                if (showCrashList_) drawCrashListPopup();
                 }
                 else if (screen_ == AppScreen::BankSelector) drawBankSelectorFrame();
                 else drawFrame();
@@ -1115,10 +1276,15 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
             if (screen_ == AppScreen::ProfileSelector) drawProfileSelectorFrame();
             else if (screen_ == AppScreen::GameSelector) {
                 drawGameSelectorFrame();
+                if (showRadialMenu_) drawRadialMenu();
                 if (showGameSelMenu_) drawGameSelMenuPopup();
+                if (showGamePick_) drawGamePickPopup();
                     if (showSettings_) drawSettingsPopup();
                 if (showSaveMenu_) drawSaveMenuPopup();
+                if (showBackpack_) drawBackpackPopup();
                 if (showBackupList_) drawBackupListPopup();
+                if (showCrashList_) drawCrashListPopup();
+                if (showTradeList_) drawTradeListPopup();
             }
             else if (screen_ == AppScreen::BankSelector) drawBankSelectorFrame();
             else drawFrame();
@@ -1159,6 +1325,7 @@ void UI::selectGame(GameType game, int occurrence) {
 
     if (!isDualBankMode()) {
         showWorking(i18n::get(StrKey::LoadingSaveData));
+        activeSaveIsRemote_ = false;
 
         if (isImportedFile(game) || isGen1File(game) || isGen2File(game) ||
             isGen45File(game) || isGen6XY(game) || isGen7SM(game)) {
@@ -1174,6 +1341,22 @@ void UI::selectGame(GameType game, int occurrence) {
             if (savePath_.empty()) {
                 showMessageAndWait(i18n::get(StrKey::MountError), i18n::get(StrKey::FailedMountSave));
                 return;
+            }
+            // Box Remoto: questo file temporaneo arriva da un save remoto
+            // (vedi UI::openRemoteBox) -- segna la provenienza cosi'
+            // UI::returnToGameSelector() sappia rispedirlo al device in
+            // uscita, con conferma, invece di considerarlo un file locale
+            // qualunque.
+            if (remoteBoxActive_) {
+                for (auto& e : remoteBoxEntries_) {
+                    if (e.type == game && e.tmpPath == savePath_) {
+                        activeSaveIsRemote_ = true;
+                        activeRemoteHost_ = e.host;
+                        activeRemoteToken_ = e.token;
+                        activeRemoteSavePath_ = e.remoteSavePath;
+                        break;
+                    }
+                }
             }
             // Come i titoli installati (backupSaveDir sopra), anche i save
             // file-backed meritano un auto-backup all'apertura: finora non ne
@@ -1350,7 +1533,12 @@ bool UI::persistGameSaveIfDirty() {
     showWorking(i18n::get(StrKey::Saving));
     ledBlink();
     bool ok = save_.save(savePath_);
-    account_.commitSave();
+    if (!ok)
+        DebugLog::line("persist: save(%s) FALLITO", savePath_.c_str());
+    if (ok && savePath_.rfind("save:/", 0) == 0 && !account_.commitSave()) {
+        DebugLog::line("persist: commitSave FALLITO dopo save ok (%s)", savePath_.c_str());
+        ok = false;
+    }
     if (ok) galInvalidateParty(selectedGame_); // preview galleria da ricaricare
     ledOff();
     // Mai fallimento silenzioso: i save read-only v1 (DS/3DS) e gli errori IO

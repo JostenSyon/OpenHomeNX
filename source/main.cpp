@@ -6,7 +6,9 @@
 #include "account.h"
 #include "update_net.h"
 #include "autoupdate.h"
+#include "remote_sync.h"
 #include "app_version.h"
+#include "settings_cfg.h"
 
 #include <switch.h>
 #include <string>
@@ -18,11 +20,31 @@
 #include <usbhsfs.h>
 #endif
 
+// Se il sistema chiede di terminare l'app (es. si salta a un altro homebrew
+// tramite Album mentre OpenHomeNX gira come Applicazione a pieno titolo, per
+// i permessi fs sui save di sistema) e nessuno intercetta la richiesta, dopo
+// un breve timeout HOS termina il processo con la forza mentre siamo in
+// stato indefinito: e' quello che sembra mandare in crash hbl - che vive nel
+// nostro stesso processo - in uscita (segnalato dall'utente + crash report
+// Atmosphere, 2026-09-13: "User Break" dentro hbl proprio a cavallo del
+// nostro exit(), innescato probabile aprendo Album/R per saltare a DBI con
+// OpenHomeNX ancora aperto). Intercettando OnExitRequest usciamo dal loop in
+// modo normale (SDL_QUIT, la stessa strada di un B/+ premuto dall'utente):
+// backup, salvataggi, unmount e shutdown puliti prima che HOS forzi la mano.
+static AppletHookCookie s_exitHookCookie;
+static void onAppletExitRequest(AppletHookType hook, void* /*param*/) {
+    if (hook == AppletHookType_OnExitRequest) {
+        SDL_Event e{};
+        e.type = SDL_QUIT;
+        SDL_PushEvent(&e);
+    }
+}
+
 int main(int argc, char* argv[]) {
     romfsInit();
 
-    // Determine base path — everything (banks/, save mount "main", crypto.cfg,
-    // debug.enable, themes, language.txt, update/) lives next to the NRO, so it
+    // Determine base path — everything (banks/, save mount "main",
+    // settings.cfg, debug.enable, update/) lives next to the NRO, so it
     // follows wherever OpenHomeNX.nro is placed (e.g. sdmc:/switch/OpenHomeNX/).
     constexpr const char* kDefaultBasePath = "sdmc:/switch/OpenHomeNX/";
     std::string basePath;
@@ -49,6 +71,7 @@ int main(int argc, char* argv[]) {
             AccountManager::backupSaveDir(legacy, basePath);
     }
 
+    Settings::init(basePath); // settings.cfg (+ migrate legacy) prima di led/lingua
     ledInitWithPath(basePath.c_str());
     DebugLog::init(basePath);
 
@@ -56,14 +79,9 @@ int main(int argc, char* argv[]) {
     // (e.g. the bounce "Updating..." card). Detect early — same logic as
     // the original block further below, but before ui.init/tryUpdateBounce.
     {
-        std::string lang = "en";
-        std::string overridePath = basePath + "language.txt";
-        std::ifstream ifs(overridePath);
-        if (ifs.good()) {
-            std::string line;
-            if (std::getline(ifs, line) && !line.empty())
-                lang = line;
-        } else {
+        std::string lang = Settings::language();
+        if (lang.empty()) {
+            // Nessuna scelta salvata: usa la lingua di sistema.
             setInitialize();
             u64 langCode;
             setGetSystemLanguage(&langCode);
@@ -110,9 +128,20 @@ int main(int argc, char* argv[]) {
     }
     bootMark("ui.init");
 
+    // SDL e' pronto solo da qui in poi: registrato dopo ui.init() cosi'
+    // SDL_PushEvent() nella callback trova sempre una coda eventi valida
+    // (l'hook puo' scattare da un thread di sistema in qualsiasi momento).
+    appletHook(&s_exitHookCookie, onAppletExitRequest, nullptr);
+
     if (pendingUpdate && ui.tryUpdateBounce(basePath)) {
         ui.shutdown();
         ledExit();
+        // Senza questo, l'hook OnExitRequest registrato sopra resta agganciato
+        // alla sessione applet condivisa con chi ci ha chainloadati (hbloader/
+        // forwarder) mentre il chainload verso il .nro vero sta per sostituire
+        // questo stesso codice "usa e getta" -- sospetta causa del mancato
+        // riavvio dopo un update (regressione 0.3.2, hook introdotto li').
+        appletUnhook(&s_exitHookCookie);
         romfsExit();
         return 0;   // libnx exit -> loader chainloads the fresh OpenHomeNX.nro
     }
@@ -140,14 +169,24 @@ int main(int argc, char* argv[]) {
     // boot-bounce): il thread fa fetch+confronto, il boot continua subito.
     // Il prompt appare in home giochi/utenti quando il risultato è pronto.
     {
-        std::string url, token;
-        if (!pendingUpdate && netReady && readUpdateAutoCfg(basePath, url, token)) {
-            if (url.empty())
+        std::string url, token, channel;
+        if (!pendingUpdate && netReady && readUpdateAutoCfg(basePath, url, token, channel)) {
+            bool beta = (channel == "beta") && url.empty();
+            if (url.empty() && !beta)
                 url = githubReleasesUrl("JostenSyon", "OpenHomeNX");
-            DebugLog::line("autoupdate: background check -> %s", url.c_str());
-            autoUpdateStart(url, token, APP_VERSION);
+            DebugLog::line("autoupdate: background check -> %s", beta ? "beta" : url.c_str());
+            autoUpdateStart(url, token, APP_VERSION, beta);
         }
     }
+
+    // Scoperta automatica in background del device remoto (Box Remoto /
+    // DevSync): NON si avvia qui apposta -- partirebbe in concorrenza con
+    // l'autoupdate appena lanciato sopra, competendo per le stesse sessioni
+    // di rete e rischiando di allungare proprio il check/download
+    // dell'aggiornamento (bug reale, gia' visto). Parte invece da
+    // UI::run(), un solo tentativo, ma solo DOPO che l'autoupdate si e'
+    // sistemato (autoUpdateSettled(): mai partito, o finito comunque vada)
+    // -- l'aggiornamento ha sempre la precedenza.
 
 #ifdef OH_USB_UPDATE
     // USB Mass Storage host: lets "Check for update" scan an inserted USB drive
@@ -216,9 +255,10 @@ int main(int argc, char* argv[]) {
     // senza passaggio dal selettore; idempotente via sidecar).
     ui.backupOnExitIfNeeded();
 
-    // Cleanup — prima il worker update (se mai partito): niente socket/stringhe
-    // toccate durante lo smontaggio rete/USB.
+    // Cleanup — prima i worker in background (se mai partiti): niente
+    // socket/stringhe toccate durante lo smontaggio rete/USB.
     autoUpdateJoin();
+    remoteSyncWorkerJoin();
     ui.shutdown();
     ledExit();
 
@@ -242,6 +282,7 @@ int main(int argc, char* argv[]) {
     if (netReady) socketExit();
     nifmExit(); // no-op se updateNetLinkStr() non ha mai inizializzato nifm:u
 
+    appletUnhook(&s_exitHookCookie);
     romfsExit();
     DebugLog::line("exit: shutdown complete");
     return 0;

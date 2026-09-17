@@ -4,6 +4,8 @@
 #include "crypto_engine.h"
 #include "debug_log.h"
 #include "species_converter.h"
+#include "trade_evo.h"
+#include "item_locations.h"
 #include "app_version.h"
 #include "move_types.h"
 #include "update_net.h"
@@ -107,6 +109,9 @@ void UI::freeSprites() {
     if (iconDebug_)        { SDL_DestroyTexture(iconDebug_);        iconDebug_ = nullptr; }
     if (iconArrow_)        { SDL_DestroyTexture(iconArrow_);        iconArrow_ = nullptr; }
     if (iconPack_)         { SDL_DestroyTexture(iconPack_);         iconPack_ = nullptr; }
+    if (iconRocket_)       { SDL_DestroyTexture(iconRocket_);       iconRocket_ = nullptr; }
+    if (iconFloppy_)       { SDL_DestroyTexture(iconFloppy_);       iconFloppy_ = nullptr; }
+    if (iconTrade_)        { SDL_DestroyTexture(iconTrade_);        iconTrade_ = nullptr; }
 }
 
 SDL_Texture* UI::getRibbonSprite(const std::string& filename) {
@@ -275,6 +280,71 @@ void UI::drawRoundRectOutline(int x, int y, int w, int h, int r, SDL_Color color
         arc(xx + ww - rr, yy + rr, 270.0, 360.0, rr);
         arc(xx + rr, yy + hh - rr, 90.0, 180.0, rr);
         arc(xx + ww - rr, yy + hh - rr, 0.0, 90.0, rr);
+    }
+}
+
+// Come drawRoundRectOutline() ma tratteggiata: costruisce il perimetro
+// (4 lati + 4 archi, stessa geometria/angoli di drawRoundRectOutline) come
+// un'unica polilinea continua in senso orario, poi cammina lungo la
+// lunghezza cumulata alternando dashLen px accesi / gapLen px spenti --
+// cosi' il tratteggio non riparte da zero a ogni lato o angolo.
+void UI::drawRoundRectOutlineDashed(int x, int y, int w, int h, int r, SDL_Color color,
+                                     int thickness, int dashLen, int gapLen) {
+    if (r < 0) r = 0;
+    if (r * 2 > w) r = w / 2;
+    if (r * 2 > h) r = h / 2;
+    if (dashLen < 1) dashLen = 1;
+    if (gapLen < 0) gapLen = 0;
+    SDL_SetRenderDrawColor(renderer_, color.r, color.g, color.b, color.a);
+    for (int t = 0; t < thickness; t++) {
+        int rr = r - t;
+        if (rr < 0) rr = 0;
+        int xx = x + t, yy = y + t, ww = w - 2 * t, hh = h - 2 * t;
+        if (ww <= 0 || hh <= 0) break;
+
+        // Perimetro come polilinea densa (corda ~3px sia sui lati dritti
+        // che sugli archi): senza questo i lati dritti finivano per essere
+        // un solo segmento lunghissimo (tutto acceso o tutto spento, niente
+        // tratteggio reale) e gli angoli, con gli archi comunque suddivisi
+        // fini, sembravano "sporchi" al confronto -- da qui sia il "non e'
+        // tratteggiato" sia il "pixelloso negli angoli".
+        std::vector<SDL_Point> pts;
+        auto addLine = [&](int x0, int y0, int x1, int y1) {
+            float len = std::sqrt((float)((x1 - x0) * (x1 - x0) + (y1 - y0) * (y1 - y0)));
+            int steps = std::max(1, (int)(len / 3.0f));
+            for (int i = 0; i <= steps; i++) {
+                float f = (float)i / steps;
+                pts.push_back({x0 + (int)((x1 - x0) * f), y0 + (int)((y1 - y0) * f)});
+            }
+        };
+        auto addArc = [&](int cx, int cy, double a0, double a1) {
+            int steps = std::max(4, (int)(std::fabs(a1 - a0) * 3.14159265 / 180.0 * rr / 3.0));
+            for (int i = 0; i <= steps; i++) {
+                double a = (a0 + (a1 - a0) * i / steps) * 3.14159265 / 180.0;
+                pts.push_back({cx + static_cast<int>(rr * std::cos(a)),
+                               cy + static_cast<int>(rr * std::sin(a))});
+            }
+        };
+        addLine(xx + rr, yy, xx + ww - rr, yy);
+        addArc(xx + ww - rr, yy + rr, -90.0, 0.0);
+        addLine(xx + ww, yy + rr, xx + ww, yy + hh - rr);
+        addArc(xx + ww - rr, yy + hh - rr, 0.0, 90.0);
+        addLine(xx + ww - rr, yy + hh, xx + rr, yy + hh);
+        addArc(xx + rr, yy + hh - rr, 90.0, 180.0);
+        addLine(xx, yy + hh - rr, xx, yy + rr);
+        addArc(xx + rr, yy + rr, 180.0, 270.0);
+        // L'ultimo addArc rientra esattamente sul primo punto pushato
+        // (xx + rr, yy): il perimetro si chiude da solo, niente punto extra.
+
+        float dist = 0.0f;
+        float cycle = (float)(dashLen + gapLen);
+        for (size_t i = 1; i < pts.size(); i++) {
+            float segLen = std::sqrt((float)((pts[i].x - pts[i-1].x) * (pts[i].x - pts[i-1].x) +
+                                              (pts[i].y - pts[i-1].y) * (pts[i].y - pts[i-1].y)));
+            if (std::fmod(dist, cycle) < (float)dashLen)
+                SDL_RenderDrawLine(renderer_, pts[i-1].x, pts[i-1].y, pts[i].x, pts[i].y);
+            dist += segLen;
+        }
     }
 }
 
@@ -799,6 +869,11 @@ void UI::drawFrame() {
         drawPkImportListPopup();
     }
 
+    // Self-trade party picker popup (Fase 1: Gen3)
+    if (showTradeList_) {
+        drawTradeListPopup();
+    }
+
     // Debug test-mon generator list popup
     if (showGenMonList_) {
         drawGenMonListPopup();
@@ -1079,9 +1154,10 @@ void UI::drawDetailPopup(const Pokemon& pkm) {
     drawText(abilityStr, infoX, infoY, T().textDim, font_);
     infoY += 34;
 
-    // Held item
+    // Held item — Gen2/Gen3 raw → modern per nome corretto (Quick Claw 183→217, non Belue Berry)
     uint16_t item = pkm.heldItem();
-    std::string itemStr = i18n::get(StrKey::HeldItemPrefix) + (item != 0 ? ItemName::get(item) : i18n::get(StrKey::NoneItem));
+    uint16_t dispItem = TradeEvo::heldToDisplayModern(pkm.gameType_, item);
+    std::string itemStr = i18n::get(StrKey::HeldItemPrefix) + (dispItem != 0 ? ItemName::get(dispItem) : i18n::get(StrKey::NoneItem));
     drawText(itemStr, infoX, infoY, T().textDim, font_);
     int infoBottom = infoY + 34; // baseline below the last info line
 
@@ -1205,18 +1281,21 @@ int UI::menuVisibleCount() const {
     // indice 5 = Export Selected (solo se ci sono slot selezionati),
     // indice 6 = Import PK files (sempre visibile),
     // indice 7 (solo normal + debug) = Generate test mons,
-    // indice 8 (solo normal, mai dual) = Send current save (solo a save caricato).
+    // indice 8 (solo normal, mai dual) = Send current save (solo a save caricato),
+    // indice 9 (solo normal, mai dual) = Scambio self-trade (solo Gen3: Pk3).
     bool hasWC = gameInfo(selectedGame_).hasWondercards;
     bool hasExport = !selectedSlots_.empty();
     bool hasSend = !isDualBankMode() && save_.isLoaded();
     bool hasGen = DebugLog::enabled() && !isDualBankMode();
-    int allCount = isDualBankMode() ? 12 : 13;
+    bool hasTrade = !isDualBankMode() && save_.isLoaded() && TradeEvo::supported(save_.gameType());
+    int allCount = isDualBankMode() ? 12 : 14;
     int count = 0;
     for (int i = 0; i < allCount; i++) {
         if (!hasWC && i == 4) continue;
         if (!hasExport && i == 5) continue;
         if (!hasGen && !isDualBankMode() && i == 7) continue;
         if (!hasSend && !isDualBankMode() && i == 8) continue;
+        if (!hasTrade && !isDualBankMode() && i == 9) continue;
         count++;
     }
     return count;
@@ -1234,6 +1313,8 @@ void UI::drawMenuPopup() {
     bool hasSend = !isDualBankMode() && save_.isLoaded();
     // "Generate test mons": solo debug, mai dual-bank.
     bool hasGen = DebugLog::enabled() && !isDualBankMode();
+    // "Scambio": solo a save Gen3 caricato (record Pk3, Fase 1), mai dual-bank.
+    bool hasTrade = !isDualBankMode() && save_.isLoaded() && TradeEvo::supported(save_.gameType());
 
     static char exportBuf[64];
     if (hasExport)
@@ -1251,6 +1332,7 @@ void UI::drawMenuPopup() {
         i18n::get(StrKey::MenuImportPk),
         "Generate test mons (DBG)",
         i18n::get(StrKey::SendSaveTitle),
+        i18n::get(StrKey::MenuTrade),
         i18n::get(StrKey::MenuSwitchBank),
         i18n::get(StrKey::MenuChangeGame),
         i18n::get(StrKey::MenuSaveQuit),
@@ -1273,13 +1355,14 @@ void UI::drawMenuPopup() {
     // Build label list, skipping conditional items — menuCount = vi
     std::string visibleLabels[15];
     const std::string* allLabels = isDualBankMode() ? labelsApplet : labelsNormal;
-    int allCount = isDualBankMode() ? 12 : 13;
+    int allCount = isDualBankMode() ? 12 : 14;
     int vi = 0;
     for (int i = 0; i < allCount; i++) {
         if (!hasWC && i == 4) continue;
         if (!hasExport && i == 5) continue;
         if (!hasGen && !isDualBankMode() && i == 7) continue;
         if (!hasSend && !isDualBankMode() && i == 8) continue;
+        if (!hasTrade && !isDualBankMode() && i == 9) continue;
         visibleLabels[vi++] = allLabels[i];
     }
     int menuCount = vi;
@@ -2148,6 +2231,110 @@ void UI::drawPkImportListPopup() {
     drawTextCentered(footer, popX + POP_W / 2, popY + POP_H - 18, T().textDim, fontSmall_);
 }
 
+void UI::drawTradeListPopup() {
+    drawRect(0, 0, SCREEN_W, SCREEN_H, T().overlay);
+
+    constexpr int POP_W = 900;
+    constexpr int ROW_H = 64;
+    constexpr int VISIBLE = 6;
+    int count = (int)tradeCandidates_.size();
+    int rows = count > 0 ? std::min(count, VISIBLE) : 1;
+    int POP_H = 60 + rows * ROW_H + 40;
+    int popX = (SCREEN_W - POP_W) / 2;
+    int popY = (SCREEN_H - POP_H) / 2;
+
+    drawRect(popX, popY, POP_W, POP_H, T().panelBg);
+    drawRectOutline(popX, popY, POP_W, POP_H, T().cursor, 2);
+
+    drawTextCentered(i18n::get(StrKey::TradeTitle), popX + POP_W / 2, popY + 22, T().text, font_);
+    if (count > VISIBLE) {
+        std::string pos = std::to_string(tradeCursor_ + 1) + "/" + std::to_string(count);
+        drawText(pos, popX + POP_W - 60, popY + 16, T().textDim, fontSmall_);
+    }
+
+    int listY = popY + 60;
+    int listX = popX + 20;
+    int listW = POP_W - 40;
+
+    for (int r = 0; r < rows; r++) {
+        int i = tradeScroll_ + r;
+        if (i >= count) break;
+        const TradeCandidate& ref = tradeCandidates_[i];
+        Pokemon pkm = ref.box < 0 ? save_.getPartySlot(ref.slot) : save_.getBoxSlot(ref.box, ref.slot);
+        int rowY = listY + r * ROW_H;
+        if (i == tradeCursor_) {
+            drawRect(listX, rowY, listW, ROW_H - 4, T().menuHighlight);
+            drawRectOutline(listX, rowY, listW, ROW_H - 4, T().cursor, 2);
+        }
+        int textY = rowY + (ROW_H - 4) / 2 - 9;
+        int x = listX + 10;
+        SDL_Texture* sprite = getSprite(pkm.species(), 0);
+        if (sprite) {
+            int tw = 0, th = 0;
+            SDL_QueryTexture(sprite, nullptr, nullptr, &tw, &th);
+            int maxH = ROW_H - 10;
+            float scale = std::min(static_cast<float>(maxH) / tw,
+                                   static_cast<float>(maxH) / th);
+            int dw = static_cast<int>(tw * scale);
+            int dh = static_cast<int>(th * scale);
+            SDL_Rect dst = {x + (maxH - dw) / 2, rowY + 2 + (maxH - dh) / 2, dw, dh};
+            SDL_RenderCopy(renderer_, sprite, nullptr, &dst);
+        }
+        x += ROW_H;
+        // Riga 1: nome + livello. Riga 2 (piu' piccola): da dove viene
+        // (Party / Box N), utile ora che la lista pesca anche dai box.
+        std::string label = "Lv " + std::to_string((int)pkm.level()) + " " +
+                            SpeciesName::get(pkm.species());
+        std::string loc = ref.box < 0 ? i18n::get(StrKey::PartyPokemon)
+                                       : (i18n::get(StrKey::BoxLabel) + " " + std::to_string(ref.box + 1));
+        uint16_t heldItemId = pkm.heldItem();
+        uint16_t dispId = TradeEvo::heldToDisplayModern(save_.gameType(), heldItemId);
+        std::string itemStr = dispId != 0 ? ItemName::get(dispId) : i18n::get(StrKey::NoneItem);
+        uint16_t heldModern = TradeEvo::heldToModern(save_.gameType(), heldItemId);
+        const TradeEvo::TradeRule* rule = TradeEvo::findRule(pkm.species(), heldModern);
+        const TradeEvo::TradeRule* base = TradeEvo::baseRuleFor(pkm.species());
+        bool outOfRange = rule && TradeEvo::isOutOfRange(save_.gameType(), rule->to);
+        bool isPaired = TradeEvo::isPairedSpecies(pkm.species());
+        // Etichetta: bianca se evolvibile subito, grigia se serve item, rossa se fuori-range.
+        SDL_Color labelCol = outOfRange ? T().genderFemale : (rule ? T().text : T().textDim);
+        drawText(label, x, textY, labelCol, font_);
+        drawText(loc, x, textY + 20, T().textDim, fontSmall_);
+        drawText(itemStr, x + 220, textY, T().textDim, fontSmall_);
+        if (outOfRange) {
+            drawText("! " + i18n::get(StrKey::TradeOutOfRange), x + 430, textY, T().genderFemale, fontSmall_);
+        } else if (rule) {
+            std::string arr = "-> " + SpeciesName::get(rule->to);
+            if (isPaired) arr += " *";
+            drawText(arr, x + 430, textY, T().cursor, font_);
+            if (isPaired) drawText(i18n::get(StrKey::TradePairedHint), x + 430, textY + 20, T().textDim, fontSmall_);
+            // Sprite del Pokémon ricevuto (a destra): così si vedono entrambi i lati dello scambio
+            SDL_Texture* sprite2 = getSprite(rule->to, 0);
+            if (sprite2) {
+                int tw = 0, th = 0;
+                SDL_QueryTexture(sprite2, nullptr, nullptr, &tw, &th);
+                int maxH = ROW_H - 10;
+                float scale = std::min(static_cast<float>(maxH) / tw,
+                                       static_cast<float>(maxH) / th);
+                int dw = static_cast<int>(tw * scale);
+                int dh = static_cast<int>(th * scale);
+                int sx = listX + listW - maxH - 10 + (maxH - dw) / 2;
+                int sy = rowY + 2 + (maxH - dh) / 2;
+                SDL_Rect dst2 = {sx, sy, dw, dh};
+                SDL_RenderCopy(renderer_, sprite2, nullptr, &dst2);
+            }
+        } else if (base && base->heldModern != 0) {
+            std::string need = ItemLocations::itemName(base->heldModern);
+            drawText(i18n::get(StrKey::TradeNeedsItem) + " (" + need + ")", x + 430, textY, T().textDim, fontSmall_);
+            std::string where = ItemLocations::footerLine(base->heldModern);
+            if (!where.empty()) drawText(where, x + 430, textY + 20, T().textDim, fontSmall_);
+        } else {
+            drawText(i18n::get(StrKey::TradeNeedsItem), x + 430, textY, T().textDim, fontSmall_);
+        }
+    }
+
+    drawTextCentered(i18n::get(StrKey::TradeFooter), popX + POP_W / 2, popY + POP_H - 18, T().textDim, fontSmall_);
+}
+
 void UI::drawLearnsetPopup() {
     drawRect(0, 0, SCREEN_W, SCREEN_H, T().overlay);
 
@@ -2311,12 +2498,14 @@ void UI::drawAboutPopup() {
     SDL_RenderDrawLine(renderer_, px + 30, y, px + POP_W - 30, y);
     y += 14;
 
-    // Basato su / Based on - ordered: pkHouse grafica/UI, OpenHome cross-gen, PKHeX, libnx, devkitPro
+    // Basato su / Based on - ordered: pkHouse grafica/UI, OpenHome cross-gen, Sphaira forwarder, PKHeX, libnx, devkitPro
     drawTextCentered(i18n::get(StrKey::AboutBasedOn), cx, y, T().selected, font_);
     y += 20;
     drawTextCentered(i18n::get(StrKey::AboutBasedPKHouse), cx, y, T().textDim, fontSmall_);
     y += 18;
     drawTextCentered(i18n::get(StrKey::AboutBasedOpenHome), cx, y, T().textDim, fontSmall_);
+    y += 18;
+    drawTextCentered(i18n::get(StrKey::AboutBasedSphaira), cx, y, T().textDim, fontSmall_);
     y += 18;
     drawTextCentered(i18n::get(StrKey::AboutBasedPKHeX), cx, y, T().textDim, fontSmall_);
     y += 18;

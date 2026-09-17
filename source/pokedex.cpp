@@ -12,6 +12,7 @@
 #include "personal_sv.h"
 #include "personal_swsh.h"
 #include "personal_bdsp.h"
+#include "debug_log.h"
 #include <cstring>
 #include <algorithm>
 
@@ -983,6 +984,15 @@ constexpr int FRLG_SEEN2_OFFSET      = 0x5F8; // within section 1 data
 constexpr int FRLG_SEEN3_SECTION     = 4;
 constexpr int FRLG_SEEN3_OFFSET      = 0xB98; // within section 4 data
 
+static constexpr uint16_t HOENN_DEX[202] = {
+    252, 253, 254, 255, 256, 257, 258, 259, 260, 261, 262, 263, 264, 265, 266, 267, 268, 269, 270, 271, 272, 273, 274, 275, 276, 277, 278, 279, 280, 281, 282, 283, 284, 285, 286, 287, 288, 289, 63, 64, 65, 290, 291, 292, 293, 294, 295, 296, 297, 118, 119, 129, 130, 298, 183, 184, 74, 75, 76, 299, 300, 301, 41, 42, 169, 72, 73, 302, 303, 304, 305, 306, 66, 67, 68, 307, 308, 309, 310, 311, 312, 81, 82, 100, 101, 313, 314, 43, 44, 45, 182, 84, 85, 315, 316, 317, 318, 319, 320, 321, 322, 323, 218, 219, 324, 88, 89, 109, 110, 325, 326, 27, 28, 327, 227, 328, 329, 330, 331, 332, 333, 334, 335, 336, 337, 338, 339, 340, 341, 342, 343, 344, 345, 346, 347, 348, 174, 39, 40, 349, 350, 351, 120, 121, 352, 353, 354, 355, 356, 357, 358, 359, 37, 38, 172, 25, 26, 54, 55, 360, 202, 177, 178, 203, 231, 232, 127, 214, 111, 112, 361, 362, 363, 364, 365, 366, 367, 368, 369, 222, 170, 171, 370, 116, 117, 230, 371, 372, 373, 374, 375, 376, 377, 378, 379, 380, 381, 382, 383, 384, 385, 386
+};
+
+static bool isHoennSpecies(uint16_t ndex) {
+    for (uint16_t v : HOENN_DEX) if (v == ndex) return true;
+    return false;
+}
+
 } // anon
 
 static void setFlagBit(uint8_t* base, int species) {
@@ -1025,6 +1035,55 @@ static void registerFRLG(SaveFile& save, const Pokemon& pkm) {
     uint8_t* sect4 = save.findGbaSectorData(FRLG_SEEN3_SECTION);
     if (sect4)
         setFlagBit(sect4 + FRLG_SEEN3_OFFSET, species);
+    save.markDirty();
+}
+
+// R/S/E: stesso contenitore a settori GBA e stesso bitfield "owned"
+// (sezione 0 + 0x28) di FRLG (vedi getDexStatus), MA le copie seen in
+// sezione 1/4 e gli slot PID Unown/Spinda sono layout FRLG: su RSE quegli
+// offset contengono altri dati, quindi qui si scrive SOLO il primario
+// caught+seen in sezione 0. Niente copie = niente corruzione.
+static void registerRSE(SaveFile& save, const Pokemon& pkm) {
+    uint16_t species = pkm.species();
+    if (species == 0 || species > FRLG_MAX_SPECIES) return;
+
+    uint8_t* sect0 = save.findGbaSectorData(0);
+    if (!sect0) return;
+
+    uint8_t* pdx = sect0 + FRLG_POKEDEX_OFS;
+    setFlagBit(pdx + FRLG_CAUGHT_OFS, species);
+    setFlagBit(pdx + FRLG_SEEN_OFS, species);
+    save.markDirty();
+    // National Dex: in RSE è bloccato finché non arriva un fuori-Hoenn
+    // (come il trade FRLG→RSE originale). Lo sblocchiamo automatico al primo
+    // fuori-Hoenn, mai per i 202 Hoenn.
+    if (!isHoennSpecies(species) && !save.isNationalDexEnabled()) {
+        save.setNationalDexEnabled();
+        DebugLog::line("registerRSE: National Dex sbloccato per spc=%u", species);
+    }
+}
+
+// Gen1 (R/B/Y): bitfield in SRAM flat — caught @0x25A3, seen @0x25B6
+static void registerGen1(SaveFile& save, const Pokemon& pkm) {
+    uint16_t species = pkm.species();
+    if (species == 0 || species > 151) return;
+    if (save.rawDataSize() < 0x25A3 + 19) return;
+    uint8_t* d = save.rawData();
+    setFlagBit(d + 0x25A3, species);
+    setFlagBit(d + 0x25B6, species);
+    save.markDirty();
+}
+
+// Gen2 (G/S/C): bitfield come saveGBC() — caught @ dexCaught, seen @ caught+0x20
+static void registerGen2(SaveFile& save, const Pokemon& pkm) {
+    uint16_t species = pkm.species();
+    if (species == 0 || species > 251) return;
+    size_t caughtOfs = save.gen2DexCaughtOffset();
+    if (caughtOfs == 0 || save.rawDataSize() < caughtOfs + 32) return;
+    uint8_t* d = save.rawData();
+    setFlagBit(d + caughtOfs, species);
+    setFlagBit(d + caughtOfs + 0x20, species);
+    save.markDirty();
 }
 
 // ============================================================
@@ -1050,6 +1109,12 @@ void registerPokemon(SaveFile& save, const Pokemon& pkm) {
         registerLGPE(save, pkm);
     } else if (isFRLG(game)) {
         registerFRLG(save, pkm);
+    } else if (isImportedFile(game)) {
+        registerRSE(save, pkm);
+    } else if (isGen1File(game)) {
+        registerGen1(save, pkm);
+    } else if (isGen2File(game)) {
+        registerGen2(save, pkm);
     }
 }
 

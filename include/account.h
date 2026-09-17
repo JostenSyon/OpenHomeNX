@@ -37,7 +37,7 @@ public:
     void unmountSave();
 
     // Commit writes to mounted save (required after save_.save() on Switch).
-    void commitSave();
+    bool commitSave(); // false = fsdevCommitDevice fallito, mai ignorato in silenzio
 
     // Copy all files from a save directory to a backup directory.
     static bool backupSaveDir(const std::string& srcDir, const std::string& dstDir);
