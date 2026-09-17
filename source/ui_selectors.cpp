@@ -5550,9 +5550,12 @@ void UI::remoteSyncTestRow() {
         return (dot == std::string::npos) ? f : f.substr(0, dot);
     };
     // Helper per trovare la ROM locale corrispondente al save (solo per file-backed gb/gbc/gba/nds + FRLG)
+    // Mai stat() su marker "save:/" (save Switch non montato qui): su Horizon
+    // ha causato crash. Per i marker si usa remoteRomBaseName/gameTag.
     auto findLocalRom = [&](const std::string& savePath, GameType type) -> std::string {
         if (!(isFRLG(type) || isImportedFile(type) || isGen1File(type) || isGen2File(type) || isGen4File(type) || isGen5File(type)))
             return std::string();
+        if (savePath.rfind("save:/", 0) == 0) return std::string();
         size_t slash = savePath.find_last_of('/');
         std::string dir = (slash == std::string::npos) ? "" : savePath.substr(0, slash + 1);
         std::string file = (slash == std::string::npos) ? savePath : savePath.substr(slash + 1);
@@ -5567,13 +5570,18 @@ void UI::remoteSyncTestRow() {
         return std::string();
     };
     // Costruisci il path remoto del save facendo combaciare esattamente il base con la ROM
+    // Se il locale e' un marker save:/ non usare il suo base (es. "FireRed_i"):
+    // usa la ROM remota o il gameTag.
     std::string wantRomBase;
+    bool localIsSaveMarker = c.localPath.rfind("save:/", 0) == 0;
     if (!c.remoteRomBaseName.empty()) wantRomBase = c.remoteRomBaseName;
-    else {
+    else if (!localIsSaveMarker) {
         std::string lr = findLocalRom(c.localPath, c.type);
         if (!lr.empty()) wantRomBase = getBaseLocal(lr);
         else if (!c.localPath.empty()) wantRomBase = getBaseLocal(c.localPath);
         else wantRomBase = std::string(gameInfo(c.type).gameTag);
+    } else {
+        wantRomBase = std::string(gameInfo(c.type).gameTag);
     }
     for (char& ch : wantRomBase) if (ch == '/' || ch == '\\') ch = '_';
     // Estensioni corrette: Switch (locale) usa .sav per file-backed, R36S (remoto) usa .srm/.dsv
@@ -5620,6 +5628,7 @@ void UI::remoteSyncTestRow() {
         if (!c.hasLocal) {
             showMessageAndWait(title, i18n::get(StrKey::DevSyncSyncNoLocalOrRemote));
         } else if (showConfirmDialog(i18n::fmt(StrKey::DevSyncSendTitle, gi.displayName), i18n::get(StrKey::DevSyncSendOnlyLocalBody))) {
+            DebugLog::line("remote sync: invia confermato %s -> %s", switchLocalPath.c_str(), remoteTargetPath.c_str());
             bool ok = doUpload(switchLocalPath, remoteTargetPath);
             // Se sul remoto manca la ROM e il gioco è file-backed, invia anche la ROM
             if (ok && !c.hasRemoteRom) {
@@ -5772,6 +5781,7 @@ void UI::remoteSyncTestRow() {
             showMessageAndWait(title, i18n::get(StrKey::DevSyncSyncNoLocalOrRemote));
         } else {
             // Verifica identità allenatore prima di confrontare date (come prima)
+            DebugLog::line("remote sync: sincronizza controllo identita' %s...", gi.gameTag);
             std::string tmpPath = tmpDir + gi.gameTag + "_check.tmp";
             std::string dlErr;
             bool tmpOk = remoteSyncDownload(host, token, c.remoteSavePath, tmpPath, dlErr);
