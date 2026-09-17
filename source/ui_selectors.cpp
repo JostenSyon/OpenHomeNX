@@ -5395,9 +5395,66 @@ void UI::remoteSyncTestRow() {
                        okUp ? "OK" : "FALLITO", opErr.c_str());
         return okUp;
     };
-    auto doDownload = [&](const std::string& remotePath, const std::string& localPath) -> bool {
+    // Scrive srcFile nel save Switch nativo di "gtype": mount in scrittura ->
+    // copia byte grezzi -> commitSave() esplicito, il cui risultato e' SEMPRE
+    // controllato (senza commitSave() Horizon scarta la scrittura all'unmount,
+    // stesso bug gia' corretto altrove in questo file -- vedi il commento su
+    // UI::restoreBackupEntry piu' sopra) -> unmount sempre, anche se la
+    // copia/commit e' fallita. Mai scrittura diretta su "save:/..." (che non
+    // e' montato quando arriviamo qui).
+    auto writeToNativeSave = [&](const std::string& srcFile, GameType gtype) -> bool {
+        const char* tag = gameInfo(gtype).gameTag;
+        int profileIdx = -1;
+        if (selectedProfile_ >= 0 && account_.hasSaveData(selectedProfile_, gtype))
+            profileIdx = selectedProfile_;
+        else {
+            for (int p = 0; p < account_.profileCount(); p++)
+                if (account_.hasSaveData(p, gtype)) { profileIdx = p; break; }
+        }
+        if (profileIdx < 0) {
+            DebugLog::line("remote sync: nessun profilo con save Switch per %s (scrittura)", tag);
+            return false;
+        }
+        std::string mnt = account_.mountSave(profileIdx, gtype);
+        if (mnt.empty()) {
+            DebugLog::line("remote sync: mountSave (scrittura) FALLITO per %s (profilo %d)", tag, profileIdx);
+            return false;
+        }
+        std::string dst = mnt + saveFileNameOf(gtype);
+        bool okCopy = false;
+        {
+            std::ifstream in(srcFile, std::ios::binary);
+            if (in.is_open()) {
+                std::ofstream out(dst, std::ios::binary | std::ios::trunc);
+                if (out.is_open()) {
+                    out << in.rdbuf();
+                    okCopy = out.good();
+                }
+            }
+        }
+        bool okCommit = okCopy && account_.commitSave();
+        if (okCopy && !okCommit)
+            DebugLog::line("remote sync: commitSave FALLITO dopo scrittura save nativo %s", tag);
+        account_.unmountSave();
+        return okCommit;
+    };
+    auto doDownload = [&](const std::string& remotePath, const std::string& localPath, GameType gtype) -> bool {
         std::string opErr;
-        bool okDown = remoteSyncDownload(host, token, remotePath, localPath, opErr);
+        bool okDown;
+        if (localPath.rfind("save:/", 0) == 0) {
+            // Save Switch nativo: scarica in un tmp, poi scrivilo nel mount
+            // nativo con writeToNativeSave() -- mai in scrittura diretta sul
+            // marker "save:/..." (non montato in questo momento).
+            std::string tmpRecv = tmpDir + std::string(gameInfo(gtype).gameTag) + "_switch_recv.tmp";
+            okDown = remoteSyncDownload(host, token, remotePath, tmpRecv, opErr);
+            if (okDown && !writeToNativeSave(tmpRecv, gtype)) {
+                okDown = false;
+                opErr = "scrittura save nativo fallita";
+            }
+            std::remove(tmpRecv.c_str());
+        } else {
+            okDown = remoteSyncDownload(host, token, remotePath, localPath, opErr);
+        }
         if (okDown) received++; else failed++;
         DebugLog::line("remote sync: ricevi %s -> %s (%s)", remotePath.c_str(),
                        okDown ? "OK" : "FALLITO", opErr.c_str());
@@ -5632,7 +5689,7 @@ void UI::remoteSyncTestRow() {
                             if (curExt != ext) destPath = dir + wantBase + ext;
                         }
                     }
-                    ok = doDownload(c.remoteSavePath, destPath);
+                    ok = doDownload(c.remoteSavePath, destPath, c.type);
                     // Se il destPath è diverso dal vecchio c.localPath e il download è ok, rimuovi il vecchio file orfano
                     if (ok && destPath != c.localPath) {
                         std::remove(c.localPath.c_str());
@@ -5654,7 +5711,7 @@ void UI::remoteSyncTestRow() {
                     for (char& ch : safeBase) if (ch == '/' || ch == '\\') ch = '_';
                     std::string ext = getLocalSaveExtFor(c.type);
                     std::string saveDest = localDest + safeBase + ext;
-                    ok = doDownload(c.remoteSavePath, saveDest);
+                    ok = doDownload(c.remoteSavePath, saveDest, c.type);
                     // Se manca il gioco (hasLocal==false) e c'è una ROM remota, chiedi se scaricare anche la ROM
                     // così il save diventa subito utilizzabile. Il save deve avere esattamente lo stesso base della ROM.
                     if (ok && c.hasRemoteRom) {
@@ -5744,8 +5801,17 @@ void UI::remoteSyncTestRow() {
                 if (showConfirmDialog(i18n::fmt(StrKey::DevSyncSyncTitle, gi.displayName), i18n::fmt(StrKey::DevSyncSyncBody, localOt, dir))) {
                     if (remoteNewer) {
                         // Usa copia già scaricata (tmpPath) — evita seconda richiesta di rete
-                        // e soprattutto non confrontare più dopo: il mtime locale va sovrascritto ora
-                        copyLocalAsReceived(tmpPath, c.localPath);
+                        // e soprattutto non confrontare più dopo: il mtime locale va sovrascritto ora.
+                        // Save Switch nativo: scrivi nel mount nativo (mai su "save:/..." diretto,
+                        // non montato qui), stesso helper usato da doDownload piu' sopra.
+                        if (c.localPath.rfind("save:/", 0) == 0) {
+                            bool okNative = writeToNativeSave(tmpPath, c.type);
+                            if (okNative) received++; else failed++;
+                            DebugLog::line("remote sync: sincronizza (save nativo, da verifica gia' scaricata) %s (%s)",
+                                           gi.gameTag, okNative ? "OK" : "FALLITO");
+                        } else {
+                            copyLocalAsReceived(tmpPath, c.localPath);
+                        }
                     } else {
                         bool ok = doUpload(switchLocalPath, remoteTargetPath);
                         if (ok && !c.hasRemoteRom) {
