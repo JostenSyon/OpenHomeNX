@@ -773,10 +773,24 @@ std::vector<SyncCandidate> remoteSyncBuildCandidates(
             c.remoteSaveModifiedUnix = f.saveModified;
             c.hasRemoteRom = f.hasRom;
             c.remoteRomBaseName = f.romBaseName;
+            auto sameGroup = [](GameType a, GameType b) -> bool {
+                if (a == b) return true;
+                // FRLG: tutte le lingue dello stesso gioco (FR o LG) sono lo stesso save compatibile
+                if (isFRLG(a) && isFRLG(b)) {
+                    bool aIsFR = (a == GameType::FR || a == GameType::FR_ES || a == GameType::FR_DE || a == GameType::FR_IT || a == GameType::FR_FR || a == GameType::FR_JA);
+                    bool bIsFR = (b == GameType::FR || b == GameType::FR_ES || b == GameType::FR_DE || b == GameType::FR_IT || b == GameType::FR_FR || b == GameType::FR_JA);
+                    bool aIsLG = !aIsFR; // se è FRLG ma non FR, è LG
+                    bool bIsLG = !bIsFR;
+                    return (aIsFR && bIsFR) || (aIsLG && bIsLG);
+                }
+                return false;
+            };
             for (const auto& lg : localGames) {
-                if (lg.type == c.type) {
+                if (sameGroup(lg.type, c.type)) {
                     c.hasLocal = true;
                     c.localPath = lg.filePath;
+                    // Salva anche il tipo effettivo locale per distinzione SW/ROM nel picker
+                    c.type = lg.type; // usa il tipo locale per coerenza (es. FR_IT invece di FR generico)
                     break;
                 }
             }
