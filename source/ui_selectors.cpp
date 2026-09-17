@@ -5217,8 +5217,11 @@ int UI::pickRemoteSyncGame(const std::vector<SyncCandidate>& candidates) {
                 drawRoundRectOutline(popX + 12, rowY, POP_W - 24, ROW_H - 6, 8, T().cursor, 2);
             }
             std::string label = gi.displayName;
-            if (c.hasLocal && c.hasRemoteSave) label += "  [L+R]";
-            else if (c.hasLocal) label += "  [L]";
+            // Distingue versione Switch (save:/) da ROM/file (sdmc:/roms) quando entrambe esistono
+            bool isSwitchLocal = c.hasLocal && c.localPath.rfind("save:/", 0) == 0;
+            std::string locTag = isSwitchLocal ? "Switch" : "ROM";
+            if (c.hasLocal && c.hasRemoteSave) label += "  [L:" + locTag + "+R]";
+            else if (c.hasLocal) label += "  [L:" + locTag + "]";
             else label += "  [R]";
             drawText(label, popX + 28, rowY + 10, T().text, font_);
         }
@@ -5333,7 +5336,37 @@ void UI::remoteSyncTestRow() {
 
     // Elenco locale (bank/import) da confrontare con quello remoto -- stessa
     // scansione gia' usata dal selettore giochi, nessuna logica duplicata.
+    // Aggiunge anche i save Switch montati (FRLG Switch) che altrimenti
+    // verrebbero visti come "solo ROM" e non offrirebbero l'invio.
     std::vector<ImportedGame> localGames = scanImportPaths(importPaths_, autoCheckUsb_);
+    {
+        // Switch saves: presentApplications() + hasSaveData() -> se il gioco
+        // Switch esiste, considera che ha un save locale anche se non c'è un
+        // file in sdmc:/roms/. Il path per il sync sarà gestito come file
+        // temporaneo estratto dal mount save:/ (compatibile perché il formato
+        // save è identico tra Switch e ROM per FRLG).
+        std::set<uint64_t> present = account_.presentApplications();
+        for (GameType g : {GameType::FR, GameType::LG, GameType::FR_ES, GameType::LG_ES, GameType::FR_DE, GameType::LG_DE, GameType::FR_IT, GameType::LG_IT, GameType::FR_FR, GameType::LG_FR, GameType::FR_JA, GameType::LG_JA}) {
+            if (!present.count(titleIdOf(g))) continue;
+            // Controlla se c'è almeno un profilo con save per questo gioco
+            bool hasAny = false;
+            for (int p = 0; p < account_.profileCount(); p++) {
+                if (account_.hasSaveData(p, g)) { hasAny = true; break; }
+            }
+            if (!hasAny) continue;
+            // Se non è già presente come file-backed, aggiungilo come Switch save
+            bool already = false;
+            for (auto& ig : localGames) if (ig.type == g) { already = true; break; }
+            if (!already) {
+                ImportedGame ig;
+                ig.type = g;
+                ig.filePath = std::string("save:/") + saveFileNameOf(g); // marker per Switch save
+                ig.sourceTag = "Switch";
+                localGames.push_back(ig);
+                DebugLog::line("remote sync: Switch save aggiunto per %s (%s)", gameInfo(g).displayName, ig.filePath.c_str());
+            }
+        }
+    }
 
     std::string buildErr;
     std::vector<SyncCandidate> candidates = remoteSyncBuildCandidates(host, token, localGames, buildErr);
