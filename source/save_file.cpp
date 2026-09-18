@@ -2416,7 +2416,23 @@ bool SaveFile::loadGBA(const std::string& path) {
         int activeSec0 = sector0Ofs(gbaActiveSlot_);
         int otherSec0 = sector0Ofs(otherSlot);
         if (activeSec0 >= 0 && otherSec0 >= 0) {
+            // Guardia identita' allenatore (2026-09-18 v4, DANNO REALE
+            // osservato: dopo "Nuova Partita" un banco aveva ancora il
+            // trainer/dex della partita PRECEDENTE mentre l'altro aveva
+            // gia' quello nuovo -- unire ciecamente i flag caught/seen ha
+            // resuscitato l'intero Pokedex della partita vecchia dentro
+            // quella nuova, +27/+31 specie di colpo). Se OT name (8B @0x00)
+            // o TID/SID (4B @0x0A) non coincidono tra i due banchi sono due
+            // trainer/partite diverse: NON uniamo mai il Pokedex tra loro,
+            // qualunque sia il contatore -- unire dex di trainer diversi
+            // non e' mai corretto, a differenza del fork stesso trainer.
+            bool sameTrainer =
+                std::memcmp(rawData_.data() + activeSec0, rawData_.data() + otherSec0, 8) == 0 &&
+                std::memcmp(rawData_.data() + activeSec0 + 0x0A, rawData_.data() + otherSec0 + 0x0A, 4) == 0;
+
             int mergedCaught = 0, mergedSeen = 0;
+            bool mergedNatDex = false;
+            if (sameTrainer) {
             uint8_t* activeCaught = rawData_.data() + activeSec0 + kPokedexOfs + kCaughtOfs;
             uint8_t* activeSeen   = rawData_.data() + activeSec0 + kPokedexOfs + kSeenOfs;
             const uint8_t* otherCaught = rawData_.data() + otherSec0 + kPokedexOfs + kCaughtOfs;
@@ -2444,9 +2460,10 @@ bool SaveFile::loadGBA(const std::string& path) {
             constexpr int kNatDexOfs = 0x19;
             uint8_t* activeNatDex = rawData_.data() + activeSec0 + kNatDexOfs;
             const uint8_t* otherNatDex = rawData_.data() + otherSec0 + kNatDexOfs;
-            bool mergedNatDex = (*activeNatDex == 0 && *otherNatDex != 0);
+            mergedNatDex = (*activeNatDex == 0 && *otherNatDex != 0);
             if (mergedNatDex)
                 *activeNatDex = *otherNatDex;
+            }
 
             if (mergedCaught > 0 || mergedSeen > 0 || mergedNatDex) {
                 DebugLog::line("loadGBA: %s -> Pokedex banco %d unito nel banco attivo %d "
@@ -2454,6 +2471,9 @@ bool SaveFile::loadGBA(const std::string& path) {
                                path.c_str(), otherSlot, gbaActiveSlot_, mergedCaught, mergedSeen,
                                mergedNatDex ? "SI" : "no");
                 gbaPokedexMergeDirty = true;
+            } else if (!sameTrainer) {
+                DebugLog::line("loadGBA: %s -> banchi con trainer diversi (nuova partita?), "
+                               "nessuna unione Pokedex", path.c_str());
             }
         }
     }
