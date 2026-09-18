@@ -2431,10 +2431,28 @@ bool SaveFile::loadGBA(const std::string& path) {
                 activeCaught[b] = newC;
                 activeSeen[b] = newS;
             }
-            if (mergedCaught > 0 || mergedSeen > 0) {
+
+            // Stesso problema, stesso rimedio, per il flag National Dex
+            // (2026-09-18 v3): setNationalDexEnabled() scrive gia' entrambi i
+            // banchi quando viene chiamata, ma se lo sblocco avviene mentre
+            // l'altro banco e' quello "congelato" dal fork mGBA, un ciclo
+            // saveGBA() successivo puo' rispecchiare il banco SENZA il flag
+            // sull'altro, perdendolo su entrambi (osservato: Pokedex nazionale
+            // mai attivo nonostante Espeon/Blastoise gia' catturati). E'
+            // un singolo byte (0x19, stesso offset di isNationalDexEnabled),
+            // quindi qui basta un OR semplice invece di un bitfield.
+            constexpr int kNatDexOfs = 0x19;
+            uint8_t* activeNatDex = rawData_.data() + activeSec0 + kNatDexOfs;
+            const uint8_t* otherNatDex = rawData_.data() + otherSec0 + kNatDexOfs;
+            bool mergedNatDex = (*activeNatDex == 0 && *otherNatDex != 0);
+            if (mergedNatDex)
+                *activeNatDex = *otherNatDex;
+
+            if (mergedCaught > 0 || mergedSeen > 0 || mergedNatDex) {
                 DebugLog::line("loadGBA: %s -> Pokedex banco %d unito nel banco attivo %d "
-                               "(+%d catture, +%d viste recuperate dal banco piu' vecchio)",
-                               path.c_str(), otherSlot, gbaActiveSlot_, mergedCaught, mergedSeen);
+                               "(+%d catture, +%d viste, natDex %s recuperati dal banco piu' vecchio)",
+                               path.c_str(), otherSlot, gbaActiveSlot_, mergedCaught, mergedSeen,
+                               mergedNatDex ? "SI" : "no");
                 gbaPokedexMergeDirty = true;
             }
         }
