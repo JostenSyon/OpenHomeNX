@@ -2371,40 +2371,61 @@ bool SaveFile::loadGBA(const std::string& path) {
     else if (!valid[1]) gbaActiveSlot_ = 0;
     else gbaActiveSlot_ = (counter[1] > counter[0]) ? 1 : 0;
 
-    // Controllo di sicurezza Pokedex (2026-09-18, corruzione osservata dopo
-    // chain-load mGBA da OpenHomeNX): il contatore piu' alto da solo non
-    // basta a fidarsi di un banco. Pokedex::caught e' un flag permanente
-    // (mai svuotato da scambi/rilasci in game normale), quindi il conteggio
-    // delle catture non deve MAI diminuire passando da un banco piu' vecchio
-    // a uno piu' nuovo. Se il banco "vincente" per contatore ha MENO catture
-    // dell'altro, e' un banco rovinato (es. un altro programma ha risalvato
-    // con RAM vecchia) -> usiamo l'altro banco, anche se il suo contatore e'
-    // piu' basso.
+    // Recupero Pokedex per fork (2026-09-18 v2): il tentativo precedente
+    // (scartare TUTTO il banco col contatore piu' alto se aveva meno
+    // catture) era sbagliato -- dai log reali si e' visto che dopo il
+    // chain-load mGBA continua ad avanzare il SUO banco (contatore sempre
+    // piu' alto, progressi di gioco reali: nuove catture, oggetti, ecc.)
+    // mentre l'altro banco resta congelato al momento del fork, con in
+    // pancia SOLO le catture fatte fino a quel momento (es. il trasferimento
+    // OpenHomeNX). Scartare il banco col contatore piu' alto buttava via
+    // tutti i progressi successivi (ogni nuova catture veniva ignorata).
+    // Fix corretto: il banco attivo resta quello col contatore piu' alto
+    // (e' il piu' recente), ma i flag Pokedex "caught"/"seen" sono
+    // permanenti quindi va bene unire (OR bit a bit) quelli dell'altro
+    // banco in quello attivo -- si recupera cosi' l'eventuale specie
+    // presente solo nel banco piu' vecchio (es. dopo un trasferimento)
+    // senza perdere nessun progresso successivo. Il prossimo saveGBA()
+    // ricopiera' il banco attivo (ora con l'unione) sull'altro banco.
     if (valid[0] && valid[1]) {
-        auto pokedexCaughtCount = [&](int slot) -> int {
-            constexpr int kPokedexOfs = 0x18, kCaughtOfs = 0x10, kMaxSpecies = 386;
+        constexpr int kPokedexOfs = 0x18, kCaughtOfs = 0x10, kSeenOfs = 0x44;
+        constexpr int kMaxSpecies = 386;
+        constexpr int kFlagBytes = (kMaxSpecies + 7) / 8; // 49 byte, bit = specie-1
+
+        auto sector0Ofs = [&](int slot) -> int {
             int slotBase = slot * GBA_SECTOR_COUNT * GBA_SECTOR_SIZE;
             for (int i = 0; i < GBA_SECTOR_COUNT; i++) {
                 int sectorOfs = slotBase + i * GBA_SECTOR_SIZE;
-                if (readU16LE(rawData_.data() + sectorOfs + GBA_OFS_SECTOR_ID) != 0)
-                    continue;
-                const uint8_t* caught = rawData_.data() + sectorOfs + kPokedexOfs + kCaughtOfs;
-                int count = 0;
-                for (int b = 0; b < kMaxSpecies; b++)
-                    if ((caught[b >> 3] >> (b & 7)) & 1) count++;
-                return count;
+                if (readU16LE(rawData_.data() + sectorOfs + GBA_OFS_SECTOR_ID) == 0)
+                    return sectorOfs;
             }
             return -1;
         };
+
         int otherSlot = 1 - gbaActiveSlot_;
-        int caughtActive = pokedexCaughtCount(gbaActiveSlot_);
-        int caughtOther = pokedexCaughtCount(otherSlot);
-        if (caughtActive >= 0 && caughtOther >= 0 && caughtActive < caughtOther) {
-            DebugLog::line("loadGBA: %s -> banco attivo (contatore %u, %d catture) < banco %d "
-                           "(contatore %u, %d catture): banco attivo scartato, uso l'altro",
-                           path.c_str(), counter[gbaActiveSlot_], caughtActive, otherSlot,
-                           counter[otherSlot], caughtOther);
-            gbaActiveSlot_ = otherSlot;
+        int activeSec0 = sector0Ofs(gbaActiveSlot_);
+        int otherSec0 = sector0Ofs(otherSlot);
+        if (activeSec0 >= 0 && otherSec0 >= 0) {
+            int mergedCaught = 0, mergedSeen = 0;
+            uint8_t* activeCaught = rawData_.data() + activeSec0 + kPokedexOfs + kCaughtOfs;
+            uint8_t* activeSeen   = rawData_.data() + activeSec0 + kPokedexOfs + kSeenOfs;
+            const uint8_t* otherCaught = rawData_.data() + otherSec0 + kPokedexOfs + kCaughtOfs;
+            const uint8_t* otherSeen   = rawData_.data() + otherSec0 + kPokedexOfs + kSeenOfs;
+            for (int b = 0; b < kFlagBytes; b++) {
+                uint8_t oldC = activeCaught[b];
+                uint8_t oldS = activeSeen[b];
+                uint8_t newC = static_cast<uint8_t>(oldC | otherCaught[b]);
+                uint8_t newS = static_cast<uint8_t>(oldS | otherSeen[b]);
+                mergedCaught += __builtin_popcount(static_cast<unsigned>(newC & ~oldC));
+                mergedSeen   += __builtin_popcount(static_cast<unsigned>(newS & ~oldS));
+                activeCaught[b] = newC;
+                activeSeen[b] = newS;
+            }
+            if (mergedCaught > 0 || mergedSeen > 0) {
+                DebugLog::line("loadGBA: %s -> Pokedex banco %d unito nel banco attivo %d "
+                               "(+%d catture, +%d viste recuperate dal banco piu' vecchio)",
+                               path.c_str(), otherSlot, gbaActiveSlot_, mergedCaught, mergedSeen);
+            }
         }
     }
 
