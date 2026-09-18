@@ -2630,6 +2630,28 @@ bool SaveFile::saveGBA(const std::string& path) {
             std::memcpy(rawData_.data() + slotBase,
                         rawData_.data() + activeBase,
                         GBA_SECTOR_COUNT * GBA_SECTOR_SIZE);
+
+            // 2026-09-18: sull'hardware vero i due banchi si alternano SEMPRE
+            // di 1 nel contatore (mai identici). Copiando l'intero banco
+            // attivo pari pari anche il contatore risultava identico sui due
+            // banchi -- stato che il gioco vero non produce mai e sembra
+            // confondere la sua scelta del banco piu' recente al boot
+            // (osservato in log: un salvataggio nativo durante una sessione
+            // mGBA ha perso il Pokedex appena aggiornato su un banco,
+            // recuperato solo al giro successivo dal nostro merge). Il
+            // contenuto resta identico sui due banchi (continuiamo a volerlo
+            // per la nostra rete di sicurezza del merge), ma decrementiamo
+            // di 1 il contatore SOLO sul banco appena copiato (quello non
+            // attivo), su tutti i 14 settori (il contatore e' replicato
+            // identico in ognuno dei 14 settori di uno stesso banco): resta
+            // un mirror dei dati, ma il gioco lo vede come lo step
+            // precedente, non un pareggio impossibile.
+            uint32_t activeCounter = readU32LE(rawData_.data() + activeBase + GBA_OFS_SAVE_INDEX);
+            uint32_t otherCounter = (activeCounter > 0) ? (activeCounter - 1) : 0;
+            for (int i = 0; i < GBA_SECTOR_COUNT; i++) {
+                int sectorOfs = slotBase + i * GBA_SECTOR_SIZE;
+                writeU32LE(rawData_.data() + sectorOfs + GBA_OFS_SAVE_INDEX, otherCounter);
+            }
         }
 
         // Write storage data back to sectors 5-13
