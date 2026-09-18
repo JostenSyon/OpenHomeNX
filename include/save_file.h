@@ -99,7 +99,9 @@ public:
     // Returns pointer to the sector's 0x1000-byte region, or nullptr.
     uint8_t* findGbaSectorData(int sectionId);
 
-    // National Dex flag for R/S/E (SaveBlock2+0x19, byte 0/1, entrambe le slot)
+    // National Dex flag for R/S/E (struct Pokedex @ section0+0x18: order@0,
+    // mode@1, nationalMagic@2 -- il vero gate, deve valere 0xDA -- SaveBlock2
+    // offset assoluto 0x1A; scritto su entrambe le slot)
     bool isNationalDexEnabled() const;
     void setNationalDexEnabled();
 

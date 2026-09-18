@@ -2449,20 +2449,26 @@ bool SaveFile::loadGBA(const std::string& path) {
             }
 
             // Stesso problema, stesso rimedio, per il flag National Dex
-            // (2026-09-18 v3): setNationalDexEnabled() scrive gia' entrambi i
-            // banchi quando viene chiamata, ma se lo sblocco avviene mentre
-            // l'altro banco e' quello "congelato" dal fork mGBA, un ciclo
-            // saveGBA() successivo puo' rispecchiare il banco SENZA il flag
-            // sull'altro, perdendolo su entrambi (osservato: Pokedex nazionale
-            // mai attivo nonostante Espeon/Blastoise gia' catturati). E'
-            // un singolo byte (0x19, stesso offset di isNationalDexEnabled),
-            // quindi qui basta un OR semplice invece di un bitfield.
-            constexpr int kNatDexOfs = 0x19;
+            // (2026-09-18 v3, corretto v5): setNationalDexEnabled() scrive
+            // gia' entrambi i banchi quando viene chiamata, ma se lo sblocco
+            // avviene mentre l'altro banco e' quello "congelato" dal fork
+            // mGBA, un ciclo saveGBA() successivo puo' rispecchiare il banco
+            // SENZA il flag sull'altro, perdendolo su entrambi. IMPORTANTE
+            // (2026-09-18 v5): il byte giusto da controllare/unire e' 0x1A
+            // (nationalMagic, deve valere 0xDA -- struct Pokedex di
+            // pokeemerald: order@0, mode@1, nationalMagic@2, unknown2@3, ...),
+            // NON 0x1A-1=0x19 (mode, solo la vista Hoenn/National correntemente
+            // selezionata: settarlo da solo non sblocca nulla per il gioco,
+            // che controlla SOLO nationalMagic==0xDA per decidere se il
+            // National Dex e' disponibile).
+            constexpr int kNatDexOfs = 0x1A;
             uint8_t* activeNatDex = rawData_.data() + activeSec0 + kNatDexOfs;
             const uint8_t* otherNatDex = rawData_.data() + otherSec0 + kNatDexOfs;
-            mergedNatDex = (*activeNatDex == 0 && *otherNatDex != 0);
-            if (mergedNatDex)
-                *activeNatDex = *otherNatDex;
+            mergedNatDex = (*activeNatDex != 0xDA && *otherNatDex == 0xDA);
+            if (mergedNatDex) {
+                *activeNatDex = 0xDA;
+                (rawData_.data() + activeSec0 + 0x19)[0] = 1; // mode segue nationalMagic
+            }
             }
 
             if (mergedCaught > 0 || mergedSeen > 0 || mergedNatDex) {
@@ -2722,7 +2728,14 @@ bool SaveFile::isNationalDexEnabled() const {
     if (!isImportedFile(gameType_)) return false;
     uint8_t* sec0 = const_cast<SaveFile*>(this)->findGbaSectorData(0);
     if (!sec0) return false;
-    return sec0[0x19] != 0;
+    // 2026-09-18 v5: era sec0[0x19]!=0 (byte "mode", solo la vista corrente
+    // Hoenn/National) -- il vero gate che pokeemerald controlla
+    // (IsNationalPokedexEnabled) e' pokedex.nationalMagic @ struct+2 =
+    // sec0+0x1A, e deve valere ESATTAMENTE 0xDA, non un bool generico.
+    // Bug reale: Mew/altri non-Hoenn restavano invisibili nel dex in game
+    // anche con caught+seen correttamente impostati, perche' il vero flag
+    // di sblocco non veniva mai scritto.
+    return sec0[0x1A] == 0xDA;
 }
 
 void SaveFile::setNationalDexEnabled() {
@@ -2735,7 +2748,8 @@ void SaveFile::setNationalDexEnabled() {
             if (ofs + GBA_SAVE_SIZE > (int)rawData_.size()) continue;
             uint16_t sid = readU16LE(rawData_.data() + ofs + GBA_OFS_SECTOR_ID);
             if (sid == 0) {
-                rawData_[ofs + 0x19] = 1;
+                rawData_[ofs + 0x19] = 1;    // mode: forza vista National (0=Hoenn,1=National)
+                rawData_[ofs + 0x1A] = 0xDA; // nationalMagic: il VERO gate (v5, vedi isNationalDexEnabled)
             }
         }
     }
