@@ -96,6 +96,12 @@ bool loadDefs(const std::string& jsonPath, std::vector<ItemDef>& out, std::strin
         d.hgss = e.value("hgss", false);
         d.bw = e.value("bw", false);
         d.b2w2 = e.value("b2w2", false);
+        d.red = e.value("red", false);
+        d.blue = e.value("blue", false);
+        d.yellow = e.value("yellow", false);
+        d.gold = e.value("gold", false);
+        d.silver = e.value("silver", false);
+        d.crystal = e.value("crystal", false);
         d.flag = e.value("flag", false);
         if (d.id <= 0 || d.name.empty() || d.max < 1) continue; // riga sporca: salta, mai fidarsi
         out.push_back(d);
@@ -113,7 +119,13 @@ bool gameOk(GameType g, const ItemDef& d) {
     if (g == GameType::HEARTGOLD || g == GameType::SOULSILVER) return d.hgss;
     if (g == GameType::BLACK || g == GameType::WHITE) return d.bw;
     if (g == GameType::BLACK2 || g == GameType::WHITE2) return d.b2w2;
-    return false; // solo GBA Gen3 + DS Gen4/5
+    if (g == GameType::RED) return d.red;
+    if (g == GameType::BLUE) return d.blue;
+    if (g == GameType::YELLOW) return d.yellow;
+    if (g == GameType::GOLD) return d.gold;
+    if (g == GameType::SILVER) return d.silver;
+    if (g == GameType::CRYSTAL) return d.crystal;
+    return false; // solo GBA Gen3 + DS Gen4/5 + GB Gen1/2
 }
 
 SaveFile::GbaBagPocket canonPocket(const ItemDef& d) {
@@ -621,6 +633,286 @@ bool dsFixAnomaly(SaveFile& sf, const DsAnomaly& a, const std::vector<ItemDef>& 
         for (auto& p : plan)
             if (!sf.writeDsBagSlot(p.p, p.s, a.id, p.q)) { msg = "Scrittura fallita a metà: ricontrolla."; return false; }
         msg = "Spostato nel pocket " + dsPocketToStr(dst) + " (ora consumabile).";
+        return true;
+    }
+    msg = "Tipo anomalia ignoto.";
+    return false;
+}
+
+// --- Zaino GB (Gen1/2): riscrittura tasche compattate (PKHeX SetPouch).
+// Niente slot fissi: slot = posizione nella lista compattata al momento
+// della lettura; ogni mutazione ricarica (come DS dopo ogni persist).
+// Capacita' tasche (voci massime, da PKHeX PlayerBag1/2).
+static int gbPocketCap(SaveFile::GbBagPocket p) {
+    using P = SaveFile::GbBagPocket;
+    if (p == P::Key) return 26;
+    if (p == P::Balls) return 12;
+    if (p == P::TmHm) return 57;
+    return 20;
+}
+const ItemDef* gbFindDef(GameType g, const std::vector<ItemDef>& defs, int id) {
+    for (auto& d : defs)
+        if (d.id == id && gameOk(g, d)) return &d;
+    return nullptr;
+}
+
+SaveFile::GbBagPocket gbCanonPocket(const ItemDef& d) {
+    return gbPocketFromStr(d.pocket);
+}
+
+std::string gbPocketToStr(SaveFile::GbBagPocket p) {
+    using P = SaveFile::GbBagPocket;
+    switch (p) {
+        case P::Key: return "key";
+        case P::Balls: return "balls";
+        case P::TmHm: return "tm";
+        default: return "items";
+    }
+}
+
+SaveFile::GbBagPocket gbPocketFromStr(const std::string& p) {
+    using P = SaveFile::GbBagPocket;
+    if (p == "key") return P::Key;
+    if (p == "balls") return P::Balls;
+    if (p == "tm") return P::TmHm;
+    return P::Items;
+}
+
+bool gbGift(SaveFile& sf, const std::string& basePath, const ItemDef& d,
+            int qty, bool baseMode, std::string& msg) {
+    if (!sf.gbBagSupported()) { msg = "Borsa non supportata per questo gioco (solo Gen1/2/3/DS)."; return false; }
+    if (!gameOk(sf.gameType(), d)) { msg = d.name + " non valido per questo gioco."; return false; }
+    if (d.flag) {
+        msg = d.name + ": richiede anche il flag evento (non ancora implementato per questo gioco/oggetto).";
+        return false;
+    }
+    SaveFile::GbBagPocket target = baseMode ? SaveFile::GbBagPocket::Key : gbCanonPocket(d);
+    // Gen1 non ha tasca Key: la modalita' Base non esiste qui.
+    if (target == SaveFile::GbBagPocket::Key && isGen1File(sf.gameType())) {
+        msg = d.name + ": tasca Base assente in Gen1.";
+        return false;
+    }
+    int want = (baseMode || d.key) ? 1 : qty;
+    if (want < 1) want = 1;
+    if (want > d.max) want = d.max;
+    const int total = want; // quanto regalato davvero (per giornale e messaggio)
+    // Stato attuale della tasca (ordinato come nel save).
+    std::vector<std::pair<uint16_t, uint16_t>> cur;
+    for (auto& s : sf.readGbBag())
+        if (s.pocket == target) cur.push_back({s.id, s.count});
+    if (!baseMode && !d.key) {
+        for (auto& e : cur) {
+            if (want <= 0) break;
+            if (e.first != (uint16_t)d.id) continue;
+            int room = d.max - e.second;
+            if (room <= 0) continue;
+            int put = (want < room) ? want : room;
+            e.second = (uint16_t)(e.second + put);
+            want -= put;
+        }
+    } else {
+        for (auto& e : cur)
+            if (e.first == (uint16_t)d.id) {
+                msg = d.name + " già protetto nei Key Items.";
+                return false;
+            }
+    }
+    // Capacita' tasca (voci massime scrivibili).
+    int cap = gbPocketCap(target);
+    if (target == SaveFile::GbBagPocket::Key && (int)cur.size() >= cap && want > 0) {
+        msg = "Borsa piena nel pocket key: niente scritto.";
+        return false;
+    }
+    while (want > 0) {
+        if ((int)cur.size() >= cap) {
+            msg = "Borsa piena nel pocket " + gbPocketToStr(target) + ": niente scritto.";
+            return false; // atomico: niente scritto fin qui (write sotto, unico)
+        }
+        int put = (want < d.max) ? want : d.max;
+        if (target == SaveFile::GbBagPocket::Key) put = 1;
+        cur.push_back({(uint16_t)d.id, (uint16_t)put});
+        want -= put;
+    }
+    int gotQty = total;
+    if (!sf.writeGbBagPocket(target, cur)) {
+        msg = "Scrittura tasca fallita (niente scritto).";
+        return false;
+    }
+    auto jl = journalLoad(basePath);
+    JournalEntry je;
+    je.game = gameKey(sf.gameType());
+    je.item = d.id;
+    je.qty = gotQty;
+    je.pocket = gbPocketToStr(target);
+    je.ts = (long)std::time(nullptr);
+    jl.push_back(je);
+    if (!journalSave(basePath, jl))
+        DebugLog::line("backpack: giornale non salvato (regalo ok)");
+    char buf[160];
+    std::snprintf(buf, sizeof(buf), "%s x%d nel pocket %s%s.", d.name.c_str(), je.qty,
+                  gbPocketToStr(target).c_str(), (baseMode || d.key) ? " (protetto)" : "");
+    msg = buf;
+    return true;
+}
+
+bool gbTakeBack(SaveFile& sf, const std::string& basePath, GameType g,
+                int itemId, const std::string& pocket, std::string& msg) {
+    if (!sf.gbBagSupported()) { msg = "Borsa non supportata per questo gioco."; return false; }
+    std::string gk = gameKey(g);
+    auto jl = journalLoad(basePath);
+    int recorded = 0;
+    for (auto& e : jl)
+        if (e.game == gk && e.item == itemId && e.pocket == pocket) recorded += e.qty;
+    if (recorded <= 0) { msg = "Mai regalato da qui in questa modalita' (giornale vuoto per questa voce)."; return false; }
+    SaveFile::GbBagPocket target = gbPocketFromStr(pocket);
+    std::vector<std::pair<uint16_t, uint16_t>> cur;
+    for (auto& s : sf.readGbBag())
+        if (s.pocket == target) cur.push_back({s.id, s.count});
+    int rest = recorded, removed = 0;
+    for (auto& e : cur) {
+        if (rest <= 0) break;
+        if (e.first != itemId) continue;
+        int take = (e.second < rest) ? e.second : rest;
+        e.second = (uint16_t)(e.second - take);
+        rest -= take;
+        removed += take;
+    }
+    // Ricompatta (voci a zero spariscono, come PKHeX ClearCount0).
+    std::vector<std::pair<uint16_t, uint16_t>> kept;
+    for (auto& e : cur)
+        if (e.second > 0) kept.push_back(e);
+    if (!sf.writeGbBagPocket(target, kept)) { msg = "Scrittura tasca fallita."; return false; }
+    int dec = removed;
+    for (auto it = jl.begin(); it != jl.end() && dec > 0;) {
+        if (it->game == gk && it->item == itemId && it->pocket == pocket) {
+            int cut = (it->qty < dec) ? it->qty : dec;
+            it->qty -= cut;
+            dec -= cut;
+            if (it->qty <= 0) it = jl.erase(it);
+            else ++it;
+        } else ++it;
+    }
+    journalSave(basePath, jl);
+    char buf[192];
+    if (rest > 0)
+        std::snprintf(buf, sizeof(buf), "Tolti %d (di %d): %d già usati o spostati.", removed, recorded, rest);
+    else
+        std::snprintf(buf, sizeof(buf), "Tolti %d.", removed);
+    msg = buf;
+    return removed > 0;
+}
+
+std::vector<GbAnomaly> gbScanBag(SaveFile& sf, const std::vector<ItemDef>& defs) {
+    std::vector<GbAnomaly> out;
+    if (!sf.gbBagSupported()) return out;
+    for (auto& s : sf.readGbBag()) {
+        if (s.id == 0) {
+            if (s.count != 0) out.push_back({s.pocket, s.slot, 0, s.count, "invalid"});
+            continue;
+        }
+        const ItemDef* d = gbFindDef(sf.gameType(), defs, s.id);
+        if (!d) {
+            out.push_back({s.pocket, s.slot, s.id, s.count, "invalid"});
+            continue;
+        }
+        if (s.count == 0)
+            out.push_back({s.pocket, s.slot, s.id, 0, "invalid"});
+        else if ((int)s.count > d->max)
+            out.push_back({s.pocket, s.slot, s.id, s.count, "over-max"});
+        else if (gbPocketFromStr(d->pocket) != s.pocket)
+            out.push_back({s.pocket, s.slot, s.id, s.count, "protected"});
+    }
+    return out;
+}
+
+bool gbFixAnomaly(SaveFile& sf, const GbAnomaly& a, const std::vector<ItemDef>& defs,
+                  std::string& msg) {
+    if (!sf.gbBagSupported()) { msg = "Borsa non supportata."; return false; }
+    // Ricostruisce la tasca: rimuove/clam pa la voce, ricompatta, riscrive.
+    std::vector<std::pair<uint16_t, uint16_t>> cur;
+    for (auto& s : sf.readGbBag())
+        if (s.pocket == a.pocket) cur.push_back({s.id, s.count});
+    bool touched = false;
+    if (a.kind == "invalid") {
+        std::vector<std::pair<uint16_t, uint16_t>> kept;
+        for (auto& e : cur) {
+            // Rimuove la voce anomala (stesso id; count 0 = slot morto).
+            if (!touched && e.first == a.id && (a.count == 0 || e.second == a.count)) {
+                touched = true;
+                continue;
+            }
+            kept.push_back(e);
+        }
+        if (!touched) { msg = "Voce non più presente (già sistemata?)."; return false; }
+        if (!sf.writeGbBagPocket(a.pocket, kept)) { msg = "Scrittura fallita."; return false; }
+        msg = "Voce rimossa.";
+        return true;
+    }
+    const ItemDef* d = nullptr;
+    for (auto& dd : defs)
+        if (dd.id == a.id && gameOk(sf.gameType(), dd)) { d = &dd; break; }
+    if (!d) { msg = "Voce ignota."; return false; }
+    if (a.kind == "over-max") {
+        for (auto& e : cur) {
+            if (e.first != a.id || touched) continue;
+            int q = e.second > d->max ? d->max : e.second;
+            if (q < 1) q = 1;
+            e.second = (uint16_t)q;
+            touched = true;
+        }
+        if (!touched) { msg = "Voce non più presente."; return false; }
+        if (!sf.writeGbBagPocket(a.pocket, cur)) { msg = "Scrittura fallita."; return false; }
+        msg = "Clampato a max " + d->name + ".";
+        return true;
+    }
+    if (a.kind == "protected") {
+        SaveFile::GbBagPocket dst = gbCanonPocket(*d);
+        if (dst == a.pocket) { msg = "Già al posto giusto."; return false; }
+        std::vector<std::pair<uint16_t, uint16_t>> kept;
+        int moved = 0;
+        for (auto& e : cur) {
+            if (e.first == a.id && moved < a.count) {
+                int take = (e.second < (a.count - moved)) ? e.second : (a.count - moved);
+                moved += take;
+                e.second = (uint16_t)(e.second - take);
+            }
+            if (e.second > 0) kept.push_back(e);
+        }
+        if (moved <= 0) { msg = "Voce non più presente."; return false; }
+        if (!sf.writeGbBagPocket(a.pocket, kept)) { msg = "Scrittura fallita."; return false; }
+        // Aggiunge nel canonico (stack o coda), con rollback se pieno.
+        std::vector<std::pair<uint16_t, uint16_t>> dstCur;
+        for (auto& s : sf.readGbBag())
+            if (s.pocket == dst) dstCur.push_back({s.id, s.count});
+        int rest = moved;
+        for (auto& e : dstCur) {
+            if (rest <= 0) break;
+            if (e.first != a.id) continue;
+            int room = d->max - e.second;
+            if (room <= 0) continue;
+            int put = rest < room ? rest : room;
+            e.second = (uint16_t)(e.second + put);
+            rest -= put;
+        }
+        while (rest > 0) {
+            // capacita' tasca (stessa di gift).
+            int cap = gbPocketCap(dst);
+            if ((int)dstCur.size() >= cap) {
+                // rollback: rimette dov'era (meglio che perdere l'oggetto)
+                std::vector<std::pair<uint16_t, uint16_t>> back;
+                for (auto& s : sf.readGbBag())
+                    if (s.pocket == a.pocket) back.push_back({s.id, s.count});
+                back.push_back({a.id, (uint16_t)moved});
+                sf.writeGbBagPocket(a.pocket, back);
+                msg = "Pocket canonico pieno: niente spostato.";
+                return false;
+            }
+            int put = rest < d->max ? rest : d->max;
+            dstCur.push_back({a.id, (uint16_t)put});
+            rest -= put;
+        }
+        if (!sf.writeGbBagPocket(dst, dstCur)) { msg = "Scrittura fallita a metà: ricontrolla."; return false; }
+        msg = "Spostato nel pocket " + gbPocketToStr(dst) + " (ora consumabile).";
         return true;
     }
     msg = "Tipo anomalia ignoto.";

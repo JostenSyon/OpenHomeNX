@@ -554,12 +554,16 @@ private:
     std::vector<BackpackLeftRow> backpackLeft_;
     std::vector<SaveFile::GbaBagSlot> backpackGameBag_; // slot non vuoti dello scratch (GBA)
     std::vector<SaveFile::DsBagSlot> backpackGameBagDs_; // idem DS (Gen4/5)
+    std::vector<SaveFile::GbBagSlot> backpackGameBagGb_; // voci presenti (GB Gen1/2, compatte)
     bool backpackBagIsDs_ = false; // destra/audit leggono i vettori DS invece dei GBA
+    bool backpackBagIsGb_ = false; // idem GB (mai entrambe vere)
     int backpackLeftCursor_ = 0, backpackLeftScroll_ = 0;
     // Tab categoria del catalogo. GBA: 0=Sfere,1=MN,2=MT,3=Consumabili,
     // 4=Speciali,5=Bacche. Gen4: +6=Posta,7=Med,8=Lotta. Gen5: senza Sfere
     // (le sfere stanno negli Strumenti): 0=MN,1=MT,2=Consumabili,3=Speciali,
-    // 4=Bacche,5=Med. Vedi bpTabCount/bpCatTabFor/bpCatTabKey in ui_backpack.
+    // 4=Bacche,5=Med. Gen1: solo 0=Consumabili. Gen2: 0=Sfere,1=MN,2=MT,
+    // 3=Consumabili,4=Speciali (niente Bacche). Vedi bpTabCount/bpCatTabFor/
+    // bpCatTabKey in ui_backpack.
     int backpackCatTab_ = 0;
     bool backpackZlHeld_ = false, backpackZrHeld_ = false; // edge-detect ZL/ZR
     // Destra a gioco scelto: righe dello zaino VERO (al posto della
@@ -570,6 +574,7 @@ private:
     bool backpackBaseMode_ = false;
     std::vector<Backpack::Anomaly> backpackAnoms_;
     std::vector<Backpack::DsAnomaly> backpackDsAnoms_;
+    std::vector<Backpack::GbAnomaly> backpackGbAnoms_;
     std::vector<Backpack::JournalRow> backpackJournal_; // regali (audit): una riga per {item, pocket}
     int backpackAuditCursor_ = 0, backpackAuditScroll_ = 0;
     SaveFile backpackSave_;          // scratch

@@ -2942,6 +2942,156 @@ bool SaveFile::writeDsBagSlot(DsBagPocket p, int slot, uint16_t id, uint16_t cou
     return true;
 }
 
+// --- Borsa Gen1/2 GB ---
+// Layout PKHeX PlayerBag1/PlayerBag2 (SAV1Offsets INT, SAV2Offsets INT):
+// Gen1 Items @0x25C9 x20; Gen2 GS: TM @0x23E6 x57 fisso, Items @0x241F x20,
+// Key @0x2449 x26, Balls @0x2464 x12; Crystal +1 ovunque. Validato sulle
+// fixture Rossa/Gialla/Oro/Argento/Cristallo (bad_id=0 over_max=0).
+namespace {
+// Ordine id legali tasca TM Gen2 (PKHeX ItemStorage2.Machine, 50 TM + 7 HM):
+// l'indice IN QUESTO ARRAY e' l'offset del count nell'array fisso 57B.
+constexpr uint16_t GB_TM_ORDER[57] = {
+    191, 192, 193, 194, 196, 197, 198, 199, 200, 201,
+    202, 203, 204, 205, 206, 207, 208, 209, 210, 211,
+    212, 213, 214, 215, 216, 217, 218, 219, 221, 222,
+    223, 224, 225, 226, 227, 228, 229, 230, 231, 232,
+    233, 234, 235, 236, 237, 238, 239, 240, 241, 242,
+    243, 244, 245, 246, 247, 248, 249,
+};
+struct GbBagPouch { SaveFile::GbBagPocket pocket; int off; int slots; bool fixed; };
+struct GbBagLayout { GbBagPouch pouches[4]; int n; };
+bool gbBagLayoutFor(GameType g, bool crystal, GbBagLayout& out) {
+    using P = SaveFile::GbBagPocket;
+    if (g == GameType::RED || g == GameType::BLUE || g == GameType::YELLOW) {
+        out.n = 1;
+        out.pouches[0] = {P::Items, 0x25C9, 20, false};
+        return true;
+    }
+    if (g == GameType::GOLD || g == GameType::SILVER || g == GameType::CRYSTAL) {
+        const int d = crystal ? 1 : 0; // Crystal sposta tutto di +1
+        out.n = 4;
+        out.pouches[0] = {P::TmHm, 0x23E6 + d, 57, true};
+        out.pouches[1] = {P::Items, 0x241F + d, 20, false};
+        out.pouches[2] = {P::Key, 0x2449 + d, 26, false};
+        out.pouches[3] = {P::Balls, 0x2464 + d, 12, false};
+        return true;
+    }
+    return false;
+}
+} // namespace
+
+bool SaveFile::gbBagSupported() const {
+    if (!loaded_) return false;
+    GbBagLayout L;
+    return gbBagLayoutFor(gameType_, gbcIsCrystal_, L);
+}
+
+std::vector<uint16_t> SaveFile::gbBagTmOrder() const {
+    if (!isGen2File(gameType_)) return {};
+    return std::vector<uint16_t>(std::begin(GB_TM_ORDER), std::end(GB_TM_ORDER));
+}
+
+std::vector<SaveFile::GbBagSlot> SaveFile::readGbBag() const {
+    std::vector<GbBagSlot> out;
+    if (!loaded_) return out;
+    GbBagLayout L;
+    if (!gbBagLayoutFor(gameType_, gbcIsCrystal_, L)) return out;
+    for (int pi = 0; pi < L.n; pi++) {
+        const auto& P = L.pouches[pi];
+        if (static_cast<size_t>(P.off) >= rawData_.size()) return out;
+        const uint8_t* base = rawData_.data() + P.off;
+        if (P.fixed) {
+            // TM: array fisso, count per indice legale (0 = assente).
+            size_t need = static_cast<size_t>(P.slots);
+            if (static_cast<size_t>(P.off) + need > rawData_.size()) return out;
+            int pos = 0;
+            for (int i = 0; i < P.slots; i++) {
+                if (base[i] == 0) continue;
+                GbBagSlot e;
+                e.pocket = P.pocket;
+                e.slot = pos++;
+                e.id = GB_TM_ORDER[i];
+                e.count = base[i];
+                out.push_back(e);
+            }
+            continue;
+        }
+        // count-driven (come PKHeX GetPouch, con sanity su count assurdi).
+        int n = base[0];
+        if (n < 0 || n > P.slots) continue; // count corrotto: tasca illeggibile, mai crash
+        for (int i = 0; i < n; i++) {
+            GbBagSlot e;
+            e.pocket = P.pocket;
+            e.slot = i;
+            if (P.pocket == GbBagPocket::Key) {
+                e.id = base[1 + i];
+                e.count = 1;
+            } else {
+                e.id = base[1 + i * 2];
+                e.count = base[1 + i * 2 + 1];
+            }
+            out.push_back(e);
+        }
+    }
+    return out;
+}
+
+bool SaveFile::writeGbBagPocket(GbBagPocket p,
+                                const std::vector<std::pair<uint16_t, uint16_t>>& items) {
+    if (!loaded_) return false;
+    GbBagLayout L;
+    if (!gbBagLayoutFor(gameType_, gbcIsCrystal_, L)) return false;
+    const GbBagPouch* found = nullptr;
+    for (int pi = 0; pi < L.n; pi++)
+        if (L.pouches[pi].pocket == p) { found = &L.pouches[pi]; break; }
+    if (!found) return false; // tasca assente per questo gioco
+    uint8_t* base = rawData_.data() + found->off;
+    if (found->fixed) {
+        // TM: riscrittura integrale 57B per indice legale (come PKHeX SetPouch).
+        if (static_cast<size_t>(found->off) + 57 > rawData_.size()) return false;
+        uint8_t full[57] = {};
+        for (auto& kv : items) {
+            if (kv.second > 0xFF) return false;
+            int idx = -1;
+            for (int i = 0; i < 57; i++)
+                if (GB_TM_ORDER[i] == kv.first) { idx = i; break; }
+            if (idx < 0) return false; // id fuori lista legale: mai scrivere a caso
+            if (full[idx] != 0) return false; // duplicato in input: abortito
+            full[idx] = static_cast<uint8_t>(kv.second);
+        }
+        size_t total = 0;
+        for (int i = 0; i < 57; i++) if (full[i] != 0) total++;
+        if (total > static_cast<size_t>(found->slots)) return false;
+        std::memcpy(base, full, 57);
+        dirty_ = true; // checksum sistemati da saveGB/saveGBC
+        return true;
+    }
+    if ((int)items.size() > found->slots) return false;
+    size_t region = 1 + static_cast<size_t>(found->slots) * 2 + 1;
+    if (static_cast<size_t>(found->off) + region > rawData_.size()) return false;
+    if (found->pocket == GbBagPocket::Key) {
+        region = 1 + static_cast<size_t>(found->slots) + 1;
+        if (static_cast<size_t>(found->off) + region > rawData_.size()) return false;
+        base[0] = static_cast<uint8_t>(items.size());
+        for (size_t i = 0; i < items.size(); i++) {
+            // Key: solo id u8 (il count e' sempre 1 alla lettura).
+            if (items[i].first > 0xFF) return false;
+            base[1 + i] = static_cast<uint8_t>(items[i].first);
+        }
+        base[1 + items.size()] = 0xFF;
+    } else {
+        base[0] = static_cast<uint8_t>(items.size());
+        for (size_t i = 0; i < items.size(); i++) {
+            if (items[i].first > 0xFF || items[i].second > 0xFF) return false;
+            base[1 + i * 2] = static_cast<uint8_t>(items[i].first);
+            base[1 + i * 2 + 1] = static_cast<uint8_t>(items[i].second);
+        }
+        base[1 + items.size() * 2] = 0xFF;
+    }
+    dirty_ = true;
+    return true;
+}
+
 // --- Gen 4/5 (DS .sav dumps, PKHeX SAV4*/SAV5BW.cs) ---
 
 // CRC16-CCITT-FALSE (poly 0x1021, init 0xFFFF, no xorout): PKHeX

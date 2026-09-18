@@ -139,6 +139,26 @@ public:
     // Scrive uno slot (set dirty). False se pocket/slot fuori range.
     bool writeDsBagSlot(DsBagPocket p, int slot, uint16_t id, uint16_t count);
 
+    // Borsa Gen1/2 GB (PKHeX PlayerBag1/PlayerBag2 + InventoryPouchGB).
+    // Niente slot fissi: tasche normali = liste compattate [count][id,count]*
+    // + 0xFF (Key: [count][id]* + 0xFF, count sempre 1); TM Gen2 = array fisso
+    // 57B (count per indice lista legale, 0 = assente). Gli slot esposti qui
+    // sono POSIZIONI nella lista compattata (per vista/audit); la scrittura
+    // riscrive la tasca intera compattata come PKHeX SetPouch. Gen1: solo
+    // Items (le MT sono oggetti normali); PC fuori perimetro. Solo INT
+    // (i JP hanno offset diversi e lo scan li rifiuta).
+    enum class GbBagPocket { Items = 0, Key, TmHm, Balls, Count };
+    struct GbBagSlot { GbBagPocket pocket; int slot; uint16_t id; uint16_t count; };
+    bool gbBagSupported() const;
+    // Tutte le voci presenti (niente vuoti: le liste sono compattate).
+    std::vector<GbBagSlot> readGbBag() const;
+    // Riscrive una tasca intera da lista compattata (set dirty). False se
+    // tasca assente per il gioco o count oltre i max gestiti.
+    bool writeGbBagPocket(GbBagPocket p,
+                          const std::vector<std::pair<uint16_t, uint16_t>>& items);
+    // Ordine id legali della tasca TM Gen2 (array fisso); vuoto altrove.
+    std::vector<uint16_t> gbBagTmOrder() const;
+
     // Get trainer info from save file (SV/ZA only, SCBlock-based)
     TrainerInfo getTrainerInfo() const;
 

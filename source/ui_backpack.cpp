@@ -63,6 +63,16 @@ const char* bpDsPocketKeyByEnum(SaveFile::DsBagPocket p) {
         default: return StrKey::BpItems;
     }
 }
+// Header tasca zaino VERO GB (destra): solo tasche esistenti (nessuna nuova
+// etichetta i18n: items/key/balls/tm bastano).
+const char* bpGbPocketKeyByEnum(SaveFile::GbBagPocket p) {
+    switch (p) {
+        case SaveFile::GbBagPocket::Key: return StrKey::BpKey;
+        case SaveFile::GbBagPocket::Balls: return StrKey::BpBalls;
+        case SaveFile::GbBagPocket::TmHm: return StrKey::BpTm;
+        default: return StrKey::BpItems;
+    }
+}
 // Trova la voce DB per id preferendo quella valida per il gioco (gli id si
 // sovrappongono tra DB di gen diverse: es. 433 Journal Gen4 / Guidebook moderno).
 static const Backpack::ItemDef* bpFindDefFor(GameType g,
@@ -73,21 +83,30 @@ static const Backpack::ItemDef* bpFindDefFor(GameType g,
         if (d.id == id) return &d;
     return nullptr;
 }
-// Numero tab catalogo per famiglia (GBA 6, Gen4 9, Gen5 6 con indici diversi).
+// Numero tab catalogo per famiglia (GBA 6, Gen4 9, Gen5 6 con indici diversi,
+// Gen1 1, Gen2 5 senza Bacche).
 static int bpTabCount(GameType g) {
     if (isGen4File(g)) return 9;
-    return 6;
+    if (isGen5File(g)) return 6;
+    if (isGen1File(g)) return 1;
+    if (isGen2File(g)) return 5;
+    return 6; // GBA
 }
 // Tab del catalogo per una voce. GBA: 0=Sfere,1=MN,2=MT,3=Consumabili,
 // 4=Speciali,5=Bacche (invariato). Gen4: +6=Mail,7=Med,8=Lotta.
 // Gen5: 0=MN,1=MT,2=Consumabili,3=Speciali,4=Bacche,5=Med (niente Sfere).
+// Gen1: tutto in 0=Consumabili. Gen2: 0=Sfere,1=MN,2=MT,3=Consumabili,
+// 4=Speciali (niente Bacche: le bacche stanno negli Strumenti).
 // MN prima di MT: nel gioco vero le Macchine Nascoste vengono prima
 // (richiesto esplicitamente).
+static bool bpIsHmName(const Backpack::ItemDef& d) {
+    return d.name.size() >= 2 && d.name[0] == 'H' && d.name[1] == 'M';
+}
 static int bpCatTabFor(GameType g, const Backpack::ItemDef& d) {
     using P = SaveFile::DsBagPocket;
     if (isGen4File(g) || isGen5File(g)) {
         P p = Backpack::dsPocketFromStr(d.pocket);
-        bool isHm = d.name.size() >= 2 && d.name[0] == 'H' && d.name[1] == 'M';
+        bool isHm = bpIsHmName(d);
         if (isGen5File(g)) {
             if (p == P::TmHm) return isHm ? 0 : 1;
             if (p == P::Key) return 3;
@@ -104,18 +123,34 @@ static int bpCatTabFor(GameType g, const Backpack::ItemDef& d) {
         if (p == P::Battle) return 8;
         return 3; // Items
     }
+    if (isGen1File(g)) return 0; // tutto consumabile
+    if (isGen2File(g)) {
+        using G = SaveFile::GbBagPocket;
+        G p = Backpack::gbPocketFromStr(d.pocket);
+        if (p == G::Balls) return 0;
+        if (p == G::TmHm) return bpIsHmName(d) ? 1 : 2;
+        if (p == G::Key) return 4;
+        return 3; // Items
+    }
     SaveFile::GbaBagPocket gp = Backpack::canonPocket(d);
     using G = SaveFile::GbaBagPocket;
     if (gp == G::Balls) return 0;
-    if (gp == G::TmHm) {
-        bool isHm = d.name.size() >= 2 && d.name[0] == 'H' && d.name[1] == 'M';
-        return isHm ? 1 : 2;
-    }
+    if (gp == G::TmHm) return bpIsHmName(d) ? 1 : 2;
     if (gp == G::Key) return 4;
     if (gp == G::Berries) return 5;
     return 3; // solo Oggetti: le Bacche hanno ora una tab propria
 }
 static const char* bpCatTabKey(GameType g, int tab) {
+    if (isGen1File(g)) return StrKey::BpTabCons;
+    if (isGen2File(g)) {
+        switch (tab) {
+            case 0: return StrKey::BpTabBalls;
+            case 1: return StrKey::BpTabMn;
+            case 2: return StrKey::BpTabMt;
+            case 4: return StrKey::BpTabSpecial;
+            default: return StrKey::BpTabCons;
+        }
+    }
     if (isGen5File(g)) {
         switch (tab) {
             case 0: return StrKey::BpTabMn;
@@ -164,7 +199,8 @@ static bool bpIsBagGame(GameType g) {
     if (g == GameType::RUBY || g == GameType::SAPPHIRE ||
         g == GameType::EMERALD || isFRLG(g))
         return true;
-    return isGen4File(g) || isGen5File(g); // zaini DS (Gen4/5)
+    if (isGen4File(g) || isGen5File(g)) return true; // zaini DS (Gen4/5)
+    return isGen1File(g) || isGen2File(g); // zaini GB (Gen1/2)
 }
 
 // Definita qui (prima di ogni uso: backpackStickStep/backpackReloadItems
@@ -184,9 +220,11 @@ void UI::openBackpack() {
 void UI::openBackpackOn(int selIdx) {
     if (backpackDefs_.empty()) {
         std::string err;
-        // Tutti i DB (Gen3+Gen4+Gen5): gameOk filtra per gioco, gli id
+        // Tutti i DB (Gen1/2/3/4/5): gameOk filtra per gioco, gli id
         // sovrapposti tra gen si risolvono con bpFindDefFor.
-        const char* dbFiles[3] = {"romfs:/data/items_gen3.json",
+        const char* dbFiles[5] = {"romfs:/data/items_gen1.json",
+                                  "romfs:/data/items_gen2.json",
+                                  "romfs:/data/items_gen3.json",
                                   "romfs:/data/items_gen4.json",
                                   "romfs:/data/items_gen5.json"};
         std::vector<Backpack::ItemDef> all;
@@ -235,7 +273,7 @@ void UI::openBackpackOn(int selIdx) {
                 break;
             }
         }
-        // Il gioco evidenziato non e' zaino-compatibile (es. Gen4+) o non
+        // Il gioco evidenziato non e' zaino-compatibile (es. Switch) o non
         // disponibile per lo zaino: NON aprire a caso il primo della lista
         // (si regalava nel gioco sbagliato senza che fosse esplicito). Come
         // per le banche, si ricade sulla scelta manuale (bug 2026-09-13).
@@ -311,6 +349,7 @@ void UI::backpackReloadItems() {
     backpackOwned_.clear();
     backpackGameBag_.clear();
     backpackGameBagDs_.clear();
+    backpackGameBagGb_.clear();
     backpackLeft_.clear();
     backpackBag_.clear();
     for (auto& d : backpackDefs_)
@@ -326,6 +365,7 @@ void UI::backpackReloadItems() {
     // Gen3 senza Mail): clamp, mai catalogo vuoto per una tab fantasma.
     if (backpackCatTab_ >= bpTabCount(backpackGame_)) backpackCatTab_ = 0;
     backpackBagIsDs_ = false;
+    backpackBagIsGb_ = false;
     if (backpackLoaded_ && backpackSave_.gameType() == backpackGame_) {
         if (isGen4File(backpackGame_) || isGen5File(backpackGame_)) {
             for (auto& s : backpackSave_.readDsBag()) {
@@ -335,6 +375,12 @@ void UI::backpackReloadItems() {
                 }
             }
             backpackBagIsDs_ = true;
+        } else if (isGen1File(backpackGame_) || isGen2File(backpackGame_)) {
+            for (auto& s : backpackSave_.readGbBag()) {
+                backpackOwned_[s.id] += s.count;
+                backpackGameBagGb_.push_back(s);
+            }
+            backpackBagIsGb_ = true;
         } else {
             for (auto& s : backpackSave_.readGbaBag()) {
                 if (s.id != 0) {
@@ -364,6 +410,15 @@ void UI::backpackReloadItems() {
         if (backpackBagIsDs_) {
             for (size_t i = 0; i < backpackGameBagDs_.size(); i++) {
                 int p = (int)backpackGameBagDs_[i].pocket;
+                if (p != curPocket) {
+                    backpackBag_.push_back({true, -1, p});
+                    curPocket = p;
+                }
+                backpackBag_.push_back({false, (int)i, -1});
+            }
+        } else if (backpackBagIsGb_) {
+            for (size_t i = 0; i < backpackGameBagGb_.size(); i++) {
+                int p = (int)backpackGameBagGb_[i].pocket;
                 if (p != curPocket) {
                     backpackBag_.push_back({true, -1, p});
                     curPocket = p;
@@ -428,7 +483,8 @@ void UI::backpackCatTabStep(int dir) {
 void UI::backpackStickStep(int dir) {
     if (backpackFocusItems_) {
         if (backpackAudit_) {
-            size_t na = backpackBagIsDs_ ? backpackDsAnoms_.size() : backpackAnoms_.size();
+            size_t na = backpackBagIsGb_ ? backpackGbAnoms_.size()
+                      : backpackBagIsDs_ ? backpackDsAnoms_.size() : backpackAnoms_.size();
             int n = (int)(na + backpackJournal_.size());
             backpackAuditCursor_ += dir;
             bpScrollIntoView(backpackAuditCursor_, backpackAuditScroll_, n, BP_VISIBLE_LEFT);
@@ -508,16 +564,20 @@ void UI::backpackClampQty() {
 void UI::backpackRefreshAudit() {
     backpackAnoms_.clear();
     backpackDsAnoms_.clear();
+    backpackGbAnoms_.clear();
     backpackJournal_.clear();
     // Solo se lo scratch contiene davvero questo gioco (dopo un hover senza
     // scelta lo scratch è vecchio o vuoto: niente dati altrui in vista).
     if (!backpackLoaded_ || backpackSave_.gameType() != backpackGame_) return;
-    if (backpackBagIsDs_)
+    if (backpackBagIsGb_)
+        backpackGbAnoms_ = Backpack::gbScanBag(backpackSave_, backpackDefs_);
+    else if (backpackBagIsDs_)
         backpackDsAnoms_ = Backpack::dsScanBag(backpackSave_, backpackDefs_);
     else
         backpackAnoms_ = Backpack::scanBag(backpackSave_, backpackDefs_);
     backpackJournal_ = Backpack::journalFor(basePath_, backpackGame_);
-    size_t n = backpackBagIsDs_ ? backpackDsAnoms_.size() : backpackAnoms_.size();
+    size_t n = backpackBagIsGb_ ? backpackGbAnoms_.size()
+             : backpackBagIsDs_ ? backpackDsAnoms_.size() : backpackAnoms_.size();
     if (backpackAuditCursor_ >= (int)(n + backpackJournal_.size()))
         backpackAuditCursor_ = 0;
 }
@@ -581,7 +641,9 @@ void UI::backpackDoGift() {
         backpackBackedUp_.insert(gi);
     }
     std::string msg;
-    bool gifted = backpackBagIsDs_
+    bool gifted = backpackBagIsGb_
+        ? Backpack::gbGift(backpackSave_, basePath_, d, qty, base, msg)
+        : backpackBagIsDs_
         ? Backpack::dsGift(backpackSave_, basePath_, d, qty, base, msg)
         : Backpack::gift(backpackSave_, basePath_, d, qty, base, msg);
     if (!gifted) {
@@ -607,6 +669,48 @@ void UI::backpackDoTake() {
     if (backpackBagCursor_ < 0 || backpackBagCursor_ >= (int)backpackBag_.size()) return;
     const auto& row = backpackBag_[backpackBagCursor_];
     if (row.header) return;
+    if (backpackBagIsGb_) {
+        // GB: niente slot fissi — toglie la voce e riscrive la tasca compattata.
+        if (row.idx < 0 || row.idx >= (int)backpackGameBagGb_.size()) return;
+        const auto& bs = backpackGameBagGb_[row.idx];
+        std::string nm = "id " + std::to_string(bs.id);
+        const auto* dd = bpFindDefFor(backpackGame_, backpackDefs_, bs.id);
+        if (dd) nm = dd->name;
+        char body[200];
+        std::snprintf(body, sizeof(body), "Togli %s x%d dallo zaino?", nm.c_str(), bs.count);
+        if (!showConfirmDialog(i18n::get(StrKey::BackpackTitle), body)) return;
+        std::vector<std::pair<uint16_t, uint16_t>> kept;
+        bool skipped = false;
+        for (auto& s : backpackSave_.readGbBag()) {
+            if (s.pocket != bs.pocket) continue;
+            if (!skipped && s.id == bs.id && s.count == bs.count) {
+                skipped = true; // solo la voce scelta (mai i gemelli)
+                continue;
+            }
+            kept.push_back({s.id, s.count});
+        }
+        // Ricostruisce solo se la voce c'era davvero (altrimenti niente scritto).
+        if (!skipped) {
+            DebugLog::line("backpack take GB: voce non trovata (pocket %d id %d)",
+                           (int)bs.pocket, bs.id);
+            showMessageAndWait(i18n::get(StrKey::BackpackTitle), "Voce non più presente.");
+            return;
+        }
+        if (!backpackSave_.writeGbBagPocket(bs.pocket, kept)) {
+            DebugLog::line("backpack take GB: writeGbBagPocket fallito");
+            showMessageAndWait(i18n::get(StrKey::BackpackTitle), "Scrittura fallita.");
+            return;
+        }
+        if (!backpackPersist("take")) {
+            DebugLog::line("backpack take: %s tolto in memoria ma persist fallito", nm.c_str());
+            return;
+        }
+        DebugLog::line("backpack take: %s tolto su %s -> ok", nm.c_str(), gameInfo(backpackGame_).gameTag);
+        backpackReloadItems();
+        showMessageAndWait(i18n::get(StrKey::BackpackTitle), "Tolto.");
+        markDirty();
+        return;
+    }
     if (backpackBagIsDs_) {
         if (row.idx < 0 || row.idx >= (int)backpackGameBagDs_.size()) return;
         const auto& bs = backpackGameBagDs_[row.idx];
@@ -658,13 +762,21 @@ void UI::backpackDoTake() {
 
 void UI::backpackDoFixSelected() {
     // Niente cancellazioni per sbaglio: ogni fix distruttiva chiede conferma.
-    size_t na = backpackBagIsDs_ ? backpackDsAnoms_.size() : backpackAnoms_.size();
+    size_t na = backpackBagIsGb_ ? backpackGbAnoms_.size()
+              : backpackBagIsDs_ ? backpackDsAnoms_.size() : backpackAnoms_.size();
     if (backpackAuditCursor_ < 0) return;
     std::string msg;
     if ((size_t)backpackAuditCursor_ < na) {
         std::string what;
         bool fixed;
-        if (backpackBagIsDs_) {
+        if (backpackBagIsGb_) {
+            const auto& a = backpackGbAnoms_[backpackAuditCursor_];
+            what = (a.kind == "invalid") ? "Rimuovi voce?"
+                 : (a.kind == "over-max") ? "Clampa al max?"
+                 : "Sposta nel pocket canonico?";
+            if (!showConfirmDialog(i18n::get(StrKey::BackpackTitle), what)) return;
+            fixed = Backpack::gbFixAnomaly(backpackSave_, a, backpackDefs_, msg);
+        } else if (backpackBagIsDs_) {
             const auto& a = backpackDsAnoms_[backpackAuditCursor_];
             what = (a.kind == "invalid") ? "Svuota slot?"
                  : (a.kind == "over-max") ? "Clampa al max?"
@@ -695,7 +807,9 @@ void UI::backpackDoFixSelected() {
         for (auto& d : backpackDefs_)
             if (d.id == itemId && Backpack::gameOk(backpackGame_, d)) { std::snprintf(body, sizeof(body), "Riprendi %s (%s)?", d.name.c_str(), mode.c_str()); break; }
         if (!showConfirmDialog(i18n::get(StrKey::BackpackTitle), body)) return;
-        bool taken = backpackBagIsDs_
+        bool taken = backpackBagIsGb_
+            ? Backpack::gbTakeBack(backpackSave_, basePath_, backpackGame_, itemId, jr.pocket, msg)
+            : backpackBagIsDs_
             ? Backpack::dsTakeBack(backpackSave_, basePath_, backpackGame_, itemId, jr.pocket, msg)
             : Backpack::takeBack(backpackSave_, basePath_, backpackGame_, itemId, jr.pocket, msg);
         if (!taken) {
@@ -790,9 +904,10 @@ void UI::drawBackpackPopup() {
             if (nm.length() > 34) nm = nm.substr(0, 33) + ".";
             drawText(nm, lx + 8, rowY + 7, T().text, fontSmall_);
             // Mossa MT/MN a destra: solo Gen3 (tabella kBpTmHmMove id 289..346).
-            // DS: niente suffisso (nessuna tabella verificata, mai inventare).
-            bool isDsCat = isGen4File(backpackGame_) || isGen5File(backpackGame_);
-            int moveId = isDsCat ? -1 : bpTmHmMoveId(d);
+            // DS/GB: niente suffisso (nessuna tabella verificata, mai inventare).
+            bool isGbaCat = !isGen4File(backpackGame_) && !isGen5File(backpackGame_) &&
+                            !isGen1File(backpackGame_) && !isGen2File(backpackGame_);
+            int moveId = isGbaCat ? bpTmHmMoveId(d) : -1;
             bool isKeyItem = d.pocket == "key";
             // Per gli Speciali non ripetiamo piu' l'etichetta pocket ("Base")
             // su ogni riga: la tab stessa ora si chiama col nome reale del
@@ -819,7 +934,8 @@ void UI::drawBackpackPopup() {
         }
     } else {
         // --- Sinistra: anomalie + regalati (giornale) ---
-        size_t na = backpackBagIsDs_ ? backpackDsAnoms_.size() : backpackAnoms_.size();
+        size_t na = backpackBagIsGb_ ? backpackGbAnoms_.size()
+                  : backpackBagIsDs_ ? backpackDsAnoms_.size() : backpackAnoms_.size();
         size_t nj = backpackJournal_.size();
         size_t total = na + nj;
         if (total == 0)
@@ -835,7 +951,13 @@ void UI::drawBackpackPopup() {
             }
             std::string txt;
             if (i < na) {
-                if (backpackBagIsDs_) {
+                if (backpackBagIsGb_) {
+                    const auto& a = backpackGbAnoms_[i];
+                    std::string nm = "id " + std::to_string(a.id);
+                    const auto* dd = bpFindDefFor(backpackGame_, backpackDefs_, a.id);
+                    if (dd) nm = dd->name;
+                    txt = nm + " x" + std::to_string(a.count) + " [" + a.kind + "]";
+                } else if (backpackBagIsDs_) {
                     const auto& a = backpackDsAnoms_[i];
                     std::string nm = "id " + std::to_string(a.id);
                     const auto* dd = bpFindDefFor(backpackGame_, backpackDefs_, a.id);
@@ -893,7 +1015,9 @@ void UI::drawBackpackPopup() {
             int rowY = listY + r * BP_ROW_H;
             const auto& row = backpackBag_[i];
             if (row.header) {
-                std::string hdr = backpackBagIsDs_
+                std::string hdr = backpackBagIsGb_
+                    ? i18n::get(bpGbPocketKeyByEnum((SaveFile::GbBagPocket)row.pocket))
+                    : backpackBagIsDs_
                     ? i18n::get(bpDsPocketKeyByEnum((SaveFile::DsBagPocket)row.pocket))
                     : i18n::get(bpPocketKeyByEnum((SaveFile::GbaBagPocket)row.pocket));
                 drawTextCentered(hdr, rx + rw / 2, rowY + 7, T().textDim, fontSmall_);
@@ -905,7 +1029,11 @@ void UI::drawBackpackPopup() {
                 drawRectOutline(rx - 6, rowY, rw + 12, BP_ROW_H - 4, T().cursor, 2);
             }
             uint16_t bsId = 0, bsCount = 0;
-            if (backpackBagIsDs_) {
+            if (backpackBagIsGb_) {
+                if (row.idx < 0 || row.idx >= (int)backpackGameBagGb_.size()) continue;
+                bsId = backpackGameBagGb_[row.idx].id;
+                bsCount = backpackGameBagGb_[row.idx].count;
+            } else if (backpackBagIsDs_) {
                 if (row.idx < 0 || row.idx >= (int)backpackGameBagDs_.size()) continue;
                 bsId = backpackGameBagDs_[row.idx].id;
                 bsCount = backpackGameBagDs_[row.idx].count;

@@ -19,6 +19,8 @@ struct ItemDef {
     bool ruby = false, emerald = false, frlg = false;
     bool dp = false, pt = false, hgss = false;
     bool bw = false, b2w2 = false;
+    bool red = false, blue = false, yellow = false;
+    bool gold = false, silver = false, crystal = false;
     bool flag = false; // biglietto evento: richiede anche il flag (solo Gen3)
 };
 
@@ -101,6 +103,27 @@ bool dsTakeBack(SaveFile& sf, const std::string& basePath, GameType g,
                 int itemId, const std::string& pocket, std::string& msg);
 std::vector<DsAnomaly> dsScanBag(SaveFile& sf, const std::vector<ItemDef>& defs);
 bool dsFixAnomaly(SaveFile& sf, const DsAnomaly& a, const std::vector<ItemDef>& defs,
+                  std::string& msg);
+
+// --- Zaino GB (Gen1/2): tasche compattate senza slot fissi (PKHeX
+// InventoryPouchGB). Gli slot esposti sono posizioni nella lista compattata;
+// la scrittura riscrive la tasca intera. PC fuori perimetro v1.
+struct GbAnomaly {
+    SaveFile::GbBagPocket pocket;
+    int slot = 0;
+    uint16_t id = 0, count = 0;
+    std::string kind; // "invalid"|"over-max"|"protected"
+};
+const ItemDef* gbFindDef(GameType g, const std::vector<ItemDef>& defs, int id);
+SaveFile::GbBagPocket gbCanonPocket(const ItemDef& d);
+std::string gbPocketToStr(SaveFile::GbBagPocket p);
+SaveFile::GbBagPocket gbPocketFromStr(const std::string& p);
+bool gbGift(SaveFile& sf, const std::string& basePath, const ItemDef& d,
+            int qty, bool baseMode, std::string& msg);
+bool gbTakeBack(SaveFile& sf, const std::string& basePath, GameType g,
+                int itemId, const std::string& pocket, std::string& msg);
+std::vector<GbAnomaly> gbScanBag(SaveFile& sf, const std::vector<ItemDef>& defs);
+bool gbFixAnomaly(SaveFile& sf, const GbAnomaly& a, const std::vector<ItemDef>& defs,
                   std::string& msg);
 
 } // namespace Backpack
