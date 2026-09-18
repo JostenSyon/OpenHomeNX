@@ -664,6 +664,15 @@ void SaveFile::setPartySlot(int idx, const Pokemon& pkm) {
             if(off+PokeCrypto::SIZE_6PARTY <= boxDataLen_){ toWrite.getEncrypted(boxData_+off); }
         }
     }
+    // Registra nel Pokedex (2026-09-18): setBoxSlot lo fa da sempre, ma
+    // setPartySlot non l'ha MAI fatto -- qualsiasi Pokemon piazzato
+    // direttamente in squadra (trasferimento in party, non in una box)
+    // restava fuori dal Pokedex per sempre (bug osservato: Espeon in
+    // squadra ma assente dal dex). registerPokemon() e' idempotente e
+    // gia' scarta da sola vuoti/uova.
+    if (!toWrite.isEmpty())
+        Pokedex::registerPokemon(*this, toWrite);
+
     dsParty_[idx]=toWrite;
     dirty_=true; invalidateAllBoxCache();
 }
