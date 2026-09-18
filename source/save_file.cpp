@@ -2387,6 +2387,7 @@ bool SaveFile::loadGBA(const std::string& path) {
     // presente solo nel banco piu' vecchio (es. dopo un trasferimento)
     // senza perdere nessun progresso successivo. Il prossimo saveGBA()
     // ricopiera' il banco attivo (ora con l'unione) sull'altro banco.
+    bool gbaPokedexMergeDirty = false;
     if (valid[0] && valid[1]) {
         constexpr int kPokedexOfs = 0x18, kCaughtOfs = 0x10, kSeenOfs = 0x44;
         constexpr int kMaxSpecies = 386;
@@ -2425,6 +2426,7 @@ bool SaveFile::loadGBA(const std::string& path) {
                 DebugLog::line("loadGBA: %s -> Pokedex banco %d unito nel banco attivo %d "
                                "(+%d catture, +%d viste recuperate dal banco piu' vecchio)",
                                path.c_str(), otherSlot, gbaActiveSlot_, mergedCaught, mergedSeen);
+                gbaPokedexMergeDirty = true;
             }
         }
     }
@@ -2536,6 +2538,22 @@ bool SaveFile::loadGBA(const std::string& path) {
         } else {
             DebugLog::line("loadGBA: %s -> party not found (scanned %zu)", path.c_str(), large.size());
         }
+    }
+
+    // Persistenza immediata (2026-09-18 v2): l'unione Pokedex sopra vive
+    // solo in RAM finche' non viene scritta su disco. Se OpenHomeNX si
+    // limita a SFOGLIARE il save (import scan) e poi l'utente lancia mGBA
+    // direttamente in chain-load, mGBA legge il file COSI' COM'E' su SD --
+    // non vede mai la correzione fatta solo in memoria. Quindi appena
+    // l'unione ha davvero recuperato qualcosa, la ri-salviamo subito qui
+    // (saveGBA mischia il banco attivo, ora corretto, sull'altro banco e
+    // ricalcola i checksum): cosi' il file su disco e' gia' sano PRIMA
+    // che l'utente apra mGBA, senza bisogno di nessuna azione manuale.
+    if (gbaPokedexMergeDirty) {
+        if (saveGBA(path))
+            DebugLog::line("loadGBA: %s -> unione Pokedex salvata su disco", path.c_str());
+        else
+            DebugLog::line("loadGBA: %s -> unione Pokedex NON salvata (saveGBA fallita)", path.c_str());
     }
 
     loaded_ = true;
