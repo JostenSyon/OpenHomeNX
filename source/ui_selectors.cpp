@@ -567,7 +567,7 @@ void UI::rescanImportedGames() {
     availableGames_.erase(
         std::remove_if(availableGames_.begin(), availableGames_.end(),
                        [](GameType g) { return isImportedFile(g) || isGen1File(g) || isGen2File(g) ||
-                                               isGen45File(g) || isGen6XY(g) || isGen7SM(g); }),
+                                               isGen45File(g) || isGen6XY(g) || isGen6ORAS(g) || isGen7SM(g) || isGen7USUM(g); }),
         availableGames_.end());
 
     importedGames_ = scanImportPaths(importPaths_, autoCheckUsb_);
@@ -953,8 +953,12 @@ SDL_Color UI::flatBgColorFor(GameType g) const {
         case GameType::WHITE2:   return {0xF8, 0xF8, 0xF8, 255};
         case GameType::X:        return {0x20, 0x60, 0xC0, 255};
         case GameType::Y:        return {0xC0, 0x30, 0x30, 255};
+        case GameType::OMEGA_RUBY:    return {0xC0, 0x20, 0x20, 255};
+        case GameType::ALPHA_SAPPHIRE: return {0x20, 0x60, 0xC0, 255};
         case GameType::SUN:      return {0xE8, 0x70, 0x20, 255};
         case GameType::MOON:     return {0x30, 0x30, 0x60, 255};
+        case GameType::ULTRA_SUN:  return {0xF8, 0x90, 0x18, 255};
+        case GameType::ULTRA_MOON: return {0x40, 0x20, 0x80, 255};
         case GameType::RED:      return {0xE0, 0x20, 0x20, 255};
         case GameType::BLUE:     return {0x20, 0x60, 0xE0, 255};
         case GameType::YELLOW:   return {0xE8, 0xC8, 0x10, 255};

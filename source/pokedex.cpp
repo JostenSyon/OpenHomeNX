@@ -1054,6 +1054,7 @@ static void registerRSE(SaveFile& save, const Pokemon& pkm) {
     setFlagBit(pdx + FRLG_CAUGHT_OFS, species);
     setFlagBit(pdx + FRLG_SEEN_OFS, species);
     save.markDirty();
+    DebugLog::line("registerRSE: spc=%u bit=%u (caught+seen)", species, species - 1);
     // National Dex: in RSE è bloccato finché non arriva un fuori-Hoenn
     // (come il trade FRLG→RSE originale). Lo sblocchiamo automatico al primo
     // fuori-Hoenn, mai per i 202 Hoenn.
@@ -1086,6 +1087,62 @@ static void registerGen2(SaveFile& save, const Pokemon& pkm) {
     save.markDirty();
 }
 
+// Gen6 XY: ZukanData blocco 20 @0x15000 (PKHeX Zukan6: caught @+0x8,
+// seen maschi @+0x68, bit = specie-1, 721 specie). Verificato
+// empiricamente su oh_y.sav (15/15 boxed sono caught).
+static void registerXY(SaveFile& save, const Pokemon& pkm) {
+    uint16_t species = pkm.species();
+    if (species == 0 || species > 721) return;
+    constexpr size_t kDex = 0x15000;
+    if (save.rawDataSize() < kDex + 0x68 + 91) return;
+    uint8_t* d = save.rawData();
+    setFlagBit(d + kDex + 0x08, species);
+    setFlagBit(d + kDex + 0x68, species);
+    save.markDirty();
+}
+
+// Gen6 ORAS: ZukanData blocco 20 @0x15000 (PKHeX Zukan6: caught @+0x8,
+// seen maschi @+0x68, bit = specie-1, 721 specie). Verificato
+// empiricamente su oh_omegaruby.sav (125/125 boxed sono caught).
+static void registerORAS(SaveFile& save, const Pokemon& pkm) {
+    uint16_t species = pkm.species();
+    if (species == 0 || species > 721) return;
+    constexpr size_t kDex = 0x15000;
+    if (save.rawDataSize() < kDex + 0x68 + 91) return;
+    uint8_t* d = save.rawData();
+    setFlagBit(d + kDex + 0x08, species);
+    setFlagBit(d + kDex + 0x68, species);
+    save.markDirty();
+}
+
+// Gen7 SM: ZukanData blocco 06 @0x02A00 (PKHeX Zukan7: caught @+0x88,
+// seen @+0xF0, bit = specie-1, 807 specie). Verificato empiricamente su
+// moon-sm.sav (802/802 boxed sono caught) e Moon-oldCitra-main (60/60).
+static void registerSM(SaveFile& save, const Pokemon& pkm) {
+    uint16_t species = pkm.species();
+    if (species == 0 || species > 807) return;
+    constexpr size_t kDex = 0x02A00;
+    if (save.rawDataSize() < kDex + 0xF0 + 101) return;
+    uint8_t* d = save.rawData();
+    setFlagBit(d + kDex + 0x88, species);
+    setFlagBit(d + kDex + 0xF0, species);
+    save.markDirty();
+}
+
+// Gen7 USUM: ZukanData blocco 06 @0x02C00 (PKHeX Zukan7: magic 0x2F120F17,
+// caught @+0x88, seen @+0xF0, bit = specie-1, 807 specie). Verificato
+// empiricamente su oh_ultrasun.sav (807/807 boxed sono caught, magic ok).
+static void registerUSUM(SaveFile& save, const Pokemon& pkm) {
+    uint16_t species = pkm.species();
+    if (species == 0 || species > 807) return;
+    constexpr size_t kDex = 0x02C00;
+    if (save.rawDataSize() < kDex + 0xF0 + 101) return;
+    uint8_t* d = save.rawData();
+    setFlagBit(d + kDex + 0x88, species);
+    setFlagBit(d + kDex + 0xF0, species);
+    save.markDirty();
+}
+
 // ============================================================
 //  Dispatcher
 // ============================================================
@@ -1096,6 +1153,9 @@ void registerPokemon(SaveFile& save, const Pokemon& pkm) {
     if (pkm.isEmpty() || pkm.isEgg()) return;
 
     GameType game = save.gameType();
+    // Log diagnostico (dex RSE sotto indagine 2026-09-18): ramo preso o nessuno.
+    DebugLog::line("registerPokemon: game=%d spc=%u gt=%d", (int)game,
+                   pkm.species(), (int)pkm.gameType_);
 
     // Only register for dual/paired games (version exclusives require cross-save transfer).
     // ZA and LA are single games — all Pokemon obtainable in one playthrough.
@@ -1115,6 +1175,14 @@ void registerPokemon(SaveFile& save, const Pokemon& pkm) {
         registerGen1(save, pkm);
     } else if (isGen2File(game)) {
         registerGen2(save, pkm);
+    } else if (isGen6XY(game)) {
+        registerXY(save, pkm);
+    } else if (isGen6ORAS(game)) {
+        registerORAS(save, pkm);
+    } else if (isGen7SM(game)) {
+        registerSM(save, pkm);
+    } else if (isGen7USUM(game)) {
+        registerUSUM(save, pkm);
     }
 }
 
@@ -1302,6 +1370,34 @@ DexStatus getDexStatusGen5(SaveFile& save) {
     return {true, popcountBits(save.rawData() + kCaughtOfs, 649), 649};
 }
 
+// Gen6 XY: caught @0x15000+0x08, 721 specie (vedi registerXY).
+DexStatus getDexStatusXY(SaveFile& save) {
+    constexpr size_t kCaughtOfs = 0x15000 + 0x08;
+    if (save.rawDataSize() < kCaughtOfs + 91) return {};
+    return {true, popcountBits(save.rawData() + kCaughtOfs, 721), 721};
+}
+
+// Gen7 SM: caught @0x02A00+0x88, 807 specie (vedi registerSM).
+DexStatus getDexStatusSM(SaveFile& save) {
+    constexpr size_t kCaughtOfs = 0x02A00 + 0x88;
+    if (save.rawDataSize() < kCaughtOfs + 101) return {};
+    return {true, popcountBits(save.rawData() + kCaughtOfs, 807), 807};
+}
+
+// Gen6 ORAS: caught @0x15000+0x08, 721 specie (vedi registerORAS).
+DexStatus getDexStatusORAS(SaveFile& save) {
+    constexpr size_t kCaughtOfs = 0x15000 + 0x08;
+    if (save.rawDataSize() < kCaughtOfs + 91) return {};
+    return {true, popcountBits(save.rawData() + kCaughtOfs, 721), 721};
+}
+
+// Gen7 USUM: caught @0x02C00+0x88, 807 specie (vedi registerUSUM).
+DexStatus getDexStatusUSUM(SaveFile& save) {
+    constexpr size_t kCaughtOfs = 0x02C00 + 0x88;
+    if (save.rawDataSize() < kCaughtOfs + 101) return {};
+    return {true, popcountBits(save.rawData() + kCaughtOfs, 807), 807};
+}
+
 } // anon
 
 DexStatus getDexStatus(SaveFile& save) {
@@ -1320,7 +1416,11 @@ DexStatus getDexStatus(SaveFile& save) {
     if (isGen2File(game))  return getDexStatusGen2(save);
     if (isGen4File(game))  return getDexStatusGen4(save);
     if (isGen5File(game))  return getDexStatusGen5(save); // solo B/W, vedi commento sopra
-    return {}; // Gen6/7(DS/3DS)/LA/B2W2: non ancora coperti
+    if (isGen6XY(game))    return getDexStatusXY(save);
+    if (isGen6ORAS(game))  return getDexStatusORAS(save);
+    if (isGen7SM(game))    return getDexStatusSM(save);
+    if (isGen7USUM(game))  return getDexStatusUSUM(save);
+    return {}; // LA / B2W2: non ancora coperti
 }
 
 } // namespace Pokedex

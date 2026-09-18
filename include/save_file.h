@@ -343,8 +343,18 @@ private:
     // dumps are rejected explicitly). Flat images without checksums: writable.
     bool loadDXY(const std::string& path);
     bool saveDXY(const std::string& path);
+    // Gen 6 ORAS (PKHeX SAV6AO, stesso record Pk6 di XY ma blocchi spostati:
+    // box 0x33000 31x30x232, party 0x14200 6x260, MyStatus 0x14000+4 = 26/27,
+    // nomi 0x04400 31x0x22). Stesso modello flat di loadDXY (niente checksum).
+    bool loadDSORAS(const std::string& path);
+    bool saveDSORAS(const std::string& path);
     bool loadDSM(const std::string& path);
     bool saveDSM(const std::string& path);
+    // Gen 7 USUM (PKHeX SAV7USUM, stesso record Pk7 di SM ma blocchi spostati:
+    // box 0x05200 32x30x232, party 0x01600 6x260, MyStatus 0x01400+4 = 32/33,
+    // nomi 0x04C00 32x0x22). Stesso modello flat di loadDSM (niente checksum).
+    bool loadDSUSUM(const std::string& path);
+    bool saveDSUSUM(const std::string& path);
     std::vector<uint8_t> dsStorage_;
     Ds4Layout ds4Layout_ = Ds4Layout::DP;
     int dsPart_ = 0; // active Gen4 partition picked by loadDS4

@@ -36,13 +36,11 @@ void registerPokemon(SaveFile& save, const Pokemon& pkm);
 // in this repo, box-only today), LA (research-task Pokedex, not a simple
 // caught bit — needs its own design).
 //
-// TODO(dex-gen6-7-b2w2): tools/test save/upstream/{b2w2,xy,oras,usum}_blank.main
-// arrived all-zero (512KB of zero bytes, and 512KB is the Gen4/5 DS save
-// size anyway — Gen6/7 3DS "main" dumps are a different size, e.g. Gen7
-// moon-sm.sav is 0x6BE00), so they were unusable and got discarded. Ask for
-// real PKHeX "Export SAV" fixtures (Black2 or White2; X or Y; Omega Ruby or
-// Alpha Sapphire; Ultra Sun or Ultra Moon) before attempting these — see
-// tools/dex_research/README.md for the method once fixtures exist.
+// TODO(dex-gen6-7-b2w2): restano XY, SM e B2W2. Fixture reali arrivate dopo:
+// oh_ultrasun.sav (US, 960 slot) e oh_omegaruby.sav (OR, 930 slot) hanno
+// permesso register+getDexStatus per USUM/ORAS (verifica empirica boxed-caught
+// 807/807 e 125/125). Per XY/SM/B2W2 servono ancora dump reali con dex
+// popolato — vedi tools/dex_research/README.md per il metodo.
 struct DexStatus {
     bool supported = false; // false: game/format not covered yet (show "--")
     int caught = 0;

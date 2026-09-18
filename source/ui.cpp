@@ -1328,7 +1328,7 @@ void UI::selectGame(GameType game, int occurrence) {
         activeSaveIsRemote_ = false;
 
         if (isImportedFile(game) || isGen1File(game) || isGen2File(game) ||
-            isGen45File(game) || isGen6XY(game) || isGen7SM(game)) {
+            isGen45File(game) || isGen6XY(game) || isGen6ORAS(game) || isGen7SM(game) || isGen7USUM(game)) {
             // File-backed game (scanned emulator save) — no titleId, no
             // AccountManager mount/backup: load straight from the resolved
             // path found by appendImportedGames(). Read/write both go
@@ -1447,7 +1447,7 @@ void UI::selectGame(GameType game, int occurrence) {
         // Only for SCBlock saves: file-backed GB/GBA/DS/3DS loaders don't
         // fill blocks_/originalFileData_ (they validate per-slot instead).
         if (!isBDSP(game) && !isLGPE(game) && !isFRLG(game) && !isImportedFile(game) && !isGen1File(game) && !isGen2File(game) &&
-            !isGen45File(game) && !isGen6XY(game) && !isGen7SM(game)) {
+            !isGen45File(game) && !isGen6XY(game) && !isGen6ORAS(game) && !isGen7SM(game) && !isGen7USUM(game)) {
             std::string rtResult = save_.verifyRoundTrip();
             if (rtResult != "OK")
                 showMessageAndWait(i18n::get(StrKey::RoundTripCheck), rtResult);

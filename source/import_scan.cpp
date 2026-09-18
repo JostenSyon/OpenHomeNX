@@ -225,40 +225,77 @@ bool detectDSVersion(const std::string& filename, const std::string& full, GameT
     return true;
 }
 
-// Gen 6 XY / Gen 7 SM (decrypted 3DS dumps, Citra/Checkpoint style).
+// Gen 6 XY / Gen 7 SM+USUM (decrypted 3DS dumps, Citra/Checkpoint style).
 // Detection is fully byte-driven: fixed MyStatus offsets carry exact Game
-// bytes (XY: 24/25, SM: 30/31), then box slots must decrypt to valid
-// checksums. Encrypted cartridge dumps fail the Game byte explicitly.
+// bytes (XY: 24/25, SM: 30/31, USUM: 32/33), then box slots must decrypt to
+// valid checksums. Encrypted cartridge dumps fail the Game byte explicitly.
+// I marker delle tre famiglie vivono a offset diversi (0x14000 / 0x01200 /
+// 0x01400): ogni ramo rifiuta se un'altra famiglia dichiara il file, cosi'
+// un byte coincidente altrove non dirotta mai il detect (i loader 3DS non
+// hanno checksum e tornerebbero true anche a box vuoti).
 bool detect3DSVersion(const std::string& full, GameType& outType) {
     std::ifstream file(full, std::ios::binary | std::ios::ate);
     if (!file.is_open())
         return false;
     size_t size = static_cast<size_t>(file.tellg());
     file.seekg(0);
+    auto markerAt = [&](size_t off) -> int {
+        if (size < off + 8) return -1;
+        std::vector<uint8_t> status(8);
+        file.clear();
+        file.seekg(off);
+        file.read(reinterpret_cast<char*>(status.data()), 8);
+        if (!file) return -1;
+        return status[4];
+    };
+    int mXY = markerAt(0x14000);
+    int mSM = markerAt(0x01200);
+    int mUSUM = markerAt(0x01400);
+    // XY e ORAS condividono l'offset MyStatus (0x14000+4: 24/25 vs 26/27,
+    // valori disgiunti). mXY qui sotto vale per entrambi: il ramo ORAS
+    // richiede 26/27, quello XY 24/25.
+    // USUM prima: il suo marker (32/33) non collide mai con SM (max count 6).
+    // Ogni ramo richiede il proprio marker E nessun altro: un file con due
+    // marker (corrotto/patologico) non viene attribuito a nessun gioco,
+    // mai al gioco sbagliato.
+    if (size >= 0x05200 + static_cast<size_t>(32) * 30 * 232) {
+        if ((mUSUM == 32 || mUSUM == 33) && mXY != 24 && mXY != 25 && mXY != 26 && mXY != 27 && mSM != 30 && mSM != 31) {
+            SaveFile probe;
+            probe.setGameType(mUSUM == 32 ? GameType::ULTRA_SUN : GameType::ULTRA_MOON);
+            if (probe.load(full)) {
+                outType = mUSUM == 32 ? GameType::ULTRA_SUN : GameType::ULTRA_MOON;
+                return true;
+            }
+        }
+    }
     // XY boxes end at 0x22600 + 31*30*232; SM at 0x04E00 + 32*30*232.
     if (size >= 0x22600 + static_cast<size_t>(31) * 30 * 232) {
-        std::vector<uint8_t> status(8);
-        file.seekg(0x14000);
-        file.read(reinterpret_cast<char*>(status.data()), 8);
-        if (file && (status[4] == 24 || status[4] == 25)) {
+        if ((mXY == 24 || mXY == 25) && mSM != 30 && mSM != 31 && mUSUM != 32 && mUSUM != 33) {
             SaveFile probe;
-            probe.setGameType(status[4] == 24 ? GameType::X : GameType::Y);
+            probe.setGameType(mXY == 24 ? GameType::X : GameType::Y);
             if (probe.load(full)) {
-                outType = status[4] == 24 ? GameType::X : GameType::Y;
+                outType = mXY == 24 ? GameType::X : GameType::Y;
+                return true;
+            }
+        }
+    }
+    // ORAS: Box 0x33000 (31x30x232), stesso MyStatus di XY (26/27).
+    if (size >= 0x33000 + static_cast<size_t>(31) * 30 * 232) {
+        if ((mXY == 26 || mXY == 27) && mSM != 30 && mSM != 31 && mUSUM != 32 && mUSUM != 33) {
+            SaveFile probe;
+            probe.setGameType(mXY == 27 ? GameType::OMEGA_RUBY : GameType::ALPHA_SAPPHIRE);
+            if (probe.load(full)) {
+                outType = mXY == 27 ? GameType::OMEGA_RUBY : GameType::ALPHA_SAPPHIRE;
                 return true;
             }
         }
     }
     if (size >= 0x04E00 + static_cast<size_t>(32) * 30 * 232) {
-        file.clear();
-        file.seekg(0x01200);
-        std::vector<uint8_t> status(8);
-        file.read(reinterpret_cast<char*>(status.data()), 8);
-        if (file && (status[4] == 30 || status[4] == 31)) {
+        if ((mSM == 30 || mSM == 31) && mUSUM != 32 && mUSUM != 33) {
             SaveFile probe;
-            probe.setGameType(status[4] == 30 ? GameType::SUN : GameType::MOON);
+            probe.setGameType(mSM == 30 ? GameType::SUN : GameType::MOON);
             if (probe.load(full)) {
-                outType = status[4] == 30 ? GameType::SUN : GameType::MOON;
+                outType = mSM == 30 ? GameType::SUN : GameType::MOON;
                 return true;
             }
         }

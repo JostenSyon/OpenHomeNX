@@ -103,8 +103,12 @@ bool SaveFile::load(const std::string& path) {
         ok = loadDS5(path);
     else if (isGen6XY(gameType_))
         ok = loadDXY(path);
+    else if (isGen6ORAS(gameType_))
+        ok = loadDSORAS(path);
     else if (isGen7SM(gameType_))
         ok = loadDSM(path);
+    else if (isGen7USUM(gameType_))
+        ok = loadDSUSUM(path);
     else if (isBDSP(gameType_))
         ok = loadBDSP(path);
     else if (isLGPE(gameType_))
@@ -132,8 +136,12 @@ bool SaveFile::save(const std::string& path) {
         ok = saveDS4(path);
     else if (isGen6XY(gameType_))
         ok = saveDXY(path);
+    else if (isGen6ORAS(gameType_))
+        ok = saveDSORAS(path);
     else if (isGen7SM(gameType_))
         ok = saveDSM(path);
+    else if (isGen7USUM(gameType_))
+        ok = saveDSUSUM(path);
     else if (isGen5File(gameType_))
         ok = saveDS5(path);
     else if (isFRLG(gameType_) || isImportedFile(gameType_))
@@ -557,14 +565,21 @@ void SaveFile::setPartySlot(int idx, const Pokemon& pkm) {
             if (toWrite.isEmpty()) std::memset(dst, 0, pSize);
             else toWrite.getEncrypted(dst);
         }
-    } else if (gameType_ == GameType::X || gameType_ == GameType::Y) {
-        constexpr size_t OFF = 0x14200; constexpr int PS=260;
+    } else if (gameType_ == GameType::X || gameType_ == GameType::Y ||
+               gameType_ == GameType::OMEGA_RUBY || gameType_ == GameType::ALPHA_SAPPHIRE) {
+        constexpr size_t OFF = 0x14200; constexpr int PS=260; // XY e ORAS: stesso blocco party
         if (OFF + (size_t)idx*PS + PS <= rawData_.size()) {
             uint8_t* dst = rawData_.data()+OFF+idx*PS;
             if (toWrite.isEmpty()) std::memset(dst,0,PS); else toWrite.getEncrypted(dst);
         }
     } else if (gameType_ == GameType::SUN || gameType_ == GameType::MOON) {
         constexpr size_t OFF = 0x01400; constexpr int PS=260;
+        if (OFF + (size_t)idx*PS + PS <= rawData_.size()) {
+            uint8_t* dst = rawData_.data()+OFF+idx*PS;
+            if (toWrite.isEmpty()) std::memset(dst,0,PS); else toWrite.getEncrypted(dst);
+        }
+    } else if (gameType_ == GameType::ULTRA_SUN || gameType_ == GameType::ULTRA_MOON) {
+        constexpr size_t OFF = 0x01600; constexpr int PS=260;
         if (OFF + (size_t)idx*PS + PS <= rawData_.size()) {
             uint8_t* dst = rawData_.data()+OFF+idx*PS;
             if (toWrite.isEmpty()) std::memset(dst,0,PS); else toWrite.getEncrypted(dst);
@@ -3693,5 +3708,272 @@ bool SaveFile::saveDSM(const std::string& path) {
     file.write(reinterpret_cast<const char*>(rawData_.data()), rawData_.size());
     file.close();
     DebugLog::line("saveDSM: %s -> OK", path.c_str());
+    return true;
+}
+
+bool SaveFile::loadDSUSUM(const std::string& path) {
+    // Gen7 USUM decrypted dump (PKHeX SAV7USUM): BoxPokemon at 0x05200
+    // (32 x 30 x 232B Pk7 slots, stesso record di SM), MyStatus at 0x01400
+    // (Game at +4: 32 = Ultra Sun, 33 = Ultra Moon), PokePartySave at 0x01600
+    // (6 x 260). Box names in BOX block at 0x04C00 (32 x 0x22 UTF-16LE).
+    // Stesso modello flat di loadDSM (niente checksum). Validato su
+    // tools/test save/upstream/oh_ultrasun.sav (960/960 slot + party 6/6).
+    static constexpr size_t BOX_BASE = 0x05200;
+    static constexpr int BOXES = 32;
+    static constexpr int SLOT = 232;
+    static constexpr size_t MIN_SIZE = BOX_BASE + static_cast<size_t>(BOXES) * 30 * SLOT;
+    std::ifstream file(path, std::ios::binary | std::ios::ate);
+    if (!file.is_open())
+        return false;
+    if (static_cast<size_t>(file.tellg()) < MIN_SIZE)
+        return false;
+    // Full file, see loadDXY: truncating would destroy the dump tail on save.
+    size_t fileSize = static_cast<size_t>(file.tellg());
+    file.seekg(0);
+    rawData_.resize(fileSize);
+    file.read(reinterpret_cast<char*>(rawData_.data()), fileSize);
+    if (!file)
+        return false;
+
+    uint8_t game = rawData_[0x01400 + 4];
+    if (game != 32 && game != 33) {
+        DebugLog::line("loadDSUSUM: %s -> Game byte %u non USUM (dump cifrato?)", path.c_str(), game);
+        return false;
+    }
+    auto slotValid = [&](const uint8_t* slot) -> bool {
+        static const uint8_t ZERO[232] = {};
+        if (std::memcmp(slot, ZERO, sizeof(ZERO)) == 0)
+            return false;
+        uint8_t dec[232];
+        PokeCrypto::decryptArray6(slot, sizeof(dec), dec);
+        uint32_t sum = 0;
+        for (int i = 8; i < 232; i += 2)
+            sum += static_cast<uint32_t>(dec[i] | (dec[i + 1] << 8));
+        uint16_t stored = static_cast<uint16_t>(dec[6] | (dec[7] << 8));
+        return (sum & 0xFFFF) == stored;
+    };
+    int validSlots = 0;
+    for (int b = 0; b < BOXES && validSlots < 3; b++)
+        for (int s = 0; s < 30 && validSlots < 3; s++) {
+            size_t o = BOX_BASE + static_cast<size_t>(b) * 30 * SLOT + static_cast<size_t>(s) * SLOT;
+            if (slotValid(rawData_.data() + o))
+                validSlots++;
+        }
+    if (validSlots <= 0)
+        DebugLog::line("loadDSUSUM: %s -> nessuno slot valido (save vuoto?)", path.c_str());
+    dsStorage_.assign(static_cast<size_t>(BOXES) * 30 * SLOT, 0);
+    int badSlots = 0;
+    for (int b = 0; b < BOXES; b++)
+        for (int s = 0; s < 30; s++) {
+            size_t o = BOX_BASE + static_cast<size_t>(b) * 30 * SLOT + static_cast<size_t>(s) * SLOT;
+            const uint8_t* slot = rawData_.data() + o;
+            uint8_t* dst = dsStorage_.data() + (static_cast<size_t>(b) * 30 + s) * SLOT;
+            static const uint8_t ZERO[232] = {};
+            if (std::memcmp(slot, ZERO, sizeof(ZERO)) == 0)
+                continue;
+            if (!slotValid(slot)) {
+                badSlots++;
+                continue;
+            }
+            std::memcpy(dst, slot, SLOT);
+        }
+    if (badSlots > 0)
+        DebugLog::line("loadDSUSUM: %s -> %d slot corrotti nascosti", path.c_str(), badSlots);
+    DebugLog::line("loadDSUSUM: %s -> Game %u (%s)", path.c_str(), game, game == 32 ? "Ultra Sun" : "Ultra Moon");
+    // Party: block 04 PokePartySave at 0x01600, 6 x 260 (SaveBlockAccessor7USUM[04])
+    dsParty_.assign(6, Pokemon{});
+    {
+        constexpr size_t PARTY_OFF = 0x01600;
+        constexpr int PARTY_SLOTS = 6;
+        constexpr int PARTY_SIZE = 260;
+        if (PARTY_OFF + PARTY_SLOTS * PARTY_SIZE <= rawData_.size()) {
+            int valid = 0;
+            for (int i = 0; i < PARTY_SLOTS; i++) {
+                const uint8_t* raw = rawData_.data() + PARTY_OFF + i * PARTY_SIZE;
+                Pokemon p; p.gameType_ = gameType_;
+                p.loadFromEncrypted(raw, PARTY_SIZE);
+                if (!p.isEmpty() && p.species()!=0) { dsParty_[i]=p; valid++; }
+            }
+            DebugLog::line("loadDSUSUM: %s -> party %d/6", path.c_str(), valid);
+        }
+        if (dsOtName_.empty()) { for(auto &pp: dsParty_) if(!pp.isEmpty()){ dsOtName_=pp.otName(); break; } }
+        if (dsOtName_.empty() && !dsParty_.empty()) dsOtName_ = dsParty_[0].otName();
+    }
+    boxData_ = dsStorage_.data();
+    boxDataLen_ = dsStorage_.size();
+    boxLayoutData_ = rawData_.data() + 0x04C00;
+    boxLayoutLen_ = BOXES * 0x22;
+    loaded_ = true;
+    return true;
+}
+
+bool SaveFile::saveDSUSUM(const std::string& path) {
+    if (!loaded_ || rawData_.empty() || dsStorage_.empty())
+        return false;
+    static constexpr size_t BOX_BASE = 0x05200;
+    static constexpr int BOXES = 32;
+    static constexpr int SLOT = 232;
+    static constexpr size_t PARTY_OFF = 0x01600;
+    static constexpr int PARTY_SIZE = 260;
+    size_t need = BOX_BASE + static_cast<size_t>(BOXES) * 30 * SLOT;
+    if (rawData_.size() < need || dsStorage_.size() < need - BOX_BASE)
+        return false;
+    std::memcpy(rawData_.data() + BOX_BASE, dsStorage_.data(), need - BOX_BASE);
+    if (PARTY_OFF + 6 * PARTY_SIZE <= rawData_.size()) {
+        if ((int)dsParty_.size() != 6) dsParty_.assign(6, Pokemon{});
+        for (int i = 0; i < 6; i++) {
+            uint8_t* dst = rawData_.data() + PARTY_OFF + i * PARTY_SIZE;
+            const Pokemon& m = dsParty_[i];
+            if (m.isEmpty() || m.species() == 0) {
+                std::memset(dst, 0, PARTY_SIZE);
+            } else {
+                Pokemon w = m;
+                w.gameType_ = gameType_;
+                // Full 260B party record (getEncrypted copre solo i 232B box).
+                w.refreshChecksum();
+                PokemonFFI::encryptArray6(w.data.data(), PARTY_SIZE, dst);
+            }
+        }
+    }
+    std::ofstream file(path, std::ios::binary | std::ios::trunc);
+    if (!file.is_open())
+        return false;
+    file.write(reinterpret_cast<const char*>(rawData_.data()), rawData_.size());
+    file.close();
+    DebugLog::line("saveDSUSUM: %s -> OK", path.c_str());
+    return true;
+}
+
+bool SaveFile::loadDSORAS(const std::string& path) {
+    // Gen6 ORAS decrypted dump (PKHeX SAV6AO): Box block 56 at 0x33000
+    // (31 x 30 x 232B Pk6 slots, stesso record di XY), MyStatus block 17 at
+    // 0x14000 (Game at +4: 26 = Alpha Sapphire, 27 = Omega Ruby),
+    // PokePartySave block 18 at 0x14200 (6 x 260). Box names in BOX block 12
+    // at 0x04400 (31 x 0x22 UTF-16LE). Stesso modello flat di loadDXY
+    // (niente checksum). Validato su tools/test save/upstream/oh_omegaruby.sav
+    // (930/930 slot + party 2/6).
+    static constexpr size_t BOX_BASE = 0x33000;
+    static constexpr int BOXES = 31;
+    static constexpr int SLOT = 232;
+    static constexpr size_t MIN_SIZE = BOX_BASE + static_cast<size_t>(BOXES) * 30 * SLOT;
+    std::ifstream file(path, std::ios::binary | std::ios::ate);
+    if (!file.is_open())
+        return false;
+    if (static_cast<size_t>(file.tellg()) < MIN_SIZE)
+        return false;
+    // Full file, see loadDXY: truncating would destroy the dump tail on save.
+    size_t fileSize = static_cast<size_t>(file.tellg());
+    file.seekg(0);
+    rawData_.resize(fileSize);
+    file.read(reinterpret_cast<char*>(rawData_.data()), fileSize);
+    if (!file)
+        return false;
+
+    uint8_t game = rawData_[0x14000 + 4];
+    if (game != 26 && game != 27) {
+        DebugLog::line("loadDSORAS: %s -> Game byte %u non ORAS (dump cifrato?)", path.c_str(), game);
+        return false;
+    }
+    auto slotValid = [&](const uint8_t* slot) -> bool {
+        static const uint8_t ZERO[232] = {};
+        if (std::memcmp(slot, ZERO, sizeof(ZERO)) == 0)
+            return false;
+        uint8_t dec[232];
+        PokeCrypto::decryptArray6(slot, sizeof(dec), dec);
+        uint32_t sum = 0;
+        for (int i = 8; i < 232; i += 2)
+            sum += static_cast<uint32_t>(dec[i] | (dec[i + 1] << 8));
+        uint16_t stored = static_cast<uint16_t>(dec[6] | (dec[7] << 8));
+        return (sum & 0xFFFF) == stored;
+    };
+    int validSlots = 0;
+    for (int b = 0; b < BOXES && validSlots < 3; b++)
+        for (int s = 0; s < 30 && validSlots < 3; s++) {
+            size_t o = BOX_BASE + static_cast<size_t>(b) * 30 * SLOT + static_cast<size_t>(s) * SLOT;
+            if (slotValid(rawData_.data() + o))
+                validSlots++;
+        }
+    if (validSlots <= 0)
+        DebugLog::line("loadDSORAS: %s -> nessuno slot valido (save vuoto?)", path.c_str());
+    dsStorage_.assign(static_cast<size_t>(BOXES) * 30 * SLOT, 0);
+    int badSlots = 0;
+    for (int b = 0; b < BOXES; b++)
+        for (int s = 0; s < 30; s++) {
+            size_t o = BOX_BASE + static_cast<size_t>(b) * 30 * SLOT + static_cast<size_t>(s) * SLOT;
+            const uint8_t* slot = rawData_.data() + o;
+            uint8_t* dst = dsStorage_.data() + (static_cast<size_t>(b) * 30 + s) * SLOT;
+            static const uint8_t ZERO[232] = {};
+            if (std::memcmp(slot, ZERO, sizeof(ZERO)) == 0)
+                continue;
+            if (!slotValid(slot)) {
+                badSlots++;
+                continue;
+            }
+            std::memcpy(dst, slot, SLOT);
+        }
+    if (badSlots > 0)
+        DebugLog::line("loadDSORAS: %s -> %d slot corrotti nascosti", path.c_str(), badSlots);
+    DebugLog::line("loadDSORAS: %s -> Game %u (%s)", path.c_str(), game, game == 27 ? "Omega Ruby" : "Alpha Sapphire");
+    // Party: block 18 PokePartySave at 0x14200, 6 x 260 (come XY)
+    dsParty_.assign(6, Pokemon{});
+    {
+        constexpr size_t PARTY_OFF = 0x14200;
+        constexpr int PARTY_SLOTS = 6;
+        constexpr int PARTY_SIZE = 260;
+        if (PARTY_OFF + PARTY_SLOTS * PARTY_SIZE <= rawData_.size()) {
+            int valid = 0;
+            for (int i = 0; i < PARTY_SLOTS; i++) {
+                const uint8_t* raw = rawData_.data() + PARTY_OFF + i * PARTY_SIZE;
+                Pokemon p; p.gameType_ = gameType_;
+                p.loadFromEncrypted(raw, PARTY_SIZE);
+                if (!p.isEmpty() && p.species()!=0) { dsParty_[i]=p; valid++; }
+            }
+            DebugLog::line("loadDSORAS: %s -> party %d/6", path.c_str(), valid);
+        }
+        if (dsOtName_.empty()) { for(auto &pp: dsParty_) if(!pp.isEmpty()){ dsOtName_=pp.otName(); break; } }
+        if (dsOtName_.empty() && !dsParty_.empty()) dsOtName_ = dsParty_[0].otName();
+    }
+    boxData_ = dsStorage_.data();
+    boxDataLen_ = dsStorage_.size();
+    boxLayoutData_ = rawData_.data() + 0x04400;
+    boxLayoutLen_ = BOXES * 0x22;
+    loaded_ = true;
+    return true;
+}
+
+bool SaveFile::saveDSORAS(const std::string& path) {
+    if (!loaded_ || rawData_.empty() || dsStorage_.empty())
+        return false;
+    static constexpr size_t BOX_BASE = 0x33000;
+    static constexpr int BOXES = 31;
+    static constexpr int SLOT = 232;
+    static constexpr size_t PARTY_OFF = 0x14200;
+    static constexpr int PARTY_SIZE = 260;
+    size_t need = BOX_BASE + static_cast<size_t>(BOXES) * 30 * SLOT;
+    if (rawData_.size() < need || dsStorage_.size() < need - BOX_BASE)
+        return false;
+    std::memcpy(rawData_.data() + BOX_BASE, dsStorage_.data(), need - BOX_BASE);
+    if (PARTY_OFF + 6 * PARTY_SIZE <= rawData_.size()) {
+        if ((int)dsParty_.size() != 6) dsParty_.assign(6, Pokemon{});
+        for (int i = 0; i < 6; i++) {
+            uint8_t* dst = rawData_.data() + PARTY_OFF + i * PARTY_SIZE;
+            const Pokemon& m = dsParty_[i];
+            if (m.isEmpty() || m.species() == 0) {
+                std::memset(dst, 0, PARTY_SIZE);
+            } else {
+                Pokemon w = m;
+                w.gameType_ = gameType_;
+                // Full 260B party record (getEncrypted copre solo i 232B box).
+                w.refreshChecksum();
+                PokemonFFI::encryptArray6(w.data.data(), PARTY_SIZE, dst);
+            }
+        }
+    }
+    std::ofstream file(path, std::ios::binary | std::ios::trunc);
+    if (!file.is_open())
+        return false;
+    file.write(reinterpret_cast<const char*>(rawData_.data()), rawData_.size());
+    file.close();
+    DebugLog::line("saveDSORAS: %s -> OK", path.c_str());
     return true;
 }
