@@ -402,6 +402,7 @@
     "devsync_action_sync": "Sync",
     "devsync_sync_no_identity": "Different trainers or unrecognized — auto sync not available. Use Send or Receive.",
     "devsync_sync_no_local_or_remote": "No copy to sync on this side.",
+    "devsync_sync_already_in_sync": "Same play time and same Pokédex caught on both sides — already in sync, nothing to do.",
     "devsync_ask_rom_title": "Missing ROM",
     "devsync_ask_rom_body": "The ROM is not present locally. Download the ROM \"{0}\" as well so the save becomes immediately usable?",
     "devsync_compare_local": "Local",

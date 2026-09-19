@@ -5873,9 +5873,10 @@ void UI::remoteSyncTestRow() {
                 struct stat st;
                 long long localModified = 0;
                 if (stat(switchLocalPath.c_str(), &st) == 0) localModified = (long long)st.st_mtime;
-                bool remoteNewer;
+                bool remoteNewer = false;
+                bool alreadySynced = false;
                 std::string howDecided;
-                const char* criterionKey;
+                const char* criterionKey = nullptr;
                 if (localPt >= 0 && remotePt >= 0 && localPt != remotePt) {
                     remoteNewer = remotePt > localPt;
                     howDecided = "playtime";
@@ -5884,6 +5885,15 @@ void UI::remoteSyncTestRow() {
                     remoteNewer = remoteDex.caught > localDex.caught;
                     howDecided = "dex";
                     criterionKey = StrKey::DevSyncCriterionDex;
+                } else if (localPt >= 0 && remotePt >= 0 && localDex.supported && remoteDex.supported) {
+                    // Stesso tempo di gioco E stessa Pokedex catturata su
+                    // entrambi i lati: sono davvero identici, il mtime non
+                    // serve (e sarebbe pure fuorviante -- un save appena
+                    // inviato al dispositivo remoto prende la data di invio
+                    // ed e' sempre "piu' recente" anche senza alcun
+                    // progresso reale).
+                    alreadySynced = true;
+                    howDecided = "identical";
                 } else {
                     remoteNewer = c.remoteSaveModifiedUnix > localModified;
                     howDecided = "mtime";
@@ -5892,6 +5902,9 @@ void UI::remoteSyncTestRow() {
                 DebugLog::line("remote sync: sincronizza direzione=%s per %s (local pt=%ld dex=%d, remote pt=%ld dex=%d)",
                                howDecided.c_str(), gi.gameTag, localPt, localDex.caught, remotePt, remoteDex.caught);
 
+                if (alreadySynced) {
+                    showMessageAndWait(title, i18n::get(StrKey::DevSyncSyncAlreadyInSync));
+                } else {
                 SyncSideInfo localInfo, remoteInfo;
                 localInfo.trainer = localOt;
                 localInfo.playTimeSeconds = localPt;
@@ -5937,6 +5950,7 @@ void UI::remoteSyncTestRow() {
                         }
                     }
                     didSomething = true;
+                }
                 }
                 std::remove(tmpPath.c_str());
                 // Nota: playtime/dex/mtime sopra sono tutti letti PRIMA del

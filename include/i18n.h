@@ -534,6 +534,7 @@ namespace StrKey {
     constexpr const char* DevSyncActionSync    = "devsync_action_sync";
     constexpr const char* DevSyncSyncNoIdentity = "devsync_sync_no_identity";
     constexpr const char* DevSyncSyncNoLocalOrRemote = "devsync_sync_no_local_or_remote";
+    constexpr const char* DevSyncSyncAlreadyInSync = "devsync_sync_already_in_sync";
     constexpr const char* DevSyncAskRomTitle = "devsync_ask_rom_title";
     constexpr const char* DevSyncAskRomBody  = "devsync_ask_rom_body";
     // Popup di confronto locale/remoto per "Sincronizza" (due riquadri
