@@ -2970,23 +2970,97 @@ uint16_t SaveFile::gbaSecurityKeyLow16() const {
     return static_cast<uint16_t>(readU32LE(sec0 + off) & 0xFFFF);
 }
 
-long SaveFile::playTimeSeconds() const {
-    if (!loaded_) return -1;
-    // Section0 (SaveBlock2/trainer info), offset 0x0E: stesso layout in
-    // Ruby/Sapphire/Emerald/FireRed/LeafGreen (playTimeHours u16 LE @0x0E,
-    // playTimeMinutes u8 @0x10, playTimeSeconds u8 @0x11 -- playTimeVBlanks
-    // @0x12 ignorato, sub-secondo, irrilevante per un confronto "chi ha piu'
-    // progressi"). Verificato: stesso offset in tutti e cinque i giochi
-    // perche' vive nella parte iniziale, condivisa, di SaveBlock2, prima
-    // che i giochi divergano piu' avanti nella struct.
-    if (!isImportedFile(gameType_) && !isFRLG(gameType_)) return -1;
-    uint8_t* sec0 = const_cast<SaveFile*>(this)->findGbaSectorData(0);
-    if (!sec0) return -1;
-    uint16_t hours = readU16LE(sec0 + 0x0E);
-    uint8_t minutes = sec0[0x10];
-    uint8_t seconds = sec0[0x11];
+namespace {
+// PlayTime<T> di PKHeX (Gen6+ fino a LA incluso): 4 byte, hours u16 LE @0,
+// minutes u8 @2, seconds u8 @3 (il resto del blocco, se piu' grande, e'
+// padding/altri campi non correlati). Stesso helper per LGPE/BDSP (flat) e
+// SwSh/LA (SCBlock) -- vedi playTimeSeconds() sotto per i rispettivi
+// offset/key.
+long playTime4Byte(const uint8_t* d, size_t len) {
+    if (!d || len < 4) return -1;
+    uint16_t hours = readU16LE(d);
+    uint8_t minutes = d[2], seconds = d[3];
     if (minutes > 59 || seconds > 59) return -1; // dati non plausibili, non fidarsi
     return static_cast<long>(hours) * 3600 + static_cast<long>(minutes) * 60 + seconds;
+}
+} // namespace
+
+long SaveFile::playTimeSeconds() const {
+    if (!loaded_) return -1;
+
+    // GBA R/S/E/FR/LG: Section0 (SaveBlock2/trainer info), offset 0x0E --
+    // stesso layout in tutti e cinque i giochi (playTimeHours u16 LE @0x0E,
+    // playTimeMinutes u8 @0x10, playTimeSeconds u8 @0x11 -- playTimeVBlanks
+    // @0x12 ignorato, sub-secondo, irrilevante per un confronto "chi ha piu'
+    // progressi"). Verificato contro pret/pokeruby, pret/pokeemerald,
+    // pret/pokefirered include/global.h: vive nella parte iniziale,
+    // condivisa, di SaveBlock2, prima che i giochi divergano piu' avanti
+    // nella struct.
+    if (isImportedFile(gameType_) || isFRLG(gameType_)) {
+        uint8_t* sec0 = const_cast<SaveFile*>(this)->findGbaSectorData(0);
+        return sec0 ? playTime4Byte(sec0, 4) : -1;
+    }
+
+    // LGPE (Let's Go Pikachu/Eevee): flat, blocco fisso #10 "PlayTime" a
+    // offset assoluto 0x45400 (PKHeX BelugaBlockIndex.PlayTime -- stesso
+    // offset gia' presente in LGPE_BLOCKS qui sotto, indice 10).
+    if (isLGPE(gameType_)) {
+        constexpr size_t kOfs = 0x45400;
+        if (rawDataSize() < kOfs + 4) return -1;
+        return playTime4Byte(const_cast<SaveFile*>(this)->rawData() + kOfs, 4);
+    }
+
+    // BDSP: flat, offset fisso 0x79C04 (PKHeX SAV8BS: Played = new
+    // PlayTime8b(this, Raw.Slice(0x79C04, 0x04))).
+    if (isBDSP(gameType_)) {
+        constexpr size_t kOfs = 0x79C04;
+        if (rawDataSize() < kOfs + 4) return -1;
+        return playTime4Byte(const_cast<SaveFile*>(this)->rawData() + kOfs, 4);
+    }
+
+    // SwSh: SCBlock key 0x8cbbfd90 "Time Played" (PKHeX
+    // SaveBlockAccessor8SWSH.KPlayTime), stesso layout PlayTime<T> a 4 byte.
+    if (isSwSh(gameType_)) {
+        SCBlock* b = const_cast<SaveFile*>(this)->findBlock(0x8cbbfd90);
+        return b ? playTime4Byte(b->data.data(), b->data.size()) : -1;
+    }
+
+    // Legends Arceus: SCBlock key 0xC4FA7C8C "Time Played" (PKHeX
+    // SaveBlockAccessor8LA.KPlayTime), stesso layout a 4 byte.
+    if (gameType_ == GameType::LA) {
+        SCBlock* b = const_cast<SaveFile*>(this)->findBlock(0xC4FA7C8C);
+        return b ? playTime4Byte(b->data.data(), b->data.size()) : -1;
+    }
+
+    // SV: SCBlock key 0xEDAFF794 "Time Played" (PKHeX
+    // SaveBlockAccessor9SV.KPlayTime), MA layout diverso da PlayTime<T>:
+    // hours/minutes/seconds sono ciascuno un i32 LE separato (12 byte
+    // totali), non u16+u8+u8 (PKHeX PlayTime9, unico caso Gen9 con questo
+    // formato piu' largo).
+    if (isSV(gameType_)) {
+        SCBlock* b = const_cast<SaveFile*>(this)->findBlock(0xEDAFF794);
+        if (!b || b->data.size() < 12) return -1;
+        int32_t hours   = static_cast<int32_t>(readU32LE(b->data.data() + 0));
+        int32_t minutes = static_cast<int32_t>(readU32LE(b->data.data() + 4));
+        int32_t seconds = static_cast<int32_t>(readU32LE(b->data.data() + 8));
+        if (hours < 0 || minutes < 0 || seconds < 0 || minutes > 59 || seconds > 59) return -1;
+        return static_cast<long>(hours) * 3600 + static_cast<long>(minutes) * 60 + seconds;
+    }
+
+    // Legends Z-A: SCBlock key 0xCE3AF8F2 "KPlayedSeconds" (PKHeX
+    // SaveBlockAccessor9ZA), double LE a 8 byte = secondi totali gia'
+    // accumulati (non piu' un campo hours/minutes/seconds separato come
+    // le generazioni precedenti -- PKHeX PlayTime9a.RawSeconds).
+    if (gameType_ == GameType::ZA) {
+        SCBlock* b = const_cast<SaveFile*>(this)->findBlock(0xCE3AF8F2);
+        if (!b || b->data.size() < 8) return -1;
+        double secs = 0.0;
+        std::memcpy(&secs, b->data.data(), 8);
+        if (!(secs >= 0.0) || secs > 1e9) return -1; // sanity: mai negativo, mai assurdo
+        return static_cast<long>(secs);
+    }
+
+    return -1;
 }
 
 bool SaveFile::gbaBagSupported() const {

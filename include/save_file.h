@@ -147,11 +147,15 @@ public:
     // ha più progressi" da "questo file è stato semplicemente toccato più di
     // recente" -- una copia via USB, un semplice caricamento in un
     // emulatore, o un orologio di sistema sbagliato bastano a confonderlo).
-    // -1 se il formato caricato non espone ancora questo campo (solo GBA
-    // R/S/E/FR/LG per ora: playTimeHours/Minutes/Seconds vivono agli stessi
-    // offset di sezione0 in tutti e cinque i giochi, essendo all'inizio
-    // condiviso di SaveBlock2 -- verificato contro pret/pokeruby,
-    // pret/pokeemerald, pret/pokefirered include/global.h).
+    // -1 se il formato caricato non espone ancora questo campo. Coperti:
+    // GBA R/S/E/FR/LG (SaveBlock2+0x0E, verificato contro pret/pokeruby,
+    // pret/pokeemerald, pret/pokefirered), LGPE (flat, blocco #10 @0x45400,
+    // PKHeX BelugaBlockIndex.PlayTime), BDSP (flat, offset fisso 0x79C04,
+    // PKHeX SAV8BS), SwSh e LA (SCBlock, PKHeX SaveBlockAccessor8SWSH/8LA
+    // KPlayTime), SV (SCBlock, PKHeX SaveBlockAccessor9SV KPlayTime -- layout
+    // diverso, i32 invece di u16+u8+u8), ZA (SCBlock, PKHeX
+    // SaveBlockAccessor9ZA KPlayedSeconds -- double, secondi gia' totali).
+    // Non ancora coperti: Gen1/2/4/5 (GB/GBC/NDS).
     long playTimeSeconds() const;
 
     // Borsa Gen4/5 DS (PKHeX PlayerBag4DP/4Pt/4HGSS/5BW/5B2W2). Slot da 4B
