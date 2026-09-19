@@ -141,6 +141,19 @@ public:
     // Ritorna solo i 16 bit bassi (quelli usati per gli item), 0 se non serve.
     uint16_t gbaSecurityKeyLow16() const;
 
+    // Tempo di gioco totale in secondi, per confrontare due copie dello
+    // stesso save senza fidarsi solo della data di modifica del file (vedi
+    // DevSync in ui_selectors.cpp: mtime da solo non distingue "questa copia
+    // ha più progressi" da "questo file è stato semplicemente toccato più di
+    // recente" -- una copia via USB, un semplice caricamento in un
+    // emulatore, o un orologio di sistema sbagliato bastano a confonderlo).
+    // -1 se il formato caricato non espone ancora questo campo (solo GBA
+    // R/S/E/FR/LG per ora: playTimeHours/Minutes/Seconds vivono agli stessi
+    // offset di sezione0 in tutti e cinque i giochi, essendo all'inizio
+    // condiviso di SaveBlock2 -- verificato contro pret/pokeruby,
+    // pret/pokeemerald, pret/pokefirered include/global.h).
+    long playTimeSeconds() const;
+
     // Borsa Gen4/5 DS (PKHeX PlayerBag4DP/4Pt/4HGSS/5BW/5B2W2). Slot da 4B
     // {id u16 LE, count u16 LE}, in chiaro (niente XOR). Gen4: base relativa
     // al blocco General della partizione attiva (dsPart_); Gen5: blocco 25

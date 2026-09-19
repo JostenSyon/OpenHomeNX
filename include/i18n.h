@@ -579,4 +579,7 @@ namespace StrKey {
     constexpr const char* AppletTitle          = "applet_title";
     constexpr const char* AppletBody           = "applet_body";
 
+    // Scheda Galleria: riga tempo di gioco sotto il Pokédex (ui_gallery.cpp)
+    constexpr const char* GalPlayTime          = "gal_play_time";
+
 }

@@ -1017,6 +1017,7 @@ private:
         std::string otName;     // valore mostrato (puo' essere l'override)
         std::string otNameReal; // valore vero dal save, mai sovrascritto
         bool dexSupported = false; int dexCaught = 0; int dexTotal = 0;
+        long playTimeSeconds = -1; // -1 = non disponibile per questo formato (vedi SaveFile::playTimeSeconds)
     };
     std::unordered_map<GameType, PartyPreview> galPartyCache_;
     int galPreviewGame_ = -1;

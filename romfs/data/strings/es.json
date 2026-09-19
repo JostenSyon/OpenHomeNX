@@ -267,5 +267,6 @@
     "set_credits": "Creditos",
     "bag_soon": "Mochila y eventos proximamente",
     "set_footer": "A: entrar/cambiar  Y: atras  B: cerrar/salir",
-    "set_footer_slider": "←/→ o Stick ←/→: ajustar  A:+ Y:-  B: atrás"
+    "set_footer_slider": "←/→ o Stick ←/→: ajustar  A:+ Y:-  B: atrás",
+    "gal_play_time": "Tiempo de juego"
 }

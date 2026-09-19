@@ -267,5 +267,6 @@
     "set_credits": "製作人員",
     "bag_soon": "背包和活動即將推出",
     "set_footer": "A：進入/更改   Y：返回   B：關閉/退出",
-    "set_footer_slider": "←/→ or Stick ←/→: adjust  A:+ Y:-  B: back"
+    "set_footer_slider": "←/→ or Stick ←/→: adjust  A:+ Y:-  B: back",
+    "gal_play_time": "遊戲時長"
 }

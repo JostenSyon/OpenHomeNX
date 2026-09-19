@@ -11,6 +11,7 @@
 #include "settings_cfg.h"
 #include "emulator.h"
 #include "trade_evo.h"
+#include "pokedex.h"
 
 #include <algorithm>
 #include <cerrno>
@@ -149,7 +150,26 @@ bool readUpdateCfg(const std::string& basePath, UpdateCfg& out) {
     std::string cfg, off;
     updateCfgPaths(basePath, cfg, off);
     if (!cfg.empty()) parseUpdateCfgFile(cfg, out, false);
-    if (!off.empty()) parseUpdateCfgFile(off, out, true);
+    if (!off.empty()) {
+        parseUpdateCfgFile(off, out, true); // channel: fallback se l'attivo non lo ha
+        // 2026-09-19: "auto" (check aggiornamenti al boot) è una preferenza
+        // dell'utente indipendente dalla sorgente (url/GitHub vs custom) --
+        // ma updateCfgHome() sceglie come "home" il file con l'url quando
+        // esiste (per non riattivare mai un url da un .off), quindi
+        // writeUpdateCfgKey("auto", ...) in modalità GitHub finiva scritto
+        // nel .off (l'unico file con url in quel momento). channelOnly sopra
+        // legge SOLO channel da quel file, ignorando "auto": il toggle
+        // risultava sempre bloccato su ON, mai spegnibile con sorgente
+        // GitHub, perché la scrittura c'era ma la lettura non la vedeva mai.
+        // Fix: se l'attivo non specifica "auto" esplicitamente, recuperalo
+        // dal .off con un parse isolato (mai in "out" direttamente, per non
+        // fargli sovrascrivere url/channel/token già decisi sopra).
+        if (cfg.empty() || !fileHasKey(cfg, "auto")) {
+            UpdateCfg offAuto;
+            parseUpdateCfgFile(off, offAuto, false);
+            out.autoOn = offAuto.autoOn;
+        }
+    }
     return !out.url.empty();
 }
 } // namespace
@@ -326,12 +346,21 @@ bool UI::dockStateItemVisible(DockState::Item item) const {
 static bool readQuickMenu(const std::string& basePath);
 static void writeQuickMenu(const std::string& basePath, bool on);
 
-// Righe popup save (X con debug): invio save, backup, browse, clean.
+// Righe popup save: backup, browse, clean [, invio save] , chiudi.
 // Normalize e' ora in Impostazioni -> Sviluppatore (analizza tutti i save).
+// 2026-09-19: "Send save" veniva aggiunta qui SEMPRE, incondizionatamente --
+// il commento originale ("X con debug") presupponeva che questo popup fosse
+// raggiungibile solo dalla scorciatoia X in griglia (quella si', gated da
+// DebugLog::enabled() al chiamante), ma lo stesso popup si apre anche
+// dall'icona dock "SaveMenu" e dal menu radiale per-gioco (RadialAction::
+// SaveMenu), NESSUNA delle due gated da debug: "Send save" compariva quindi
+// sempre, a prescindere da debug e da sorgente GitHub/custom. Ora richiede
+// lo stesso override rete di UI::sendAvailable() (debug on + url custom),
+// passato dal chiamante perche' questa e' una funzione libera senza `this`.
 static std::string normalizeRowLabel() { return i18n::get(StrKey::SetNormalizeSave); }
-static std::vector<std::string> saveMenuRows(GameType g) {
+static std::vector<std::string> saveMenuRows(GameType g, bool canSend) {
     std::vector<std::string> r = { "Backup save", "Browse backups", "Clean old backups" };
-    r.push_back("Send save");
+    if (canSend) r.push_back("Send save");
     r.push_back("Close");
     return r;
 }
@@ -2354,7 +2383,7 @@ void UI::handleGameSelectorInput(bool& running) {
         if (showSaveMenu_) {
             if (event.type == SDL_CONTROLLERBUTTONDOWN) {
                 markDirty();
-                int smN = (int)saveMenuRows(saveMenuGame_).size();
+                int smN = (int)saveMenuRows(saveMenuGame_, sendAvailable()).size();
                 switch (event.cbutton.button) {
                     case SDL_CONTROLLER_BUTTON_DPAD_UP:
                     case SDL_CONTROLLER_BUTTON_DPAD_LEFT:
@@ -2365,7 +2394,7 @@ void UI::handleGameSelectorInput(bool& running) {
                         saveMenuCursor_ = (saveMenuCursor_ + 1) % smN;
                         break;
                     case SDL_CONTROLLER_BUTTON_B: { // Switch A = conferma
-                        std::string sel = saveMenuRows(saveMenuGame_)[saveMenuCursor_];
+                        std::string sel = saveMenuRows(saveMenuGame_, sendAvailable())[saveMenuCursor_];
                         if (sel == "Backup save") {
                             std::string out;
                             showSaveMenu_ = false;
@@ -2753,7 +2782,7 @@ void UI::handleGameSelectorInput(bool& running) {
         uint32_t now = SDL_GetTicks();
         uint32_t delay = stickMoved_ ? STICK_REPEAT_DELAY : STICK_INITIAL_DELAY;
         if (now - stickMoveTime_ >= delay) {
-            int smN = (int)saveMenuRows(saveMenuGame_).size();
+            int smN = (int)saveMenuRows(saveMenuGame_, sendAvailable()).size();
             saveMenuCursor_ = (saveMenuCursor_ + (stickDirY_ > 0 ? 1 : smN - 1)) % smN;
             stickMoveTime_ = now;
             stickMoved_ = true;
@@ -4533,7 +4562,7 @@ bool UI::restoreBackupEntry(GameType g, const std::string& entry) {
 
 void UI::drawSaveMenuPopup() {
     drawRect(0, 0, SCREEN_W, SCREEN_H, T().overlay);
-    std::vector<std::string> rows = saveMenuRows(saveMenuGame_);
+    std::vector<std::string> rows = saveMenuRows(saveMenuGame_, sendAvailable());
     int NROWS = (int)rows.size();
     constexpr int POP_W = 360;
     int rowH = 36;
@@ -4560,16 +4589,14 @@ std::vector<GameSelMenuAction> UI::gameSelMenuActions() const {
     std::vector<GameSelMenuAction> v = { GameSelMenuAction::SwitchCore, GameSelMenuAction::DebugLog,
                                           GameSelMenuAction::ClearLog };
     // Invio log/save solo con override rete attivo (GitHub non riceve upload).
-    if (DebugLog::enabled()) {
-        UpdateCfg cfg;
-        readUpdateCfg(basePath_, cfg);
-        if (!cfg.url.empty()) {
-            v.push_back(GameSelMenuAction::SendLog);
-            v.push_back(GameSelMenuAction::SendSave);
-            // Niente CrashReport nel menu rapido +: resta solo in
-            // Impostazioni -> Sviluppatore (richiesto esplicitamente,
-            // il + doveva restare corto).
-        }
+    // Stessa condizione di UI::sendAvailable() (debug on + url custom) —
+    // richiamata invece di duplicarla qui una quarta volta.
+    if (sendAvailable()) {
+        v.push_back(GameSelMenuAction::SendLog);
+        v.push_back(GameSelMenuAction::SendSave);
+        // Niente CrashReport nel menu rapido +: resta solo in
+        // Impostazioni -> Sviluppatore (richiesto esplicitamente,
+        // il + doveva restare corto).
     }
     v.push_back(GameSelMenuAction::ImportSettings);
     v.push_back(GameSelMenuAction::CheckUpdate);
@@ -5806,8 +5833,12 @@ void UI::remoteSyncTestRow() {
             bool tmpOk = remoteSyncDownload(host, token, c.remoteSavePath, tmpPath, dlErr);
             std::string localOt;
             bool sameIdentity = false;
+            // localProbe/remoteProbe dichiarati qui (non dentro l'if sotto)
+            // perche' servono anche piu' avanti per il confronto
+            // playtime/dex -- stesso oggetto gia' caricato per il controllo
+            // identita', zero costo di rete o parsing in piu'.
+            SaveFile localProbe, remoteProbe;
             if (tmpOk) {
-                SaveFile localProbe, remoteProbe;
                 localProbe.setGameType(c.type);
                 remoteProbe.setGameType(c.type);
                 if (localProbe.load(switchLocalPath) && remoteProbe.load(tmpPath)) {
@@ -5821,11 +5852,44 @@ void UI::remoteSyncTestRow() {
                 showMessageAndWait(title, i18n::get(StrKey::DevSyncSyncNoIdentity));
                 std::remove(tmpPath.c_str());
             } else {
-                struct stat st;
-                long long localModified = 0;
-                long long localBefore = 0;
-                if (stat(switchLocalPath.c_str(), &st) == 0) localModified = localBefore = (long long)st.st_mtime;
-                bool remoteNewer = c.remoteSaveModifiedUnix > localModified;
+                // 2026-09-19: la sola data di modifica del file NON dice chi ha
+                // davvero piu' progressi -- una copia via USB, un semplice
+                // caricamento in un emulatore, o un orologio di sistema sballato
+                // bastano a confonderla, e su questi due save (stesso allenatore,
+                // appena verificato sopra) la differenza reale che conta e'
+                // quanto si e' giocato. localProbe/remoteProbe sono gia' caricati
+                // per il controllo identita': stesso costo di rete, nessun
+                // download in piu'.
+                // Priorita': 1) tempo di gioco (solo GBA per ora, vedi
+                // SaveFile::playTimeSeconds) 2) Pokedex catturati (copre anche
+                // GB/GBC/NDS, vedi Pokedex::getDexStatus) 3) mtime del file, come
+                // ultima spiaggia quando nessuno dei due segnali e' disponibile o
+                // i due save risultano identici su entrambi.
+                long localPt = localProbe.playTimeSeconds();
+                long remotePt = remoteProbe.playTimeSeconds();
+                bool remoteNewer;
+                std::string howDecided;
+                if (localPt >= 0 && remotePt >= 0 && localPt != remotePt) {
+                    remoteNewer = remotePt > localPt;
+                    howDecided = "playtime";
+                } else {
+                    Pokedex::DexStatus localDex = Pokedex::getDexStatus(localProbe);
+                    Pokedex::DexStatus remoteDex = Pokedex::getDexStatus(remoteProbe);
+                    if (localDex.supported && remoteDex.supported && localDex.caught != remoteDex.caught) {
+                        remoteNewer = remoteDex.caught > localDex.caught;
+                        howDecided = "dex";
+                    } else {
+                        struct stat st;
+                        long long localModified = 0;
+                        if (stat(switchLocalPath.c_str(), &st) == 0) localModified = (long long)st.st_mtime;
+                        remoteNewer = c.remoteSaveModifiedUnix > localModified;
+                        howDecided = "mtime";
+                    }
+                }
+                DebugLog::line("remote sync: sincronizza direzione=%s per %s (local pt=%ld dex=%d, remote pt=%ld dex=%d)",
+                               howDecided.c_str(), gi.gameTag, localPt,
+                               Pokedex::getDexStatus(localProbe).caught, remotePt,
+                               Pokedex::getDexStatus(remoteProbe).caught);
                 std::string dir = i18n::get(remoteNewer ? StrKey::DevSyncDirRemoteToLocal : StrKey::DevSyncDirLocalToRemote);
                 if (showConfirmDialog(i18n::fmt(StrKey::DevSyncSyncTitle, gi.displayName), i18n::fmt(StrKey::DevSyncSyncBody, localOt, dir))) {
                     if (remoteNewer) {
@@ -5860,8 +5924,10 @@ void UI::remoteSyncTestRow() {
                     didSomething = true;
                 }
                 std::remove(tmpPath.c_str());
-                // Nota mtime: confrontiamo i valori originali prima del transfer (localBefore vs remoteModified).
-                // Dopo il transfer il file locale avrà mtime = now, non va usato per decisioni future nello stesso flusso.
+                // Nota: playtime/dex/mtime sopra sono tutti letti PRIMA del
+                // transfer (localProbe/localModified originali) -- dopo il
+                // transfer il file locale ha mtime = now, non va mai riletto
+                // per decisioni nello stesso giro.
             }
         }
     }
@@ -6227,7 +6293,14 @@ void UI::settingsRowActivate(int cat, int row, int dir, bool& running) {
                 else
                     showMessageAndWait(i18n::get(StrKey::SetTitle), std::string("rename FAIL:\n") + off);
             }
-        } else if (row == 2) {
+        } else if (row == 3) {
+            // 2026-09-19: era "row == 2", stessa condizione del blocco Sorgente
+            // appena sopra -- da quando il boot-toggle (nuovo row==1) ha
+            // spostato Sorgente/Canale di una posizione, questo ramo era
+            // diventato IRRAGGIUNGIBILE (il primo "row == 2" vince sempre) e
+            // la riga "Canale" (ora davvero row==3) cadeva nel fallback
+            // sottostante, aprendo l'edit dell'URL al posto del toggle
+            // stabile/beta.
             // Canale stabile/beta: solo 2 valori, qualunque dir alterna.
             UpdateCfg cfg;
             readUpdateCfg(basePath_, cfg);

@@ -267,5 +267,6 @@
     "set_credits": "クレジット",
     "bag_soon": "バッグとイベントは近日公開",
     "set_footer": "A：入る/変更   Y：戻る   B：閉じる/終了",
-    "set_footer_slider": "←/→ or Stick ←/→: adjust  A:+ Y:-  B: back"
+    "set_footer_slider": "←/→ or Stick ←/→: adjust  A:+ Y:-  B: back",
+    "gal_play_time": "プレイ時間"
 }

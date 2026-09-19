@@ -267,5 +267,6 @@
     "set_credits": "Credits",
     "bag_soon": "Sac et evenements bientot",
     "set_footer": "A : entrer/changer   Y : retour   B : fermer/quitter",
-    "set_footer_slider": "←/→ ou Stick ←/→: ajuster  A:+ Y:-  B: retour"
+    "set_footer_slider": "←/→ ou Stick ←/→: ajuster  A:+ Y:-  B: retour",
+    "gal_play_time": "Temps de jeu"
 }

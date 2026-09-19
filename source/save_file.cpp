@@ -2970,6 +2970,25 @@ uint16_t SaveFile::gbaSecurityKeyLow16() const {
     return static_cast<uint16_t>(readU32LE(sec0 + off) & 0xFFFF);
 }
 
+long SaveFile::playTimeSeconds() const {
+    if (!loaded_) return -1;
+    // Section0 (SaveBlock2/trainer info), offset 0x0E: stesso layout in
+    // Ruby/Sapphire/Emerald/FireRed/LeafGreen (playTimeHours u16 LE @0x0E,
+    // playTimeMinutes u8 @0x10, playTimeSeconds u8 @0x11 -- playTimeVBlanks
+    // @0x12 ignorato, sub-secondo, irrilevante per un confronto "chi ha piu'
+    // progressi"). Verificato: stesso offset in tutti e cinque i giochi
+    // perche' vive nella parte iniziale, condivisa, di SaveBlock2, prima
+    // che i giochi divergano piu' avanti nella struct.
+    if (!isImportedFile(gameType_) && !isFRLG(gameType_)) return -1;
+    uint8_t* sec0 = const_cast<SaveFile*>(this)->findGbaSectorData(0);
+    if (!sec0) return -1;
+    uint16_t hours = readU16LE(sec0 + 0x0E);
+    uint8_t minutes = sec0[0x10];
+    uint8_t seconds = sec0[0x11];
+    if (minutes > 59 || seconds > 59) return -1; // dati non plausibili, non fidarsi
+    return static_cast<long>(hours) * 3600 + static_cast<long>(minutes) * 60 + seconds;
+}
+
 bool SaveFile::gbaBagSupported() const {
     if (!loaded_) return false;
     GbaBagLayout L;

@@ -267,5 +267,6 @@
     "set_credits": "Credits",
     "bag_soon": "Tasche & Events kommen bald",
     "set_footer": "A: oeffnen/aendern  Y: zurueck  B: schliessen/verlassen",
-    "set_footer_slider": "←/→ oder Stick ←/→: regeln  A:+ Y:-  B: zurück"
+    "set_footer_slider": "←/→ oder Stick ←/→: regeln  A:+ Y:-  B: zurück",
+    "gal_play_time": "Spielzeit"
 }

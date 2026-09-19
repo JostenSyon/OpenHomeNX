@@ -267,5 +267,6 @@
     "set_credits": "Credits",
     "bag_soon": "Tas en evenementen komen eraan",
     "set_footer": "A: openen/wijzigen  Y: terug  B: sluiten/afsluiten",
-    "set_footer_slider": "←/→ of Stick ←/→: aanpassen  A:+ Y:-  B: terug"
+    "set_footer_slider": "←/→ of Stick ←/→: aanpassen  A:+ Y:-  B: terug",
+    "gal_play_time": "Speeltijd"
 }

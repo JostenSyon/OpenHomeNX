@@ -267,5 +267,6 @@
     "set_credits": "Creditos",
     "bag_soon": "Bolsa e eventos em breve",
     "set_footer": "A: entrar/mudar  Y: voltar  B: fechar/sair",
-    "set_footer_slider": "←/→ ou Stick ←/→: ajustar  A:+ Y:-  B: voltar"
+    "set_footer_slider": "←/→ ou Stick ←/→: ajustar  A:+ Y:-  B: voltar",
+    "gal_play_time": "Tempo de jogo"
 }

@@ -388,6 +388,21 @@ void UI::drawGameList_Gallery() {
                                    std::to_string(pit->second.dexTotal);
                 const auto& ve = getTextEntry(val, fontSmall_, T().text);
                 drawText(val, rightEdge - (int)ve.w, statRowY, T().text, fontSmall_);
+                statRowY += 26;
+            }
+            if (pit->second.playTimeSeconds >= 0) {
+                // Sotto il Pokédex, stesso trattamento label/valore. Solo
+                // GBA per ora (vedi SaveFile::playTimeSeconds): -1 su tutti
+                // gli altri formati, riga nascosta.
+                long total = pit->second.playTimeSeconds;
+                long hh = total / 3600, mm = (total % 3600) / 60;
+                std::string lbl = i18n::get(StrKey::GalPlayTime);
+                drawText(lbl, textX, statRowY, T().textDim, fontSmall_);
+                char buf[32];
+                std::snprintf(buf, sizeof(buf), "%ldh %02ldm", hh, mm);
+                std::string val = buf;
+                const auto& ve = getTextEntry(val, fontSmall_, T().text);
+                drawText(val, rightEdge - (int)ve.w, statRowY, T().text, fontSmall_);
             }
         }
     }
@@ -624,6 +639,7 @@ void UI::galEnsureParty(GameType g) {
             pv.dexSupported = dex.supported;
             pv.dexCaught = dex.caught;
             pv.dexTotal = dex.total;
+            pv.playTimeSeconds = sf.playTimeSeconds();
             DebugLog::line("gal party: %s cached %d/6", gameInfo(g).gameTag, filled);
         } else {
             // Nessun path: scrivi il vuoto solo se non c'è già una cache
@@ -680,7 +696,12 @@ void UI::galLoadCacheFromDisk() {
     }
     uint8_t version = 0;
     uint32_t count = 0;
-    if (std::fread(&version, sizeof(version), 1, f) != 1 || version != 2 ||
+    // v3 (2026-09-19): + playTimeSeconds (int64, -1 = non disponibile) dopo
+    // dexTotal. v2 viene scartata in blocco (return, cache vuota, si
+    // ricostruisce da sola al primo giro su ogni gioco) invece di provare a
+    // leggerla a campi mancanti: stesso trattamento gia' riservato a
+    // qualunque versione sconosciuta qui sotto.
+    if (std::fread(&version, sizeof(version), 1, f) != 1 || version != 3 ||
         std::fread(&count, sizeof(count), 1, f) != 1 || count > 4096) {
         std::fclose(f);
         return;
@@ -690,12 +711,14 @@ void UI::galLoadCacheFromDisk() {
         int64_t mtime = -1;
         uint8_t dexSupported = 0;
         int32_t dexCaught = 0, dexTotal = 0;
+        int64_t playTimeSeconds = -1;
         uint8_t otLen = 0;
         if (std::fread(&gameByte, 1, 1, f) != 1 ||
             std::fread(&mtime, sizeof(mtime), 1, f) != 1 ||
             std::fread(&dexSupported, 1, 1, f) != 1 ||
             std::fread(&dexCaught, sizeof(dexCaught), 1, f) != 1 ||
             std::fread(&dexTotal, sizeof(dexTotal), 1, f) != 1 ||
+            std::fread(&playTimeSeconds, sizeof(playTimeSeconds), 1, f) != 1 ||
             std::fread(&otLen, 1, 1, f) != 1)
             break;
         std::string ot;
@@ -717,6 +740,7 @@ void UI::galLoadCacheFromDisk() {
         pv.dexSupported = dexSupported != 0;
         pv.dexCaught = dexCaught;
         pv.dexTotal = dexTotal;
+        pv.playTimeSeconds = static_cast<long>(playTimeSeconds);
         pv.otName = ot;
         pv.otNameReal = otReal;
         pv.mons.assign(6, PartyPreviewMon{});
@@ -744,7 +768,7 @@ void UI::galSaveCacheToDisk() const {
     FILE* f = std::fopen((basePath_ + "gallery_cache.dat").c_str(), "wb");
     if (!f) return;
     uint32_t magic = GAL_CACHE_MAGIC;
-    uint8_t version = 2;
+    uint8_t version = 3; // v3: + playTimeSeconds dopo dexTotal (vedi galLoadCacheFromDisk)
     uint32_t count = static_cast<uint32_t>(galPartyCache_.size());
     std::fwrite(&magic, sizeof(magic), 1, f);
     std::fwrite(&version, sizeof(version), 1, f);
@@ -754,6 +778,7 @@ void UI::galSaveCacheToDisk() const {
         int64_t mtime = pv.mtime;
         uint8_t dexSupported = pv.dexSupported ? 1 : 0;
         int32_t dexCaught = pv.dexCaught, dexTotal = pv.dexTotal;
+        int64_t playTimeSeconds = pv.playTimeSeconds;
         uint8_t otLen = static_cast<uint8_t>(std::min<size_t>(pv.otName.size(), 255));
         uint8_t otRealLen = static_cast<uint8_t>(std::min<size_t>(pv.otNameReal.size(), 255));
         std::fwrite(&gameByte, 1, 1, f);
@@ -761,6 +786,7 @@ void UI::galSaveCacheToDisk() const {
         std::fwrite(&dexSupported, 1, 1, f);
         std::fwrite(&dexCaught, sizeof(dexCaught), 1, f);
         std::fwrite(&dexTotal, sizeof(dexTotal), 1, f);
+        std::fwrite(&playTimeSeconds, sizeof(playTimeSeconds), 1, f);
         std::fwrite(&otLen, 1, 1, f);
         if (otLen > 0) std::fwrite(pv.otName.data(), 1, otLen, f);
         std::fwrite(&otRealLen, 1, 1, f);

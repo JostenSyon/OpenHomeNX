@@ -267,5 +267,6 @@
     "set_credits": "Авторы",
     "bag_soon": "Сумка и события скоро",
     "set_footer": "A: войти/изменить  Y: назад  B: закрыть/выйти",
-    "set_footer_slider": "←/→ or Stick ←/→: регулировать  A:+ Y:-  B: назад"
+    "set_footer_slider": "←/→ or Stick ←/→: регулировать  A:+ Y:-  B: назад",
+    "gal_play_time": "Время игры"
 }
