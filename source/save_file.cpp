@@ -2906,6 +2906,28 @@ void SaveFile::setNationalDexEnabled() {
     dirty_ = true;
 }
 
+void SaveFile::disableNationalDex() {
+    if (!isImportedFile(gameType_)) return;
+    int flagOfs, varOfs;
+    if (!gbaNationalDexFlagVarOfs(gameType_, flagOfs, varOfs)) return;
+    for (int slot = 0; slot < 2; slot++) {
+        int base = slot * GBA_SECTOR_COUNT * GBA_SECTOR_SIZE;
+        for (int i = 0; i < GBA_SECTOR_COUNT; i++) {
+            int ofs = base + i * GBA_SECTOR_SIZE;
+            if (ofs + GBA_SECTOR_SIZE > (int)rawData_.size()) continue;
+            uint16_t sid = readU16LE(rawData_.data() + ofs + GBA_OFS_SECTOR_ID);
+            if (sid == 0) {
+                rawData_[ofs + 0x19] = 0; // mode: torna a vista Hoenn
+                rawData_[ofs + 0x1A] = 0; // nationalMagic
+            } else if (sid == 2) {
+                rawData_[ofs + flagOfs] &= static_cast<uint8_t>(~(1 << kNatDexFlagBit)); // FLAG_SYS_NATIONAL_DEX
+                writeU16LE(rawData_.data() + ofs + varOfs, 0); // VAR_NATIONAL_DEX
+            }
+        }
+    }
+    dirty_ = true;
+}
+
 // --- Borsa Gen3 GBA ---
 // Offsets relativi all'inizio dati settore 1 (SaveBlock1) + slot count.
 // Fonti: pret include/global.h (pokeruby/pokeemerald/pokefirered) incrociato
@@ -3003,24 +3025,56 @@ bool SaveFile::writeGbaBagSlot(GbaBagPocket p, int slot, uint16_t id, uint16_t c
     return true;
 }
 
+namespace {
+// 2026-09-19: setGbaFlag()/isGbaFlagSet() assumevano SEMPRE settore 1 con
+// flags[] a SaveBlock1+0xEE0 -- vero SOLO per FRLG (pret/pokefirered
+// include/global.h: struct SaveBlock1 flags[] @ 0x0EE0, dentro il settore
+// 1 [0,0xF80)). Ruby/Sapphire ed Emerald hanno flags[] a un offset
+// DIVERSO nel loro SaveBlock1 (struct diversa, stesso problema gia' visto
+// per seen1/seen2 e per VAR/FLAG National Dex): Emerald 0x1270, Ruby/
+// Sapphire 0x1220 -- entrambi cadono in SETTORE 2, non 1. Con l'offset
+// FRLG riusato su Emerald/RS: Aurora/Mistico/Old Sea Map/Ship Southern
+// Island finivano scritti nel settore SBAGLIATO (corrompendo un campo
+// SaveBlock1 non correlato), e l'Eon Ticket di Ruby/Sapphire (flag 0x853)
+// calcolava un offset che sfora GBA_SECTOR_USED nel settore 1 -- setGbaFlag
+// ritornava false silenziosamente (il chiamante non controllava il valore
+// di ritorno) e non scriveva MAI nulla. Anche per FRLG stesso solo meta'
+// del problema era coperta: i flag RECEIVED (0x2A7/0x2A8) cadono davvero
+// in settore 1, ma i flag SHIP_BIRTH_ISLAND/SHIP_NAVEL_ROCK (0x84B/0x84A,
+// necessari perche' la nave ti ci porti davvero) cadono in settore 2 --
+// scritti anche loro nel settore sbagliato.
+// Fix: localizza settore+offset dinamicamente in base al gioco, invece di
+// assumere sempre settore1+0xEE0.
+bool gbaFlagLocation(GameType g, uint16_t flag, int& sectionId, size_t& byteOfs) {
+    int flagsBase;
+    if (isFRLG(g)) flagsBase = 0x0EE0;
+    else if (g == GameType::RUBY || g == GameType::SAPPHIRE) flagsBase = 0x1220;
+    else if (g == GameType::EMERALD) flagsBase = 0x1270;
+    else return false;
+    constexpr int kSectorUsed = 0xF80; // = SaveFile::GBA_SECTOR_USED (private, non raggiungibile da qui)
+    int abs = flagsBase + (flag >> 3);
+    sectionId = 1 + abs / kSectorUsed;
+    byteOfs = static_cast<size_t>(abs % kSectorUsed);
+    return true;
+}
+} // namespace
+
 bool SaveFile::isGbaFlagSet(uint16_t flag) const {
     if (!gbaBagSupported()) return false;
-    uint8_t* sec1 = const_cast<SaveFile*>(this)->findGbaSectorData(1);
-    if (!sec1) return false;
-    constexpr int FLAGS_OFF = 0xEE0;
-    size_t off = FLAGS_OFF + (flag >> 3);
-    if (off >= GBA_SECTOR_USED) return false;
-    return (sec1[off] >> (flag & 7)) & 1;
+    int sectionId; size_t byteOfs;
+    if (!gbaFlagLocation(gameType_, flag, sectionId, byteOfs)) return false;
+    uint8_t* sec = const_cast<SaveFile*>(this)->findGbaSectorData(sectionId);
+    if (!sec || byteOfs >= GBA_SECTOR_USED) return false;
+    return (sec[byteOfs] >> (flag & 7)) & 1;
 }
 
 bool SaveFile::setGbaFlag(uint16_t flag) {
     if (!gbaBagSupported()) return false;
-    uint8_t* sec1 = findGbaSectorData(1);
-    if (!sec1) return false;
-    constexpr int FLAGS_OFF = 0xEE0;
-    size_t off = FLAGS_OFF + (flag >> 3);
-    if (off >= GBA_SECTOR_USED) return false;
-    sec1[off] |= (1u << (flag & 7));
+    int sectionId; size_t byteOfs;
+    if (!gbaFlagLocation(gameType_, flag, sectionId, byteOfs)) return false;
+    uint8_t* sec = findGbaSectorData(sectionId);
+    if (!sec || byteOfs >= GBA_SECTOR_USED) return false;
+    sec[byteOfs] |= (1u << (flag & 7));
     dirty_ = true;
     return true;
 }

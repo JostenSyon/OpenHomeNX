@@ -104,6 +104,15 @@ public:
     // offset assoluto 0x1A; scritto su entrambe le slot)
     bool isNationalDexEnabled() const;
     void setNationalDexEnabled();
+    // Inverso esatto di setNationalDexEnabled() -- stesso mirroring pret
+    // (event_data.c DisableNationalPokedex): azzera nationalMagic, mode,
+    // VAR_NATIONAL_DEX e FLAG_SYS_NATIONAL_DEX su entrambe le slot. Non
+    // tocca i bitfield caught/seen (restano intatti, riappaiono in vista
+    // National se lo si riabilita) -- e' l'unica azione che il gioco vero
+    // stesso compie (in pratica solo a New Game), quindi sicura da rifare
+    // a mano: reversibile, nessun altro sistema dipende dal fatto che sia
+    // irreversibile.
+    void disableNationalDex();
 
     // Borsa Gen3 GBA (RSE/FRLG, settore 1 = SaveBlock1). Slot da 4B
     // {id u16 LE, count u16 LE}. Layout verificato: pret global.h di
@@ -117,7 +126,12 @@ public:
     std::vector<GbaBagSlot> readGbaBag() const;
     // Scrive uno slot (set dirty). False se pocket/slot fuori range.
     bool writeGbaBagSlot(GbaBagPocket p, int slot, uint16_t id, uint16_t count);
-    // Flag evento Gen3 (FRLG/RSE) a SaveBlock1+0xEE0, 1 bit per flag (flag/8, flag%8).
+    // Flag evento Gen3 (FRLG/RSE), 1 bit per flag (flag/8, flag%8) dentro
+    // SaveBlock1.flags[]. Offset assoluto e sezione GBA (settore 1-4)
+    // dipendono dal gioco -- FRLG/RSE hanno struct SaveBlock1 diverse
+    // (flags[] a 0xEE0 su FRLG, 0x1270 su Emerald, 0x1220 su Ruby/Sapphire;
+    // 2026-09-19: un offset unico riusato da FRLG su Emerald/RS scriveva
+    // nel settore sbagliato, vedi gbaFlagLocation() in save_file.cpp).
     // Per FRLG Aurora/Mistico imposta 0x2A7/0x84B e 0x2A8/0x84A, per Smeraldo ecc. vedi docs.
     bool setGbaFlag(uint16_t flag);
     bool isGbaFlagSet(uint16_t flag) const;
