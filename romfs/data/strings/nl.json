@@ -268,5 +268,8 @@
     "bag_soon": "Tas en evenementen komen eraan",
     "set_footer": "A: openen/wijzigen  Y: terug  B: sluiten/afsluiten",
     "set_footer_slider": "←/→ of Stick ←/→: aanpassen  A:+ Y:-  B: terug",
-    "gal_play_time": "Speeltijd"
+    "gal_play_time": "Speeltijd",
+    "cleargalcache_title": "Galerijcache wissen",
+    "cleargalcache_body": "Dwingt af dat de voorbeeldkaarten van de Galerij (team, Pokédex, speeltijd) opnieuw worden opgebouwd uit de saves de volgende keer dat je elk spel opent. Er wordt niets in de spellen zelf aangepast. Doorgaan?",
+    "cleargalcache_done": "Galerijcache gewist."
 }

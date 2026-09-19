@@ -268,5 +268,8 @@
     "bag_soon": "가방과 이벤트는 곷 출시",
     "set_footer": "A: 입장/변경   Y: 뒤로   B: 닫기/종료",
     "set_footer_slider": "←/→ or Stick ←/→: adjust  A:+ Y:-  B: back",
-    "gal_play_time": "플레이 시간"
+    "gal_play_time": "플레이 시간",
+    "cleargalcache_title": "갤러리 캐시 지우기",
+    "cleargalcache_body": "다음에 각 게임을 열 때 갤러리 미리보기 카드(파티, 도감, 플레이 시간)를 세이브 파일에서 다시 만듭니다. 게임 자체는 변경되지 않습니다. 계속하시겠습니까?",
+    "cleargalcache_done": "갤러리 캐시를 지웠습니다."
 }

@@ -268,5 +268,8 @@
     "bag_soon": "Sac et evenements bientot",
     "set_footer": "A : entrer/changer   Y : retour   B : fermer/quitter",
     "set_footer_slider": "←/→ ou Stick ←/→: ajuster  A:+ Y:-  B: retour",
-    "gal_play_time": "Temps de jeu"
+    "gal_play_time": "Temps de jeu",
+    "cleargalcache_title": "Vider le cache de la Galerie",
+    "cleargalcache_body": "Force la reconstruction des fiches d'aperçu de la Galerie (équipe, Pokédex, temps de jeu) à partir des sauvegardes à la prochaine ouverture de chaque jeu. Rien n'est modifié dans les jeux eux-mêmes. Continuer ?",
+    "cleargalcache_done": "Cache de la Galerie vidé."
 }

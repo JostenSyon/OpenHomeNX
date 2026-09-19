@@ -4863,9 +4863,9 @@ int UI::settingsRowCount(int cat) const {
             return n; // Boot, Check, Sorgente, Canale [, Modifica]
         }
         case 5: {
-            // Debug, Menu + [, Pulisci cronologia zaino] [, Normalize save] [, Invia log, Crash report], Ricerca dispositivi
+            // Debug, Menu + [, Pulisci cronologia zaino] [, Normalize save] [, Pulisci cache Galleria] [, Invia log, Crash report], Ricerca dispositivi
             int n = 2;
-            if (DebugLog::enabled()) n += 1 + 1; // + ClearBp, + Normalize
+            if (DebugLog::enabled()) n += 1 + 1 + 1; // + ClearBp, + Normalize, + ClearGalCache
             if (sendAvailable()) n += 2;
             n += 1; // + Ricerca dispositivi (sempre ultima riga, vedi remoteSyncTestRow)
             return n;
@@ -4926,7 +4926,8 @@ std::string UI::settingsRowLabel(int cat, int row) const {
         if (row == 1) return i18n::get(StrKey::SetDbgMenu);
         if (row == 2) return i18n::get(StrKey::ClearBpHistTitle);
         if (row == 3) return normalizeRowLabel();
-        if (row == 4) return i18n::get(StrKey::SendLogTitle);
+        if (row == 4) return i18n::get(StrKey::ClearGalCacheTitle);
+        if (row == 5) return i18n::get(StrKey::SendLogTitle);
         return i18n::get(StrKey::CrashReportTitle);
     }
     if (row == 0) return i18n::get(StrKey::SetVersion);
@@ -6354,6 +6355,17 @@ void UI::settingsRowActivate(int cat, int row, int dir, bool& running) {
                 fixed > 0 ? "corretti" : "tutto OK");
             showMessageAndWait(normalizeRowLabel(), buf);
         } else if (row == 4) {
+            // Pulisci cache Galleria: svuota la mappa in RAM + il file su
+            // disco (gallery_cache.dat). Non tocca i save dei giochi -- si
+            // ricostruisce da sola al primo giro su ogni gioco (stesso
+            // meccanismo del bump v3->v4, ma a richiesta invece che
+            // automatico a ogni fix di formato).
+            if (showConfirmDialog(i18n::get(StrKey::ClearGalCacheTitle), i18n::get(StrKey::ClearGalCacheBody))) {
+                galPartyCache_.clear();
+                std::remove((basePath_ + "gallery_cache.dat").c_str());
+                showMessageAndWait(i18n::get(StrKey::ClearGalCacheTitle), i18n::get(StrKey::ClearGalCacheDone));
+            }
+        } else if (row == 5) {
             sendLogNow();
         } else {
             openCrashList();

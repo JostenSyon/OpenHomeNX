@@ -268,5 +268,8 @@
     "bag_soon": "Bolsa e eventos em breve",
     "set_footer": "A: entrar/mudar  Y: voltar  B: fechar/sair",
     "set_footer_slider": "←/→ ou Stick ←/→: ajustar  A:+ Y:-  B: voltar",
-    "gal_play_time": "Tempo de jogo"
+    "gal_play_time": "Tempo de jogo",
+    "cleargalcache_title": "Limpar cache da Galeria",
+    "cleargalcache_body": "Força a reconstrução dos cartões de pré-visualização da Galeria (equipe, Pokédex, tempo de jogo) a partir dos saves na próxima vez que abrir cada jogo. Nada é alterado nos próprios jogos. Continuar?",
+    "cleargalcache_done": "Cache da Galeria limpo."
 }

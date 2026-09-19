@@ -268,5 +268,8 @@
     "bag_soon": "Tasche & Events kommen bald",
     "set_footer": "A: oeffnen/aendern  Y: zurueck  B: schliessen/verlassen",
     "set_footer_slider": "←/→ oder Stick ←/→: regeln  A:+ Y:-  B: zurück",
-    "gal_play_time": "Spielzeit"
+    "gal_play_time": "Spielzeit",
+    "cleargalcache_title": "Galerie-Cache leeren",
+    "cleargalcache_body": "Erzwingt, dass die Vorschaukarten der Galerie (Team, Pokédex, Spielzeit) beim nächsten Öffnen jedes Spiels neu aus den Spielständen erstellt werden. Die Spiele selbst werden nicht verändert. Fortfahren?",
+    "cleargalcache_done": "Galerie-Cache geleert."
 }

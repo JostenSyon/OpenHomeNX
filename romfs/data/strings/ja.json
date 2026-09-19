@@ -268,5 +268,8 @@
     "bag_soon": "バッグとイベントは近日公開",
     "set_footer": "A：入る/変更   Y：戻る   B：閉じる/終了",
     "set_footer_slider": "←/→ or Stick ←/→: adjust  A:+ Y:-  B: back",
-    "gal_play_time": "プレイ時間"
+    "gal_play_time": "プレイ時間",
+    "cleargalcache_title": "ギャラリーキャッシュを消去",
+    "cleargalcache_body": "次に各ゲームを開いたときに、ギャラリーのプレビューカード(手持ち、図鑑、プレイ時間)をセーブデータから再構築します。ゲーム本体には影響しません。続けますか?",
+    "cleargalcache_done": "ギャラリーキャッシュを消去しました。"
 }

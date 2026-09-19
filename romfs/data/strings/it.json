@@ -470,5 +470,8 @@
     "bp_tab_med": "Med",
     "bp_tab_battle": "Lotta",
     "bp_owned": "Posseduto",
-    "gal_play_time": "Tempo di gioco"
+    "gal_play_time": "Tempo di gioco",
+    "cleargalcache_title": "Pulisci cache Galleria",
+    "cleargalcache_body": "Forza la ricostruzione delle schede anteprima della Galleria (squadra, Pokédex, tempo di gioco) dai save la prossima volta che apri ogni gioco. Non tocca nulla nei giochi stessi. Continuare?",
+    "cleargalcache_done": "Cache Galleria ripulita."
 }

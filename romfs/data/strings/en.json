@@ -470,5 +470,8 @@
     "bp_tab_med": "Med",
     "bp_tab_battle": "Battle",
     "bp_owned": "Owned",
-    "gal_play_time": "Play time"
+    "gal_play_time": "Play time",
+    "cleargalcache_title": "Clear Gallery cache",
+    "cleargalcache_body": "Forces the Gallery preview cards (party, Pokédex, play time) to be rebuilt from the save files next time you open each game. Nothing in the games themselves is touched. Continue?",
+    "cleargalcache_done": "Gallery cache cleared."
 }

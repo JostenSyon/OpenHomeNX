@@ -268,5 +268,8 @@
     "bag_soon": "背包和活动即将推出",
     "set_footer": "A：进入/更改   Y：返回   B：关闭/退出",
     "set_footer_slider": "←/→ or Stick ←/→: adjust  A:+ Y:-  B: back",
-    "gal_play_time": "游戏时长"
+    "gal_play_time": "游戏时长",
+    "cleargalcache_title": "清除画廊缓存",
+    "cleargalcache_body": "下次打开每个游戏时，强制从存档重新生成画廊预览卡片（队伍、图鉴、游戏时长）。不会修改游戏本身的任何内容。继续吗？",
+    "cleargalcache_done": "画廊缓存已清除。"
 }

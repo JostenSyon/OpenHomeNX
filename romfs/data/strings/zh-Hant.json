@@ -268,5 +268,8 @@
     "bag_soon": "背包和活動即將推出",
     "set_footer": "A：進入/更改   Y：返回   B：關閉/退出",
     "set_footer_slider": "←/→ or Stick ←/→: adjust  A:+ Y:-  B: back",
-    "gal_play_time": "遊戲時長"
+    "gal_play_time": "遊戲時長",
+    "cleargalcache_title": "清除畫廋快取",
+    "cleargalcache_body": "下次打開每個遊戲時，強制從存檔重新產生畫廋預覽卡片（隊伍、圖鑑、遊戲時長）。不會修改遊戲本身的任何內容。繼續嗎？",
+    "cleargalcache_done": "畫廋快取已清除。"
 }

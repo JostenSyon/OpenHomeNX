@@ -481,6 +481,9 @@ namespace StrKey {
     constexpr const char* ClearBpHistBody      = "clearbphist_body";
     constexpr const char* ClearBpHistDone      = "clearbphist_done";
     constexpr const char* ClearBpHistFailed    = "clearbphist_failed";
+    constexpr const char* ClearGalCacheTitle   = "cleargalcache_title";
+    constexpr const char* ClearGalCacheBody    = "cleargalcache_body";
+    constexpr const char* ClearGalCacheDone    = "cleargalcache_done";
     constexpr const char* SetNormalizeSave     = "set_normalize_save";
     constexpr const char* ClearLogDone         = "clearlog_done";
     constexpr const char* ClearLogFailed       = "clearlog_failed";
