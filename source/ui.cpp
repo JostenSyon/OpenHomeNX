@@ -448,6 +448,102 @@ bool UI::showConfirmDialog(const std::string& title, const std::string& body) {
     return result == 1;
 }
 
+bool UI::showSyncCompareDialog(const std::string& gameName, const SyncSideInfo& local,
+                                const SyncSideInfo& remote, bool remoteNewer,
+                                const char* criterionKey) {
+    if (!renderer_) return false;
+    markDirty(); // Force redraw after modal returns
+
+    constexpr int POP_W = 980;
+    constexpr int POP_H = 440;
+    constexpr int BOX_GAP = 24;
+    constexpr int BOX_W = (POP_W - BOX_GAP) / 2;
+    constexpr int BOX_H = 300;
+    int popX = (SCREEN_W - POP_W) / 2;
+    int popY = (SCREEN_H - POP_H) / 2;
+    int leftX  = popX;
+    int rightX = popX + BOX_W + BOX_GAP;
+    int boxY = popY + 96;
+
+    // "-> " nella direzione scelta cosi' si vede subito quale lato verra'
+    // sovrascritto, non solo perche' (vedi criterionKey sotto).
+    auto fmtRow = [&](int boxX, int rowY, const std::string& label, const std::string& value) {
+        drawText(label, boxX + 20, rowY, T().textDim, fontSmall_);
+        const auto& ve = getTextEntry(value, fontSmall_, T().text);
+        drawText(value, boxX + BOX_W - 20 - (int)ve.w, rowY, T().text, fontSmall_);
+    };
+    auto fmtDate = [](long long unixTime) -> std::string {
+        if (unixTime <= 0) return "--";
+        time_t t = (time_t)unixTime;
+        struct tm tmv;
+        localtime_r(&t, &tmv);
+        char buf[32];
+        std::snprintf(buf, sizeof(buf), "%04d-%02d-%02d %02d:%02d",
+                      tmv.tm_year + 1900, tmv.tm_mon + 1, tmv.tm_mday, tmv.tm_hour, tmv.tm_min);
+        return buf;
+    };
+    auto fmtPlaytime = [](long secs) -> std::string {
+        if (secs < 0) return "--";
+        char buf[32];
+        std::snprintf(buf, sizeof(buf), "%ldh %02ldm", secs / 3600, (secs % 3600) / 60);
+        return buf;
+    };
+    auto fmtDex = [](const SyncSideInfo& s) -> std::string {
+        if (!s.dexSupported) return "--";
+        return std::to_string(s.dexCaught) + "/" + std::to_string(s.dexTotal);
+    };
+
+    int result = -1; // -1 = undecided
+    while (result < 0) {
+        SDL_Event event;
+        while (SDL_PollEvent(&event)) {
+            if (event.type == SDL_QUIT) result = 0;
+            if (event.type == SDL_CONTROLLERBUTTONDOWN) {
+                if (event.cbutton.button == SDL_CONTROLLER_BUTTON_B) result = 1; // Switch A = conferma
+                if (event.cbutton.button == SDL_CONTROLLER_BUTTON_A) result = 0; // Switch B = annulla
+            }
+        }
+
+        SDL_SetRenderDrawColor(renderer_, T().bg.r, T().bg.g, T().bg.b, 255);
+        SDL_RenderClear(renderer_);
+
+        drawTextCentered(i18n::fmt(StrKey::DevSyncSyncTitle, gameName), SCREEN_W / 2, popY + 18, T().red, fontLarge_);
+        drawTextCentered(i18n::fmt(StrKey::DevSyncCompareCriterion, i18n::get(criterionKey)),
+                          SCREEN_W / 2, popY + 56, T().textDim, fontSmall_);
+
+        for (int side = 0; side < 2; side++) {
+            bool isLocal = side == 0;
+            const SyncSideInfo& s = isLocal ? local : remote;
+            int bx = isLocal ? leftX : rightX;
+            bool isSource = isLocal ? !remoteNewer : remoteNewer;
+            SDL_Color border = isSource ? T().cursor : T().textDim;
+
+            drawRect(bx, boxY, BOX_W, BOX_H, T().panelBg);
+            drawRectOutline(bx, boxY, BOX_W, BOX_H, border, isSource ? 3 : 1);
+
+            drawTextCentered(i18n::get(isLocal ? StrKey::DevSyncCompareLocal : StrKey::DevSyncCompareRemote),
+                              bx + BOX_W / 2, boxY + 24, isSource ? T().cursor : T().text, font_);
+            if (isSource)
+                drawTextCentered(i18n::get(StrKey::DevSyncCompareSource), bx + BOX_W / 2, boxY + 50, T().cursor, fontSmall_);
+
+            int rowY = boxY + 96;
+            fmtRow(bx, rowY, i18n::get(StrKey::FilterOT), s.trainer.empty() ? "--" : s.trainer);
+            rowY += 32;
+            fmtRow(bx, rowY, "Pokédex", fmtDex(s));
+            rowY += 32;
+            fmtRow(bx, rowY, i18n::get(StrKey::GalPlayTime), fmtPlaytime(s.playTimeSeconds));
+            rowY += 32;
+            fmtRow(bx, rowY, i18n::get(StrKey::DevSyncCompareSaveDate), fmtDate(s.modifiedUnix));
+        }
+
+        drawTextCentered(i18n::get(StrKey::AContinueBCancel), SCREEN_W / 2, popY + POP_H - 16, T().textDim, fontSmall_);
+
+        SDL_RenderPresent(renderer_);
+        SDL_Delay(16);
+    }
+    return result == 1;
+}
+
 void UI::showLauncherPromptPopup() {
     if (!renderer_) return;
     markDirty();

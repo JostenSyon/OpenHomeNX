@@ -5868,31 +5868,45 @@ void UI::remoteSyncTestRow() {
                 // i due save risultano identici su entrambi.
                 long localPt = localProbe.playTimeSeconds();
                 long remotePt = remoteProbe.playTimeSeconds();
+                Pokedex::DexStatus localDex = Pokedex::getDexStatus(localProbe);
+                Pokedex::DexStatus remoteDex = Pokedex::getDexStatus(remoteProbe);
+                struct stat st;
+                long long localModified = 0;
+                if (stat(switchLocalPath.c_str(), &st) == 0) localModified = (long long)st.st_mtime;
                 bool remoteNewer;
                 std::string howDecided;
+                const char* criterionKey;
                 if (localPt >= 0 && remotePt >= 0 && localPt != remotePt) {
                     remoteNewer = remotePt > localPt;
                     howDecided = "playtime";
+                    criterionKey = StrKey::DevSyncCriterionPlaytime;
+                } else if (localDex.supported && remoteDex.supported && localDex.caught != remoteDex.caught) {
+                    remoteNewer = remoteDex.caught > localDex.caught;
+                    howDecided = "dex";
+                    criterionKey = StrKey::DevSyncCriterionDex;
                 } else {
-                    Pokedex::DexStatus localDex = Pokedex::getDexStatus(localProbe);
-                    Pokedex::DexStatus remoteDex = Pokedex::getDexStatus(remoteProbe);
-                    if (localDex.supported && remoteDex.supported && localDex.caught != remoteDex.caught) {
-                        remoteNewer = remoteDex.caught > localDex.caught;
-                        howDecided = "dex";
-                    } else {
-                        struct stat st;
-                        long long localModified = 0;
-                        if (stat(switchLocalPath.c_str(), &st) == 0) localModified = (long long)st.st_mtime;
-                        remoteNewer = c.remoteSaveModifiedUnix > localModified;
-                        howDecided = "mtime";
-                    }
+                    remoteNewer = c.remoteSaveModifiedUnix > localModified;
+                    howDecided = "mtime";
+                    criterionKey = StrKey::DevSyncCriterionMtime;
                 }
                 DebugLog::line("remote sync: sincronizza direzione=%s per %s (local pt=%ld dex=%d, remote pt=%ld dex=%d)",
-                               howDecided.c_str(), gi.gameTag, localPt,
-                               Pokedex::getDexStatus(localProbe).caught, remotePt,
-                               Pokedex::getDexStatus(remoteProbe).caught);
-                std::string dir = i18n::get(remoteNewer ? StrKey::DevSyncDirRemoteToLocal : StrKey::DevSyncDirLocalToRemote);
-                if (showConfirmDialog(i18n::fmt(StrKey::DevSyncSyncTitle, gi.displayName), i18n::fmt(StrKey::DevSyncSyncBody, localOt, dir))) {
+                               howDecided.c_str(), gi.gameTag, localPt, localDex.caught, remotePt, remoteDex.caught);
+
+                SyncSideInfo localInfo, remoteInfo;
+                localInfo.trainer = localOt;
+                localInfo.playTimeSeconds = localPt;
+                localInfo.dexCaught = localDex.caught;
+                localInfo.dexTotal = localDex.total;
+                localInfo.dexSupported = localDex.supported;
+                localInfo.modifiedUnix = localModified;
+                remoteInfo.trainer = remoteProbe.dsOtName();
+                remoteInfo.playTimeSeconds = remotePt;
+                remoteInfo.dexCaught = remoteDex.caught;
+                remoteInfo.dexTotal = remoteDex.total;
+                remoteInfo.dexSupported = remoteDex.supported;
+                remoteInfo.modifiedUnix = c.remoteSaveModifiedUnix;
+
+                if (showSyncCompareDialog(gi.displayName, localInfo, remoteInfo, remoteNewer, criterionKey)) {
                     if (remoteNewer) {
                         // Usa copia già scaricata (tmpPath) — evita seconda richiesta di rete
                         // e soprattutto non confrontare più dopo: il mtime locale va sovrascritto ora.

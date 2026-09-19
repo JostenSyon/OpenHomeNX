@@ -73,6 +73,17 @@ struct SearchResult {
     std::string otName;
 };
 
+// Riepilogo di un lato (locale/remoto) per il popup di confronto della
+// Sincronizza DevSync — vedi UI::showSyncCompareDialog.
+struct SyncSideInfo {
+    std::string trainer;
+    long playTimeSeconds = -1;   // -1 = non disponibile per questo formato
+    int  dexCaught = -1;
+    int  dexTotal  = -1;
+    bool dexSupported = false;
+    long long modifiedUnix = 0;  // 0 = sconosciuto
+};
+
 // Cursor position within the two-panel display
 struct Cursor {
     Panel panel = Panel::Game;
@@ -96,6 +107,15 @@ public:
     std::vector<std::string> wrapText(const std::string& line, TTF_Font* f, int maxW);
     void showMessageAndWait(const std::string& title, const std::string& body);
     bool showConfirmDialog(const std::string& title, const std::string& body);
+    // Popup di conferma per "Sincronizza" (DevSync): due riquadri affiancati
+    // (locale/remoto) con allenatore, Pokédex, tempo di gioco e data
+    // salvataggio, cosi' si vede il criterio usato per scegliere la
+    // direzione invece del solo testo "il save locale e' piu' recente".
+    // criterionKey e' una StrKey (DevSyncCriterion*) gia' risolta dal
+    // chiamante in base a howDecided.
+    bool showSyncCompareDialog(const std::string& gameName, const SyncSideInfo& local,
+                                const SyncSideInfo& remote, bool remoteNewer,
+                                const char* criterionKey);
     // Popup di scoperta "Installa launcher" (icona app + testo), mostrato
     // una sola volta in vita: solo informativo (il pulsante vero sta in
     // Impostazioni > Sistema, non ancora costruito), quindi niente scelta

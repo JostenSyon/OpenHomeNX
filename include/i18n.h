@@ -536,6 +536,16 @@ namespace StrKey {
     constexpr const char* DevSyncSyncNoLocalOrRemote = "devsync_sync_no_local_or_remote";
     constexpr const char* DevSyncAskRomTitle = "devsync_ask_rom_title";
     constexpr const char* DevSyncAskRomBody  = "devsync_ask_rom_body";
+    // Popup di confronto locale/remoto per "Sincronizza" (due riquadri
+    // affiancati, vedi UI::showSyncCompareDialog).
+    constexpr const char* DevSyncCompareLocal    = "devsync_compare_local";
+    constexpr const char* DevSyncCompareRemote   = "devsync_compare_remote";
+    constexpr const char* DevSyncCompareSource   = "devsync_compare_source";
+    constexpr const char* DevSyncCompareSaveDate = "devsync_compare_save_date";
+    constexpr const char* DevSyncCompareCriterion = "devsync_compare_criterion";
+    constexpr const char* DevSyncCriterionPlaytime = "devsync_criterion_playtime";
+    constexpr const char* DevSyncCriterionDex      = "devsync_criterion_dex";
+    constexpr const char* DevSyncCriterionMtime    = "devsync_criterion_mtime";
 
     // Box Remoto (apre un save remoto nel selettore giochi/banca locale).
     constexpr const char* RemoteBoxMenuLabel   = "remotebox_menu_label";
