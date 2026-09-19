@@ -701,7 +701,18 @@ void UI::galLoadCacheFromDisk() {
     // ricostruisce da sola al primo giro su ogni gioco) invece di provare a
     // leggerla a campi mancanti: stesso trattamento gia' riservato a
     // qualunque versione sconosciuta qui sotto.
-    if (std::fread(&version, sizeof(version), 1, f) != 1 || version != 3 ||
+    // v4 (2026-09-19): STESSO layout byte-per-byte di v3 -- bump fatto solo
+    // per invalidare in blocco le entry gia' in cache scritte quando
+    // SaveFile::playTimeSeconds() copriva solo GBA. Senza questo, un gioco
+    // GB/GBC/LGPE/BDSP/SwSh/SV/LA/ZA gia' visto in Galleria PRIMA che il
+    // supporto per il suo formato venisse aggiunto restava con
+    // playTimeSeconds=-1 congelato per sempre: l'mtime del save non cambia
+    // solo perche' il nostro codice e' diventato piu' capace, quindi la
+    // cache lo considerava ancora valido e non lo ricalcolava mai (bug
+    // osservato dall'utente: playtime assente su alcuni giochi GB/GBC/GBA
+    // ma non su altri, a seconda di quando erano stati aperti la prima
+    // volta in Galleria rispetto a questi fix).
+    if (std::fread(&version, sizeof(version), 1, f) != 1 || version != 4 ||
         std::fread(&count, sizeof(count), 1, f) != 1 || count > 4096) {
         std::fclose(f);
         return;
@@ -768,7 +779,7 @@ void UI::galSaveCacheToDisk() const {
     FILE* f = std::fopen((basePath_ + "gallery_cache.dat").c_str(), "wb");
     if (!f) return;
     uint32_t magic = GAL_CACHE_MAGIC;
-    uint8_t version = 3; // v3: + playTimeSeconds dopo dexTotal (vedi galLoadCacheFromDisk)
+    uint8_t version = 4; // v4: stesso layout di v3, bump solo per invalidare cache pre-playtime-esteso (vedi galLoadCacheFromDisk)
     uint32_t count = static_cast<uint32_t>(galPartyCache_.size());
     std::fwrite(&magic, sizeof(magic), 1, f);
     std::fwrite(&version, sizeof(version), 1, f);
