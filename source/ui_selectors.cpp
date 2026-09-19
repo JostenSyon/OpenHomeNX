@@ -5523,7 +5523,14 @@ void UI::remoteSyncTestRow() {
     };
 
     // Nuovo flusso: picker gioco + 3 bottoni (evita spam). B nel picker torna
-    // alla schermata precedente, B nei 3 bottoni torna al picker (1 passo indietro).
+    // alla schermata precedente (dock), B nei 3 bottoni torna al picker (1
+    // passo indietro). L'intero corpo qui sotto (fino al riepilogo/cleanup
+    // in fondo alla funzione) e' avvolto in questo while(true): finita
+    // un'azione (completata, annullata con B sul dialogo di conferma, o
+    // fallita) si torna alla lista giochi invece di uscire dalla funzione --
+    // altrimenti l'utente doveva rientrare dalla dock per ogni singola
+    // sincronizzazione, anche solo per annullarne una.
+    while (true) {
     SyncCandidate c;
     const GameInfo* giPtr = nullptr;
     int action = -1;
@@ -5537,6 +5544,7 @@ void UI::remoteSyncTestRow() {
         break;
     }
     const GameInfo& gi = *giPtr;
+    sent = received = skipped = failed = 0;
 
     // Se il candidato locale e' un save Switch nativo (marker "save:/...",
     // aggiunto per FRLG quando manca un file in sdmc:/roms/), qui non c'e'
@@ -5963,8 +5971,9 @@ void UI::remoteSyncTestRow() {
     }
 
     // Summary per singola azione: non mostrare popup "inviato/saltati" se l'utente ha
-    // appena premuto B per annullare — con B deve tornare subito alla schermata
-    // precedente (giochi / dock sync save), senza spam. Logga solo, mostra solo se fallito.
+    // appena premuto B per annullare — con B deve tornare subito alla lista
+    // giochi da sincronizzare (non uscire dalla dock), senza spam. Logga solo,
+    // mostra solo se fallito.
     skipped = didSomething ? 0 : 1;
     if (failed > 0) {
         showMessageAndWait(title, i18n::fmt(StrKey::DevSyncFlowSummary, std::to_string(sent), std::to_string(received), std::to_string(skipped), std::to_string(failed)));
@@ -5975,6 +5984,21 @@ void UI::remoteSyncTestRow() {
     // mai lasciato sul dispositivo dopo che il flusso e' terminato, come
     // ogni altro tmp di questa funzione.
     if (!switchSaveRealPath.empty()) std::remove(switchSaveRealPath.c_str());
+
+    // Si torna alla lista (vedi while(true) sopra): i dati del candidato appena
+    // usato (hasLocal/hasRemoteSave/mtime) sono adesso vecchi se l'azione ha
+    // scritto qualcosa (es. "Ricevi" crea il locale, "Sincronizza" puo'
+    // aggiornare uno dei due lati) -- senza un refresh i bottoni Invia/Ricevi
+    // /Sincronizza della prossima selezione userebbero stato pre-azione. Se il
+    // refresh fallisce (rete a singhiozzo) tiene la lista precedente piuttosto
+    // che svuotarla e forzare un'uscita non richiesta.
+    if (didSomething) {
+        std::string refreshErr;
+        std::vector<SyncCandidate> refreshed = remoteSyncBuildCandidates(host, token, localGames, refreshErr);
+        if (!refreshed.empty()) candidates = refreshed;
+        else DebugLog::line("remote sync: refresh candidati fallito dopo l'azione: %s", refreshErr.c_str());
+    }
+    } // while(true) -- torna alla lista giochi, vedi commento sopra il picker
 }
 
 // --- Box Remoto: apre save gia' presenti sul dispositivo remoto dentro lo
