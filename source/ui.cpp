@@ -455,18 +455,17 @@ bool UI::showSyncCompareDialog(const std::string& gameName, const SyncSideInfo& 
     markDirty(); // Force redraw after modal returns
 
     constexpr int POP_W = 980;
-    constexpr int POP_H = 452;
-    constexpr int BOX_GAP = 24;
+    constexpr int POP_H = 424;
+    constexpr int BOX_GAP = 56; // spazio attorno alla freccia ">" tra i riquadri, prima era quasi attaccata
     constexpr int BOX_W = (POP_W - BOX_GAP) / 2;
     constexpr int BOX_H = 300;
+    constexpr int BOX_R = 12; // stesso raggio delle card/popup nel resto dell'app (vedi drawRoundRect altrove)
     int popX = (SCREEN_W - POP_W) / 2;
     int popY = (SCREEN_H - POP_H) / 2;
     int leftX  = popX;
     int rightX = popX + BOX_W + BOX_GAP;
-    int boxY = popY + 108;
+    int boxY = popY + 84;
 
-    // "-> " nella direzione scelta cosi' si vede subito quale lato verra'
-    // sovrascritto, non solo perche' (vedi criterionKey sotto).
     auto fmtRow = [&](int boxX, int rowY, const std::string& label, const std::string& value) {
         drawText(label, boxX + 20, rowY, T().textDim, fontSmall_);
         const auto& ve = getTextEntry(value, fontSmall_, T().text);
@@ -508,32 +507,15 @@ bool UI::showSyncCompareDialog(const std::string& gameName, const SyncSideInfo& 
         SDL_RenderClear(renderer_);
 
         drawTextCentered(i18n::fmt(StrKey::DevSyncSyncTitle, gameName), SCREEN_W / 2, popY + 18, T().red, fontLarge_);
-
-        // Riga d'azione esplicita ("LOCALE > REMOTO" / "REMOTO > LOCALE"):
-        // l'utente ha segnalato che il solo riquadro evidenziato non basta a
-        // capire subito il verso premendo A, quindi lo scriviamo a parole
-        // proprio sotto il titolo, oltre alla freccia tra i riquadri sotto.
-        {
-            std::string srcLbl = i18n::get(remoteNewer ? StrKey::DevSyncCompareRemote : StrKey::DevSyncCompareLocal);
-            std::string dstLbl = i18n::get(remoteNewer ? StrKey::DevSyncCompareLocal : StrKey::DevSyncCompareRemote);
-            const auto& srcVe = getTextEntry(srcLbl, font_, T().cursor);
-            const auto& arVe  = getTextEntry(">", font_, T().arrow);
-            const auto& dstVe = getTextEntry(dstLbl, font_, T().cursor);
-            int totalW = (int)srcVe.w + 16 + (int)arVe.w + 16 + (int)dstVe.w;
-            int ax = SCREEN_W / 2 - totalW / 2;
-            int ay = popY + 52;
-            drawText(srcLbl, ax, ay, T().cursor, font_);
-            ax += (int)srcVe.w + 16;
-            drawText(">", ax, ay, T().arrow, font_);
-            ax += (int)arVe.w + 16;
-            drawText(dstLbl, ax, ay, T().cursor, font_);
-        }
         drawTextCentered(i18n::fmt(StrKey::DevSyncCompareCriterion, i18n::get(criterionKey)),
-                          SCREEN_W / 2, popY + 78, T().textDim, fontSmall_);
+                          SCREEN_W / 2, popY + 54, T().textDim, fontSmall_);
 
-        // Freccia grande tra i due riquadri, stesso verso della riga sopra:
-        // rinforzo visivo immediato oltre al testo, stesso trattamento a
-        // colori (T().arrow) delle frecce di scroll gia' usate altrove.
+        // Freccia tra i due riquadri, unico indicatore del verso (niente piu'
+        // "LOCALE > REMOTO" a parole sotto il titolo: col criterio mtime il
+        // verso suggerito puo' essere fuorviante -- un file appena inviato al
+        // remoto prende la data di invio ed e' sempre "piu' recente" anche
+        // senza alcun progresso reale, quindi meglio non dichiararlo a parole
+        // in grande, il bordo evidenziato sul riquadro sorgente basta).
         drawTextCentered(remoteNewer ? "<" : ">", leftX + BOX_W + BOX_GAP / 2, boxY + BOX_H / 2, T().arrow, fontLarge_);
 
         for (int side = 0; side < 2; side++) {
@@ -543,8 +525,8 @@ bool UI::showSyncCompareDialog(const std::string& gameName, const SyncSideInfo& 
             bool isSource = isLocal ? !remoteNewer : remoteNewer;
             SDL_Color border = isSource ? T().cursor : T().textDim;
 
-            drawRect(bx, boxY, BOX_W, BOX_H, T().panelBg);
-            drawRectOutline(bx, boxY, BOX_W, BOX_H, border, isSource ? 3 : 1);
+            drawRoundRect(bx, boxY, BOX_W, BOX_H, BOX_R, T().panelBg);
+            drawRoundRectOutline(bx, boxY, BOX_W, BOX_H, BOX_R, border, isSource ? 3 : 1);
 
             drawTextCentered(i18n::get(isLocal ? StrKey::DevSyncCompareLocal : StrKey::DevSyncCompareRemote),
                               bx + BOX_W / 2, boxY + 24, isSource ? T().cursor : T().text, font_);
