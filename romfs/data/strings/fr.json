@@ -257,6 +257,7 @@
     "set_backupmax": "Max sauvegardes auto",
     "set_backupclean": "Nettoyer sauvegardes",
     "set_checkupdate": "Verifier mise a jour",
+    "set_update_boot": "Verifier au demarrage",
     "set_source": "Source",
     "set_editurl": "Modifier adresse",
     "set_debugtoggle": "Fonctions debug",

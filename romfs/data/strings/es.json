@@ -257,6 +257,7 @@
     "set_backupmax": "Max. backups auto",
     "set_backupclean": "Limpiar backups",
     "set_checkupdate": "Buscar actualizacion",
+    "set_update_boot": "Buscar actualizacion al iniciar",
     "set_source": "Fuente",
     "set_editurl": "Editar direccion",
     "set_debugtoggle": "Funciones debug",

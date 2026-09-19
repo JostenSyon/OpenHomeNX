@@ -276,6 +276,7 @@ namespace StrKey {
     constexpr const char* SetCleanConfirm = "set_clean_confirm";
     constexpr const char* SetCleanDone    = "set_clean_done";
     constexpr const char* SetCheckUpdate  = "set_checkupdate";
+    constexpr const char* SetUpdateBoot   = "set_update_boot";
     constexpr const char* SetChannel      = "set_channel";
     constexpr const char* ChannelStable   = "channel_stable";
     constexpr const char* ChannelBeta     = "channel_beta";

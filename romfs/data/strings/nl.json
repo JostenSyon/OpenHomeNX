@@ -257,6 +257,7 @@
     "set_backupmax": "Max. auto-backups",
     "set_backupclean": "Backups opschonen",
     "set_checkupdate": "Op update controleren",
+    "set_update_boot": "Bij start controleren op updates",
     "set_source": "Bron",
     "set_editurl": "Adres bewerken",
     "set_debugtoggle": "Debugfuncties",

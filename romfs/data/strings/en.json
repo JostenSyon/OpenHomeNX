@@ -192,6 +192,7 @@
     "set_clean_confirm": "Delete all automatic backups?",
     "set_clean_done": "Freed",
     "set_checkupdate": "Check for update",
+    "set_update_boot": "Check for updates at boot",
     "set_channel": "Channel",
     "channel_stable": "Stable",
     "channel_beta": "Beta",

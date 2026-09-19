@@ -155,7 +155,9 @@ bool readUpdateAutoCfg(const std::string& basePath, std::string& urlOut,
     // quello è statico in un anonymous namespace).
     const std::string paths[] = { basePath + "update.cfg",
                                   "sdmc:/switch/OpenHomeNX/update.cfg" };
-    bool autoOn = false;
+    // Default ON: nuovo utente parte con il check di boot attivo.
+    // L'utente spegne scrivendo auto=0 (o off/no/false) dal menu Impostazioni.
+    bool autoOn = true;
     for (const auto& p : paths) {
         std::ifstream f(p);
         if (!f.good()) continue;
@@ -174,9 +176,12 @@ bool readUpdateAutoCfg(const std::string& basePath, std::string& urlOut,
             if (k == "url") urlOut = v;
             else if (k == "token") tokenOut = v;
             else if (k == "channel") channelOut = v;
-            else if (k == "auto" && (v == "1" || v == "on" || v == "yes")) autoOn = true;
+            else if (k == "auto") {
+                // Ultimo file/scrittura vince; valori sconosciuti non cambiano lo stato.
+                if (v == "0" || v == "off" || v == "no" || v == "false") autoOn = false;
+                else if (v == "1" || v == "on" || v == "yes" || v == "true") autoOn = true;
+            }
         }
-        if (autoOn) return true;
     }
-    return false;
+    return autoOn;
 }

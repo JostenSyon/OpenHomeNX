@@ -1285,7 +1285,12 @@ int UI::menuVisibleCount() const {
     // indice 9 (solo normal, mai dual) = Scambio self-trade (solo Gen3: Pk3).
     bool hasWC = gameInfo(selectedGame_).hasWondercards;
     bool hasExport = !selectedSlots_.empty();
-    bool hasSend = !isDualBankMode() && save_.isLoaded();
+    // "Send current save" solo a save caricato, mai dual-bank, e SOLO con
+    // override rete attivo (debug + url custom). Senza questo, debug off o
+    // sorgente GitHub mostrerebbero comunque la voce, che finirebbe per
+    // proporre l'upload verso GitHub venendo pero' rifiutato a runtime.
+    // Vedi UI::sendAvailable() — stessa logica del `+` radiale, estesa qui.
+    bool hasSend = !isDualBankMode() && save_.isLoaded() && sendAvailable();
     bool hasGen = DebugLog::enabled() && !isDualBankMode();
     bool hasTrade = !isDualBankMode() && save_.isLoaded() && TradeEvo::supported(save_.gameType());
     int allCount = isDualBankMode() ? 12 : 14;
@@ -1309,8 +1314,12 @@ void UI::drawMenuPopup() {
     // SV/SwSh games get a "Wondercard" item after Search — +1 Crypto (M3d)
     bool hasWC = gameInfo(selectedGame_).hasWondercards;
     bool hasExport = !selectedSlots_.empty();
-    // "Send current save": solo a save caricato e mai in dual-bank.
-    bool hasSend = !isDualBankMode() && save_.isLoaded();
+    // "Send current save": solo a save caricato, mai dual-bank, e SOLO con
+    // override rete attivo (debug + url custom). Senza questo, debug off o
+    // sorgente GitHub mostrerebbero comunque la voce, che finirebbe per
+    // proporre l'upload verso GitHub venendo pero' rifiutato a runtime.
+    // Vedi UI::sendAvailable() — stessa logica del `+` radiale, estesa qui.
+    bool hasSend = !isDualBankMode() && save_.isLoaded() && sendAvailable();
     // "Generate test mons": solo debug, mai dual-bank.
     bool hasGen = DebugLog::enabled() && !isDualBankMode();
     // "Scambio": solo a save Gen3 caricato (record Pk3, Fase 1), mai dual-bank.

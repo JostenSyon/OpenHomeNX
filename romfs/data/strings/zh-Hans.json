@@ -257,6 +257,7 @@
     "set_backupmax": "自动备份上限",
     "set_backupclean": "清理备份",
     "set_checkupdate": "检查更新",
+    "set_update_boot": "启动时检查更新",
     "set_source": "来源",
     "set_editurl": "编辑地址",
     "set_debugtoggle": "调试功能",

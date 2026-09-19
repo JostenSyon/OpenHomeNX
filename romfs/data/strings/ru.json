@@ -257,6 +257,7 @@
     "set_backupmax": "Макс. автобэкапов",
     "set_backupclean": "Очистить бэкапы",
     "set_checkupdate": "Проверить обновление",
+    "set_update_boot": "Проверять обновления при запуске",
     "set_source": "Источник",
     "set_editurl": "Изменить адрес",
     "set_debugtoggle": "Функции отладки",

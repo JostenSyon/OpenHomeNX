@@ -157,9 +157,11 @@ void UI::handleInput(bool& running) {
 void UI::handleMenuInput(const SDL_Event& event, bool& running) {
     bool hasWC = gameInfo(selectedGame_).hasWondercards;
     bool hasExport = !selectedSlots_.empty();
-    // "Send current save": solo a save caricato e mai in dual-bank (lì il
-    // pannello sinistro è una banca, non il save del gioco aperto).
-    bool hasSend = !isDualBankMode() && save_.isLoaded();
+    // "Send current save": solo a save caricato, mai dual-bank, e SOLO con
+    // override rete attivo (debug + url custom). Vedere il commento analogo
+    // in UI::drawMenuPopup() — le tre definizioni di hasSend devono restare
+    // coerenti tra questa input handler e i due punti del render.
+    bool hasSend = !isDualBankMode() && save_.isLoaded() && sendAvailable();
     // "Generate test mons": solo debug, mai dual-bank.
     bool hasGen = DebugLog::enabled() && !isDualBankMode();
     // "Scambio": solo a save Gen3 caricato (record Pk3, Fase 1), mai dual-bank.

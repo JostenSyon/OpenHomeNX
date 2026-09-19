@@ -257,6 +257,7 @@
     "set_backupmax": "자동 백업 최대",
     "set_backupclean": "백업 정리",
     "set_checkupdate": "업데이트 확인",
+    "set_update_boot": "시작 시 업데이트 확인",
     "set_source": "소스",
     "set_editurl": "주소 수정",
     "set_debugtoggle": "디버그 기능",

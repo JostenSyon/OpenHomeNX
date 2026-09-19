@@ -65,6 +65,7 @@ struct UpdateCfg {
     std::string channel;   // "" o "stable" = release stabili, "beta" = pre-release
     long backupMb = 256;   // tetto CUMULATIVO auto-backup titoli installati
     long backupMbSd = 32;  // tetto cumulativo save file-backed (SD, piccoli)
+    bool autoOn = true;    // check al boot: default ON se la chiave `auto` manca
 };
 
 // Cerca update.cfg/.off nelle due dir note (duplica findUpdateCfgFiles,
@@ -136,6 +137,7 @@ static void parseUpdateCfgFile(const std::string& path, UpdateCfg& out, bool cha
         else if (k == "channel") out.channel = v;
         else if (k == "backup_mb") out.backupMb = std::atol(v.c_str());
         else if (k == "backup_mb_sd") out.backupMbSd = std::atol(v.c_str());
+        else if (k == "auto") out.autoOn = (v == "1" || v == "on" || v == "yes" || v == "true");
     }
 }
 
@@ -4829,9 +4831,9 @@ int UI::settingsRowCount(int cat) const {
         case 3: return 4; // Cartelle, Scansiona, Max, Pulisci
         case 4: {
             // Sorgente/edit custom solo con debug: l'utente normale resta su GitHub.
-            int n = 3;
-            if (DebugLog::enabled() && hasCustomUrlFile(basePath_)) n = 4;
-            return n; // Update, Sorgente, Canale [, Modifica]
+            int n = 4;
+            if (DebugLog::enabled() && hasCustomUrlFile(basePath_)) n = 5;
+            return n; // Boot, Check, Sorgente, Canale [, Modifica]
         }
         case 5: {
             // Debug, Menu + [, Pulisci cronologia zaino] [, Normalize save] [, Invia log, Crash report], Ricerca dispositivi
@@ -4881,8 +4883,9 @@ std::string UI::settingsRowLabel(int cat, int row) const {
     }
     if (cat == 4) {
         if (row == 0) return i18n::get(StrKey::SetCheckUpdate);
-        if (row == 1) return i18n::get(StrKey::SetSource);
-        if (row == 2) return i18n::get(StrKey::SetChannel);
+        if (row == 1) return i18n::get(StrKey::SetUpdateBoot);
+        if (row == 2) return i18n::get(StrKey::SetSource);
+        if (row == 3) return i18n::get(StrKey::SetChannel);
         return i18n::get(StrKey::SetEditUrl);
     }
     if (cat == 5) {
@@ -4945,14 +4948,21 @@ std::string UI::settingsRowValue(int cat, int row) {
         return "";
     }
     if (cat == 4) {
-        if (row == 0) return "";
+        if (row == 0) return ""; // riga azione manuale, niente valore a destra
         if (row == 1) {
+            // Check al boot: default ON se l'utente non ha espresso preferenza.
+            // Coerente con readUpdateAutoCfg() che tratta la chiave mancante come ON.
+            UpdateCfg cfg;
+            readUpdateCfg(basePath_, cfg);
+            return cfg.autoOn ? i18n::get(StrKey::SetOn) : i18n::get(StrKey::SetOff);
+        }
+        if (row == 2) {
             // Solo GitHub/Custom, mai l'IP (quello sta sotto).
             UpdateCfg cfg;
             readUpdateCfg(basePath_, cfg);
             return cfg.url.empty() ? "GitHub" : "Custom";
         }
-        if (row == 2) {
+        if (row == 3) {
             UpdateCfg cfg;
             readUpdateCfg(basePath_, cfg);
             return cfg.channel == "beta" ? i18n::get(StrKey::ChannelBeta)
@@ -6177,6 +6187,14 @@ void UI::settingsRowActivate(int cat, int row, int dir, bool& running) {
         if (row == 0) {
             if (checkForUpdate(false)) running = false;
         } else if (row == 1) {
+            // Toggle del check al boot. Default ON se update.cfg non ha scritto
+            // un valore esplicito (vedi readUpdateAutoCfg).
+            UpdateCfg cfg;
+            readUpdateCfg(basePath_, cfg);
+            std::string next = cfg.autoOn ? "0" : "1";
+            if (writeUpdateCfgKey(basePath_, "auto", next))
+                DebugLog::line("settings: auto=%s", next.c_str());
+        } else if (row == 2) {
             if (!DebugLog::enabled()) return; // solo display senza debug
             // Switch GitHub <-> custom senza ridigitare: se non esiste alcun
             // file, apre direttamente l'edit per crearlo.

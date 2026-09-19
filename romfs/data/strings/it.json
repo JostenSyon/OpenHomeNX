@@ -192,6 +192,7 @@
     "set_clean_confirm": "Cancellare tutti i backup automatici?",
     "set_clean_done": "Liberati",
     "set_checkupdate": "Controlla aggiornamenti",
+    "set_update_boot": "Controlla aggiornamenti all'avvio",
     "set_channel": "Canale",
     "channel_stable": "Stabile",
     "channel_beta": "Beta",

@@ -257,6 +257,7 @@
     "set_backupmax": "自動バックアップ上限",
     "set_backupclean": "バックアップを整理",
     "set_checkupdate": "アップデートを確認",
+    "set_update_boot": "起動時にアップデートを確認",
     "set_source": "ソース",
     "set_editurl": "アドレスを編集",
     "set_debugtoggle": "デバッグ機能",
