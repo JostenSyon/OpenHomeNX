@@ -2402,15 +2402,16 @@ bool SaveFile::loadGBA(const std::string& path) {
         constexpr int kMaxSpecies = 386;
         constexpr int kFlagBytes = (kMaxSpecies + 7) / 8; // 49 byte, bit = specie-1
 
-        auto sector0Ofs = [&](int slot) -> int {
+        auto sectorOfs = [&](int slot, int sectionId) -> int {
             int slotBase = slot * GBA_SECTOR_COUNT * GBA_SECTOR_SIZE;
             for (int i = 0; i < GBA_SECTOR_COUNT; i++) {
-                int sectorOfs = slotBase + i * GBA_SECTOR_SIZE;
-                if (readU16LE(rawData_.data() + sectorOfs + GBA_OFS_SECTOR_ID) == 0)
-                    return sectorOfs;
+                int off = slotBase + i * GBA_SECTOR_SIZE;
+                if (readU16LE(rawData_.data() + off + GBA_OFS_SECTOR_ID) == sectionId)
+                    return off;
             }
             return -1;
         };
+        auto sector0Ofs = [&](int slot) -> int { return sectorOfs(slot, 0); };
 
         int otherSlot = 1 - gbaActiveSlot_;
         int activeSec0 = sector0Ofs(gbaActiveSlot_);
@@ -2448,6 +2449,37 @@ bool SaveFile::loadGBA(const std::string& path) {
                 activeSeen[b] = newS;
             }
 
+            // Copie ridondanti seen1/seen2 (Emerald, SaveBlock1 +0x988/
+            // +0x3B24) o dexSeen2/dexSeen3 (Ruby/Sapphire, SaveBlock1
+            // +0x938/+0x3A8C) in sezione 1/4 -- vedi Pokedex::registerRSE
+            // (source/pokedex.cpp) per il perche': senza queste tre/quattro
+            // copie coerenti tra loro, GetSetPokedexFlag() del gioco vero
+            // azzera owned/seen al primo accesso. Se il banco "congelato"
+            // le aveva gia' impostate (catture organiche precedenti al
+            // fork), vanno unite qui esattamente come owned/seen, altrimenti
+            // il recupero sopra resterebbe comunque incoerente e il gioco
+            // lo azzererebbe di nuovo da solo.
+            if (isImportedFile(gameType_)) {
+                int sec1Ofs, sec4Ofs;
+                if (gameType_ == GameType::RUBY || gameType_ == GameType::SAPPHIRE) {
+                    sec1Ofs = 0x938; sec4Ofs = 0x3A8C - 0x2E80;
+                } else {
+                    sec1Ofs = 0x988; sec4Ofs = 0x3B24 - 0x2E80;
+                }
+                int activeSec1 = sectorOfs(gbaActiveSlot_, 1), otherSec1 = sectorOfs(otherSlot, 1);
+                int activeSec4 = sectorOfs(gbaActiveSlot_, 4), otherSec4 = sectorOfs(otherSlot, 4);
+                if (activeSec1 >= 0 && otherSec1 >= 0) {
+                    uint8_t* a = rawData_.data() + activeSec1 + sec1Ofs;
+                    const uint8_t* o = rawData_.data() + otherSec1 + sec1Ofs;
+                    for (int b = 0; b < kFlagBytes; b++) a[b] |= o[b];
+                }
+                if (activeSec4 >= 0 && otherSec4 >= 0) {
+                    uint8_t* a = rawData_.data() + activeSec4 + sec4Ofs;
+                    const uint8_t* o = rawData_.data() + otherSec4 + sec4Ofs;
+                    for (int b = 0; b < kFlagBytes; b++) a[b] |= o[b];
+                }
+            }
+
             // Stesso problema, stesso rimedio, per il flag National Dex
             // (2026-09-18 v3, corretto v5): setNationalDexEnabled() scrive
             // gia' entrambi i banchi quando viene chiamata, ma se lo sblocco
@@ -2468,6 +2500,36 @@ bool SaveFile::loadGBA(const std::string& path) {
             if (mergedNatDex) {
                 *activeNatDex = 0xDA;
                 (rawData_.data() + activeSec0 + 0x19)[0] = 1; // mode segue nationalMagic
+            }
+
+            // 2026-09-19: nationalMagic da solo non e' il vero gate (vedi
+            // isNationalDexEnabled/setNationalDexEnabled) -- il gioco
+            // controlla anche VAR_NATIONAL_DEX==0x302 e FLAG_SYS_NATIONAL_DEX,
+            // che vivono in sezione 2 (SaveBlock1), non in sezione 0. Stesso
+            // rischio di "banco congelato" del merge sopra: uniamo anche
+            // questi se l'altro banco li aveva gia' impostati.
+            if (isImportedFile(gameType_)) {
+                int flagOfs, varOfs;
+                if (gameType_ == GameType::RUBY || gameType_ == GameType::SAPPHIRE) {
+                    flagOfs = 0x3A6; varOfs = 0x44C;
+                } else {
+                    flagOfs = 0x402; varOfs = 0x4A8;
+                }
+                constexpr int kBit = 6; // FLAG_SYS_NATIONAL_DEX & 7
+                int activeSec2 = sectorOfs(gbaActiveSlot_, 2), otherSec2 = sectorOfs(otherSlot, 2);
+                if (activeSec2 >= 0 && otherSec2 >= 0) {
+                    uint8_t* aFlag = rawData_.data() + activeSec2 + flagOfs;
+                    const uint8_t* oFlag = rawData_.data() + otherSec2 + flagOfs;
+                    uint16_t oVar = readU16LE(rawData_.data() + otherSec2 + varOfs);
+                    if (!(*aFlag & (1 << kBit)) && (*oFlag & (1 << kBit))) {
+                        *aFlag |= (1 << kBit);
+                        mergedNatDex = true;
+                    }
+                    if (oVar == 0x302 && readU16LE(rawData_.data() + activeSec2 + varOfs) != 0x302) {
+                        writeU16LE(rawData_.data() + activeSec2 + varOfs, 0x302);
+                        mergedNatDex = true;
+                    }
+                }
             }
             }
 
@@ -2621,36 +2683,42 @@ bool SaveFile::saveGBA(const std::string& path) {
     }
 
     // Write modified storage back to sectors in BOTH save slots
+    // 2026-09-19: oltre a non essere mai identico tra i due banchi (fix
+    // precedente), sull'hardware vero il contatore del banco attivo
+    // AVANZA di 1 ad ogni salvataggio nativo -- qui restava congelato tra
+    // due nostri saveGBA() consecutivi (mai toccato se non dal gioco
+    // stesso), stato che una console reale non produce mai (il contatore
+    // e' un numero di generazione monotono, mai fermo tra due salvataggi).
+    // Un nostro saveGBA() e' a tutti gli effetti un nuovo salvataggio, cosi'
+    // lo incrementiamo anche noi: il banco attivo passa da N a N+1, il
+    // banco specchiato riceve N (il valore che l'attivo aveva PRIMA di
+    // questo giro) -- resta sempre esattamente 1 indietro, mai un
+    // pareggio, esattamente come produce l'hardware vero quando scrive nel
+    // banco "nuovo" e lascia l'altro fermo al suo ultimo valore.
+    uint32_t activeBase_ = gbaActiveSlot_ * GBA_SECTOR_COUNT * GBA_SECTOR_SIZE;
+    uint32_t activeCounterOld = readU32LE(rawData_.data() + activeBase_ + GBA_OFS_SAVE_INDEX);
+    uint32_t activeCounterNew = activeCounterOld + 1;
+
     for (int slot = 0; slot < 2; slot++) {
         int slotBase = slot * GBA_SECTOR_COUNT * GBA_SECTOR_SIZE;
 
-        // Copy sector structure from active slot if writing to the other slot
-        if (slot != gbaActiveSlot_) {
+        if (slot == gbaActiveSlot_) {
+            for (int i = 0; i < GBA_SECTOR_COUNT; i++) {
+                int sectorOfs = slotBase + i * GBA_SECTOR_SIZE;
+                writeU32LE(rawData_.data() + sectorOfs + GBA_OFS_SAVE_INDEX, activeCounterNew);
+            }
+        } else {
+            // Copy sector structure from the active slot onto the mirror slot
+            // (contenuto identico su entrambi i banchi -- rete di sicurezza
+            // del merge cross-banco, vedi loadGBA), poi il contatore un
+            // passo indietro rispetto al nuovo valore dell'attivo.
             int activeBase = gbaActiveSlot_ * GBA_SECTOR_COUNT * GBA_SECTOR_SIZE;
             std::memcpy(rawData_.data() + slotBase,
                         rawData_.data() + activeBase,
                         GBA_SECTOR_COUNT * GBA_SECTOR_SIZE);
-
-            // 2026-09-18: sull'hardware vero i due banchi si alternano SEMPRE
-            // di 1 nel contatore (mai identici). Copiando l'intero banco
-            // attivo pari pari anche il contatore risultava identico sui due
-            // banchi -- stato che il gioco vero non produce mai e sembra
-            // confondere la sua scelta del banco piu' recente al boot
-            // (osservato in log: un salvataggio nativo durante una sessione
-            // mGBA ha perso il Pokedex appena aggiornato su un banco,
-            // recuperato solo al giro successivo dal nostro merge). Il
-            // contenuto resta identico sui due banchi (continuiamo a volerlo
-            // per la nostra rete di sicurezza del merge), ma decrementiamo
-            // di 1 il contatore SOLO sul banco appena copiato (quello non
-            // attivo), su tutti i 14 settori (il contatore e' replicato
-            // identico in ognuno dei 14 settori di uno stesso banco): resta
-            // un mirror dei dati, ma il gioco lo vede come lo step
-            // precedente, non un pareggio impossibile.
-            uint32_t activeCounter = readU32LE(rawData_.data() + activeBase + GBA_OFS_SAVE_INDEX);
-            uint32_t otherCounter = (activeCounter > 0) ? (activeCounter - 1) : 0;
             for (int i = 0; i < GBA_SECTOR_COUNT; i++) {
                 int sectorOfs = slotBase + i * GBA_SECTOR_SIZE;
-                writeU32LE(rawData_.data() + sectorOfs + GBA_OFS_SAVE_INDEX, otherCounter);
+                writeU32LE(rawData_.data() + sectorOfs + GBA_OFS_SAVE_INDEX, activeCounterOld);
             }
         }
 
@@ -2746,32 +2814,92 @@ uint8_t* SaveFile::findGbaSectorData(int sectionId) {
     return nullptr;
 }
 
+// 2026-09-19 v6: nationalMagic==0xDA da solo NON basta -- e' il bug
+// residuo per cui Mew (non-Hoenn) resta invisibile nel dex in game anche
+// dopo il fix v5 e dopo il fix seen1/seen2 (specie Hoenn come Pikachu
+// funzionano gia', Mew no). Fonte: pret/pokeemerald e pret/pokeruby
+// src/event_data.c, IsNationalPokedexEnabled():
+//   nationalMagic==0xDA && VarGet(VAR_NATIONAL_DEX)==0x302 &&
+//   FlagGet(FLAG_SYS_NATIONAL_DEX)
+// VAR_NATIONAL_DEX e FLAG_SYS_NATIONAL_DEX NON vivono nel Pokedex struct
+// di sezione 0 (SaveBlock2): sono in gSaveBlock1Ptr->vars[]/flags[]
+// (SaveBlock1, sezione 2 per entrambi i giochi). Senza questi due,
+// CreatePokedexList() (src/pokedex.c) forza dexMode a DEX_MODE_HOENN ad
+// ogni apertura del Pokedex indipendentemente da nationalMagic o dal
+// nostro mode=1 -- le specie non-Hoenn restano quindi invisibili anche
+// con caught+seen (+ copie ridondanti) corretti su disco.
+// Offset calcolati da include/constants/{flags,vars}.h + global.h (SYSTEM_FLAGS,
+// FLAGS_COUNT/vars[] field offset) e verificati byte-per-byte:
+//   Emerald:       FLAG_SYS_NATIONAL_DEX=0x896 -> SaveBlock1+0x1382 (bit 6)
+//                  VAR_NATIONAL_DEX=0x4046      -> SaveBlock1+0x1428 (u16)
+//   Ruby/Sapphire: FLAG_SYS_NATIONAL_DEX=0x836 -> SaveBlock1+0x1326 (bit 6)
+//                  VAR_NATIONAL_DEX=0x4046      -> SaveBlock1+0x13CC (u16)
+// Entrambi cadono in sezione 2 (SaveBlock1 offset [0xF80,0x1F00)) per
+// entrambi i giochi -- offset relativo = assoluto - 0xF80.
+namespace {
+bool gbaNationalDexFlagVarOfs(GameType g, int& flagOfs, int& varOfs) {
+    if (g == GameType::RUBY || g == GameType::SAPPHIRE) {
+        flagOfs = 0x3A6; varOfs = 0x44C; return true;
+    }
+    if (g == GameType::EMERALD) {
+        flagOfs = 0x402; varOfs = 0x4A8; return true;
+    }
+    return false;
+}
+constexpr int kNatDexFlagBit = 6; // FLAG_SYS_NATIONAL_DEX & 7 (0x896 e 0x836 hanno entrambi bit 6)
+} // namespace
+
 bool SaveFile::isNationalDexEnabled() const {
     if (!isImportedFile(gameType_)) return false;
     uint8_t* sec0 = const_cast<SaveFile*>(this)->findGbaSectorData(0);
     if (!sec0) return false;
-    // 2026-09-18 v5: era sec0[0x19]!=0 (byte "mode", solo la vista corrente
-    // Hoenn/National) -- il vero gate che pokeemerald controlla
-    // (IsNationalPokedexEnabled) e' pokedex.nationalMagic @ struct+2 =
-    // sec0+0x1A, e deve valere ESATTAMENTE 0xDA, non un bool generico.
-    // Bug reale: Mew/altri non-Hoenn restavano invisibili nel dex in game
-    // anche con caught+seen correttamente impostati, perche' il vero flag
-    // di sblocco non veniva mai scritto.
-    return sec0[0x1A] == 0xDA;
+    if (sec0[0x1A] != 0xDA) return false; // nationalMagic: gate primario (v5)
+
+    int flagOfs, varOfs;
+    if (!gbaNationalDexFlagVarOfs(gameType_, flagOfs, varOfs)) return false;
+    uint8_t* sec2 = const_cast<SaveFile*>(this)->findGbaSectorData(2);
+    if (!sec2) return false;
+    bool flagSet = (sec2[flagOfs] & (1 << kNatDexFlagBit)) != 0;
+    uint16_t varVal = readU16LE(sec2 + varOfs);
+    return flagSet && varVal == 0x302;
 }
 
 void SaveFile::setNationalDexEnabled() {
     if (!isImportedFile(gameType_)) return;
+    int flagOfs, varOfs;
+    if (!gbaNationalDexFlagVarOfs(gameType_, flagOfs, varOfs)) return;
     // Scrivi su entrambe le slot (come fa il gioco quando sblocca il National Dex)
+    //
+    // 2026-09-19: bug reale trovato analizzando un save utente in cui
+    // Espeon (transfer non-Hoenn) risultava caught+seen su disco ma
+    // nationalMagic/FLAG/VAR restavano a 0 nonostante il log mostrasse
+    // "National Dex sbloccato" -- la guardia sotto era
+    // "ofs + GBA_SAVE_SIZE > rawData_.size()" (GBA_SAVE_SIZE = 0x20000,
+    // l'INTERO save, non un settore). Con rawData_ tipicamente esattamente
+    // 0x20000 byte, "ofs + 0x20000 > 0x20000" e' vero per QUALSIASI ofs>0
+    // -- il loop scrive quindi SOLO l'eventuale settore a ofs==0 (il primo
+    // settore fisico dello slot 0) e salta silenziosamente tutti gli altri
+    // 27, sui due slot. Se in quel momento lo slot ATTIVO (quello da cui
+    // findGbaSectorData(0) legge/scrive caught/seen in registerRSE) e'
+    // lo slot 1, l'unica scrittura che sopravvive alla guardia finisce
+    // nello slot 0 (quello "specchiato"/scartato da saveGBA(), che
+    // sovrascrive lo slot non attivo con una copia dello slot attivo) --
+    // persa al primo saveGBA(), mentre caught/seen (scritti nello slot
+    // attivo) sopravvivono. Era chiaramente un refuso: il confronto voleva
+    // controllare che un SINGOLO SETTORE (GBA_SECTOR_SIZE, 0x1000) non
+    // sfori il buffer, non l'intero save.
     for (int slot = 0; slot < 2; slot++) {
         int base = slot * GBA_SECTOR_COUNT * GBA_SECTOR_SIZE;
         for (int i = 0; i < GBA_SECTOR_COUNT; i++) {
             int ofs = base + i * GBA_SECTOR_SIZE;
-            if (ofs + GBA_SAVE_SIZE > (int)rawData_.size()) continue;
+            if (ofs + GBA_SECTOR_SIZE > (int)rawData_.size()) continue;
             uint16_t sid = readU16LE(rawData_.data() + ofs + GBA_OFS_SECTOR_ID);
             if (sid == 0) {
                 rawData_[ofs + 0x19] = 1;    // mode: forza vista National (0=Hoenn,1=National)
-                rawData_[ofs + 0x1A] = 0xDA; // nationalMagic: il VERO gate (v5, vedi isNationalDexEnabled)
+                rawData_[ofs + 0x1A] = 0xDA; // nationalMagic: gate primario (v5, vedi isNationalDexEnabled)
+            } else if (sid == 2) {
+                rawData_[ofs + flagOfs] |= (1 << kNatDexFlagBit); // FLAG_SYS_NATIONAL_DEX
+                writeU16LE(rawData_.data() + ofs + varOfs, 0x302); // VAR_NATIONAL_DEX
             }
         }
     }

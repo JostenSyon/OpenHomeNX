@@ -1039,10 +1039,40 @@ static void registerFRLG(SaveFile& save, const Pokemon& pkm) {
 }
 
 // R/S/E: stesso contenitore a settori GBA e stesso bitfield "owned"
-// (sezione 0 + 0x28) di FRLG (vedi getDexStatus), MA le copie seen in
-// sezione 1/4 e gli slot PID Unown/Spinda sono layout FRLG: su RSE quegli
-// offset contengono altri dati, quindi qui si scrive SOLO il primario
-// caught+seen in sezione 0. Niente copie = niente corruzione.
+// (sezione 0 + 0x28) di FRLG (vedi getDexStatus). Gli slot PID Unown/Spinda
+// sono layout FRLG (offset diversi su RSE, non replicati qui).
+//
+// 2026-09-19: bug reale segnalato dall'utente, sopravvissuto al fix
+// precedente (National Dex byte) -- un mon MAI visto in game e trasferito
+// solo via box appariva SOLO nel box, mai nel Pokedex (né seen né caught),
+// nonostante caught fosse correttamente settato su disco (verificato byte
+// per byte, checksum validi, identici su entrambi i banchi). Causa reale,
+// trovata leggendo GetSetPokedexFlag() nel sorgente pret/pokeemerald e
+// pret/pokeruby (src/pokedex.c): il gioco NON si fida del bitfield
+// owned/seen da solo. Per FLAG_GET_SEEN confronta pokedex.seen contro DUE
+// copie ridondanti in SaveBlock1 (gSaveBlock2Ptr->pokedex.seen[i] ==
+// gSaveBlock1Ptr->seen1[i] == gSaveBlock1Ptr->seen2[i] su Emerald;
+// dexSeen2/dexSeen3 su Ruby/Sapphire) e se anche un solo bit non combacia
+// AZZERA TUTTE E TRE le copie silenziosamente in RAM -- non su richiesta
+// esplicita, ma al primo GetSetPokedexFlag(FLAG_GET_SEEN) sulla specie,
+// cioè non appena il Pokedex in game prova a disegnare quella entry. Per
+// FLAG_GET_CAUGHT il controllo è su QUATTRO copie (owned + seen + le due
+// ridondanti): stessa sorte. Scrivere solo owned/seen di sezione 0 (fix
+// precedente) lasciava le due copie a 0 per una specie mai vista in game:
+// al primo giro nel Pokedex il gioco le trovava incoerenti e le azzerava
+// tutte -- il mon spariva sia da seen che da caught, esattamente il bug
+// segnalato. Per una specie già vista organicamente in game invece le due
+// copie erano già a 1 (settate dal gioco stesso), quindi coincidevano per
+// puro caso col nostro owned/seen e l'incoerenza non si manifestava mai --
+// da cui l'impressione che "il bit funzioni" solo per i mon già visti.
+//
+// Fix: scriviamo anche le due copie ridondanti. SaveBlock1 occupa le
+// sezioni 1-4 (0xF80 byte utili a settore, come da GBA_SECTOR_USED
+// esistente): Emerald seen1 @ SaveBlock1+0x988 (sezione 1, stesso offset)
+// e seen2 @ SaveBlock1+0x3B24 (sezione 4, offset -0x2E80 = 0xCA4);
+// Ruby/Sapphire dexSeen2 @ SaveBlock1+0x938 (sezione 1) e dexSeen3 @
+// SaveBlock1+0x3A8C (sezione 4, offset -0x2E80 = 0xC0C). Bit = specie-1,
+// stesso indice del bitfield primario.
 static void registerRSE(SaveFile& save, const Pokemon& pkm) {
     uint16_t species = pkm.species();
     if (species == 0 || species > FRLG_MAX_SPECIES) return;
@@ -1053,8 +1083,24 @@ static void registerRSE(SaveFile& save, const Pokemon& pkm) {
     uint8_t* pdx = sect0 + FRLG_POKEDEX_OFS;
     setFlagBit(pdx + FRLG_CAUGHT_OFS, species);
     setFlagBit(pdx + FRLG_SEEN_OFS, species);
+
+    GameType game = save.gameType();
+    int sec1Ofs, sec4Ofs;
+    if (game == GameType::RUBY || game == GameType::SAPPHIRE) {
+        sec1Ofs = 0x938;
+        sec4Ofs = 0x3A8C - 0x2E80; // 0xC0C
+    } else { // EMERALD
+        sec1Ofs = 0x988;
+        sec4Ofs = 0x3B24 - 0x2E80; // 0xCA4
+    }
+    if (uint8_t* sect1 = save.findGbaSectorData(1))
+        setFlagBit(sect1 + sec1Ofs, species);
+    if (uint8_t* sect4 = save.findGbaSectorData(4))
+        setFlagBit(sect4 + sec4Ofs, species);
+
     save.markDirty();
-    DebugLog::line("registerRSE: spc=%u bit=%u (caught+seen)", species, species - 1);
+    DebugLog::line("registerRSE: spc=%u bit=%u (caught+seen+copie ridondanti SaveBlock1)",
+                   species, species - 1);
     // National Dex: in RSE è bloccato finché non arriva un fuori-Hoenn
     // (come il trade FRLG→RSE originale). Lo sblocchiamo automatico al primo
     // fuori-Hoenn, mai per i 202 Hoenn.
