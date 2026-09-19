@@ -671,6 +671,19 @@ void UI::galEnsureParty(GameType g) {
 void UI::galInvalidateParty(GameType g) {
     galPartyCache_.erase(g);
     galSaveCacheToDisk();
+    // 2026-09-19: se il gioco appena invalidato e' quello attualmente
+    // mostrato nel pannello anteprima, resetta anche galSettleChecked_ --
+    // altrimenti galEnsureParty() esce subito al suo primo controllo (vedi
+    // "il probe vero e proprio avviene al massimo una volta per atterraggio")
+    // e la scheda resta vuota per sempre finche' l'utente non sposta la
+    // selezione altrove e ritorna (un nuovo "atterraggio"). Caso reale:
+    // apri il save da Galleria, modifichi qualcosa, torni con B senza mai
+    // cambiare selezione -- persistGameSaveIfDirty() invalida la cache di
+    // questo stesso gioco, ma senza questo reset il pannello restava
+    // bloccato su "…" poi vuoto, mai ricaricato da solo.
+    if (galPreviewGame_ >= 0 && galPreviewGame_ < (int)availableGames_.size() &&
+        availableGames_[galPreviewGame_] == g)
+        galSettleChecked_ = false;
 }
 
 void UI::galPreloadCacheFromDisk() {
