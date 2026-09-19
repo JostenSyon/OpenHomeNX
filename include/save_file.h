@@ -154,8 +154,11 @@ public:
     // PKHeX SAV8BS), SwSh e LA (SCBlock, PKHeX SaveBlockAccessor8SWSH/8LA
     // KPlayTime), SV (SCBlock, PKHeX SaveBlockAccessor9SV KPlayTime -- layout
     // diverso, i32 invece di u16+u8+u8), ZA (SCBlock, PKHeX
-    // SaveBlockAccessor9ZA KPlayedSeconds -- double, secondi gia' totali).
-    // Non ancora coperti: Gen1/2/4/5 (GB/GBC/NDS).
+    // SaveBlockAccessor9ZA KPlayedSeconds -- double, secondi gia' totali),
+    // Gen1 R/B/Y (SRAM flat, PKHeX SAV1Offsets.INT -- hours e' un solo
+    // byte, non u16), Gen2 G/S/C (SRAM flat, PKHeX SAV2Offsets ramo
+    // Internazionale -- hours e' u16 BIG-ENDIAN, non little).
+    // Non ancora coperti: Gen4/5 (NDS).
     long playTimeSeconds() const;
 
     // Borsa Gen4/5 DS (PKHeX PlayerBag4DP/4Pt/4HGSS/5BW/5B2W2). Slot da 4B

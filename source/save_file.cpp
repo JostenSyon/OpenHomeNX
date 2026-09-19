@@ -3060,6 +3060,36 @@ long SaveFile::playTimeSeconds() const {
         return static_cast<long>(secs);
     }
 
+    // Gen1 (R/B/Y): SRAM flat, offset assoluto 0x2CED (PKHeX SAV1Offsets.INT
+    // -- stesso set INT di DexCaught 0x25A3/DexSeen 0x25B6 gia' usato in
+    // registerGen1(), quindi stesso layout confermato). Diverso dal 4-byte
+    // standard: hours e' UN SOLO byte (max 255, con un secondo byte
+    // "PlayedMaximum" @+1 quando satura), non un u16 -- minutes @+2,
+    // seconds @+3.
+    if (isGen1File(gameType_)) {
+        constexpr size_t kOfs = 0x2CED;
+        if (rawDataSize() < kOfs + 4) return -1;
+        const uint8_t* d = const_cast<SaveFile*>(this)->rawData() + kOfs;
+        uint8_t hours = d[0], minutes = d[2], seconds = d[3];
+        if (minutes > 59 || seconds > 59) return -1;
+        return static_cast<long>(hours) * 3600 + static_cast<long>(minutes) * 60 + seconds;
+    }
+
+    // Gen2 (G/S/C): SRAM flat, offset assoluto per versione (PKHeX
+    // SAV2Offsets, ramo Internazionale -- stesso ramo gia' confermato da
+    // GBC_GS/GBC_C in questo file, i cui offset combaciano esattamente con
+    // quelli INT di PKHeX). A differenza di Gen1/GBA, PlayedHours qui e' un
+    // u16 BIG-ENDIAN (non little-endian): PKHeX usa ReadUInt16BigEndian.
+    if (isGen2File(gameType_)) {
+        size_t ofs = gbcIsCrystal_ ? 0x2052 : 0x2053;
+        if (rawDataSize() < ofs + 4) return -1;
+        const uint8_t* d = const_cast<SaveFile*>(this)->rawData() + ofs;
+        uint16_t hours = static_cast<uint16_t>((d[0] << 8) | d[1]); // big-endian
+        uint8_t minutes = d[2], seconds = d[3];
+        if (minutes > 59 || seconds > 59) return -1;
+        return static_cast<long>(hours) * 3600 + static_cast<long>(minutes) * 60 + seconds;
+    }
+
     return -1;
 }
 
