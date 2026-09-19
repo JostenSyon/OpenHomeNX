@@ -113,9 +113,14 @@ public:
     // direzione invece del solo testo "il save locale e' piu' recente".
     // criterionKey e' una StrKey (DevSyncCriterion*) gia' risolta dal
     // chiamante in base a howDecided.
+    // alreadySynced=true (tempo di gioco e Pokédex identici su entrambi i
+    // lati): niente bordo evidenziato su nessuno dei due lati, "=" al posto
+    // della freccia, messaggio "gia' sincronizzati" al posto del criterio --
+    // stessi due riquadri, non un popup a se stante, cosi' il colpo d'occhio
+    // resta coerente con la normale conferma.
     bool showSyncCompareDialog(const std::string& gameName, const SyncSideInfo& local,
                                 const SyncSideInfo& remote, bool remoteNewer,
-                                const char* criterionKey);
+                                const char* criterionKey, bool alreadySynced = false);
     // Popup di scoperta "Installa launcher" (icona app + testo), mostrato
     // una sola volta in vita: solo informativo (il pulsante vero sta in
     // Impostazioni > Sistema, non ancora costruito), quindi niente scelta

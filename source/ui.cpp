@@ -450,7 +450,7 @@ bool UI::showConfirmDialog(const std::string& title, const std::string& body) {
 
 bool UI::showSyncCompareDialog(const std::string& gameName, const SyncSideInfo& local,
                                 const SyncSideInfo& remote, bool remoteNewer,
-                                const char* criterionKey) {
+                                const char* criterionKey, bool alreadySynced) {
     if (!renderer_) return false;
     markDirty(); // Force redraw after modal returns
 
@@ -507,22 +507,29 @@ bool UI::showSyncCompareDialog(const std::string& gameName, const SyncSideInfo& 
         SDL_RenderClear(renderer_);
 
         drawTextCentered(i18n::fmt(StrKey::DevSyncSyncTitle, gameName), SCREEN_W / 2, popY + 18, T().red, fontLarge_);
-        drawTextCentered(i18n::fmt(StrKey::DevSyncCompareCriterion, i18n::get(criterionKey)),
-                          SCREEN_W / 2, popY + 54, T().textDim, fontSmall_);
+        if (alreadySynced) {
+            drawTextCentered(i18n::get(StrKey::DevSyncCompareAlreadySynced),
+                              SCREEN_W / 2, popY + 54, T().textDim, fontSmall_);
+        } else {
+            drawTextCentered(i18n::fmt(StrKey::DevSyncCompareCriterion, i18n::get(criterionKey)),
+                              SCREEN_W / 2, popY + 54, T().textDim, fontSmall_);
+        }
 
         // Freccia tra i due riquadri, unico indicatore del verso (niente piu'
         // "LOCALE > REMOTO" a parole sotto il titolo: col criterio mtime il
         // verso suggerito puo' essere fuorviante -- un file appena inviato al
         // remoto prende la data di invio ed e' sempre "piu' recente" anche
         // senza alcun progresso reale, quindi meglio non dichiararlo a parole
-        // in grande, il bordo evidenziato sul riquadro sorgente basta).
-        drawTextCentered(remoteNewer ? "<" : ">", leftX + BOX_W + BOX_GAP / 2, boxY + BOX_H / 2, T().arrow, fontLarge_);
+        // in grande, il bordo evidenziato sul riquadro sorgente basta). Se
+        // alreadySynced non c'e' nessun verso: "=" al posto di "<"/">".
+        drawTextCentered(alreadySynced ? "=" : (remoteNewer ? "<" : ">"),
+                          leftX + BOX_W + BOX_GAP / 2, boxY + BOX_H / 2, T().arrow, fontLarge_);
 
         for (int side = 0; side < 2; side++) {
             bool isLocal = side == 0;
             const SyncSideInfo& s = isLocal ? local : remote;
             int bx = isLocal ? leftX : rightX;
-            bool isSource = isLocal ? !remoteNewer : remoteNewer;
+            bool isSource = !alreadySynced && (isLocal ? !remoteNewer : remoteNewer);
             SDL_Color border = isSource ? T().cursor : T().textDim;
 
             drawRoundRect(bx, boxY, BOX_W, BOX_H, BOX_R, T().panelBg);

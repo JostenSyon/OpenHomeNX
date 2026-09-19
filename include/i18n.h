@@ -534,7 +534,6 @@ namespace StrKey {
     constexpr const char* DevSyncActionSync    = "devsync_action_sync";
     constexpr const char* DevSyncSyncNoIdentity = "devsync_sync_no_identity";
     constexpr const char* DevSyncSyncNoLocalOrRemote = "devsync_sync_no_local_or_remote";
-    constexpr const char* DevSyncSyncAlreadyInSync = "devsync_sync_already_in_sync";
     constexpr const char* DevSyncAskRomTitle = "devsync_ask_rom_title";
     constexpr const char* DevSyncAskRomBody  = "devsync_ask_rom_body";
     // Popup di confronto locale/remoto per "Sincronizza" (due riquadri
@@ -544,6 +543,7 @@ namespace StrKey {
     constexpr const char* DevSyncCompareSource   = "devsync_compare_source";
     constexpr const char* DevSyncCompareSaveDate = "devsync_compare_save_date";
     constexpr const char* DevSyncCompareCriterion = "devsync_compare_criterion";
+    constexpr const char* DevSyncCompareAlreadySynced = "devsync_compare_already_synced";
     constexpr const char* DevSyncCriterionPlaytime = "devsync_criterion_playtime";
     constexpr const char* DevSyncCriterionDex      = "devsync_criterion_dex";
     constexpr const char* DevSyncCriterionMtime    = "devsync_criterion_mtime";

@@ -5902,9 +5902,6 @@ void UI::remoteSyncTestRow() {
                 DebugLog::line("remote sync: sincronizza direzione=%s per %s (local pt=%ld dex=%d, remote pt=%ld dex=%d)",
                                howDecided.c_str(), gi.gameTag, localPt, localDex.caught, remotePt, remoteDex.caught);
 
-                if (alreadySynced) {
-                    showMessageAndWait(title, i18n::get(StrKey::DevSyncSyncAlreadyInSync));
-                } else {
                 SyncSideInfo localInfo, remoteInfo;
                 localInfo.trainer = localOt;
                 localInfo.playTimeSeconds = localPt;
@@ -5919,7 +5916,12 @@ void UI::remoteSyncTestRow() {
                 remoteInfo.dexSupported = remoteDex.supported;
                 remoteInfo.modifiedUnix = c.remoteSaveModifiedUnix;
 
-                if (showSyncCompareDialog(gi.displayName, localInfo, remoteInfo, remoteNewer, criterionKey)) {
+                if (alreadySynced) {
+                    // Stessi due riquadri della conferma normale (colpo
+                    // d'occhio coerente), ma solo per mostrare "=" -- A/B
+                    // chiudono senza fare nulla, non c'e' nessun trasferimento.
+                    showSyncCompareDialog(gi.displayName, localInfo, remoteInfo, false, nullptr, true);
+                } else if (showSyncCompareDialog(gi.displayName, localInfo, remoteInfo, remoteNewer, criterionKey)) {
                     if (remoteNewer) {
                         // Usa copia già scaricata (tmpPath) — evita seconda richiesta di rete
                         // e soprattutto non confrontare più dopo: il mtime locale va sovrascritto ora.
@@ -5950,7 +5952,6 @@ void UI::remoteSyncTestRow() {
                         }
                     }
                     didSomething = true;
-                }
                 }
                 std::remove(tmpPath.c_str());
                 // Nota: playtime/dex/mtime sopra sono tutti letti PRIMA del
