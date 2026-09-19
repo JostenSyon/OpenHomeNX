@@ -2997,8 +2997,17 @@ long SaveFile::playTimeSeconds() const {
     // condivisa, di SaveBlock2, prima che i giochi divergano piu' avanti
     // nella struct.
     if (isImportedFile(gameType_) || isFRLG(gameType_)) {
+        // 2026-09-19: bug reale, mio -- il refactor che ha introdotto
+        // playTime4Byte() per riuso su LGPE/BDSP/SwSh/LA aveva perso il "+
+        // 0x0E" qui: passava sec0 (inizio sezione0, cioe' l'OT name) invece
+        // di sec0+0x0E (playTimeHours). Leggeva quindi byte dell'OT come
+        // hours/minutes/seconds, quasi sempre > 59 -> il controllo di
+        // plausibilita' in playTime4Byte scartava tutto silenziosamente,
+        // sempre -1. La mia stessa verifica su save reali era fatta in
+        // Python leggendo l'offset giusto direttamente dal file: mai
+        // passata per questo codice, quindi non l'ha mai vista.
         uint8_t* sec0 = const_cast<SaveFile*>(this)->findGbaSectorData(0);
-        return sec0 ? playTime4Byte(sec0, 4) : -1;
+        return sec0 ? playTime4Byte(sec0 + 0x0E, 4) : -1;
     }
 
     // LGPE (Let's Go Pikachu/Eevee): flat, blocco fisso #10 "PlayTime" a

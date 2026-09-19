@@ -640,7 +640,13 @@ void UI::galEnsureParty(GameType g) {
             pv.dexCaught = dex.caught;
             pv.dexTotal = dex.total;
             pv.playTimeSeconds = sf.playTimeSeconds();
-            DebugLog::line("gal party: %s cached %d/6", gameInfo(g).gameTag, filled);
+            // 2026-09-19: log esplicito del valore per diagnosticare "playtime
+            // assente su alcuni giochi" senza dover indovinare -- dexSupported/
+            // dexCaught inclusi per lo stesso motivo (correlare coi due bug gia'
+            // visti quest'oggi: sezione0 non trovata / dati non plausibili).
+            DebugLog::line("gal party: %s cached %d/6 dex=%d/%d(%s) playtime=%ld",
+                           gameInfo(g).gameTag, filled, dex.caught, dex.total,
+                           dex.supported ? "sup" : "unsup", pv.playTimeSeconds);
         } else {
             // Nessun path: scrivi il vuoto solo se non c'è già una cache
             // (primo giro), altrimenti tienila (stesso anti-flicker sopra).
