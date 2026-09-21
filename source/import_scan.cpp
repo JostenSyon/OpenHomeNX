@@ -29,9 +29,15 @@ std::string toLower(std::string s) {
 // G3SaveBackup (upstream reference) has the exact same ambiguity and falls
 // back to Ruby when nothing else disambiguates it; we do the same, preferring
 // a filename hint first since emulator save files are almost always named
-// after the ROM. gameCode 1 is FireRed/LeafGreen — rejected here since those
-// already have real titleId-backed GameTypes; import scanning isn't meant to
-// duplicate that path.
+// after the ROM. gameCode 1 is FireRed/LeafGreen: questi hanno anche
+// GameType nativi con titleId reale (NSO GBA), quindi in teoria "gia'
+// coperti" — ma solo per chi possiede quel titolo Switch. Chi ha solo la
+// ROM GBA (praticamente sempre su R36S/ArkOS, dove non esiste alcun
+// concetto di titolo Switch installato) restava senza alcuna riga per
+// FireRed/LeafGreen: prima qui veniva scartato a prescindere. Ora viene
+// classificato come qualunque altro Gen3 -- l'eventuale doppione quando
+// ENTRAMBI (titolo nativo + ROM import) sono presenti si evita a monte,
+// in UI::appendImportedGames() (stesso bankGroupName gia' in availableGames_).
 bool detectGen3Version(const std::string& filename, SaveFile& probe, GameType& outType) {
     uint8_t* sector0 = probe.findGbaSectorData(0);
     if (!sector0)
@@ -40,8 +46,6 @@ bool detectGen3Version(const std::string& filename, SaveFile& probe, GameType& o
                        | (static_cast<uint32_t>(sector0[0xad]) << 8)
                        | (static_cast<uint32_t>(sector0[0xae]) << 16)
                        | (static_cast<uint32_t>(sector0[0xaf]) << 24);
-    if (gameCode == 1)
-        return false;
 
     // Filename keywords in all common languages (EN/IT/DE/FR/ES): the GBA
     // save itself carries no game code (bytes at 0xAC are 0 on real saves),
@@ -52,6 +56,8 @@ bool detectGen3Version(const std::string& filename, SaveFile& probe, GameType& o
     if (has("sapphire") || has("zaffiro") || has("saphir") || has("zafiro")) { outType = GameType::SAPPHIRE; return true; }
     if (has("ruby") || has("rubino") || has("rubin") || has("rubis") || has("rub")) { outType = GameType::RUBY; return true; }
     if (has("emerald") || has("smeraldo") || has("smaragd") || has("meraude") || has("esmeralda")) { outType = GameType::EMERALD; return true; }
+    if (has("leafgreen") || has("verdefoglia") || has("verde foglia") || has("blattgruen") || has("feuille") || has("hoja")) { outType = GameType::LG; return true; }
+    if (has("firered") || has("rossofuoco") || has("rosso fuoco") || has("feuerrot") || has("rougefeu") || has("rojofuego")) { outType = GameType::FR; return true; }
     // No keyword: the save's own game code (ASCII at sector0+0xAC).
     char code[5] = {0};
     code[0] = static_cast<char>(sector0[0xac]);
@@ -61,6 +67,9 @@ bool detectGen3Version(const std::string& filename, SaveFile& probe, GameType& o
     if (std::strcmp(code, "AXPE") == 0) { outType = GameType::SAPPHIRE; return true; }
     if (std::strcmp(code, "AXVE") == 0) { outType = GameType::RUBY;     return true; }
     if (std::strcmp(code, "BPEE") == 0) { outType = GameType::EMERALD;  return true; }
+    if (std::strcmp(code, "BPRE") == 0) { outType = GameType::FR;       return true; }
+    if (std::strcmp(code, "BPGE") == 0) { outType = GameType::LG;       return true; }
+    if (gameCode == 1) { outType = GameType::FR; return true; } // FR/LG ambigui: FR come default, stessa politica di Ruby
     outType = (gameCode == 0) ? GameType::RUBY : GameType::EMERALD;
     return true;
 }

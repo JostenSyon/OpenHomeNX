@@ -550,8 +550,23 @@ void UI::selectProfile(int index) {
 
 void UI::appendImportedGames() {
     importedGames_ = scanImportPaths(importPaths_, autoCheckUsb_);
-    for (const auto& ig : importedGames_)
+    for (const auto& ig : importedGames_) {
+        // FireRed/LeafGreen sono l'unica famiglia import che puo' anche
+        // avere un GameType nativo con titleId reale (NSO GBA) gia' in
+        // availableGames_ (da fillPresentGames()) -- se chi possiede quel
+        // titolo Switch importa ANCHE la ROM GBA, evita la riga doppia per
+        // "lo stesso gioco" confrontando il bankGroupName condiviso da
+        // tutte le varianti regionali FR/LG, non solo il GameType esatto.
+        bool alreadyNative = false;
+        for (GameType g : availableGames_) {
+            if (std::strcmp(bankGroupNameOf(g), bankGroupNameOf(ig.type)) == 0) {
+                alreadyNative = true;
+                break;
+            }
+        }
+        if (alreadyNative) continue;
         availableGames_.push_back(ig.type);
+    }
     // Non riordino qui: il chiamante (selectProfile/fillPresentGames) fa già apply; rescan fa a parte.
 }
 
