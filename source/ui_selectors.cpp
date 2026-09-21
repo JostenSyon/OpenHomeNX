@@ -381,6 +381,7 @@ void UI::refreshBankCounts() {
             gameBankCounts_[g] = it->second;
         else
             gameBankCounts_[g] = BankManager::countBanks(basePath_, g);
+        DebugLog::line("bank count: %s -> %d", gameInfo(g).gameTag, gameBankCounts_[g]);
     }
 }
 

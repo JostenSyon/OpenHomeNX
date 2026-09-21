@@ -46,6 +46,19 @@ bool UI::init() {
         return false;
     }
 
+#ifdef OH_LINUX
+    // Build Linux (R36S): il display nativo è più piccolo di SCREEN_W/H.
+    // Apriamo la finestra a risoluzione nativa e lasciamo che SDL scali
+    // tutto il rendering (disegnato a SCREEN_W/SCREEN_H) al display.
+    {
+        SDL_DisplayMode dm;
+        if (SDL_GetCurrentDisplayMode(0, &dm) == 0 && dm.w > 0 && dm.h > 0) {
+            SDL_SetWindowSize(window_, dm.w, dm.h);
+            SDL_SetWindowFullscreen(window_, SDL_WINDOW_FULLSCREEN_DESKTOP);
+        }
+    }
+#endif
+
     renderer_ = SDL_CreateRenderer(window_, -1,
         SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
     if (!renderer_) {
@@ -57,6 +70,14 @@ bool UI::init() {
     }
     SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_BLEND);
 
+#ifdef OH_LINUX
+    // Logica: tutto il codice disegna in coordinate SCREEN_W x SCREEN_H
+    // (1280x720). Su display più piccoli (640x480 R36S) SDL applica lo
+    // scaling automatico con proporzioni preservate.
+    SDL_RenderSetLogicalSize(renderer_, SCREEN_W, SCREEN_H);
+    SDL_RenderSetIntegerScale(renderer_, SDL_FALSE);
+#endif
+
     // Load font
     // NOTE: PlSharedFontType_Standard covers Latin, Cyrillic, and Japanese glyphs.
     // Korean (PlSharedFontType_KO) and Chinese (PlSharedFontType_ChineseSimplified /
@@ -67,21 +88,45 @@ bool UI::init() {
     plInitialize(PlServiceType_System);
     plGetSharedFontByType(&fontData, PlSharedFontType_Standard);
     SDL_RWops* rw = SDL_RWFromMem(fontData.address, fontData.size);
+#ifdef OH_LINUX
+    // Build Linux: la UI è disegnata a SCREEN_W/H (1280x720) e downscalata
+    // al display più piccolo (R36S 640x480), quindi i font vanno ingranditi
+    // in proporzione (~1.8x) per restare leggibili dopo lo scaling.
+    font_ = TTF_OpenFontRW(rw, 0, 32);
+    fontSmall_ = TTF_OpenFontRW(SDL_RWFromMem(fontData.address, fontData.size), 0, 25);
+    fontLarge_ = TTF_OpenFontRW(SDL_RWFromMem(fontData.address, fontData.size), 0, 40);
+    fontAbout_ = TTF_OpenFontRW(SDL_RWFromMem(fontData.address, fontData.size), 0, 30);
+#else
     font_ = TTF_OpenFontRW(rw, 0, 18);
     fontSmall_ = TTF_OpenFontRW(SDL_RWFromMem(fontData.address, fontData.size), 0, 14);
     fontLarge_ = TTF_OpenFontRW(SDL_RWFromMem(fontData.address, fontData.size), 0, 28);
     fontAbout_ = TTF_OpenFontRW(SDL_RWFromMem(fontData.address, fontData.size), 0, 20);
+#endif
 
     if (!font_ || !fontSmall_) {
+#ifdef OH_LINUX
+        if (!font_)
+            font_ = TTF_OpenFont("romfs:/fonts/default.ttf", 32);
+        if (!fontSmall_)
+            fontSmall_ = TTF_OpenFont("romfs:/fonts/default.ttf", 25);
+#else
         if (!font_)
             font_ = TTF_OpenFont("romfs:/fonts/default.ttf", 18);
         if (!fontSmall_)
             fontSmall_ = TTF_OpenFont("romfs:/fonts/default.ttf", 14);
+#endif
     }
+#ifdef OH_LINUX
+    if (!fontLarge_)
+        fontLarge_ = TTF_OpenFont("romfs:/fonts/default.ttf", 40);
+    if (!fontAbout_)
+        fontAbout_ = TTF_OpenFont("romfs:/fonts/default.ttf", 30);
+#else
     if (!fontLarge_)
         fontLarge_ = TTF_OpenFont("romfs:/fonts/default.ttf", 28);
     if (!fontAbout_)
         fontAbout_ = TTF_OpenFont("romfs:/fonts/default.ttf", 20);
+#endif
     if (!fontAbout_) fontAbout_ = font_; // mai nullo al draw
 
     // Load status icons
@@ -220,12 +265,18 @@ bool UI::init() {
     }
 
     // Open game controller
+    DebugLog::line("pad: SDL_NumJoysticks=%d", SDL_NumJoysticks());
     for (int i = 0; i < SDL_NumJoysticks(); i++) {
+        DebugLog::line("pad: joystick %d = '%s' isGameController=%d", i,
+                       SDL_JoystickNameForIndex(i) ? SDL_JoystickNameForIndex(i) : "?",
+                       SDL_IsGameController(i));
         if (SDL_IsGameController(i)) {
             pad_ = SDL_GameControllerOpen(i);
+            DebugLog::line("pad: aperto joystick %d come GameController (pad_=%p)", i, (void*)pad_);
             break;
         }
     }
+    if (!pad_) DebugLog::line("pad: nessun GameController aperto");
 
     // Set default theme (persisted selection loaded in run())
     theme_ = &getTheme(0);
@@ -788,17 +839,23 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
     auto fillPresentGames = [&]() {
         std::set<uint64_t> present = account_.presentApplications();
         availableGames_.clear();
-        if (present.empty()) {
-            availableGames_.assign(std::begin(allGames), std::end(allGames));
-        } else {
+        if (!present.empty()) {
             for (GameType g : allGames)
                 if (present.count(titleIdOf(g)))
                     availableGames_.push_back(g);
-            if (availableGames_.empty())
-                availableGames_.assign(std::begin(allGames), std::end(allGames));
         }
+#ifndef OH_LINUX
+        if (present.empty() || availableGames_.empty()) {
+            availableGames_.assign(std::begin(allGames), std::end(allGames));
+        }
+#else
+        DebugLog::line("r36s: fillPresentGames present=%zu avail(before import)=%zu", present.size(), availableGames_.size());
+#endif
         appendImportedGames();
         applyFavoritesOrder();
+#ifdef OH_LINUX
+        DebugLog::line("r36s: fillPresentGames dopo import=%zu", availableGames_.size());
+#endif
     };
 
     if (appletMode_) {
