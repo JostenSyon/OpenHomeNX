@@ -146,15 +146,21 @@ void UI::handleInput(bool& running) {
             bool isBack = (b == 12);
             bool isStart = (b == 13);
             if (isBack) {
+                if (event.type == SDL_JOYBUTTONDOWN) DebugLog::line("r36s: joybutton 12 -> BACK (-)");
                 event.type = (event.type == SDL_JOYBUTTONDOWN) ? SDL_CONTROLLERBUTTONDOWN : SDL_CONTROLLERBUTTONUP;
                 event.cbutton.button = SDL_CONTROLLER_BUTTON_BACK;
             } else if (isStart) {
+                if (event.type == SDL_JOYBUTTONDOWN) DebugLog::line("r36s: joybutton 13 -> START (+)");
                 event.type = (event.type == SDL_JOYBUTTONDOWN) ? SDL_CONTROLLERBUTTONDOWN : SDL_CONTROLLERBUTTONUP;
                 event.cbutton.button = SDL_CONTROLLER_BUTTON_START;
             } else {
                 // Log una sola volta per indice cosi' se in futuro cambia
                 // ancora device/driver si vede subito il valore vero invece
-                // di dover indovinare di nuovo alla cieca.
+                // di dover indovinare di nuovo alla cieca. Se INVECE non
+                // compare mai nessun "joybutton" nel log mentre si preme
+                // Select/Start, l'evento non arriva affatto come JoyButton
+                // (probabile gptokeyb che lo trasforma in tastiera prima --
+                // vedi il fallback subito sotto, ora loggato allo stesso modo).
                 static bool seen[256] = {};
                 if (event.type == SDL_JOYBUTTONDOWN && !seen[b]) {
                     seen[b] = true;
@@ -166,13 +172,23 @@ void UI::handleInput(bool& running) {
         // Fallback per gptokeyb: Select/Start tradotti in tasti tastiera
         if (event.type == SDL_KEYDOWN || event.type == SDL_KEYUP) {
             if (event.key.keysym.sym == SDLK_TAB || event.key.keysym.sym == SDLK_ESCAPE) {
+                if (event.type == SDL_KEYDOWN) DebugLog::line("r36s: keydown TAB/ESCAPE -> BACK (-)");
                 event.type = (event.type == SDL_KEYDOWN) ? SDL_CONTROLLERBUTTONDOWN : SDL_CONTROLLERBUTTONUP;
                 event.cbutton.button = SDL_CONTROLLER_BUTTON_BACK;
             } else if (event.key.keysym.sym == SDLK_RETURN || event.key.keysym.sym == SDLK_KP_ENTER) {
+                if (event.type == SDL_KEYDOWN) DebugLog::line("r36s: keydown RETURN -> START (+)");
                 event.type = (event.type == SDL_KEYDOWN) ? SDL_CONTROLLERBUTTONDOWN : SDL_CONTROLLERBUTTONUP;
                 event.cbutton.button = SDL_CONTROLLER_BUTTON_START;
             } else {
-                // non è un tasto che ci interessa per BACK/START
+                // non è un tasto che ci interessa per BACK/START -- ma se e'
+                // uno di quelli premuti da Select/Start via gptokeyb con un
+                // keysym diverso da quelli attesi, questo log lo rivela.
+                static bool seenKey[512] = {};
+                unsigned idx = (unsigned)(event.key.keysym.sym) % 512;
+                if (event.type == SDL_KEYDOWN && !seenKey[idx]) {
+                    seenKey[idx] = true;
+                    DebugLog::line("r36s: keydown sym=%d non mappato (ignorato)", (int)event.key.keysym.sym);
+                }
                 if (event.type == SDL_KEYDOWN || event.type == SDL_KEYUP) continue;
             }
         }
