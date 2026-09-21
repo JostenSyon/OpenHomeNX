@@ -1545,8 +1545,24 @@ void UI::selectGame(GameType game, int occurrence) {
         showWorking(i18n::get(StrKey::LoadingSaveData));
         activeSaveIsRemote_ = false;
 
+        // FR/LG sono l'unica famiglia che puo' essere SIA nativa (titleId
+        // reale, AccountManager -- chi possiede il titolo Switch/NSO GBA)
+        // SIA import da file (ROM GBA scansionata -- l'unico modo di
+        // averli su R36S/ArkOS, dove non esiste alcun titolo "installato").
+        // Le altre famiglie qui sotto sono sempre e solo import, quindi
+        // basta il GameType a deciderlo; per FR/LG serve invece controllare
+        // se QUESTA occorrenza specifica ha davvero un path di import --
+        // importedSavePath() ritorna "" quando non lo trova, il che
+        // coincide comodamente con "non e' un import, prova il mount
+        // nativo" (branch sotto). Prima mancava del tutto: un FireRed/
+        // LeafGreen import restava senza nessuna delle due strade valide
+        // e cadeva nel ramo finale "else" (path fittizio "basePath_+main",
+        // mai esistito), fallendo il load in silenzio.
+        std::string frlgImportPath = isFRLG(game) ? importedSavePath(game, occurrence) : std::string();
+
         if (isImportedFile(game) || isGen1File(game) || isGen2File(game) ||
-            isGen45File(game) || isGen6XY(game) || isGen6ORAS(game) || isGen7SM(game) || isGen7USUM(game)) {
+            isGen45File(game) || isGen6XY(game) || isGen6ORAS(game) || isGen7SM(game) || isGen7USUM(game) ||
+            !frlgImportPath.empty()) {
             // File-backed game (scanned emulator save) — no titleId, no
             // AccountManager mount/backup: load straight from the resolved
             // path found by appendImportedGames(). Read/write both go
@@ -1556,7 +1572,7 @@ void UI::selectGame(GameType game, int occurrence) {
             // land directly on the user's own emulator save. Tutte le famiglie
             // file-backed sono scrivibili (GB/GBC/GBA/DS/3DS con write-back +
             // CRC ricalcolati dove servono).
-            savePath_ = importedSavePath(game, occurrence);
+            savePath_ = isFRLG(game) ? frlgImportPath : importedSavePath(game, occurrence);
             if (savePath_.empty()) {
                 showMessageAndWait(i18n::get(StrKey::MountError), i18n::get(StrKey::FailedMountSave));
                 return;
