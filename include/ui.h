@@ -107,6 +107,9 @@ public:
     std::vector<std::string> wrapText(const std::string& line, TTF_Font* f, int maxW);
     void showMessageAndWait(const std::string& title, const std::string& body);
     bool showConfirmDialog(const std::string& title, const std::string& body);
+    // Scelta tipo banca alla creazione: 0=cross-gen (A), 1=specifica (Y),
+    // -1=annullato (B, non crea nulla). Vedi ui_bank.cpp per l'uso.
+    int  pickNewBankKind(const std::string& title, const std::string& body);
     // Popup di conferma per "Sincronizza" (DevSync): due riquadri affiancati
     // (locale/remoto) con allenatore, Pokédex, tempo di gioco e data
     // salvataggio, cosi' si vede il criterio usato per scegliere la

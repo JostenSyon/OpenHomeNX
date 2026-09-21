@@ -588,6 +588,7 @@ namespace StrKey {
     // Bank creation (ui_bank.cpp)
     constexpr const char* CreateBankTitle      = "create_bank_title";
     constexpr const char* CreateBankBody       = "create_bank_body";
+    constexpr const char* NewBankKindFooter    = "new_bank_kind_footer";
 
     // Applet mode info (ui.cpp)
     constexpr const char* AppletTitle          = "applet_title";

@@ -397,22 +397,32 @@ void UI::handleBankSelectorInput(bool& running) {
                         bankManager_.init(basePath_, selectedGame_);
                     }
                     return;
-                case SDL_CONTROLLER_BUTTON_Y: // Switch X = new
+                case SDL_CONTROLLER_BUTTON_Y: { // Switch X = new
+                    // A = cross-gen, Y = solo questo gioco, B = annulla per
+                    // davvero (prima B sceglieva "banca normale" invece di
+                    // uscire senza fare nulla, come B fa ovunque altrove).
                     if (!bankManager_.isAllMode()) {
-                        newBankCrossGen_ = showConfirmDialog(i18n::get(StrKey::CreateBankTitle),
+                        int kind = pickNewBankKind(i18n::get(StrKey::CreateBankTitle),
                             i18n::get(StrKey::CreateBankBody));
-                        beginTextInput(TextInputPurpose::CreateBank);
+                        if (kind >= 0) {
+                            newBankCrossGen_ = (kind == 0);
+                            beginTextInput(TextInputPurpose::CreateBank);
+                        }
                     } else if (bankRightCrossGen_) {
                         // New bank is created for the currently loaded game;
                         // drop back to its single-game list first.
                         bankRightCrossGen_ = false;
                         bankManager_.init(basePath_, selectedGame_);
-                        newBankCrossGen_ = showConfirmDialog(i18n::get(StrKey::CreateBankTitle),
+                        int kind = pickNewBankKind(i18n::get(StrKey::CreateBankTitle),
                             i18n::get(StrKey::CreateBankBody));
-                        beginTextInput(TextInputPurpose::CreateBank);
+                        if (kind >= 0) {
+                            newBankCrossGen_ = (kind == 0);
+                            beginTextInput(TextInputPurpose::CreateBank);
+                        }
                         return;
                     }
                     break;
+                }
                 case SDL_CONTROLLER_BUTTON_X: // Switch Y = rename / theme
                     if (bankManager_.isAllMode()) {
                         showThemeSelector_ = true;
@@ -426,7 +436,17 @@ void UI::handleBankSelectorInput(bool& running) {
                     showAbout_ = true;
                     break;
                 case SDL_CONTROLLER_BUTTON_START: // + = delete
-                    if (bankCount > 0 && !bankManager_.isAllMode())
+                    // L'hint "+: Delete" compare anche nella vista cross-gen
+                    // di default (bankRightCrossGen_, box a sinistra + lista
+                    // banche a destra) ma il controllo bloccava sempre lì
+                    // perche' quella vista usa bankManager_.initAll() ->
+                    // isAllMode()==true. deleteBank() lavora per fullPath
+                    // per-voce e non dipende da banksDir_, quindi funziona
+                    // gia' bene in questa modalita': va permesso. Resta
+                    // bloccato solo nel picker esplicito "Tutte le banche"
+                    // (allBanksMode_ senza bankRightCrossGen_), il cui hint
+                    // infatti non promette Delete.
+                    if (bankCount > 0 && (bankRightCrossGen_ || !bankManager_.isAllMode()))
                         showDeleteConfirm_ = true;
                     break;
             }
@@ -694,6 +714,20 @@ void UI::beginTextInput(TextInputPurpose purpose) {
         swkbdConfigSetHeaderText(&kbd, i18n::get(StrKey::SetEditUrlHdr).c_str());
         swkbdConfigSetStringLenMax(&kbd, 127);
     }
+#ifdef OH_LINUX
+    // Build Linux (R36S): non c'e' la tastiera virtuale di Switch (swkbd).
+    // Forniamo un input automatico: per creare banca un default univoco, per
+    // gli altri purpose il buffer gia' preimpostato. Cosi' la creazione
+    // banca funziona anche senza tastiera.
+    if (purpose == TextInputPurpose::CreateBank) {
+        int n = 1;
+        while (bankManager_.bankExists("Banca " + std::to_string(n))) n++;
+        textInputBuffer_ = "Banca " + std::to_string(n);
+        textInputCursorPos_ = (int)textInputBuffer_.size();
+    }
+    commitTextInput(textInputBuffer_);
+    return;
+#endif
     if (purpose == TextInputPurpose::RenameBank && !renamingBankName_.empty())
         swkbdConfigSetInitialText(&kbd, renamingBankName_.c_str());
     else if (!textInputBuffer_.empty())

@@ -516,6 +516,40 @@ bool UI::showConfirmDialog(const std::string& title, const std::string& body) {
     return result == 1;
 }
 
+// Scelta tipo banca alla creazione: A = cross-gen, Y = specifica per questo
+// gioco, B = annulla (davvero annulla, non crea nulla -- prima B era
+// "riutilizzato" per scegliere "banca specifica" invece di uscire senza
+// fare nulla, confuso perche' B ovunque nel resto dell'app significa
+// "annulla/torna indietro" senza effetti collaterali).
+// Ritorna: 0 = cross-gen, 1 = specifica per il gioco, -1 = annullato.
+int UI::pickNewBankKind(const std::string& title, const std::string& body) {
+    if (!renderer_) return -1;
+    markDirty();
+
+    int result = -2; // -2 = in attesa
+    while (result == -2) {
+        SDL_Event event;
+        while (SDL_PollEvent(&event)) {
+            if (event.type == SDL_QUIT) result = -1;
+            if (event.type == SDL_CONTROLLERBUTTONDOWN) {
+                if (event.cbutton.button == SDL_CONTROLLER_BUTTON_B) result = 0;       // Switch A = cross-gen
+                else if (event.cbutton.button == SDL_CONTROLLER_BUTTON_X) result = 1;  // Switch Y = specifica
+                else if (event.cbutton.button == SDL_CONTROLLER_BUTTON_A) result = -1; // Switch B = annulla
+            }
+        }
+
+        SDL_SetRenderDrawColor(renderer_, T().bg.r, T().bg.g, T().bg.b, 255);
+        SDL_RenderClear(renderer_);
+
+        drawTextCentered(title, SCREEN_W / 2, SCREEN_H / 2 - 40, T().red, fontLarge_);
+        drawBodyText(body, SCREEN_H / 2 + 5, i18n::get(StrKey::NewBankKindFooter));
+
+        SDL_RenderPresent(renderer_);
+        SDL_Delay(16);
+    }
+    return result;
+}
+
 bool UI::showSyncCompareDialog(const std::string& gameName, const SyncSideInfo& local,
                                 const SyncSideInfo& remote, bool remoteNewer,
                                 const char* criterionKey, bool alreadySynced) {
