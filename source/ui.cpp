@@ -273,6 +273,22 @@ bool UI::init() {
         if (SDL_IsGameController(i)) {
             pad_ = SDL_GameControllerOpen(i);
             DebugLog::line("pad: aperto joystick %d come GameController (pad_=%p)", i, (void*)pad_);
+#ifdef OH_LINUX
+            // Select/Start su R36S sono bottoni "TRIGGER_HAPPY" fuori dalla
+            // mappatura GameController standard (vedi ui_input.cpp) -- un
+            // test su hardware ha confermato che il tool esterno li vede
+            // (SDL_JOYBUTTONDOWN 12/13 aperti come joystick grezzo), ma il
+            // nostro processo, con lo stesso device aperto SOLO via
+            // GameControllerOpen, non riceve NESSUN evento per quei due
+            // indici (ne' joybutton ne' fallback tastiera). Apriamo quindi
+            // esplicitamente anche il joystick grezzo sullo stesso indice:
+            // SDL2 conta i riferimenti, quindi aprirlo due volte e' sicuro,
+            // e se il filtro degli eventi "extra" dipende da come il device
+            // e' stato aperto, questo lo forza a generarli comunque.
+            SDL_Joystick* rawPad = SDL_JoystickOpen(i);
+            DebugLog::line("pad: SDL_JoystickOpen(%d) rawPad=%p numButtons=%d",
+                           i, (void*)rawPad, rawPad ? SDL_JoystickNumButtons(rawPad) : -1);
+#endif
             break;
         }
     }
