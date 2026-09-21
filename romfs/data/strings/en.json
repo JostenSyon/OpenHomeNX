@@ -483,5 +483,17 @@
     "gal_play_time": "Play time",
     "cleargalcache_title": "Clear Gallery cache",
     "cleargalcache_body": "Forces the Gallery preview cards (party, Pokédex, play time) to be rebuilt from the save files next time you open each game. Nothing in the games themselves is touched. Continue?",
-    "cleargalcache_done": "Gallery cache cleared."
+    "cleargalcache_done": "Gallery cache cleared.",
+    "scraper_boxart_title": "Update boxart (ROM)",
+    "scraper_boxart_done": "Boxart: {0}/{1} found.",
+    "scraper_boxart_offline": "Network unavailable: using local covers only.",
+    "scraper_boxart_clear": "Clear boxart cache",
+    "scraper_boxart_clear_body": "Removes downloaded/copied 2D covers. Composed tiles (logo + background) return. Continue?",
+    "scraper_boxart_cleared": "Boxart cache cleared: {0} file(s).",
+    "scraper_boxart_style": "Boxart style",
+    "scraper_boxart_style_cover": "Boxart",
+    "scraper_boxart_style_shot": "Screenshot",
+    "scraper_boxart_style_title": "Title",
+    "scraper_rename_title": "Rename ROMs",
+    "scraper_rename_done": "ROMs renamed: {0}/{1}."
 }

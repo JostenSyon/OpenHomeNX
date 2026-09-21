@@ -167,6 +167,16 @@ void setDockOrder(const std::string& v) {
 }
 bool dockVisible() { return getInt("dock_visible", 1) != 0; }
 void setDockVisible(bool v) { setInt("dock_visible", v ? 1 : 0); }
+int boxartStyle() {
+    int v = getInt("boxart_style", 0);
+    if (v < 0 || v > 2) v = 0;
+    return v;
+}
+void setBoxartStyle(int v) {
+    if (v < 0) v = 0;
+    if (v > 2) v = 2;
+    setInt("boxart_style", v);
+}
 std::string remoteSyncHost() {
     auto it = g_kv.find("remotesync_host");
     return (it == g_kv.end()) ? "" : it->second;

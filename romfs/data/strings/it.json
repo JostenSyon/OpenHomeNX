@@ -483,5 +483,17 @@
     "gal_play_time": "Tempo di gioco",
     "cleargalcache_title": "Pulisci cache Galleria",
     "cleargalcache_body": "Forza la ricostruzione delle schede anteprima della Galleria (squadra, Pokédex, tempo di gioco) dai save la prossima volta che apri ogni gioco. Non tocca nulla nei giochi stessi. Continuare?",
-    "cleargalcache_done": "Cache Galleria ripulita."
+    "cleargalcache_done": "Cache Galleria ripulita.",
+    "scraper_boxart_title": "Aggiorna boxart (ROM)",
+    "scraper_boxart_done": "Boxart: {0}/{1} trovate.",
+    "scraper_boxart_offline": "Rete non disponibile: uso solo cover locali.",
+    "scraper_boxart_clear": "Pulisci cache boxart",
+    "scraper_boxart_clear_body": "Rimuove le cover 2D scaricate/copiate. Tornano le tile composte (logo + sfondo). Continuare?",
+    "scraper_boxart_cleared": "Cache boxart pulita: {0} file.",
+    "scraper_boxart_style": "Stile boxart",
+    "scraper_boxart_style_cover": "Copertina",
+    "scraper_boxart_style_shot": "Screenshot",
+    "scraper_boxart_style_title": "Titolo",
+    "scraper_rename_title": "Rinomina ROM",
+    "scraper_rename_done": "ROM rinominate: {0}/{1}."
 }

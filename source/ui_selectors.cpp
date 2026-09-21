@@ -11,6 +11,8 @@
 #include "settings_cfg.h"
 #include "emulator.h"
 #include "trade_evo.h"
+#include "boxart.h"
+#include "rominfo.h"
 #include "pokedex.h"
 
 #include <algorithm>
@@ -358,6 +360,11 @@ static void writeQuickMenu(const std::string& basePath, bool on);
 // lo stesso override rete di UI::sendAvailable() (debug on + url custom),
 // passato dal chiamante perche' questa e' una funzione libera senza `this`.
 static std::string normalizeRowLabel() { return i18n::get(StrKey::SetNormalizeSave); }
+static std::string boxartStyleLabel(int v) {
+    if (v == 1) return i18n::get(StrKey::ScraperBoxartStyleShot);
+    if (v == 2) return i18n::get(StrKey::ScraperBoxartStyleTitle);
+    return i18n::get(StrKey::ScraperBoxartStyleCover);
+}
 static std::vector<std::string> saveMenuRows(GameType g, bool canSend) {
     std::vector<std::string> r = { "Backup save", "Browse backups", "Clean old backups" };
     if (canSend) r.push_back("Send save");
@@ -833,12 +840,41 @@ void UI::loadGameIcons() {
     }
 
     bool needSystem = false;
-    for (GameType game : availableGames_) {
+    for (size_t ai = 0; ai < availableGames_.size(); ai++) {
+        GameType game = availableGames_[ai];
         // Imported games (Ruby/Sapphire/Emerald/Gen1 from a scanned file) have no
         // real titleId and no NS control data — they always use the abbrev.
-        // placeholder in drawGameSelectorFrame() instead of a fetched icon.
-        if (isImportedFile(game) || isGen1File(game) || isGen2File(game))
+        // placeholder in drawGameSelectorFrame() instead of a fetched icon,
+        // a meno che cache/covers/ abbia una cover 2D (Sviluppatore ->
+        // Aggiorna boxart): in quel caso la usano come le icone di sistema.
+        if (isImportedFile(game) || isGen1File(game) || isGen2File(game)) {
+            size_t occ = 0;
+            for (size_t aj = 0; aj < ai; aj++)
+                if (availableGames_[aj] == game) occ++;
+            std::string romPath = Emulator::findRomForSave(
+                importedSavePath(game, (int)occ), game);
+            std::string cover = Boxart::findCachedCover(basePath_, romPath);
+            if (!cover.empty()) {
+                SDL_Surface* csurf = IMG_Load(cover.c_str());
+                if (csurf) {
+                    if (SDL_Surface* rr = roundCornersSurface(csurf, std::min(csurf->w, csurf->h) / 12)) {
+                        SDL_FreeSurface(csurf);
+                        csurf = rr;
+                    }
+                }
+                if (csurf) {
+                    SDL_Texture* ctex = SDL_CreateTextureFromSurface(renderer_, csurf);
+                    SDL_FreeSurface(csurf);
+                    if (ctex) {
+                        SDL_SetTextureBlendMode(ctex, SDL_BLENDMODE_BLEND);
+                        gameIconCache_[game] = ctex;
+                        DebugLog::line("icons: %s cover %s",
+                            gameInfo(game).gameTag, cover.c_str());
+                    }
+                }
+            }
             continue;
+        }
         // Try loading from cache first
         char hexId[32];
         std::snprintf(hexId, sizeof(hexId), "%016lX", titleIdOf(game));
@@ -4879,10 +4915,14 @@ int UI::settingsRowCount(int cat) const {
             return n; // Boot, Check, Sorgente, Canale [, Modifica]
         }
         case 5: {
-            // Debug, Menu + [, Pulisci cronologia zaino] [, Normalize save] [, Pulisci cache Galleria] [, Invia log, Crash report], Ricerca dispositivi
+            // Debug, Menu + [, Pulisci cronologia zaino] [, Normalize save] [, Pulisci cache Galleria] [, Invia log, Crash report] + Aggiorna boxart (ROM) + Pulisci boxart + Ricerca dispositivi
             int n = 2;
             if (DebugLog::enabled()) n += 1 + 1 + 1; // + ClearBp, + Normalize, + ClearGalCache
             if (sendAvailable()) n += 2;
+            n += 1; // + Rinomina ROM, sempre quintultima riga
+            n += 1; // + Stile boxart, sempre quartultima riga
+            n += 1; // + Aggiorna boxart (ROM), sempre terzultima riga
+            n += 1; // + Pulisci boxart, sempre penultima riga
             n += 1; // + Ricerca dispositivi (sempre ultima riga, vedi remoteSyncTestRow)
             return n;
         }
@@ -4936,8 +4976,12 @@ std::string UI::settingsRowLabel(int cat, int row) const {
         // qualunque sia il numero di righe extra sbloccate da debug/rete
         // (vedi settingsRowCount): va controllata per prima o finirebbe per
         // combaciare con uno degli indici fissi sotto quando le righe extra
-        // non ci sono tutte.
+        // non ci sono tutte. Aggiorna boxart e' sempre la penultima.
         if (row == settingsRowCount(5) - 1) return i18n::get(StrKey::DevSyncTitle);
+        if (row == settingsRowCount(5) - 2) return i18n::get(StrKey::ScraperBoxartClear);
+        if (row == settingsRowCount(5) - 3) return i18n::get(StrKey::ScraperBoxartTitle);
+        if (row == settingsRowCount(5) - 4) return i18n::get(StrKey::ScraperBoxartStyle);
+        if (row == settingsRowCount(5) - 5) return i18n::get(StrKey::ScraperRenameTitle);
         if (row == 0) return i18n::get(StrKey::SetDebugToggle);
         if (row == 1) return i18n::get(StrKey::SetDbgMenu);
         if (row == 2) return i18n::get(StrKey::ClearBpHistTitle);
@@ -5026,6 +5070,8 @@ std::string UI::settingsRowValue(int cat, int row) {
             return DebugLog::enabled() ? i18n::get(StrKey::SetOn) : i18n::get(StrKey::SetOff);
         if (row == 1)
             return readQuickMenu(basePath_) ? i18n::get(StrKey::SetOn) : i18n::get(StrKey::SetOff);
+        if (row == settingsRowCount(5) - 4)
+            return boxartStyleLabel(Settings::boxartStyle());
         return "";
     }
     if (row == 0) {
@@ -6385,6 +6431,77 @@ void UI::settingsRowActivate(int cat, int row, int dir, bool& running) {
             // Ricerca dispositivi: sempre l'ultima riga, va controllata per
             // prima per lo stesso motivo spiegato in settingsRowLabel.
             remoteSyncTestRow();
+        } else if (row == settingsRowCount(5) - 5) {
+            // Rinomina ROM: sempre la quintultima riga. Rileva lingua
+            // dall'header e propone nomi No-Intro; conferma prima di toccare
+            // i file (ROM + save/stati associati + patch gamelist.xml).
+            std::vector<RomInfo::RenamePlan> plans;
+            for (const auto& g : importedGames_) {
+                std::string rom = Emulator::findRomForSave(g.filePath, g.type);
+                if (rom.empty()) continue;
+                RomInfo::RenamePlan p;
+                if (RomInfo::planRename(rom, p)) plans.push_back(p);
+            }
+            std::string rtitle = i18n::get(StrKey::ScraperRenameTitle);
+            if (plans.empty()) {
+                showMessageAndWait(rtitle,
+                    i18n::fmt(StrKey::ScraperRenameDone, "0", "0"));
+            } else {
+                std::string body;
+                for (size_t i = 0; i < plans.size() && i < 12; i++)
+                    body += plans[i].oldBase + plans[i].ext + " -> " +
+                            plans[i].newBase + plans[i].ext + "\n";
+                if (plans.size() > 12)
+                    body += "... (+" + std::to_string(plans.size() - 12) + ")\n";
+                if (showConfirmDialog(rtitle, body)) {
+                    int ok = 0;
+                    for (const auto& p : plans) {
+                        std::string err;
+                        if (RomInfo::applyRename(p, err)) ok++;
+                    }
+                    showMessageAndWait(rtitle,
+                        i18n::fmt(StrKey::ScraperRenameDone,
+                            std::to_string(ok), std::to_string(plans.size())));
+                    rescanImportedGames();
+                    loadGameIcons();
+                }
+            }
+        } else if (row == settingsRowCount(5) - 4) {
+            // Stile boxart: sempre la quartultima riga. B/X cicla lo stile.
+            int v = (Settings::boxartStyle() + dir + 3) % 3;
+            Settings::setBoxartStyle(v);
+            DebugLog::line("settings: boxart_style=%d", v);
+        } else if (row == settingsRowCount(5) - 3) {
+            // Aggiorna boxart (ROM): sempre la terzultima riga.
+            // R36S: riuso solo locale (Skyscraper images/gamelist -> cache).
+            // Switch: cache hit, altrimenti download se la rete e' pronta.
+            bool netOk = true;
+#ifndef OH_LINUX
+            netOk = updateNetEnsureReady();
+#endif
+            if (!netOk) {
+                // Senza rete il download e' impossibile: dirlo subito
+                // invece di un generico 0/N che non spiega nulla.
+                showMessageAndWait(i18n::get(StrKey::ScraperBoxartTitle),
+                    i18n::get(StrKey::ScraperBoxartOffline));
+            } else {
+                showWorking(i18n::get(StrKey::ScraperBoxartTitle));
+                Boxart::ScrapeResult res = Boxart::scrape(basePath_, importedGames_);
+                showMessageAndWait(i18n::get(StrKey::ScraperBoxartTitle),
+                    i18n::fmt(StrKey::ScraperBoxartDone,
+                        std::to_string(res.found), std::to_string(res.total)));
+                loadGameIcons(); // le nuove cover in cache appaiono subito
+            }
+        } else if (row == settingsRowCount(5) - 2) {
+            // Pulisci boxart: sempre la penultima riga. Cancella cache/covers/
+            // cosi' tornano le tile composte logo+sfondo+label da romfs.
+            if (showConfirmDialog(i18n::get(StrKey::ScraperBoxartClear),
+                    i18n::get(StrKey::ScraperBoxartClearBody))) {
+                int n = Boxart::clearCache(basePath_);
+                showMessageAndWait(i18n::get(StrKey::ScraperBoxartClear),
+                    i18n::fmt(StrKey::ScraperBoxartCleared, std::to_string(n)));
+                loadGameIcons(); // le tile composte riappaiono subito
+            }
         } else if (row == 0) {
             bool on = !DebugLog::enabled();
             DebugLog::setEnabled(on);

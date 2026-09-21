@@ -15,12 +15,15 @@ Built on the **pkHouse** UI framework (C++/SDL2) — graphics and layouts adapte
 
 ## Features
 
-- Two-panel box viewer, pick & place, multi-select, ZL/ZR box view
+- Two-panel box viewer, pick & place, multi-select, ZL/ZR box view, persistent reorderable dock
 - Pokémon details, search/filters, learnset viewer, 9 themes, 12 languages
+- Gallery view with per-game preview: party, Pokédex progress, play time
 - Real cross-gen transfer across 13 formats (gen 1–9, PA8/PA9/PB8/PB7) with
   explicit dex-cut and move-drop, OHPKM tracking for lossless return
-- Party strip with OT, grab/swap/place from party, compaction on save
+- Party strip with OT, grab/swap/place from party, self-trade, compaction on save
+- Backpack / item editing across generations (Gen 1/2 GB, Gen 3 RSE/FRLG, Gen 4/5 DS)
 - Native GB/GBC/GBA/DS/decrypted-3DS saves + SD/USB import
+- LAN remote sync with Filebrowser-compatible devices (R36S/ArkOS…): send/receive/auto-sync saves and ROMs
 - Wondercard injection, automatic save backups, LED, network indicator
 - Self-update from SD/GitHub releases
 
@@ -28,14 +31,23 @@ Built on the **pkHouse** UI framework (C++/SDL2) — graphics and layouts adapte
 
 Any Pokémon can be moved between any supported save via the cross-gen bank (`banks/All/` or per-family with `banks/<Family>/`). Conversion goes through OHPKM in Rust: PID re-rolled to keep nature/ability/gender/shininess, dex-cut and 4-move drop are shown explicitly (`A: proceed / B: cancel`), and `OriginalBackup` keeps the initial bytes for a lossless return. No silent failures — `transfer_cant_read_src` etc.
 
+## Backpack (item editing)
+
+Item editing per generation, not just Pokémon: Gen 1/2 (GB bags), Gen 3 (RSE/FRLG), Gen 4/5 (DS) — gift and take back items (stack to max, key items protected), full anomaly scan (invalid/over-max/protected) with a journal and one-tap fixes. Per-game event items (National Dex, Eon Ticket, Mystery Event…) are tracked as pure save flags instead of fake bag items: take one back and the event is actually disabled again, not just hidden from the bag.
+
+## Remote sync (LAN)
+
+Box Remoto and DevSync talk to any Filebrowser-compatible device on the LAN (R36S/ArkOS and similar): browse and open saves directly from the remote device, or send/receive/auto-sync between the Switch and it. Auto-sync direction is decided from real progress — play time first, then Pokédex catches — never a blind file timestamp, so a save just received over the network isn't mistaken for "newer".
+
 ## Supported games
 
 | Family | Games | Via |
 |---|---|---|
 | Switch | Scarlet / Violet (4.0.0), Sword / Shield (1.3.2), BDSP (1.3.0), Legends Arceus (1.1.1), Legends Z-A (2.0.2), Let's Go Pikachu/Eevee (1.0.2), FireRed/LeafGreen (incl. ES/DE/IT/FR/JA) | Installed save (`AccountManager`) |
+| 3DS (decrypted, import) | X / Y, Omega Ruby / Alpha Sapphire, Sun / Moon, Ultra Sun / Ultra Moon | SD/USB file |
 | GBA (import) | Ruby / Sapphire / Emerald | SD/USB file |
 | GB (import) | Red / Blue / Yellow, Gold / Silver / Crystal | SD/USB file |
-| DS (import) | Diamond / Pearl / Platinum / HGSS, Black / White / B2W2, X / Y, Sun / Moon (decrypted) | SD/USB file |
+| DS (import) | Diamond / Pearl / Platinum / HGSS, Black / White / B2W2 (save write-back) | SD/USB file |
 
 Cross-gen bank covers all 13 stored formats (PK1/PK2/PK3/PK4/PK5/PK6/PK7/PK8/PK9/PA8/PA9/PB8/PB7).
 
@@ -159,12 +171,15 @@ Costruito sul framework UI di **pkHouse** (C++/SDL2) — grafica e layout adatta
 
 ## Funzioni
 
-- Box viewer a due pannelli, pick & place, multi-selezione, box view ZL/ZR
+- Box viewer a due pannelli, pick & place, multi-selezione, box view ZL/ZR, dock persistente riordinabile
 - Dettaglio Pokémon, ricerca/filtri, learnset viewer, 9 temi, 12 lingue
+- Vista Galleria con anteprima per gioco: squadra, avanzamento Pokédex, tempo di gioco
 - Transfer cross-gen reale su 13 formati (gen 1–9, PA8/PA9/PB8/PB7) con
   dex-cut e move-drop espliciti, tracking OHPKM per il ritorno lossless
-- Party strip con OT, grab/swap/posa dal party, compattamento al salvataggio
+- Party strip con OT, grab/swap/posa dal party, self-trade, compattamento al salvataggio
+- Zaino / modifica oggetti multi-generazione (Gen 1/2 GB, Gen 3 RSE/FRLG, Gen 4/5 DS)
 - Save nativi GB/GBC/GBA/DS/3DS-decifrati + import da SD/USB
+- Sync remoto via LAN con dispositivi compatibili Filebrowser (R36S/ArkOS…): invia/ricevi/sincronizza save e ROM
 - Wondercard injection, backup automatici dei save, LED, indicatore rete
 - Self-update da SD/release GitHub
 
@@ -172,14 +187,23 @@ Costruito sul framework UI di **pkHouse** (C++/SDL2) — grafica e layout adatta
 
 Qualsiasi Pokémon può passare tra tutti i save supportati via banca cross-gen (`banks/All/` o per famiglia `banks/<Famiglia>/`). La conversione passa dall'OHPKM Rust: PID ricalcolato per mantenere natura/abilità/sesso/cromaticità, dex-cut e taglio a 4 mosse mostrati espliciti (`A: procedi / B: annulla`), `OriginalBackup` conserva i byte iniziali per il ritorno lossless. Mai silenzioso — errori `transfer_cant_read_src` ecc.
 
+## Zaino (modifica oggetti)
+
+Modifica oggetti per ogni generazione, non solo Pokémon: Gen 1/2 (borse GB), Gen 3 (RSE/FRLG), Gen 4/5 (DS) — regala e riprendi oggetti (fino al massimo dello stack, oggetti chiave protetti), scansione anomalie completa (non validi/oltre il massimo/protetti) con giornale e fix in un tocco. Gli oggetti-evento per gioco (National Dex, Biglietto Eone, Evento Misterioso…) sono tracciati come flag puri sul save invece che come falsi oggetti in borsa: riprendendoli l'evento viene davvero disattivato, non solo tolto dalla vista.
+
+## Sync remoto (LAN)
+
+Box Remoto e DevSync parlano con qualsiasi dispositivo compatibile Filebrowser sulla LAN (R36S/ArkOS e simili): apri i save direttamente dal dispositivo remoto, oppure invia/ricevi/sincronizza automaticamente tra la Switch e quello. La direzione della sincronizzazione automatica si decide sul progresso reale — prima il tempo di gioco, poi i Pokémon catturati nel Pokédex — mai sulla sola data del file, così un save appena ricevuto via rete non viene scambiato per "più recente".
+
 ## Giochi supportati
 
 | Famiglia | Giochi | Via |
 |---|---|---|
 | Switch | Scarlatto / Violetto (4.0.0), Spada / Scudo (1.3.2), Diamante Lucente / Perla Splendente (1.3.0), Leggende Arceus (1.1.1), Leggende Z-A (2.0.2), Let's Go Pikachu/Eevee (1.0.2), Rosso Fuoco / Verde Foglia (incl. ES/DE/IT/FR/JA) | Save installato (`AccountManager`) |
+| 3DS (decifrati, import) | X / Y, Rubino Omega / Zaffiro Alpha, Sole / Luna, Ultrasole / Ultraluna | File SD/USB |
 | GBA (import) | Rubino / Zaffiro / Smeraldo | File SD/USB |
 | GB (import) | Rosso / Blu / Giallo, Oro / Argento / Cristallo | File SD/USB |
-| DS (import) | Diamante / Perla / Platino / HGSS, Nero / Bianco / B2W2, X / Y, Sole / Luna (decifrati) | File SD/USB |
+| DS (import) | Diamante / Perla / Platino / HGSS, Nero / Bianco / B2W2 (scrittura save) | File SD/USB |
 
 Banca cross-gen: tutti i 13 formati (PK1/PK2/PK3/PK4/PK5/PK6/PK7/PK8/PK9/PA8/PA9/PB8/PB7).
 
