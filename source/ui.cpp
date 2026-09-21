@@ -264,35 +264,36 @@ bool UI::init() {
         tileBgCache_[GameType::SAPPHIRE] = loadBg("sapphire");
     }
 
+#ifdef OH_LINUX
+    // ArkOS spedisce una mappatura SDL_GameController extra per pad senza
+    // entry nel DB comunitario di SDL (es. "GO-Super Gamepad": back/start
+    // sono bottoni "TRIGGER_HAPPY" fuori standard, mai esposti come
+    // CONTROLLERBUTTONDOWN senza questa mappatura -- verificato su hardware:
+    // ne' il joybutton grezzo ne' un fallback tastiera arrivavano affatto).
+    // I tool di sistema (es. "Advanced > Controller Tester") la caricano
+    // via SDL_GAMECONTROLLERCONFIG_FILE prima di aprire il pad; facciamo lo
+    // stesso qui. File assente/non ArkOS -> ritorna -1, nessun problema,
+    // resta solo il fallback raw-joybutton gia' in ui_input.cpp.
+    int nMap = SDL_GameControllerAddMappingsFromFile("/opt/inttools/gamecontrollerdb.txt");
+    DebugLog::line("pad: SDL_GameControllerAddMappingsFromFile -> %d", nMap);
+#endif
+
     // Open game controller
-    DebugLog::line("pad: SDL_NumJoysticks=%d", SDL_NumJoysticks());
     for (int i = 0; i < SDL_NumJoysticks(); i++) {
-        DebugLog::line("pad: joystick %d = '%s' isGameController=%d", i,
-                       SDL_JoystickNameForIndex(i) ? SDL_JoystickNameForIndex(i) : "?",
-                       SDL_IsGameController(i));
         if (SDL_IsGameController(i)) {
             pad_ = SDL_GameControllerOpen(i);
-            DebugLog::line("pad: aperto joystick %d come GameController (pad_=%p)", i, (void*)pad_);
-#ifdef OH_LINUX
-            // Select/Start su R36S sono bottoni "TRIGGER_HAPPY" fuori dalla
-            // mappatura GameController standard (vedi ui_input.cpp) -- un
-            // test su hardware ha confermato che il tool esterno li vede
-            // (SDL_JOYBUTTONDOWN 12/13 aperti come joystick grezzo), ma il
-            // nostro processo, con lo stesso device aperto SOLO via
-            // GameControllerOpen, non riceve NESSUN evento per quei due
-            // indici (ne' joybutton ne' fallback tastiera). Apriamo quindi
-            // esplicitamente anche il joystick grezzo sullo stesso indice:
-            // SDL2 conta i riferimenti, quindi aprirlo due volte e' sicuro,
-            // e se il filtro degli eventi "extra" dipende da come il device
-            // e' stato aperto, questo lo forza a generarli comunque.
-            SDL_Joystick* rawPad = SDL_JoystickOpen(i);
-            DebugLog::line("pad: SDL_JoystickOpen(%d) rawPad=%p numButtons=%d",
-                           i, (void*)rawPad, rawPad ? SDL_JoystickNumButtons(rawPad) : -1);
-#endif
+            DebugLog::line("pad: aperto joystick %d ('%s') come GameController (pad_=%p)", i,
+                           SDL_JoystickNameForIndex(i) ? SDL_JoystickNameForIndex(i) : "?", (void*)pad_);
             break;
         }
     }
-    if (!pad_) DebugLog::line("pad: nessun GameController aperto");
+    if (pad_) {
+        padNativeBack_  = SDL_GameControllerGetBindForButton(pad_, SDL_CONTROLLER_BUTTON_BACK).bindType != SDL_CONTROLLER_BINDTYPE_NONE;
+        padNativeStart_ = SDL_GameControllerGetBindForButton(pad_, SDL_CONTROLLER_BUTTON_START).bindType != SDL_CONTROLLER_BINDTYPE_NONE;
+        DebugLog::line("pad: bind nativo back=%d start=%d", (int)padNativeBack_, (int)padNativeStart_);
+    } else {
+        DebugLog::line("pad: nessun GameController aperto");
+    }
 
     // Set default theme (persisted selection loaded in run())
     theme_ = &getTheme(0);

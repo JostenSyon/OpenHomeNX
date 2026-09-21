@@ -137,14 +137,20 @@ void UI::handleInput(bool& running) {
             markDirty();
 
 #ifdef OH_LINUX
-        // R36S: GO-Super Gamepad non ha back/start nel mapping di default;
-        // i tasti Select/Start arrivano come JoyButton (TRIGGER_HAPPY).
-        // Indici confermati su hardware: Select=12, Start=13.
+        // R36S: se UI::init() e' riuscito a caricare la mappatura extra di
+        // ArkOS (gamecontrollerdb.txt), back/start arrivano gia' come
+        // SDL_CONTROLLERBUTTONDOWN nativi -- niente da tradurre qui, anzi
+        // tradurre ANCHE il joybutton grezzo li farebbe scattare due volte
+        // (un evento nativo + uno tradotto per la stessa pressione). Questo
+        // fallback quindi resta attivo solo quando il bind nativo manca
+        // (mappatura non trovata/device diverso).
+        if (!padNativeBack_ || !padNativeStart_) {
         if (event.type == SDL_JOYBUTTONDOWN || event.type == SDL_JOYBUTTONUP) {
             Uint8 b = event.jbutton.button;
-            // Select (-) -> BACK, Start (+) -> START.
-            bool isBack = (b == 12);
-            bool isStart = (b == 13);
+            // Select (-) -> BACK, Start (+) -> START. Indici confermati su
+            // hardware (GO-Super Gamepad): Select=12, Start=13.
+            bool isBack = !padNativeBack_ && (b == 12);
+            bool isStart = !padNativeStart_ && (b == 13);
             if (isBack) {
                 if (event.type == SDL_JOYBUTTONDOWN) DebugLog::line("r36s: joybutton 12 -> BACK (-)");
                 event.type = (event.type == SDL_JOYBUTTONDOWN) ? SDL_CONTROLLERBUTTONDOWN : SDL_CONTROLLERBUTTONUP;
@@ -192,6 +198,7 @@ void UI::handleInput(bool& running) {
                 if (event.type == SDL_KEYDOWN || event.type == SDL_KEYUP) continue;
             }
         }
+        } // !padNativeBack_ || !padNativeStart_
 #endif
 
         if (showMenu_)               { handleMenuInput(event, running); continue; }

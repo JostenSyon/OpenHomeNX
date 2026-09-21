@@ -149,6 +149,12 @@ private:
     SDL_Window*          window_    = nullptr;
     SDL_Renderer*        renderer_  = nullptr;
     SDL_GameController*  pad_       = nullptr;
+    // true se pad_ ha gia' un bind nativo per BACK/START dopo aver caricato
+    // l'eventuale mappatura extra (vedi UI::init()) -- se true, il fallback
+    // raw-joybutton in ui_input.cpp deve stare zitto per non duplicare
+    // l'evento (altrimenti Select/Start scatterebbero due volte a pressione).
+    bool padNativeBack_  = false;
+    bool padNativeStart_ = false;
     TTF_Font*            font_      = nullptr;
     TTF_Font*            fontSmall_ = nullptr;
     TTF_Font*            fontLarge_ = nullptr;
