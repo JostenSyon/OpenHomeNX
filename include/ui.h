@@ -910,6 +910,13 @@ private:
     int  bankSelScroll_ = 0;
     bool showDeleteConfirm_ = false;
     bool newBankCrossGen_ = false;
+    // true quando "crea banca" e' stata avviata dalla vista cross-gen
+    // (bankRightCrossGen_): quel percorso scende temporaneamente in
+    // modalita' singolo-gioco solo per calcolare bankFolderNameOf()/
+    // banksDir_ corretti, ma senza questo flag la vista restava li'
+    // (lista di un solo gioco) anche dopo la creazione, finche' non si
+    // usciva e rientrava -- vedi UI::commitTextInput().
+    bool bankCreateWasCrossGenView_ = false;
 
     TextInputPurpose textInputPurpose_;
     std::string textInputBuffer_;

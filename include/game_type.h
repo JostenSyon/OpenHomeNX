@@ -1,5 +1,6 @@
 #pragma once
 #include <cstdint>
+#include <string>
 
 // Supported game types (sequential enum used as array index)
 enum class GameType { ZA, S, V, Sw, Sh, BD, SP, LA, GP, GE, FR, LG, FR_ES, LG_ES, FR_DE, LG_DE, FR_IT, LG_IT, FR_FR, LG_FR, FR_JA, LG_JA, RUBY, SAPPHIRE, EMERALD, RED, BLUE, YELLOW, GOLD, SILVER, CRYSTAL, DIAMOND, PEARL, PLATINUM, HEARTGOLD, SOULSILVER, BLACK, WHITE, BLACK2, WHITE2, X, Y, OMEGA_RUBY, ALPHA_SAPPHIRE, SUN, MOON, ULTRA_SUN, ULTRA_MOON };
@@ -364,7 +365,13 @@ inline uint64_t    titleIdOf(GameType g)        { return gameInfo(g).titleId; }
 inline const char* saveFileNameOf(GameType g)   { return gameInfo(g).saveFileName; }
 inline const char* gameDisplayNameOf(GameType g){ return gameInfo(g).displayName; }
 inline const char* bankGroupNameOf(GameType g)  { return gameInfo(g).bankGroupName; }
-inline const char* bankFolderNameOf(GameType g) { return gameInfo(g).bankFolderName; }
+inline std::string bankFolderNameOf(GameType g) {
+    std::string s = gameInfo(g).bankFolderName;
+#ifdef OH_LINUX
+    for (auto& c : s) c = (char)tolower((unsigned char)c);
+#endif
+    return s;
+}
 inline const char* gamePathNameOf(GameType g)   { return gameInfo(g).gamePathName; }
 inline const char* pkFileExtension(GameType g)  { return gameInfo(g).pkExtension; }
 inline int         pkPartySize(GameType g)      { return gameInfo(g).pkPartySize; }

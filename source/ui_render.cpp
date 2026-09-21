@@ -531,9 +531,15 @@ void UI::drawSlot(int x, int y, const SlotDisplay& sd, bool isCursor, int select
             SDL_RenderCopy(renderer_, sprite, nullptr, &dst);
         }
 
-        // Species name below sprite
+        // Species name below sprite — normalize all-caps Gen3 nicknames to Title Case
+        std::string dispName = sd.name;
+        bool allCaps = !dispName.empty();
+        for (char c : dispName) if (c >= 'a' && c <= 'z') { allCaps = false; break; }
+        if (allCaps && dispName.size() > 1) {
+            for (size_t i = 1; i < dispName.size(); ++i) dispName[i] = (char)tolower((unsigned char)dispName[i]);
+        }
         SDL_Color nameColor = sd.shiny ? T().shiny : T().text;
-        drawTextCentered(sd.name, x + CELL_W / 2, y + SPRITE_SIZE + 10, nameColor, fontSmall_);
+        drawTextCentered(dispName, x + CELL_W / 2, y + SPRITE_SIZE + 10, nameColor, fontSmall_);
 
         // Level at the bottom
         if (!sd.egg) {
