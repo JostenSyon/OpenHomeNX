@@ -131,8 +131,52 @@ void UI::handleInput(bool& running) {
 
         // Any button/key event dirties the screen
         if (event.type == SDL_CONTROLLERBUTTONDOWN ||
-            event.type == SDL_CONTROLLERBUTTONUP)
+            event.type == SDL_CONTROLLERBUTTONUP ||
+            event.type == SDL_JOYBUTTONDOWN ||
+            event.type == SDL_JOYBUTTONUP)
             markDirty();
+
+#ifdef OH_LINUX
+        // R36S: GO-Super Gamepad non ha back/start nel mapping di default;
+        // i tasti Select/Start arrivano come JoyButton (TRIGGER_HAPPY).
+        // Indici confermati su hardware: Select=12, Start=13.
+        if (event.type == SDL_JOYBUTTONDOWN || event.type == SDL_JOYBUTTONUP) {
+            Uint8 b = event.jbutton.button;
+            // Select (-) -> BACK, Start (+) -> START.
+            bool isBack = (b == 12);
+            bool isStart = (b == 13);
+            if (isBack) {
+                event.type = (event.type == SDL_JOYBUTTONDOWN) ? SDL_CONTROLLERBUTTONDOWN : SDL_CONTROLLERBUTTONUP;
+                event.cbutton.button = SDL_CONTROLLER_BUTTON_BACK;
+            } else if (isStart) {
+                event.type = (event.type == SDL_JOYBUTTONDOWN) ? SDL_CONTROLLERBUTTONDOWN : SDL_CONTROLLERBUTTONUP;
+                event.cbutton.button = SDL_CONTROLLER_BUTTON_START;
+            } else {
+                // Log una sola volta per indice cosi' se in futuro cambia
+                // ancora device/driver si vede subito il valore vero invece
+                // di dover indovinare di nuovo alla cieca.
+                static bool seen[256] = {};
+                if (event.type == SDL_JOYBUTTONDOWN && !seen[b]) {
+                    seen[b] = true;
+                    DebugLog::line("r36s: joybutton %u non mappato (ignorato)", (unsigned)b);
+                }
+                continue;
+            }
+        }
+        // Fallback per gptokeyb: Select/Start tradotti in tasti tastiera
+        if (event.type == SDL_KEYDOWN || event.type == SDL_KEYUP) {
+            if (event.key.keysym.sym == SDLK_TAB || event.key.keysym.sym == SDLK_ESCAPE) {
+                event.type = (event.type == SDL_KEYDOWN) ? SDL_CONTROLLERBUTTONDOWN : SDL_CONTROLLERBUTTONUP;
+                event.cbutton.button = SDL_CONTROLLER_BUTTON_BACK;
+            } else if (event.key.keysym.sym == SDLK_RETURN || event.key.keysym.sym == SDLK_KP_ENTER) {
+                event.type = (event.type == SDL_KEYDOWN) ? SDL_CONTROLLERBUTTONDOWN : SDL_CONTROLLERBUTTONUP;
+                event.cbutton.button = SDL_CONTROLLER_BUTTON_START;
+            } else {
+                // non è un tasto che ci interessa per BACK/START
+                if (event.type == SDL_KEYDOWN || event.type == SDL_KEYUP) continue;
+            }
+        }
+#endif
 
         if (showMenu_)               { handleMenuInput(event, running); continue; }
         if (showSpeciesListPicker_)  { handleSpeciesListPickerInput(event); continue; }

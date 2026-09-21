@@ -1,9 +1,11 @@
 #include "bank_manager.h"
 #include <algorithm>
+#include <cctype>
 #include <cstdio>
 #include <cstring>
 #include <dirent.h>
 #include <sys/stat.h>
+#include <unordered_map>
 
 bool BankManager::init(const std::string& basePath, GameType game) {
     basePath_ = basePath;
@@ -15,7 +17,11 @@ bool BankManager::init(const std::string& basePath, GameType game) {
     mkdir(banksParent.c_str(), 0755);
 
     // Game-specific subdirectory (paired games share a folder)
-    banksDir_ = banksParent + bankFolderNameOf(game) + "/";
+    std::string folderName = bankFolderNameOf(game);
+#ifdef OH_LINUX
+    for (auto& c : folderName) c = (char)tolower((unsigned char)c);
+#endif
+    banksDir_ = banksParent + folderName + "/";
 
     mkdir(banksDir_.c_str(), 0755);
 
@@ -31,16 +37,47 @@ void BankManager::refreshAll() {
     bankList_.clear();
     const std::string& basePath = basePath_;
 
-    // One representative game per unique bank folder (matches game card order)
-    constexpr GameType folderGames[] = {
-        GameType::GP, GameType::Sw, GameType::BD,
-        GameType::LA, GameType::S, GameType::ZA, GameType::FR
-    };
+    // Prima girava su una lista fissa di 7 GameType "rappresentativi" (solo
+    // le famiglie native Switch: LetsGo/SwSh/BDSP/LA/SV/ZA/FRLG) — qualsiasi
+    // gioco import da file (GBA/GB/GBC/DS/3DS: Ruby/Sapphire/Emerald,
+    // Red/Blue/Yellow, Gold/Silver/Crystal, Diamond/Pearl/Platinum/HGSS,
+    // Black/White/B2W2, X/Y/OmegaRuby/AlphaSapphire/Sun/Moon/UltraSun/
+    // UltraMoon) non era in quella lista, quindi la sua cartella banche non
+    // veniva mai guardata -- appariva come "nessuna banca" anche con banche
+    // gia' create su disco. Stesso bug su Switch, solo meno visibile li'
+    // perche' la maggior parte usa titoli nativi; su R36S la libreria e'
+    // fatta solo di giochi import, quindi sempre riproducibile. Fix: invece
+    // di elencare a mano i GameType, si legge davvero cosa c'e' sotto
+    // banks/ e si risolve ogni sottocartella al suo GameType tramite
+    // bankFolderNameOf() (case-insensitive, copre anche il lowercasing
+    // R36S) -- funziona per ogni gioco presente e futuro senza lista da
+    // mantenere.
+    std::unordered_map<std::string, GameType> folderToGame;
+    for (int i = 0; i < GAME_TYPE_COUNT; i++) {
+        GameType g = static_cast<GameType>(i);
+        std::string key = bankFolderNameOf(g);
+        for (auto& c : key) c = (char)tolower((unsigned char)c);
+        folderToGame.emplace(key, g); // il primo GameType vince per cartelle condivise (es. FR/LG)
+    }
 
     std::string banksParent = basePath + "banks/";
+    DIR* parent = opendir(banksParent.c_str());
+    if (!parent) return;
 
-    for (GameType g : folderGames) {
-        std::string dir = banksParent + bankFolderNameOf(g) + "/";
+    struct dirent* pe;
+    while ((pe = readdir(parent)) != nullptr) {
+        std::string folderName = pe->d_name;
+        if (folderName == "." || folderName == "..") continue;
+        std::string dir = banksParent + folderName + "/";
+        struct stat pst;
+        if (stat(dir.c_str(), &pst) != 0 || !S_ISDIR(pst.st_mode)) continue;
+
+        std::string key = folderName;
+        for (auto& c : key) c = (char)tolower((unsigned char)c);
+        auto it = folderToGame.find(key);
+        if (it == folderToGame.end()) continue; // cartella sconosciuta (non un bankFolderName valido)
+        GameType g = it->second;
+
         DIR* d = opendir(dir.c_str());
         if (!d) continue;
 
@@ -63,6 +100,7 @@ void BankManager::refreshAll() {
         }
         closedir(d);
     }
+    closedir(parent);
 
     // Sort by game card order then alphabetically by name
     auto gameOrder = [](GameType g) -> int {
