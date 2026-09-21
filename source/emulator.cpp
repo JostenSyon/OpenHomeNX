@@ -60,7 +60,14 @@ std::string findRomForSave(const std::string& savePath, GameType g) {
     std::vector<std::string> exts;
     if (isGen1File(g)) exts = {".gb", ".GB"};
     else if (isGen2File(g)) exts = {".gbc", ".GBC", ".gb", ".GB"};
-    else if (isImportedFile(g)) exts = {".gba", ".GBA"};
+    // isImportedFile() copre solo Ruby/Sapphire/Emerald (mai FR/LG, che
+    // hanno anche un GameType nativo con titleId reale) -- stessa
+    // combinazione isFRLG()||isImportedFile() gia' usata altrove nel
+    // codebase per trattare in modo uniforme tutti i save Gen3 su file.
+    // Senza isFRLG() qui, un FireRed/LeafGreen importato da file (l'unico
+    // modo di averli su R36S, dove non esiste alcun titolo "installato")
+    // non trovava mai la sua ROM: bottone "Avvia" sempre nascosto.
+    else if (isImportedFile(g) || isFRLG(g)) exts = {".gba", ".GBA"};
     else return ""; // generazione non emulabile (es. Gen4 DS)
     for (auto& e : exts) {
         std::string cand = base + e;
