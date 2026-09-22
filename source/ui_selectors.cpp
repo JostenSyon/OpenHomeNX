@@ -621,6 +621,7 @@ void UI::rescanImportedGames() {
     availableGames_.erase(
         std::remove_if(availableGames_.begin(), availableGames_.end(),
                        [](GameType g) { return isImportedFile(g) || isGen1File(g) || isGen2File(g) ||
+                                               isFRLG(g) || // FRLG da import: senza questo sopravvive e duplica a ogni rescan
                                                isGen45File(g) || isGen6XY(g) || isGen6ORAS(g) || isGen7SM(g) || isGen7USUM(g); }),
         availableGames_.end());
 
