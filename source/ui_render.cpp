@@ -2566,20 +2566,23 @@ void UI::drawAboutPopup() {
     y += 14;
 #endif
 
-    // Basato su / Based on - ordered: pkHouse grafica/UI, OpenHome cross-gen, Sphaira forwarder, PKHeX, libnx, devkitPro
+    // Basato su / Based on - ordered by peso reale: OpenHome (core Rust vivo,
+    // compilato dentro l'app) prima di pkHouse (ormai solo credito storico,
+    // l'idea originale della griglia box/banche - vedi about_based_pkhouse).
+    // Poi Sphaira forwarder, PKHeX, libnx, devkitPro.
     drawTextCentered(i18n::get(StrKey::AboutBasedOn), cx, y, T().selected, font_);
 #ifdef OH_LINUX
     y += 19;
 #else
     y += 20;
 #endif
-    drawTextCentered(i18n::get(StrKey::AboutBasedPKHouse), cx, y, T().textDim, fontSmall_);
+    drawTextCentered(i18n::get(StrKey::AboutBasedOpenHome), cx, y, T().textDim, fontSmall_);
 #ifdef OH_LINUX
     y += 16;
 #else
     y += 18;
 #endif
-    drawTextCentered(i18n::get(StrKey::AboutBasedOpenHome), cx, y, T().textDim, fontSmall_);
+    drawTextCentered(i18n::get(StrKey::AboutBasedPKHouse), cx, y, T().textDim, fontSmall_);
 #ifdef OH_LINUX
     y += 16;
 #else
