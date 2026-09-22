@@ -12,6 +12,7 @@
 #include <sstream>
 #include <vector>
 #include "json.hpp"
+#include <set>
 #include <sys/stat.h>
 #include <sys/types.h>
 
@@ -379,6 +380,88 @@ std::string urlEncodePath(const std::string& s) {
     return out;
 }
 
+// ---- download (ScreenScraper.fr: box-2D/box-3D veri, non i nomi No-Intro
+// di libretro-thumbnails) ----
+// devid/devpassword: credenziali applicazione registrate da JostenSyon sul
+// forum ScreenScraper (richiesta developer, board "ScreenScraper WebAPI").
+// Pubbliche nel binario per design -- identificano il software, non un
+// utente -- stesso schema di SCREENSCRAPER_DEV_LOGIN che usano Skyscraper/
+// ES-DE/dArkOS (la build di EmulationStation su cui gira ArkOS).
+constexpr const char* kSsDevId = "JostenSyon";
+constexpr const char* kSsDevPassword = "mpSGJYDntsO";
+constexpr const char* kSsSoftName = "OpenHomeNX";
+
+// systemeid ScreenScraper per i sistemi coperti (screenscraper.fr, elenco
+// piattaforme). "" se non mappato -> scrape() salta SS e usa solo libretro.
+std::string ssSystemId(const std::string& sysdirLower) {
+    if (sysdirLower == "gba") return "12";
+    if (sysdirLower == "gbc") return "10";
+    if (sysdirLower == "gb")  return "9";
+    if (sysdirLower == "nds") return "15";
+    return "";
+}
+
+// Sceglie il media migliore per tipo (box-2D/box-3D) fra le regioni
+// disponibili: priorita' a wor/eu/us (arte "pulita", meno testo regionale
+// sulla confezione), poi le altre lingue, prima di arrendersi.
+std::string ssPickMediaUrl(const nlohmann::json& medias, const std::string& wantType) {
+    static const char* kPrio[] = {"wor", "eu", "us", "it", "fr", "de", "jp", "ss", "sp", nullptr};
+    std::string best;
+    int bestRank = 999;
+    for (const auto& m : medias) {
+        if (m.value("type", std::string()) != wantType) continue;
+        std::string url = m.value("url", std::string());
+        if (url.empty()) continue;
+        std::string region = m.value("region", std::string());
+        int rank = 100;
+        for (int i = 0; kPrio[i]; i++)
+            if (region == kPrio[i]) { rank = i; break; }
+        if (rank < bestRank) { bestRank = rank; best = url; }
+    }
+    return best;
+}
+
+// Interroga jeuInfos.php per nome+dimensione ROM (match "exact file name
+// based" di ScreenScraper, nessun checksum richiesto), scarica il media
+// wantType nella regione migliore disponibile. Il .json intermedio va nella
+// stessa cache/covers/ e viene rimosso subito dopo, come il listing libretro.
+bool screenScraperFetch(const std::string& basePath, const std::string& rom,
+                        const std::string& sysId, const std::string& wantType,
+                        const std::string& dst, std::string& err) {
+    struct stat st;
+    long long romSize = (stat(rom.c_str(), &st) == 0) ? (long long)st.st_size : 0;
+    std::string url = "https://api.screenscraper.fr/api2/jeuInfos.php"
+                      "?devid=" + urlEncodePath(kSsDevId) +
+                      "&devpassword=" + urlEncodePath(kSsDevPassword) +
+                      "&softname=" + urlEncodePath(kSsSoftName) +
+                      "&output=json&systemeid=" + sysId +
+                      "&romtype=rom&romnom=" + urlEncodePath(fileName(rom));
+    if (romSize > 0) url += "&romtaille=" + std::to_string(romSize);
+
+    std::string jsonPath = basePath + "cache/covers/.ssinfo.json";
+    if (!updateNetDownload(url, "", jsonPath, "", err)) return false;
+
+    std::ifstream jf(jsonPath, std::ios::binary);
+    std::string js((std::istreambuf_iterator<char>(jf)), std::istreambuf_iterator<char>());
+    std::remove(jsonPath.c_str());
+    auto j = nlohmann::json::parse(js, nullptr, false);
+    if (j.is_discarded() || !j.contains("response") || !j["response"].contains("jeu")) {
+        err = "jeu non trovato su ScreenScraper";
+        return false;
+    }
+    const auto& jeu = j["response"]["jeu"];
+    if (!jeu.contains("medias") || !jeu["medias"].is_array()) {
+        err = "nessun media disponibile";
+        return false;
+    }
+    std::string mediaUrl = ssPickMediaUrl(jeu["medias"], wantType);
+    if (mediaUrl.empty()) {
+        err = wantType + " non disponibile per questo gioco";
+        return false;
+    }
+    return updateNetDownload(mediaUrl, "", dst, "", err);
+}
+
 } // namespace
 
 // Cache separata per stile (<base>.locale/.2d/.3d): cambiare stile
@@ -415,13 +498,28 @@ ScrapeResult scrape(const std::string& basePath,
                     const std::vector<ImportedGame>& games) {
     ScrapeResult r;
     Style style = curStyle();
+    // Raccogli tutte le ROM da considerare: quelle con save + quelle orfane
+    // quando l'utente vuole vederle (toggle). Evita duplicati per ROM.
+    std::vector<std::string> roms;
+    std::set<std::string> seenRom;
     for (const auto& g : games) {
         std::string rom = Emulator::findRomForSave(g.filePath, g.type);
-        if (rom.empty()) {
-            DebugLog::line("boxart: skip %s (nessuna ROM accanto al save)",
-                           g.filePath.c_str());
-            continue;
+        if (!rom.empty() && seenRom.insert(rom).second) roms.push_back(rom);
+    }
+    if (Settings::showRomsWithoutSave()) {
+        std::vector<std::string> romDirs;
+        // Usa gli stessi importPaths della UI (sono globali via scan, ma qui
+        // li ricostruiamo dal basePath per non dipendere dallo stato UI).
+        // Per semplicità, scansiona i path standard di R36S/Switch.
+        // Su Switch: sdmc:/roms è vuoto, ma non fa male provarci.
+        std::vector<std::string> dirs = {"/roms/gba", "/roms/gbc", "/roms/gb", "/roms/nds", "sdmc:/roms/gba", "sdmc:/roms/gbc", "sdmc:/roms/gb", "sdmc:/roms/nds"};
+        // Filtra solo quelli abilitati se importPaths è disponibile? Per ora
+        // scansiona tutti i candidati, tanto i non esistenti vengono ignorati.
+        for (const auto& rom : RomInfo::scanRoms(dirs)) {
+            if (seenRom.insert(rom).second) roms.push_back(rom);
         }
+    }
+    for (const auto& rom : roms) {
         r.total++;
         std::string base = stemOf(rom);
         std::string hit = findCachedCover(basePath, rom);
@@ -452,7 +550,8 @@ ScrapeResult scrape(const std::string& basePath,
         }
         std::string sys = toLowerStr(dirName(parentDir(rom)));
         std::string repo = libretroRepo(sys);
-        if (repo.empty()) {
+        std::string ssSysId = ssSystemId(sys);
+        if (repo.empty() && ssSysId.empty()) {
             DebugLog::line("boxart: %s miss (sistema '%s' non mappato)",
                            base.c_str(), sys.c_str());
             continue;
@@ -461,6 +560,23 @@ ScrapeResult scrape(const std::string& basePath,
         std::string err;
         bool ok = false;
         if (ensureDir(parentDir(dst))) {
+            // 0. ScreenScraper: box-2D/box-3D veri (non i nomi No-Intro di
+            //    libretro-thumbnails sotto). Provato per primo se il sistema
+            //    e' coperto; libretro-thumbnails resta fallback se il gioco
+            //    non e' nel loro database o l'API non risponde.
+            if (!ssSysId.empty()) {
+                std::string wantType = (style == Style::Box3d) ? "box-3D" : "box-2D";
+                ok = screenScraperFetch(basePath, rom, ssSysId, wantType, dst, err);
+                if (ok)
+                    DebugLog::line("boxart: %s ScreenScraper %s ok", base.c_str(), wantType.c_str());
+                else
+                    DebugLog::line("boxart: %s ScreenScraper miss (%s)%s", base.c_str(), err.c_str(),
+                                   repo.empty() ? "" : ", provo libretro-thumbnails");
+            }
+            // 1+2. libretro-thumbnails: solo se ScreenScraper non ha dato
+            // nulla sopra (miss/rete off/sistema non coperto da SS) e il
+            // sistema e' comunque mappato qui (repo non vuoto).
+            if (!ok && !repo.empty()) {
             // 1. Nomi esatti (veloce): convenzione RetroArch, prima senza
             //    poi con estensione ROM.
             std::string url = "https://raw.githubusercontent.com/libretro-thumbnails/"
@@ -484,13 +600,20 @@ ScrapeResult scrape(const std::string& basePath,
                     std::string js((std::istreambuf_iterator<char>(lf)),
                                    std::istreambuf_iterator<char>());
                     auto arr = nlohmann::json::parse(js, nullptr, false);
-                    // Query extra: nome canonico da header ROM (lingua reale).
-                    // Es. ROM "crystal" (ITA) -> "Pokemon - Versione Cristallo (Italy)".
-                    std::string canon;
+                    // Query extra: nome canonico da header ROM (lingua reale)
+                    // + quello inglese per lo stesso gioco (per match cross-lingua:
+                    // ROM italiana "Smeraldo" vs repo file inglese "Emerald").
+                    std::string canon, canonEn;
                     {
                         RomInfo::Info ri;
-                        if (RomInfo::detect(rom, ri))
+                        if (RomInfo::detect(rom, ri)) {
                             canon = RomInfo::canonicalName(ri);
+                            // Genera anche il canon inglese per lo stesso gioco
+                            RomInfo::Info riEn = ri;
+                            riEn.lang = "en";
+                            std::string ce = RomInfo::canonicalName(riEn);
+                            if (!ce.empty() && ce != canon) canonEn = ce;
+                        }
                     }
                     if (!arr.is_discarded() && arr.is_array()) {
                         int best = 0;
@@ -504,6 +627,10 @@ ScrapeResult scrape(const std::string& basePath,
                             if (!canon.empty()) {
                                 int s2 = fuzzyScore(canon, stem);
                                 if (s2 > s) s = s2;
+                            }
+                            if (!canonEn.empty()) {
+                                int s3 = fuzzyScore(canonEn, stem);
+                                if (s3 > s) s = s3;
                             }
                             if (s <= best) continue;
                             // Tiebreak: meno parole = nome piu' pulito.
@@ -527,6 +654,7 @@ ScrapeResult scrape(const std::string& basePath,
                                    base.c_str(), apiErr.c_str());
                 }
             }
+            } // !ok && !repo.empty()
             // 3. Mai cache spazzatura: verifica firma PNG.
             if (ok) {
                 std::ifstream vf(dst, std::ios::binary);
