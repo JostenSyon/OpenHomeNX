@@ -1048,7 +1048,7 @@ void UI::drawDetailPopup(const Pokemon& pkm) {
     constexpr int POP_W = 620;
     const int POP_H = 440 + (pkm.hasHandlingTrainer() ? 28 : 0);
     constexpr int LARGE_SPRITE = 96;
-    constexpr int MOVE_COL_W = 190;
+    constexpr int MOVE_COL_W = 170;
 #else
     constexpr int POP_W = 900;
     const int POP_H = 550 + (pkm.hasHandlingTrainer() ? 28 : 0);
@@ -1110,6 +1110,12 @@ void UI::drawDetailPopup(const Pokemon& pkm) {
     // --- Left column info (next to sprite) ---
     int infoX = sprX + LARGE_SPRITE + 30;
     int infoY = sprY + 4;
+#ifdef OH_LINUX
+    // 4:3: righe info compatte (c'e' spazio in verticale).
+    constexpr int INFO_DY = 28;
+#else
+    constexpr int INFO_DY = 34;
+#endif
 
     // Ball icon + Species name + level + gender
     constexpr int BALL_SZ = 24;
@@ -1143,18 +1149,28 @@ void UI::drawDetailPopup(const Pokemon& pkm) {
     else if (g == 1)
         drawText("\xe2\x99\x80", afterLvl, infoY, T().genderFemale, font_);
 
-    infoY += 34;
+    infoY += INFO_DY;
 
     // National dex ID
     std::string idStr = i18n::get(StrKey::NationalDexPrefix) + std::to_string(pkm.species());
     drawText(idStr, infoX, infoY, T().textDim, font_);
-    infoY += 34;
+    infoY += INFO_DY;
 
     // OT + TID/SID
+#ifdef OH_LINUX
+    // 4:3: OT e TID/SID su due righe (in una sola invadono il grafico IVs).
+    drawText(i18n::get(StrKey::OTPrefix) + pkm.otName(), infoX, infoY, T().textDim, font_);
+    infoY += INFO_DY;
+    drawText(i18n::get(StrKey::TIDPrefix) + std::to_string(pkm.displayTid())
+             + " | " + i18n::get(StrKey::SIDPrefix) + std::to_string(pkm.displaySid()),
+             infoX, infoY, T().textDim, font_);
+    infoY += INFO_DY;
+#else
     std::string otStr = i18n::get(StrKey::OTPrefix) + pkm.otName() + " | " + i18n::get(StrKey::TIDPrefix) + std::to_string(pkm.displayTid())
                         + " | " + i18n::get(StrKey::SIDPrefix) + std::to_string(pkm.displaySid());
     drawText(otStr, infoX, infoY, T().textDim, font_);
-    infoY += 34;
+    infoY += INFO_DY;
+#endif
 
     // HT (handling trainer) — only for formats that store one
     if (pkm.hasHandlingTrainer()) {
@@ -1162,18 +1178,18 @@ void UI::drawDetailPopup(const Pokemon& pkm) {
         std::string htStr = i18n::get(StrKey::HTPrefix) +
                             (ht.empty() ? i18n::get(StrKey::NoneItem) : ht);
         drawText(htStr, infoX, infoY, T().textDim, font_);
-        infoY += 34;
+        infoY += INFO_DY;
     }
 
     // Nature
     std::string natureStr = i18n::get(StrKey::NaturePrefix) + NatureName::get(pkm.nature());
     drawText(natureStr, infoX, infoY, T().textDim, font_);
-    infoY += 34;
+    infoY += INFO_DY;
 
     // Ability
     std::string abilityStr = i18n::get(StrKey::AbilityPrefix) + AbilityName::get(pkm.ability());
     drawText(abilityStr, infoX, infoY, T().textDim, font_);
-    infoY += 34;
+    infoY += INFO_DY;
 
     // Held item — Gen2/Gen3 raw → modern per nome corretto (Quick Claw 183→217, non Belue Berry)
     uint16_t item = pkm.heldItem();
@@ -1269,11 +1285,14 @@ void UI::drawDetailPopup(const Pokemon& pkm) {
 
     // --- Right column: IV and EV radar charts ---
     // Order: HP, Atk, Def, Spe, SpD, SpA (clockwise from top)
-    int chartCX = popX + POP_W * 3 / 4;
+    // 4:3: colonna destra (mosse/ribbon a sinistra finiscono a ~380).
 #ifdef OH_LINUX
-    // 4:3: chart compatti affiancati alle info (moves/ribbon stanno a sinistra).
-    constexpr int CHART_RADIUS = 40;
+    int chartCX = popX + POP_W - 115;
+    // Chart compatti distribuiti in verticale: titoli vicini ai grafici,
+    // label PS/Velocita' senza overlap, tutto sopra il footer hint.
+    constexpr int CHART_RADIUS = 42;
 #else
+    int chartCX = popX + POP_W * 3 / 4;
     constexpr int CHART_RADIUS = 65;
 #endif
 
@@ -1281,7 +1300,7 @@ void UI::drawDetailPopup(const Pokemon& pkm) {
     drawTextCentered(i18n::get(StrKey::IVs), chartCX, popY + 18, T().text, font_);
     int ivsRadar[] = {pkm.ivHp(), pkm.ivAtk(), pkm.ivDef(), pkm.ivSpe(), pkm.ivSpD(), pkm.ivSpA()};
 #ifdef OH_LINUX
-    drawRadarChart(chartCX, popY + 100, CHART_RADIUS, ivsRadar, 31);
+    drawRadarChart(chartCX, popY + 140, CHART_RADIUS, ivsRadar, 31);
 #else
     drawRadarChart(chartCX, popY + 150, CHART_RADIUS, ivsRadar, 31);
 #endif
@@ -1289,8 +1308,8 @@ void UI::drawDetailPopup(const Pokemon& pkm) {
     // EVs radar chart
     int evsRadar[] = {pkm.evHp(), pkm.evAtk(), pkm.evDef(), pkm.evSpe(), pkm.evSpD(), pkm.evSpA()};
 #ifdef OH_LINUX
-    drawTextCentered(i18n::get(StrKey::EVs), chartCX, popY + 168, T().text, font_);
-    drawRadarChart(chartCX, popY + 228, CHART_RADIUS, evsRadar, 252);
+    drawTextCentered(i18n::get(StrKey::EVs), chartCX, popY + 228, T().text, font_);
+    drawRadarChart(chartCX, popY + 340, CHART_RADIUS, evsRadar, 252);
 #else
     drawTextCentered(i18n::get(StrKey::EVs), chartCX, popY + 283, T().text, font_);
     drawRadarChart(chartCX, popY + 415, CHART_RADIUS, evsRadar, 252);
