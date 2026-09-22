@@ -715,6 +715,11 @@ void UI::loadGameIcons() {
             std::string cover = Boxart::findCachedCover(basePath_, romPath);
             if (!cover.empty()) {
                 SDL_Surface* csurf = IMG_Load(cover.c_str());
+                // Mancava qui (presente nel ramo NS sotto): senza questo le
+                // cover da import/scraper restano sull'accent flat generico
+                // invece del colore vero della copertina (sfondo "vetro" +
+                // pallino in Galleria mai colorati in base alla boxart).
+                if (csurf) gameAccentCache_[game] = computeAccentColor(csurf);
                 if (csurf) {
                     if (SDL_Surface* rr = roundCornersSurface(csurf, std::min(csurf->w, csurf->h) / 12)) {
                         SDL_FreeSurface(csurf);
