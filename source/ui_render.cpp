@@ -2420,10 +2420,17 @@ void UI::drawLearnsetPopup() {
 }
 
 void UI::drawAboutPopup() {
-    drawRect(0, 0, SCREEN_W, SCREEN_H, T().overlayDark);
+    drawRect(0, 0, SCREEN_W, SCREEN_H, T().overlay);
 
+#ifdef OH_LINUX
+    // R36S 640x480: popup compatto, stessa struttura. Senza sezione Comandi
+    // (layout tasti Switch, non applicabile); credits incl. pkHouse mantenuti.
+    constexpr int POP_W = 600;
+    constexpr int POP_H = 460;
+#else
     constexpr int POP_W = 700;
     constexpr int POP_H = 600;
+#endif
     int px = (SCREEN_W - POP_W) / 2;
     int py = (SCREEN_H - POP_H) / 2;
 
@@ -2431,11 +2438,19 @@ void UI::drawAboutPopup() {
     drawRectOutline(px, py, POP_W, POP_H, T().popupBorder, 2);
 
     int cx = px + POP_W / 2;
+#ifdef OH_LINUX
+    int y = py + 22;
+#else
     int y = py + 25;
+#endif
 
     // Title
     drawTextCentered(i18n::get(StrKey::AboutTitle), cx, y, T().shiny, fontLarge_);
+#ifdef OH_LINUX
+    y += 32;
+#else
     y += 38;
+#endif
 
     // Version / author (GitHub URLs moved to Basato su section)
     drawTextCentered("v" APP_VERSION " - Developed by " APP_AUTHOR, cx, y, T().textDim, fontSmall_);
@@ -2444,7 +2459,11 @@ void UI::drawAboutPopup() {
     // Divider
     SDL_SetRenderDrawColor(renderer_, T().popupBorder.r, T().popupBorder.g, T().popupBorder.b, T().popupBorder.a);
     SDL_RenderDrawLine(renderer_, px + 30, y, px + POP_W - 30, y);
+#ifdef OH_LINUX
+    y += 12;
+#else
     y += 18;
+#endif
 
     // Description - wrapped to stay inside popup ( AboutDesc2 was overflowing )
     constexpr int MAX_W = POP_W - 60;
@@ -2499,42 +2518,101 @@ void UI::drawAboutPopup() {
     y += 6;
     // AboutDesc2 uses smaller font and wrapping to avoid going off-screen (it.json is very long)
     drawWrappedCentered(i18n::get(StrKey::AboutDesc2), fontAbout_, T().text, MAX_W, 26, y);
+#ifdef OH_LINUX
+    y += 10;
+#else
     y += 16;
+#endif
 
     drawTextCentered(i18n::get(StrKey::SupportedGames), cx, y, T().selected, font_);
     y += 22;
     drawTextCentered(i18n::get(StrKey::SupportedLGPE), cx, y, T().textDim, fontSmall_);
+#ifdef OH_LINUX
+    y += 16;
+#else
     y += 18;
+#endif
     drawTextCentered(i18n::get(StrKey::SupportedSwSh), cx, y, T().textDim, fontSmall_);
+#ifdef OH_LINUX
+    y += 16;
+#else
     y += 18;
+#endif
     drawTextCentered(i18n::get(StrKey::SupportedSVZA), cx, y, T().textDim, fontSmall_);
+#ifdef OH_LINUX
+    y += 16;
+#else
     y += 18;
+#endif
     drawTextCentered(i18n::get(StrKey::SupportedFRLG), cx, y, T().textDim, fontSmall_);
+#ifdef OH_LINUX
+    y += 16;
+#else
     y += 18;
+#endif
     drawTextCentered(i18n::get(StrKey::SupportedGB), cx, y, T().textDim, fontSmall_);
+#ifdef OH_LINUX
+    y += 12;
+#else
     y += 14;
+#endif
 
     // Divider
     SDL_SetRenderDrawColor(renderer_, T().popupBorder.r, T().popupBorder.g, T().popupBorder.b, T().popupBorder.a);
     SDL_RenderDrawLine(renderer_, px + 30, y, px + POP_W - 30, y);
+#ifdef OH_LINUX
+    y += 12;
+#else
     y += 14;
+#endif
 
     // Basato su / Based on - ordered: pkHouse grafica/UI, OpenHome cross-gen, Sphaira forwarder, PKHeX, libnx, devkitPro
     drawTextCentered(i18n::get(StrKey::AboutBasedOn), cx, y, T().selected, font_);
+#ifdef OH_LINUX
+    y += 19;
+#else
     y += 20;
+#endif
     drawTextCentered(i18n::get(StrKey::AboutBasedPKHouse), cx, y, T().textDim, fontSmall_);
+#ifdef OH_LINUX
+    y += 16;
+#else
     y += 18;
+#endif
     drawTextCentered(i18n::get(StrKey::AboutBasedOpenHome), cx, y, T().textDim, fontSmall_);
+#ifdef OH_LINUX
+    y += 16;
+#else
     y += 18;
+#endif
     drawTextCentered(i18n::get(StrKey::AboutBasedSphaira), cx, y, T().textDim, fontSmall_);
+#ifdef OH_LINUX
+    y += 16;
+#else
     y += 18;
+#endif
     drawTextCentered(i18n::get(StrKey::AboutBasedPKHeX), cx, y, T().textDim, fontSmall_);
+#ifdef OH_LINUX
+    y += 16;
+#else
     y += 18;
+#endif
     drawTextCentered(i18n::get(StrKey::AboutBasedLibnx), cx, y, T().textDim, fontSmall_);
+#ifdef OH_LINUX
+    y += 16;
+#else
     y += 18;
+#endif
     drawTextCentered(i18n::get(StrKey::AboutBasedDevkitPro), cx, y, T().textDim, fontSmall_);
+#ifdef OH_LINUX
+    y += 16;
+#else
     y += 18;
+#endif
 
+#ifdef OH_LINUX
+    // R36S: niente sezione Comandi (layout tasti Switch, non applicabile).
+#else
     // Divider before controls
     SDL_SetRenderDrawColor(renderer_, T().popupBorder.r, T().popupBorder.g, T().popupBorder.b, T().popupBorder.a);
     SDL_RenderDrawLine(renderer_, px + 30, y, px + POP_W - 30, y);
@@ -2547,6 +2625,7 @@ void UI::drawAboutPopup() {
     y += 18;
     drawText(i18n::get(StrKey::ControlsLine2), px + 50, y, T().textDim, fontSmall_);
     y += 10;
+#endif
 
     // Footer (anchored to bottom of popup, no longer overlapping controls)
     drawTextCentered(i18n::get(StrKey::PressMinusBClose), cx, py + POP_H - 18, T().textDim, fontSmall_);

@@ -38,6 +38,12 @@ $SSH "$USER@$IP" 'pkill -9 -x OpenHomeNX 2>/dev/null; echo ok' 2>&1 | tail -1
 # binario in entrambe le posizioni (Tools usa /home/ark, Ports usa /roms/ports)
 $SCP "$BIN" "$USER@$IP:/home/ark/OpenHomeNX/OpenHomeNX" 2>&1 | tail -1
 $SCP "$BIN" "$USER@$IP:/roms/ports/OpenHomeNX/OpenHomeNX" 2>&1 | tail -1
+# romfs: e' una cartella REALE sul device (romfs: e' solo un symlink che ci
+# punta, vedi Makefile), mai sincronizzata da scp del solo binario -> senza
+# questo passo stringhe/i18n/sprite restano vecchie anche a binario aggiornato
+# (bug reale visto dal vivo: romfs fermo a giorni prima nonostante piu' deploy).
+echo "==> sync romfs (rsync)"
+rsync -az --delete -e "$SSH" "$PROJ/romfs/" "$USER@$IP:/home/ark/OpenHomeNX/romfs/"
 # script launcher
 if [ -f "$PROJ/tools/OpenHomeNX.sh" ]; then
   $SCP "$PROJ/tools/OpenHomeNX.sh" "$USER@$IP:/roms/tools/OpenHomeNX.sh" 2>&1 | tail -1

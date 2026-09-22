@@ -10,6 +10,27 @@ TOPDIR  := $(CURDIR)
 PROJ    := $(abspath $(TOPDIR)/../..)
 BUILD   := $(TOPDIR)/build
 
+# include/app_version.h e' condiviso con la build Switch (debug_log.cpp,
+# ui_render.cpp, ui_selectors.cpp, main.cpp lo includono anche qui) ma il
+# Makefile Switch non e' invocabile da qui (fallisce subito se DEVKITPRO non
+# e' settato, es. dentro il container). APP_VERSION/APP_AUTHOR quindi si
+# leggono dal Makefile Switch (fonte unica) invece di duplicarli a mano.
+APP_VERSION := $(shell grep -m1 '^APP_VERSION' $(PROJ)/Makefile | sed -E 's/^APP_VERSION[[:space:]]*:=[[:space:]]*//')
+APP_AUTHOR  := $(shell grep -m1 '^APP_AUTHOR'  $(PROJ)/Makefile | sed -E 's/^APP_AUTHOR[[:space:]]*:=[[:space:]]*//')
+VERSION_HDR := $(PROJ)/include/app_version.h
+
+# genversion e' il primo target con recipe nel file -> senza questo
+# diventerebbe il default goal implicito (bare `make` si fermerebbe li',
+# niente binario, nessun errore visibile). Stesso footgun gia' documentato
+# nel Makefile Switch principale.
+.DEFAULT_GOAL := all
+
+genversion:
+	@printf '#pragma once\n#define APP_VERSION "%s"\n#define APP_AUTHOR "%s"\n#define BUILD_SHA "%s%s"\n' \
+	  '$(APP_VERSION)' '$(APP_AUTHOR)' '$(shell git -C $(PROJ) rev-parse --short=7 HEAD 2>/dev/null || echo nogit)' '$(shell [ -z "$$(git -C $(PROJ) status --porcelain 2>/dev/null)" ] || echo -dirty)' > $(VERSION_HDR).tmp
+	@if cmp -s $(VERSION_HDR).tmp $(VERSION_HDR) 2>/dev/null; then rm -f $(VERSION_HDR).tmp; \
+	 else mv -f $(VERSION_HDR).tmp $(VERSION_HDR); echo "genversion -> v$(APP_VERSION)"; fi
+
 # ---- host build (macOS di prova) ----
 TARGET_ARCH := aarch64
 TARGET_OS   := apple-darwin
@@ -47,7 +68,7 @@ STUB_SRC := stub_system stub_forwarder stub_account
 OFILES := $(addprefix $(BUILD)/,$(addsuffix .o,$(SRC_CORE) $(STUB_SRC) main))
 
 # ---- regole ----
-.PHONY: all rust clean run r36s docker-image
+.PHONY: all rust clean run r36s docker-image genversion
 
 all: $(TOPDIR)/OpenHomeNX
 
@@ -58,10 +79,14 @@ $(TOPDIR)/OpenHomeNX: $(OFILES) $(RUST_LIB)
 		$(RUST_LIB) \
 		$(shell $(PKG) --libs sdl2 $(SDL2IMG) $(SDL2TTF)) -lpthread -ldl -lcurl -Wl,-Bstatic -lmbedcrypto -Wl,-Bdynamic
 
-$(BUILD)/%.o: $(PROJ)/source/%.cpp | $(BUILD)
+# genversion come order-only: app_version.h deve esistere PRIMA di compilare
+# (main.cpp/ui_render.cpp/ui_selectors.cpp/debug_log.cpp lo includono), ma e'
+# phony/sempre-rigenerato quindi non deve forzare ricompilazioni inutili via
+# normal prerequisite (-MMD/-MP sopra gestisce gia' gli header reali).
+$(BUILD)/%.o: $(PROJ)/source/%.cpp | $(BUILD) genversion
 	$(CXX) $(CXXFLAGS) -c -o $@ $<
 
-$(BUILD)/stub_%.o: $(TOPDIR)/stub/stub_%.cpp | $(BUILD)
+$(BUILD)/stub_%.o: $(TOPDIR)/stub/stub_%.cpp | $(BUILD) genversion
 	$(CXX) $(CXXFLAGS) -c -o $@ $<
 
 $(BUILD):
@@ -105,7 +130,8 @@ r36s: docker-image
 		-w /src/OpenHomeNX \
 		-e CARGO_TARGET_DIR=/src/r36s/rust-target \
 		-e PKG_CONFIG_PATH=/usr/lib/aarch64-linux-gnu/pkgconfig \
-		$(IMG) bash -lc "cd /src/r36s && \
+		$(IMG) bash -lc "git config --global --add safe.directory /src/OpenHomeNX && \
+			cd /src/r36s && \
 			make PROJ=/src/OpenHomeNX CXX=g++ TARGET_OS=unknown-linux-gnu \
 				BUILD=/src/r36s/build-r36s \
 				SDL2IMG=SDL2_image SDL2TTF=SDL2_ttf \
