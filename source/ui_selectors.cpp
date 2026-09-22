@@ -6561,12 +6561,11 @@ void UI::settingsRowActivate(int cat, int row, int dir, bool& running) {
                 showMessageAndWait(rtitle,
                     i18n::fmt(StrKey::ScraperRenameDone, "0", "0"));
             } else {
+                // Niente piu' cap righe: il dialog scrolla (D-pad/analogico).
                 std::string body;
-                for (size_t i = 0; i < plans.size() && i < 12; i++)
+                for (size_t i = 0; i < plans.size(); i++)
                     body += plans[i].oldBase + plans[i].ext + " -> " +
                             plans[i].newBase + plans[i].ext + "\n";
-                if (plans.size() > 12)
-                    body += "... (+" + std::to_string(plans.size() - 12) + ")\n";
                 if (showConfirmDialog(rtitle, body)) {
                     int ok = 0;
                     for (const auto& p : plans) {

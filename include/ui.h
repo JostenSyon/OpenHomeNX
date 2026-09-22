@@ -105,6 +105,14 @@ public:
     void showSplash(int holdMs = 2500, bool fadeOut = true);
     int  drawBodyText(const std::string& body, int startY, const std::string& footer);
     std::vector<std::string> wrapText(const std::string& line, TTF_Font* f, int maxW);
+    // Righe wrappate dell'intero body (una per riga video) per i dialog
+    // scrollabili. -1/0/+1 da D-pad su/giu o stick sinistro Y (con repeat),
+    // 0 se nessun controller o nessuna direzione premuta.
+    std::vector<std::string> wrapBodyLines(const std::string& body);
+    int  dialogScrollDir(uint32_t now, uint32_t& lastTick, int& lastDir);
+    int  drawBodyWindow(const std::vector<std::string>& lines, int first,
+                        int topY, int bottomY, int lineH,
+                        SDL_Color col, SDL_Color footCol);
     void showMessageAndWait(const std::string& title, const std::string& body);
     bool showConfirmDialog(const std::string& title, const std::string& body);
     // Scelta tipo banca alla creazione: 0=cross-gen (A), 1=specifica (Y),

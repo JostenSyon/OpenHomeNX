@@ -462,10 +462,76 @@ std::vector<std::string> UI::wrapText(const std::string& line, TTF_Font* f, int 
     return out;
 }
 
+std::vector<std::string> UI::wrapBodyLines(const std::string& body) {
+    std::vector<std::string> out;
+    const int maxW = SCREEN_W - 80;
+    std::string remaining = body;
+    while (!remaining.empty()) {
+        size_t nl = remaining.find('\n');
+        std::string line = (nl != std::string::npos) ? remaining.substr(0, nl) : remaining;
+        for (auto& wl : wrapText(line, font_, maxW))
+            out.push_back(wl);
+        if (nl == std::string::npos) break;
+        remaining = remaining.substr(nl + 1);
+    }
+    if (out.empty()) out.push_back("");
+    return out;
+}
+
+int UI::dialogScrollDir(uint32_t now, uint32_t& lastTick, int& lastDir) {
+    int dir = 0;
+    if (pad_) {
+        if (SDL_GameControllerGetButton(pad_, SDL_CONTROLLER_BUTTON_DPAD_UP))
+            dir = -1;
+        else if (SDL_GameControllerGetButton(pad_, SDL_CONTROLLER_BUTTON_DPAD_DOWN))
+            dir = 1;
+        else {
+            int16_t ly = SDL_GameControllerGetAxis(pad_, SDL_CONTROLLER_AXIS_LEFTY);
+            if (ly > 8000) dir = 1;
+            else if (ly < -8000) dir = -1;
+        }
+    }
+    if (dir == 0) { lastDir = 0; return 0; }
+    if (dir != lastDir) { lastDir = dir; lastTick = now; return dir; } // scatto immediato
+    if (now - lastTick >= 200) { lastTick = now; return dir; } // repeat
+    return 0;
+}
+
+// Disegna la finestra scrollabile di righe [first, ...] fra topY e bottomY.
+// Ritorna la y del footer (dinamica se tutto entra, fissa in basso se scroll).
+int UI::drawBodyWindow(const std::vector<std::string>& lines, int first,
+                       int topY, int bottomY, int lineH,
+                       SDL_Color col, SDL_Color footCol) {
+    int visible = (bottomY - topY) / lineH;
+    if (visible < 1) visible = 1;
+    int maxFirst = (int)lines.size() - visible;
+    if (maxFirst < 0) maxFirst = 0;
+    if (first < 0) first = 0;
+    if (first > maxFirst) first = maxFirst;
+    for (int i = 0; i < visible && (size_t)(first + i) < lines.size(); i++)
+        drawTextCentered(lines[(size_t)(first + i)], SCREEN_W / 2,
+                         topY + i * lineH, col, font_);
+    if (maxFirst > 0) {
+        if (first > 0)
+            drawTextCentered("^", SCREEN_W / 2, topY - 20, footCol, font_);
+        if (first < maxFirst)
+            drawTextCentered("v", SCREEN_W / 2, bottomY + 4, footCol, font_);
+        return SCREEN_H - 40; // footer fisso in basso durante lo scroll
+    }
+    return topY + (int)lines.size() * lineH + 20; // tutto entra: come prima
+}
+
 void UI::showMessageAndWait(const std::string& title, const std::string& body) {
     if (!renderer_) return;
     markDirty(); // Force redraw after modal returns
 
+    const int lineH = 24;
+    const int topY = SCREEN_H / 2 + 5;
+    const int bottomY = SCREEN_H - 56;
+    std::vector<std::string> lines = wrapBodyLines(body);
+    int first = 0, maxFirst = 0;
+    uint32_t lastTick = 0;
+    int lastDir = 0;
     bool waiting = true;
     while (waiting) {
         SDL_Event event;
@@ -479,11 +545,21 @@ void UI::showMessageAndWait(const std::string& title, const std::string& body) {
             }
         }
 
+        int maxFirst = (int)lines.size() - (bottomY - topY) / lineH;
+        if (maxFirst < 0) maxFirst = 0;
+        first += dialogScrollDir(SDL_GetTicks(), lastTick, lastDir);
+        if (first < 0) first = 0;
+        if (first > maxFirst) first = maxFirst;
+
         SDL_SetRenderDrawColor(renderer_, T().bg.r, T().bg.g, T().bg.b, 255);
         SDL_RenderClear(renderer_);
 
         drawTextCentered(title, SCREEN_W / 2, SCREEN_H / 2 - 40, T().red, fontLarge_);
-        drawBodyText(body, SCREEN_H / 2 + 5, i18n::get(StrKey::PressBToDismiss));
+        int footY = drawBodyWindow(lines, first, topY, bottomY, lineH,
+                                   T().textDim, T().textDim);
+        drawTextCentered(i18n::get(StrKey::PressBToDismiss),
+                         SCREEN_W / 2, maxFirst > 0 ? SCREEN_H - 40 : footY,
+                         T().textDim, fontSmall_);
 
         SDL_RenderPresent(renderer_);
         SDL_Delay(16);
@@ -494,6 +570,13 @@ bool UI::showConfirmDialog(const std::string& title, const std::string& body) {
     if (!renderer_) return false;
     markDirty(); // Force redraw after modal returns
 
+    const int lineH = 24;
+    const int topY = SCREEN_H / 2 + 5;
+    const int bottomY = SCREEN_H - 56;
+    std::vector<std::string> lines = wrapBodyLines(body);
+    int first = 0, maxFirst = 0;
+    uint32_t lastTick = 0;
+    int lastDir = 0;
     int result = -1; // -1 = undecided
     while (result < 0) {
         SDL_Event event;
@@ -509,11 +592,21 @@ bool UI::showConfirmDialog(const std::string& title, const std::string& body) {
             }
         }
 
+        int maxFirst = (int)lines.size() - (bottomY - topY) / lineH;
+        if (maxFirst < 0) maxFirst = 0;
+        first += dialogScrollDir(SDL_GetTicks(), lastTick, lastDir);
+        if (first < 0) first = 0;
+        if (first > maxFirst) first = maxFirst;
+
         SDL_SetRenderDrawColor(renderer_, T().bg.r, T().bg.g, T().bg.b, 255);
         SDL_RenderClear(renderer_);
 
         drawTextCentered(title, SCREEN_W / 2, SCREEN_H / 2 - 40, T().red, fontLarge_);
-        drawBodyText(body, SCREEN_H / 2 + 5, i18n::get(StrKey::AContinueBCancel));
+        int footY = drawBodyWindow(lines, first, topY, bottomY, lineH,
+                                   T().textDim, T().textDim);
+        drawTextCentered(i18n::get(StrKey::AContinueBCancel),
+                         SCREEN_W / 2, maxFirst > 0 ? SCREEN_H - 40 : footY,
+                         T().textDim, fontSmall_);
 
         SDL_RenderPresent(renderer_);
         SDL_Delay(16);
