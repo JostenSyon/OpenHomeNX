@@ -3433,8 +3433,9 @@ void UI::doTradeEvolve(int candidateIdx) {
                 showTradeList_ = false;
                 playTradeEvolveAnim(pkm.species(), rule->to);
                 playTradeEvolveAnim(pkm2.species(), rule2->to);
-                showMessageAndWait(i18n::get(StrKey::TradeDoneTitle),
-                                   i18n::fmt(StrKey::TradeDoubleDoneBody, from1, to1, from2, to2));
+                showTradeResultDialog(i18n::get(StrKey::TradeDoneTitle),
+                                      i18n::fmt(StrKey::TradeDoubleDoneBody, from1, to1, from2, to2),
+                                      rule->to, rule2->to);
                 return;
             }
         }
@@ -3458,8 +3459,9 @@ void UI::doTradeEvolve(int candidateIdx) {
     persistGameSaveIfDirty();
     showTradeList_ = false;
     playTradeEvolveAnim(fromSpeciesAnim, toSpeciesAnim);
-    showMessageAndWait(i18n::get(StrKey::TradeDoneTitle),
-                       i18n::fmt(StrKey::TradeDoneBody, from, to));
+    showTradeResultDialog(i18n::get(StrKey::TradeDoneTitle),
+                          i18n::fmt(StrKey::TradeDoneBody, from, to),
+                          toSpeciesAnim);
 }
 
 void UI::playTradeEvolveAnim(uint16_t fromSpecies, uint16_t toSpecies) {
@@ -3502,7 +3504,17 @@ void UI::playTradeEvolveAnim(uint16_t fromSpecies, uint16_t toSpecies) {
     // scosta di lato (verso alto-sinistra per il blu, verso basso-destra
     // per il verde), la y segue comunque la diagonale cosi' il percorso
     // resta sempre parallelo ad essa senza mai attraversarla.
+    // SPR resta 176 anche su R36S (640px): lo sprite grande e' voluto, da'
+    // il "vibe" scambio dei vecchi giochi su schermo piccolo. Pero' 230 di
+    // OFFSET su 640px di larghezza tagliava lo sprite per buona parte di
+    // ingresso/uscita (appariva tardi, spariva presto) -- 150 tiene lo
+    // sprite dentro lo schermo gia' a fade-in completato, con margine di
+    // ~82px alla pausa centrale, senza mai attraversare la diagonale.
+#ifdef OH_LINUX
+    constexpr float OFFSET = 150.0f;
+#else
     constexpr float OFFSET = 230.0f;
+#endif
     float blY = SCREEN_H * 0.86f, trY = SCREEN_H * 0.14f;
     auto splitXAt = [=](float y) { return SCREEN_W * (1.0f - y / SCREEN_H); };
 

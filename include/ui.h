@@ -114,6 +114,11 @@ public:
                         int topY, int bottomY, int lineH,
                         SDL_Color col, SDL_Color footCol);
     void showMessageAndWait(const std::string& title, const std::string& body);
+    // Come showMessageAndWait ma con lo sprite dello scambio sopra il testo
+    // (conferma visiva, non solo testuale) -- species2 != 0 per lo scambio
+    // doppio (Karrablast/Shelmet), mostra entrambi affiancati.
+    void showTradeResultDialog(const std::string& title, const std::string& body,
+                               uint16_t species1, uint16_t species2 = 0);
     bool showConfirmDialog(const std::string& title, const std::string& body);
     // Scelta tipo banca alla creazione: 0=cross-gen (A), 1=specifica (Y),
     // -1=annullato (B, non crea nulla). Vedi ui_bank.cpp per l'uso.

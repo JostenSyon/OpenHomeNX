@@ -566,6 +566,91 @@ void UI::showMessageAndWait(const std::string& title, const std::string& body) {
     }
 }
 
+void UI::showTradeResultDialog(const std::string& title, const std::string& body,
+                               uint16_t species1, uint16_t species2) {
+    if (!renderer_) return;
+    markDirty();
+
+    // Stessa dimensione sprite dell'animazione di scambio (playTradeEvolveAnim,
+    // ui_input.cpp): e' il "vibe" scambio voluto, resta 176 su entrambe le
+    // piattaforme -- solo il layout attorno si adatta all'altezza schermo.
+    constexpr int SPR = 176;
+#ifdef OH_LINUX
+    constexpr int SPR_GAP = 16;
+    constexpr int TITLE_H = 30, GAP1 = 14, GAP2 = 16, GAP3 = 14, FOOTER_H = 18;
+#else
+    constexpr int SPR_GAP = 24;
+    constexpr int TITLE_H = 40, GAP1 = 20, GAP2 = 24, GAP3 = 20, FOOTER_H = 22;
+#endif
+    SDL_Texture* tex1 = getSprite(species1, 0);
+    SDL_Texture* tex2 = species2 != 0 ? getSprite(species2, 0) : nullptr;
+
+    const int lineH = 24;
+    const int margin = 20; // margine minimo sopra se il blocco non ci sta centrato
+    std::vector<std::string> lines = wrapBodyLines(body);
+
+    // Blocco intero (titolo + sprite + testo + footer) centrato verticalmente
+    // nello schermo, non ancorato in alto -- se il testo fosse troppo lungo
+    // per starci (raro per una conferma scambio), si ancora al margine e il
+    // testo scrolla come gli altri dialog (drawBodyWindow gestisce gia' il caso).
+    int bodyH = (int)lines.size() * lineH;
+    int totalH = TITLE_H + GAP1 + SPR + GAP2 + bodyH + GAP3 + FOOTER_H;
+    int blockTop = (SCREEN_H - totalH) / 2;
+    if (blockTop < margin) blockTop = margin;
+
+    const int TITLE_Y = blockTop + TITLE_H / 2;
+    const int SPR_Y = blockTop + TITLE_H + GAP1;
+    const int topY = SPR_Y + SPR + GAP2;
+    const int bottomY = SCREEN_H - 56;
+    int first = 0;
+    uint32_t lastTick = 0;
+    int lastDir = 0;
+    bool waiting = true;
+    while (waiting) {
+        SDL_Event event;
+        while (SDL_PollEvent(&event)) {
+            if (event.type == SDL_QUIT) {
+                waiting = false;
+            }
+            if (event.type == SDL_CONTROLLERBUTTONDOWN) {
+                if (event.cbutton.button == SDL_CONTROLLER_BUTTON_A) // Switch B
+                    waiting = false;
+            }
+        }
+
+        int maxFirst = (int)lines.size() - (bottomY - topY) / lineH;
+        if (maxFirst < 0) maxFirst = 0;
+        first += dialogScrollDir(SDL_GetTicks(), lastTick, lastDir);
+        if (first < 0) first = 0;
+        if (first > maxFirst) first = maxFirst;
+
+        SDL_SetRenderDrawColor(renderer_, T().bg.r, T().bg.g, T().bg.b, 255);
+        SDL_RenderClear(renderer_);
+
+        drawTextCentered(title, SCREEN_W / 2, TITLE_Y, T().red, fontLarge_);
+
+        if (tex2) {
+            // Scambio doppio: entrambi gli sprite affiancati, centrati come coppia.
+            int pairW = SPR * 2 + SPR_GAP;
+            int x1 = SCREEN_W / 2 - pairW / 2;
+            int x2 = x1 + SPR + SPR_GAP;
+            if (tex1) drawSpriteFit(x1, SPR_Y, SPR, SPR, tex1);
+            drawSpriteFit(x2, SPR_Y, SPR, SPR, tex2);
+        } else if (tex1) {
+            drawSpriteFit(SCREEN_W / 2 - SPR / 2, SPR_Y, SPR, SPR, tex1);
+        }
+
+        int footY = drawBodyWindow(lines, first, topY, bottomY, lineH,
+                                   T().textDim, T().textDim);
+        drawTextCentered(i18n::get(StrKey::PressBToDismiss),
+                         SCREEN_W / 2, maxFirst > 0 ? SCREEN_H - 40 : footY,
+                         T().textDim, fontSmall_);
+
+        SDL_RenderPresent(renderer_);
+        SDL_Delay(16);
+    }
+}
+
 bool UI::showConfirmDialog(const std::string& title, const std::string& body) {
     if (!renderer_) return false;
     markDirty(); // Force redraw after modal returns
