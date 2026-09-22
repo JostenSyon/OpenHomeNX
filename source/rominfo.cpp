@@ -24,9 +24,10 @@ std::string upperTrim(const unsigned char* d, size_t n) {
     for (size_t i = 0; i < n; i++) {
         unsigned char c = d[i];
         if (c == 0) break;
+        if (c == '_') c = ' ';
         s += (char)toupper(c);
     }
-    while (!s.empty() && (s.back() == ' ' || s.back() == '_')) s.pop_back();
+    while (!s.empty() && s.back() == ' ') s.pop_back();
     size_t a = s.find_first_not_of(" ");
     if (a != std::string::npos && a > 0) s = s.substr(a);
     return s;
@@ -54,35 +55,53 @@ bool regionOf(char r, std::string& lang, std::string& region) {
     }
 }
 
-// Titolo GB/GBC normalizzato -> candidati (game, lang). Piu' candidati =
-// ambiguo (es. "POKEMON ORO" vale it+es): si scioglie col filename.
-struct TitleEntry { const char* title; const char* game; const char* lang; };
+// Titolo GB/GBC normalizzato -> gioco (SOLO gioco, mai lingua: i titoli
+// localizzati ingannano, es. Rossa italiana ha titolo "POKEMON RED").
+// La lingua viene SEMPRE dal filename (o dalla lettera regione su GBA).
+struct TitleEntry { const char* title; const char* game; };
 static const TitleEntry kGbTitles[] = {
-    {"POKEMON RED", "red", "en"}, {"POKEMON BLUE", "blue", "en"},
-    {"POKEMON YELLOW", "yellow", "en"}, {"POKEMON GOLD", "gold", "en"},
-    {"POKEMON SILVER", "silver", "en"}, {"POKEMON CRYSTAL", "crystal", "en"},
-    {"POKEMON ROSSA", "red", "it"}, {"POKEMON BLU", "blue", "it"},
-    {"POKEMON GIALLA", "yellow", "it"}, {"POKEMON ORO", "gold", "it"},
-    {"POKEMON ARGENTO", "silver", "it"}, {"POKEMON CRISTALLO", "crystal", "it"},
-    {"POKEMON ROJA", "red", "es"}, {"POKEMON AZUL", "blue", "es"},
-    {"POKEMON AMARILLO", "yellow", "es"}, {"POKEMON ORO", "gold", "es"},
-    {"POKEMON PLATA", "silver", "es"}, {"POKEMON CRISTAL", "crystal", "es"},
-    {"POKEMON ROUGE", "red", "fr"}, {"POKEMON BLEU", "blue", "fr"},
-    {"POKEMON JAUNE", "yellow", "fr"}, {"POKEMON OR", "gold", "fr"},
-    {"POKEMON ARGENT", "silver", "fr"}, {"POKEMON CRISTAL", "crystal", "fr"},
-    {"POKEMON ROT", "red", "de"}, {"POKEMON BLAU", "blue", "de"},
-    {"POKEMON GELB", "yellow", "de"}, {"POKEMON KRISTALL", "crystal", "de"},
+    {"POKEMON RED", "red"}, {"POKEMON BLUE", "blue"},
+    {"POKEMON YELLOW", "yellow"}, {"POKEMON GOLD", "gold"},
+    {"POKEMON SILVER", "silver"}, {"POKEMON CRYSTAL", "crystal"},
+    {"POKEMON ROSSA", "red"}, {"POKEMON BLU", "blue"},
+    {"POKEMON GIALLA", "yellow"}, {"POKEMON ORO", "gold"},
+    {"POKEMON ARGENTO", "silver"}, {"POKEMON CRISTALLO", "crystal"},
+    {"POKEMON ROJA", "red"}, {"POKEMON AZUL", "blue"},
+    {"POKEMON AMARILLO", "yellow"}, {"POKEMON PLATA", "silver"},
+    {"POKEMON CRISTAL", "crystal"},
+    {"POKEMON ROUGE", "red"}, {"POKEMON BLEU", "blue"},
+    {"POKEMON JAUNE", "yellow"}, {"POKEMON OR", "gold"},
+    {"POKEMON ARGENT", "silver"},
+    {"POKEMON ROT", "red"}, {"POKEMON BLAU", "blue"},
+    {"POKEMON GELB", "yellow"}, {"POKEMON KRISTALL", "crystal"},
+    // Abbreviati reali visti su dump (titoli troncati/manufacturer):
+    {"POKEMON YEL", "yellow"}, {"POKEMON YELPSI", "yellow"},
+    {"POKEMON GLD", "gold"}, {"POKEMON SLV", "silver"},
+    {"PM CRYSTAL", "crystal"},
 };
 
-// Token lingua dal filename (tiebreak ambiguiti').
-int langHint(const std::string& filename, const std::string& lang) {
-    static const struct { const char* lang; const char* toks[8]; } k[] = {
-        {"it", {"it", "ita", "italy", "italiano", "italia", 0, 0, 0}},
-        {"es", {"es", "esp", "spa", "spain", "espana", 0, 0, 0}},
-        {"fr", {"fr", "fra", "france", "francais", 0, 0, 0, 0}},
-        {"de", {"de", "ger", "germany", "deutsch", 0, 0, 0, 0}},
-        {"en", {"en", "eng", "usa", "us", "europe", "uk", "english", 0}},
-        {"ja", {"ja", "jp", "jpn", "japan", "japanese", 0, 0, 0}},
+// Lingua dal filename: token interi, vincitore unico con score>=2,
+// altrimenti ignota (mai indovinare: meglio saltare il rename).
+// Es. "Pokemon Versione Rossa" -> it:2 (versione, rossa).
+// "crystal" da solo -> en:1 -> sotto soglia -> ignota (sicuro).
+bool langFromFilename(const std::string& filename, std::string& out) {
+    static const struct { const char* lang; const char* toks[24]; } k[] = {
+        {"it", {"versione", "rosso", "rossa", "fuoco", "verde", "foglia",
+                "rubino", "zaffiro", "smeraldo", "blu", "gialla", "oro",
+                "argento", "cristallo", "italy", "italia", "italiano", 0}},
+        {"en", {"version", "red", "blue", "yellow", "gold", "silver",
+                "crystal", "fire", "leaf", "ruby", "sapphire", "emerald",
+                "green", "usa", "europe", "english", 0}},
+        {"es", {"edicion", "roja", "rojo", "azul", "amarilla", "amarillo",
+                "oro", "plata", "cristal", "fuego", "hoja", "rubi",
+                "zafiro", "esmeralda", "verde", "spain", "espana", 0}},
+        {"fr", {"version", "rouge", "bleue", "jaune", "or", "argent",
+                "cristal", "feu", "feuille", "rubis", "saphir", "emeraude",
+                "verte", "france", "francais", 0}},
+        {"de", {"edition", "rot", "blau", "gelb", "gold", "silber",
+                "kristall", "feuer", "blatt", "grun", "smaragd", "saphir",
+                "rubin", "germany", "deutschland", 0}},
+        {"ja", {"japan", "japanese", "ja", "jp", 0, 0, 0, 0}},
     };
     std::string low;
     for (char c : filename) {
@@ -95,15 +114,19 @@ int langHint(const std::string& filename, const std::string& lang) {
     std::istringstream ss(low);
     std::string t;
     while (ss >> t) toks.push_back(t);
+    std::string best;
+    int bestN = 0;
+    bool tie = false;
     for (const auto& e : k) {
-        if (lang != e.lang) continue;
         int n = 0;
         for (int i = 0; e.toks[i]; i++)
             for (const auto& w : toks)
-                if (w == e.toks[i]) n++;
-        return n;
+                if (w == e.toks[i]) { n++; break; }
+        if (n > bestN) { bestN = n; best = e.lang; tie = false; }
+        else if (n == bestN && n > 0) { tie = true; }
     }
-    return 0;
+    if (!tie && bestN >= 2) { out = best; return true; }
+    return false;
 }
 
 struct CanonEntry { const char* game; const char* lang; const char* name; };
@@ -189,11 +212,13 @@ bool detect(const std::string& path, Info& out) {
             std::string game;
             if (pre == "BPE") game = "emerald";
             else if (pre == "BPR") game = "firered";
-            else if (pre == "BPL") game = "leafgreen";
+            else if (pre == "BPL" || pre == "BPG") game = "leafgreen"; // BPG = LeafGreen IT
             else if (pre == "AXV") game = "ruby";
             else if (pre == "AXP") game = "sapphire";
             std::string lang, region;
             bool rok = regionOf(code[3], lang, region);
+            if (!rok)
+                rok = langFromFilename(fileNameOf(path), lang); // lettera ignota: prova filename
             out.valid = true;
             out.kind = "gba";
             out.game = game;
@@ -210,35 +235,39 @@ bool detect(const std::string& path, Info& out) {
         for (size_t i = 0x134; i <= 0x14C; i++) x = x - h[i] - 1;
         if ((x & 0xFF) == h[0x14D]) {
             bool cgb = (h[0x143] == 0x80 || h[0x143] == 0xC0);
-            size_t tlen = cgb ? 11 : 16;
-            if (cgb && h[0x143] != 0x80 && h[0x143] != 0xC0) tlen = 16;
-            std::string title = upperTrim(h + 0x134, tlen);
-            std::vector<const TitleEntry*> hits;
-            for (const auto& e : kGbTitles)
-                if (title == e.title) hits.push_back(&e);
             out.valid = true;
             out.kind = cgb ? "gbc" : "gb";
-            if (hits.size() == 1) {
-                out.game = hits[0]->game;
-                out.lang = hits[0]->lang;
-            } else if (hits.size() > 1) {
-                // ambiguo (es. ORO it/es, CRISTAL es/fr): tiebreak col filename
-                std::string fn = fileNameOf(path);
-                const TitleEntry* best = nullptr;
-                int bestN = 0;
-                for (const auto* e : hits) {
-                    int n = langHint(fn, e->lang);
-                    if (n > bestN) { bestN = n; best = e; }
+            // Prova titolo 11-char e (CGB) variante 15-char 0x134-0x142:
+            // alcuni dump reali hanno il titolo esteso (es. "POKEMON YELPSI").
+            std::string game;
+            {
+                std::string t11 = upperTrim(h + 0x134, 11);
+                std::string t15 = upperTrim(h + 0x134, 15);
+                for (const auto& e : kGbTitles) {
+                    if (t11 == e.title || (cgb && t15 == e.title)) {
+                        game = e.game;
+                        break;
+                    }
                 }
-                if (best && bestN > 0) {
-                    out.game = best->game;
-                    out.lang = best->lang;
+                if (game.empty()) {
+                    char hex[64] = {0};
+                    for (int i = 0; i < 16 && got > (size_t)(0x134 + i); i++)
+                        snprintf(hex + i * 3, 4, "%02X ", h[0x134 + i]);
+                    DebugLog::line("rominfo: titolo GB sconosciuto '%s' [%s]",
+                                   t11.c_str(), hex);
+                }
+            }
+            out.game = game;
+            // Lingua MAI dal titolo (Rossa IT ha titolo inglese!): solo filename,
+            // con soglia per non indovinare (es. "crystal" da solo -> ignota).
+            if (!game.empty()) {
+                std::string lang;
+                if (langFromFilename(fileNameOf(path), lang)) {
+                    out.lang = lang;
                 } else {
-                    DebugLog::line("rominfo: titolo '%s' ambiguo, lingua ignota",
-                                   title.c_str());
+                    DebugLog::line("rominfo: %s lingua ignota, salto rename",
+                                   game.c_str());
                 }
-            } else {
-                DebugLog::line("rominfo: titolo GB sconosciuto '%s'", title.c_str());
             }
             return true;
         }
@@ -280,7 +309,13 @@ bool planRename(const std::string& romPath, RenamePlan& out) {
     Info info;
     if (!detect(romPath, info)) return false;
     std::string canon = canonicalName(info);
-    if (canon.empty()) return false;
+    if (canon.empty()) {
+        // game o lingua non determinabili (es. titolo ambiguo senza regione
+        // ne' filename chiaro): mai rinominare alla cieca, l'utente lo fa a mano.
+        DebugLog::line("rominfo: skip %s (game='%s' lang='%s' incerti)",
+                       romPath.c_str(), info.game.c_str(), info.lang.c_str());
+        return false;
+    }
     size_t slash = romPath.find_last_of('/');
     size_t dot = romPath.find_last_of('.');
     if (dot == std::string::npos) return false;

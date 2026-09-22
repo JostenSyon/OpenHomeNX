@@ -842,12 +842,14 @@ void UI::loadGameIcons() {
     bool needSystem = false;
     for (size_t ai = 0; ai < availableGames_.size(); ai++) {
         GameType game = availableGames_[ai];
-        // Imported games (Ruby/Sapphire/Emerald/Gen1 from a scanned file) have no
+        // Imported games (RSE/FRLG/Gen1/Gen2 from a scanned file) have no
         // real titleId and no NS control data — they always use the abbrev.
         // placeholder in drawGameSelectorFrame() instead of a fetched icon,
         // a meno che cache/covers/ abbia una cover 2D (Sviluppatore ->
         // Aggiorna boxart): in quel caso la usano come le icone di sistema.
-        if (isImportedFile(game) || isGen1File(game) || isGen2File(game)) {
+        // isFRLG incluso: FireRed/LeafGreen esistono solo da import (GBA),
+        // mai installati con titleId (su Switch il fetch NS fallirebbe comunque).
+        if (isImportedFile(game) || isGen1File(game) || isGen2File(game) || isFRLG(game)) {
             size_t occ = 0;
             for (size_t aj = 0; aj < ai; aj++)
                 if (availableGames_[aj] == game) occ++;
@@ -913,7 +915,7 @@ void UI::loadGameIcons() {
     if (needSystem) {
         nsInitialize();
         for (GameType game : availableGames_) {
-            if (isImportedFile(game) || isGen1File(game) || isGen2File(game))
+            if (isImportedFile(game) || isGen1File(game) || isGen2File(game) || isFRLG(game))
                 continue; // no titleId, no NS control data — placeholder only
             if (gameIconCache_.count(game))
                 continue; // already loaded from cache

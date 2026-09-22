@@ -3,6 +3,7 @@ build/
 build-r36s/
 rust-target/
 OpenHomeNX
+rominfo_test
 *.o
 *.d
 *.log
