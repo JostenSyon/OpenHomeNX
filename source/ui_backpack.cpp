@@ -18,6 +18,28 @@
 namespace {
 constexpr int BP_POP_W = 1120;
 constexpr int BP_POP_H = 600;
+#ifdef OH_LINUX
+// 4:3: scala l'intero popup per farlo entrare in 640x480 (stesso look
+// del downscale 16:9 che era apprezzato). RAII: ripristina viewport e
+// scala all'uscita, compreso il return anticipato dell'audit. R36S senza
+// touch: la navigazione gamepad usa coordinate logiche, inalterata.
+struct BackpackScaleGuard {
+    SDL_Renderer* r;
+    SDL_Rect oldVp;
+    float osx, osy;
+    BackpackScaleGuard(SDL_Renderer* rr, float s, int vw, int vh, int sw, int sh) : r(rr) {
+        SDL_RenderGetViewport(r, &oldVp);
+        SDL_RenderGetScale(r, &osx, &osy);
+        SDL_Rect nv = {(sw - vw) / 2, (sh - vh) / 2, vw, vh};
+        SDL_RenderSetViewport(r, &nv);
+        SDL_RenderSetScale(r, s, s);
+    }
+    ~BackpackScaleGuard() {
+        SDL_RenderSetViewport(r, &oldVp);
+        SDL_RenderSetScale(r, osx, osy);
+    }
+};
+#endif
 constexpr int BP_ROW_H = 38;
 constexpr int BP_VISIBLE = 12;
 constexpr int BP_LEFT_W = 660;
@@ -825,8 +847,17 @@ void UI::backpackDoFixSelected() {
 
 void UI::drawBackpackPopup() {
     drawRect(0, 0, SCREEN_W, SCREEN_H, T().overlay);
+#ifdef OH_LINUX
+    // Origine virtuale (0,0): viewport+scale la centrano a schermo.
+    constexpr float BP_SCALE = 0.55f; // 1120x600 -> 616x330
+    int popX = 0, popY = 0;
+    BackpackScaleGuard guard(renderer_, BP_SCALE,
+        (int)(BP_POP_W * BP_SCALE), (int)(BP_POP_H * BP_SCALE),
+        SCREEN_W, SCREEN_H);
+#else
     int popX = (SCREEN_W - BP_POP_W) / 2;
     int popY = (SCREEN_H - BP_POP_H) / 2;
+#endif
     drawRect(popX, popY, BP_POP_W, BP_POP_H, T().panelBg);
     drawRectOutline(popX, popY, BP_POP_W, BP_POP_H, T().cursor, 2);
 

@@ -101,10 +101,18 @@ void UI::drawBankSelectorFrame() {
                          selCenterX, SCREEN_H / 2 + 15, T().textDim, fontSmall_);
     } else if (bankManager_.isAllMode()) {
         // All-banks mode: grouped list with game headers
+#ifdef OH_LINUX
+        // 4:3: lista contenuta nello schermo (status bar a 445).
+        int LIST_W = splitView ? (PANEL_W - 30) : 600;
+        int LIST_X = splitView ? (selAreaX + 15) : (SCREEN_W - LIST_W) / 2;
+        int LIST_Y = splitView ? 50 : 80;
+        int LIST_BOTTOM = 420;
+#else
         int LIST_W = splitView ? (PANEL_W - 30) : 800;
         int LIST_X = splitView ? (selAreaX + 15) : (SCREEN_W - LIST_W) / 2;
         int LIST_Y = splitView ? 50 : 80;
         int LIST_BOTTOM = 580;
+#endif
         int ROW_H = 50;
         int HDR_H = 32;
         int visiblePixels = LIST_BOTTOM - LIST_Y;
@@ -211,10 +219,18 @@ void UI::drawBankSelectorFrame() {
         }
     } else {
         // Normal mode: flat bank list
+#ifdef OH_LINUX
+        // 4:3: lista contenuta nello schermo (status bar a 445).
+        int LIST_W = splitView ? (PANEL_W - 30) : 600;
+        int LIST_X = splitView ? (selAreaX + 15) : (SCREEN_W - LIST_W) / 2;
+        int LIST_Y = splitView ? 50 : 80;
+        int LIST_BOTTOM = 420;
+#else
         int LIST_W = splitView ? (PANEL_W - 30) : 800;
         int LIST_X = splitView ? (selAreaX + 15) : (SCREEN_W - LIST_W) / 2;
         int LIST_Y = splitView ? 50 : 80;
         int LIST_BOTTOM = 580;
+#endif
         int ROW_H = 50;
         int visibleRows = (LIST_BOTTOM - LIST_Y) / ROW_H;
 

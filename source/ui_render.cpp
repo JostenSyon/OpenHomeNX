@@ -2255,9 +2255,16 @@ void UI::drawPkImportListPopup() {
 void UI::drawTradeListPopup() {
     drawRect(0, 0, SCREEN_W, SCREEN_H, T().overlay);
 
+#ifdef OH_LINUX
+    // 4:3: popup contenuto, colonne compresse (vedi TX_ITEM/TX_EVO sotto).
+    constexpr int POP_W = 600;
+    constexpr int ROW_H = 56;
+    constexpr int VISIBLE = 4;
+#else
     constexpr int POP_W = 900;
     constexpr int ROW_H = 64;
     constexpr int VISIBLE = 6;
+#endif
     int count = (int)tradeCandidates_.size();
     int rows = count > 0 ? std::min(count, VISIBLE) : 1;
     int POP_H = 60 + rows * ROW_H + 40;
@@ -2276,6 +2283,14 @@ void UI::drawTradeListPopup() {
     int listY = popY + 60;
     int listX = popX + 20;
     int listW = POP_W - 40;
+#ifdef OH_LINUX
+    // 4:3: colonne compresse (item/evo piu' vicini, testi troncati sotto).
+    constexpr int TX_ITEM = 140;
+    constexpr int TX_EVO = 280;
+#else
+    constexpr int TX_ITEM = 220;
+    constexpr int TX_EVO = 430;
+#endif
 
     for (int r = 0; r < rows; r++) {
         int i = tradeScroll_ + r;
@@ -2320,14 +2335,21 @@ void UI::drawTradeListPopup() {
         SDL_Color labelCol = outOfRange ? T().genderFemale : (rule ? T().text : T().textDim);
         drawText(label, x, textY, labelCol, font_);
         drawText(loc, x, textY + 20, T().textDim, fontSmall_);
-        drawText(itemStr, x + 220, textY, T().textDim, fontSmall_);
+        // 4:3: tronca i testi lunghi per non invadere lo sprite ricevuto a destra.
+        auto truncFit = [&](std::string t, TTF_Font* f, SDL_Color c, int maxW) {
+            while (t.size() > 4 && getTextEntry(t, f, c).w > maxW)
+                t = t.substr(0, t.size() - 5) + "..";
+            return t;
+        };
+        int evoMaxW = listX + listW - (ROW_H - 10) - 10 - 8 - (x + TX_EVO);
+        drawText(itemStr, x + TX_ITEM, textY, T().textDim, fontSmall_);
         if (outOfRange) {
-            drawText("! " + i18n::get(StrKey::TradeOutOfRange), x + 430, textY, T().genderFemale, fontSmall_);
+            drawText("! " + i18n::get(StrKey::TradeOutOfRange), x + TX_EVO, textY, T().genderFemale, fontSmall_);
         } else if (rule) {
             std::string arr = "-> " + SpeciesName::get(rule->to);
             if (isPaired) arr += " *";
-            drawText(arr, x + 430, textY, T().cursor, font_);
-            if (isPaired) drawText(i18n::get(StrKey::TradePairedHint), x + 430, textY + 20, T().textDim, fontSmall_);
+            drawText(truncFit(arr, font_, T().cursor, evoMaxW), x + TX_EVO, textY, T().cursor, font_);
+            if (isPaired) drawText(i18n::get(StrKey::TradePairedHint), x + TX_EVO, textY + 20, T().textDim, fontSmall_);
             // Sprite del Pokémon ricevuto (a destra): così si vedono entrambi i lati dello scambio
             SDL_Texture* sprite2 = getSprite(rule->to, 0);
             if (sprite2) {
@@ -2345,11 +2367,11 @@ void UI::drawTradeListPopup() {
             }
         } else if (base && base->heldModern != 0) {
             std::string need = ItemLocations::itemName(base->heldModern);
-            drawText(i18n::get(StrKey::TradeNeedsItem) + " (" + need + ")", x + 430, textY, T().textDim, fontSmall_);
+            drawText(truncFit(i18n::get(StrKey::TradeNeedsItem) + " (" + need + ")", fontSmall_, T().textDim, evoMaxW), x + TX_EVO, textY, T().textDim, fontSmall_);
             std::string where = ItemLocations::footerLine(base->heldModern);
-            if (!where.empty()) drawText(where, x + 430, textY + 20, T().textDim, fontSmall_);
+            if (!where.empty()) drawText(where, x + TX_EVO, textY + 20, T().textDim, fontSmall_);
         } else {
-            drawText(i18n::get(StrKey::TradeNeedsItem), x + 430, textY, T().textDim, fontSmall_);
+            drawText(i18n::get(StrKey::TradeNeedsItem), x + TX_EVO, textY, T().textDim, fontSmall_);
         }
     }
 
