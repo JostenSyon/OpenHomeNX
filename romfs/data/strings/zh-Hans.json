@@ -279,9 +279,9 @@
     "scraper_boxart_clear_body": "删除已下载/复制的2D封面。恢复合成磁贴（logo + 背景）。继续吗？",
     "scraper_boxart_cleared": "封面缓存已清除: {0} 个文件。",
     "scraper_boxart_style": "封面样式",
-    "scraper_boxart_style_cover": "封面",
-    "scraper_boxart_style_shot": "截图",
-    "scraper_boxart_style_title": "标题",
     "scraper_rename_title": "重命名ROM",
-    "scraper_rename_done": "ROM已重命名: {0}/{1}。"
+    "scraper_rename_done": "ROM已重命名: {0}/{1}。",
+    "scraper_boxart_style_locale": "本地",
+    "scraper_boxart_style_2d": "2D",
+    "scraper_boxart_style_3d": "3D"
 }

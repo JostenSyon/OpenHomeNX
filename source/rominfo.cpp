@@ -1,9 +1,12 @@
 #include "rominfo.h"
 #include "debug_log.h"
+#include <algorithm>
 #include <cctype>
 #include <cstdio>
+#include <dirent.h>
 #include <fstream>
 #include <sstream>
+#include <sys/stat.h>
 
 namespace RomInfo {
 namespace {
@@ -344,6 +347,42 @@ bool applyRename(const RenamePlan& plan, std::string& err) {
         }
     }
     return true;
+}
+
+std::vector<std::string> scanRoms(const std::vector<std::string>& dirs) {
+    static const char* kExt[] = {".gba", ".gbc", ".gb", ".nds"};
+    std::vector<std::string> out;
+    for (const auto& dir : dirs) {
+        DIR* d = opendir(dir.c_str());
+        if (!d) continue;
+        struct dirent* e;
+        while ((e = readdir(d)) != nullptr) {
+            std::string name = e->d_name;
+            if (name == "." || name == "..") continue;
+            std::string low = name;
+            for (auto& c : low) c = (char)tolower((unsigned char)c);
+            bool rom = false;
+            for (const char* x : kExt) {
+                std::string xs = x;
+                if (low.size() > xs.size() &&
+                    low.compare(low.size() - xs.size(), xs.size(), xs) == 0) {
+                    rom = true;
+                    break;
+                }
+            }
+            if (!rom) continue;
+            std::string full = dir;
+            if (!full.empty() && full.back() != '/') full += '/';
+            full += name;
+            struct stat st;
+            if (stat(full.c_str(), &st) != 0 || !S_ISREG(st.st_mode)) continue;
+            out.push_back(full);
+        }
+        closedir(d);
+    }
+    std::sort(out.begin(), out.end());
+    DebugLog::line("rominfo: scanRoms %zu dir -> %zu ROM", dirs.size(), out.size());
+    return out;
 }
 
 } // namespace RomInfo

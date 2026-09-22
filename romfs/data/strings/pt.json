@@ -279,9 +279,9 @@
     "scraper_boxart_clear_body": "Remove as capas 2D baixadas/copiadas. Voltam os mosaicos compostos (logo + fundo). Continuar?",
     "scraper_boxart_cleared": "Cache de boxart limpo: {0} arquivo(s).",
     "scraper_boxart_style": "Estilo de boxart",
-    "scraper_boxart_style_cover": "Capa",
-    "scraper_boxart_style_shot": "Captura",
-    "scraper_boxart_style_title": "Título",
     "scraper_rename_title": "Renomear ROMs",
-    "scraper_rename_done": "ROMs renomeadas: {0}/{1}."
+    "scraper_rename_done": "ROMs renomeadas: {0}/{1}.",
+    "scraper_boxart_style_locale": "Local",
+    "scraper_boxart_style_2d": "2D",
+    "scraper_boxart_style_3d": "3D"
 }

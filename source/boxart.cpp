@@ -3,9 +3,7 @@
 #include "emulator.h"
 #include "rominfo.h"
 #include "settings_cfg.h"
-#ifndef OH_LINUX
-#include "update_net.h" // updateNetEnsureReady/updateNetDownload (solo Switch)
-#endif
+#include "update_net.h" // updateNetEnsureReady/updateNetDownload (rete reale anche su R36S)
 #include <cctype>
 #include <cstdio>
 #include <cstring>
@@ -252,39 +250,109 @@ static Style curStyle() {
     return (Style)v;
 }
 
-// Screenshot locali: gamelist <image> (solo se screenshot) oppure
-// media/screenshots/<base>.png/.jpg (layout Skyscraper visto su R36S).
-std::string localShot(const std::string& romDir, const std::string& romFile,
-                      const std::string& base) {
-    std::string g = gamelistImage(romDir, romFile);
-    if (!g.empty() && isScreenshotPath(g)) return g;
-    static const char* kExt[] = {".png", ".jpg", ".jpeg"};
-    for (const char* e : kExt) {
-        std::string cand = romDir + "/media/screenshots/" + base + e;
-        if (fileExists(cand)) return cand;
-    }
-    return "";
+// Dimensioni IHDR di un PNG (solo .png). false se non leggibile.
+bool pngDims(const std::string& path, unsigned& w, unsigned& h) {
+    std::ifstream f(path, std::ios::binary);
+    if (!f.good()) return false;
+    unsigned char hdr[24] = {0};
+    f.read((char*)hdr, 24);
+    if (f.gcount() != 24) return false;
+    static const unsigned char kPng[8] =
+        {0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A};
+    if (memcmp(hdr, kPng, 8) != 0) return false;
+    w = ((unsigned)hdr[16] << 24) | ((unsigned)hdr[17] << 16) |
+        ((unsigned)hdr[18] << 8) | (unsigned)hdr[19];
+    h = ((unsigned)hdr[20] << 24) | ((unsigned)hdr[21] << 16) |
+        ((unsigned)hdr[22] << 8) | (unsigned)hdr[23];
+    return w > 0 && h > 0;
 }
 
-// Priorita' (gamelist.xml di Skyscraper e' inaffidabile: perde giochi):
-//  Copertina: 1. images/<base>[-image] 2. gamelist (mai screenshot)
-//               3. images/<base>-thumb 4. fuzzy su images/ (nomi diversi)
-//  Screenshot: 1. gamelist se screenshot 2. media/screenshots/<base>
-//               3. ripiego su ordine Copertina (loggato)
-//  Titolo: nessun sorgente locale affidabile -> ordine Copertina (loggato)
+// "3D-ish": nome con box/3d, oppure PNG quadrato (tipico dei render 3D;
+// le 2D frontali sono portrait, gli screenshot landscape).
+bool is3dFile(const std::string& fullPath, const std::string& stem) {
+    std::string low = toLowerStr(stem);
+    if (low.find("box") != std::string::npos) return true;
+    if (low.find("3d") != std::string::npos) return true;
+    std::string llow = toLowerStr(fullPath);
+    if (llow.size() < 4 ||
+        llow.compare(llow.size() - 4, 4, ".png") != 0)
+        return false;
+    unsigned w = 0, h = 0;
+    if (!pngDims(fullPath, w, h)) return false;
+    double r = (double)w / (double)h;
+    return r > 0.85 && r < 1.15;
+}
+
+// Come imagesFuzzy ma solo candidati 3D-ish (score>=70).
+std::string imagesFuzzy3d(const std::string& romDir, const std::string& base) {
+    static const char* kSuf[] = {"-thumb", "-image", "-marquee", "-screenshot",
+                                 "-boxart", "-cover", "-title", "-wheel", "-fanart", "-logo"};
+    static const char* kExt[] = {".png", ".jpg", ".jpeg"};
+    std::string imgDir = romDir + "/images";
+    DIR* d = opendir(imgDir.c_str());
+    if (!d) return "";
+    std::string bestPath;
+    int best = 0;
+    size_t bestWords = 0;
+    struct dirent* e;
+    while ((e = readdir(d)) != nullptr) {
+        std::string name = e->d_name;
+        if (name == "." || name == "..") continue;
+        std::string low = toLowerStr(name);
+        std::string ext;
+        for (const char* x : kExt) {
+            std::string xs = x;
+            if (low.size() > xs.size() &&
+                low.compare(low.size() - xs.size(), xs.size(), xs) == 0) {
+                ext = name.substr(name.size() - xs.size());
+                break;
+            }
+        }
+        if (ext.empty()) continue;
+        std::string stem = name.substr(0, name.size() - ext.size());
+        std::string slow = toLowerStr(stem);
+        for (const char* s : kSuf) {
+            std::string ss = s;
+            if (slow.size() > ss.size() &&
+                slow.compare(slow.size() - ss.size(), ss.size(), ss) == 0) {
+                stem = stem.substr(0, stem.size() - ss.size());
+                break;
+            }
+        }
+        std::string full = imgDir + "/" + name;
+        if (!is3dFile(full, name)) continue;
+        int sc = fuzzyScore(stem, base);
+        if (sc < 70 || sc < best) continue;
+        size_t nw = splitWords(normName(stem)).size();
+        if (sc == best && nw >= bestWords) continue;
+        best = sc;
+        bestWords = nw;
+        bestPath = full;
+    }
+    closedir(d);
+    if (!bestPath.empty())
+        DebugLog::line("boxart: %s fuzzy-3d images '%s' (score %d)",
+                       base.c_str(), bestPath.c_str(), best);
+    return bestPath;
+}
+
+// Priorita' (gamelist.xml di Skyscraper e' inaffidabile: perde giochi).
+// Screenshot e loghi mai usati, su nessuno stile.
+//  Locale: 1. images/<base>[-image] 2. gamelist (mai screenshot)
+//           3. images/<base>-thumb 4. fuzzy su images/ (nomi diversi)
+//  Box2d: niente locale (solo download) -> "" sempre qui.
+//  Box3d: solo arte 3D locale (nomi box/3d o PNG quadrato).
 std::string localCover(const std::string& romPath, Style style) {
     std::string dir = parentDir(romPath);
     std::string file = fileName(romPath);
     std::string base = stemOf(romPath);
     if (dir.empty() || file.empty()) return "";
-    if (style == Style::Shot) {
-        std::string s = localShot(dir, file, base);
-        if (!s.empty()) return s;
-        DebugLog::line("boxart: %s nessuno screenshot locale, ripiego su cover",
-                       base.c_str());
-    } else if (style == Style::Title) {
-        DebugLog::line("boxart: %s titoli non disponibili in locale, uso cover",
-                       base.c_str());
+    if (style == Style::Box2d) return ""; // solo download
+    if (style == Style::Box3d) {
+        std::string hit = imagesFuzzy3d(dir, base);
+        if (hit.empty())
+            DebugLog::line("boxart: %s 3D non trovato in locale", base.c_str());
+        return hit;
     }
     std::string hit = imagesDirHit(dir, base, false);
     if (!hit.empty()) return hit;
@@ -302,8 +370,7 @@ std::string localCover(const std::string& romPath, Style style) {
     return imagesFuzzy(dir, base);
 }
 
-// ---- download Switch (libretro-thumbnails, repo pubblico usato da RetroArch) ----
-#ifndef OH_LINUX
+// ---- download (libretro-thumbnails, repo pubblico usato da RetroArch) ----
 std::string libretroRepo(const std::string& sysdirLower) {
     // Il repo ombrello ha solo submodule: i PNG stanno nei repo per-sistema.
     if (sysdirLower == "gba") return "Nintendo_-_Game_Boy_Advance";
@@ -313,16 +380,6 @@ std::string libretroRepo(const std::string& sysdirLower) {
     return "";
 }
 
-// Sottocartella libretro-thumbnails per stile (repo pubblico di RetroArch,
-// niente API key): Copertina -> Named_Boxarts, Screenshot -> Named_Snaps,
-// Titolo -> Named_Titles.
-const char* libretroKind(Style style) {
-    if (style == Style::Shot) return "Named_Snaps";
-    if (style == Style::Title) return "Named_Titles";
-    return "Named_Boxarts";
-}
-#endif // OH_LINUX: helper URL solo-Switch
-#ifndef OH_LINUX
 std::string urlEncodePath(const std::string& s) {
     static const char* kHex = "0123456789ABCDEF";
     std::string out;
@@ -338,18 +395,16 @@ std::string urlEncodePath(const std::string& s) {
     }
     return out;
 }
-#endif // OH_LINUX: urlEncode solo-Switch
 
 } // namespace
 
-// Cache separata per stile (<base>.cover/.shot/.title): cambiare stile
-// in Sviluppatore deve mostrare arte diversa, non il cache hit di un altro
-// stile (es. screenshot cachato mentre si chiede Copertina).
+// Cache separata per stile (<base>.locale/.2d/.3d): cambiare stile
+// in Sviluppatore deve mostrare arte diversa, non il cache hit di un altro.
 std::string styleTag() {
     switch (curStyle()) {
-        case Style::Shot: return "shot";
-        case Style::Title: return "title";
-        default: return "cover";
+        case Style::Box2d: return "2d";
+        case Style::Box3d: return "3d";
+        default: return "locale";
     }
 }
 
@@ -404,10 +459,10 @@ ScrapeResult scrape(const std::string& basePath,
             }
             continue;
         }
-#ifdef OH_LINUX
-        DebugLog::line("boxart: %s miss (solo locale su R36S)", base.c_str());
-#else
-        // Switch: download on-demand se la rete e' pronta.
+        // Download 2D on-demand se la rete e' pronta (entrambe le piattaforme).
+        // Locale senza hit e Box3d senza 3D locale arrivano qui.
+        if (style == Style::Box3d)
+            DebugLog::line("boxart: %s 3D non trovato, uso 2D", base.c_str());
         if (!updateNetEnsureReady()) {
             DebugLog::line("boxart: %s miss (rete off)", base.c_str());
             continue;
@@ -419,7 +474,6 @@ ScrapeResult scrape(const std::string& basePath,
                            base.c_str(), sys.c_str());
             continue;
         }
-        std::string kind = libretroKind(style);
         std::string dst = coverCachePath(basePath, rom);
         std::string err;
         bool ok = false;
@@ -427,19 +481,19 @@ ScrapeResult scrape(const std::string& basePath,
             // 1. Nomi esatti (veloce): convenzione RetroArch, prima senza
             //    poi con estensione ROM.
             std::string url = "https://raw.githubusercontent.com/libretro-thumbnails/"
-                              + repo + "/master/" + kind + "/" +
+                              + repo + "/master/Named_Boxarts/" +
                               urlEncodePath(base + ".png");
             ok = updateNetDownload(url, "", dst, "", err);
             if (!ok) {
                 std::string url2 = "https://raw.githubusercontent.com/libretro-thumbnails/"
-                                   + repo + "/master/" + kind + "/" +
+                                   + repo + "/master/Named_Boxarts/" +
                                    urlEncodePath(fileName(rom) + ".png");
                 ok = updateNetDownload(url2, "", dst, "", err);
             }
             // 2. Match fuzzy via elenco repo (nomi No-Intro vs nome ROM).
             if (!ok) {
                 std::string api = "https://api.github.com/repos/libretro-thumbnails/"
-                                  + repo + "/contents/" + kind;
+                                  + repo + "/contents/Named_Boxarts";
                 std::string listPath = basePath + "cache/covers/.listing_" + sys + ".json";
                 std::string apiErr;
                 if (updateNetDownload(api, "", listPath, "", apiErr)) {
@@ -505,13 +559,12 @@ ScrapeResult scrape(const std::string& basePath,
                 }
             }
         }
-    if (ok) {
-        DebugLog::line("boxart: %s download ok", base.c_str());
-        r.found++;
-    } else {
-        DebugLog::line("boxart: %s download FAIL (%s)", base.c_str(), err.c_str());
-    }
-#endif
+        if (ok) {
+            DebugLog::line("boxart: %s download ok", base.c_str());
+            r.found++;
+        } else {
+            DebugLog::line("boxart: %s download FAIL (%s)", base.c_str(), err.c_str());
+        }
     }
     DebugLog::line("boxart: scrape %d/%d", r.found, r.total);
     return r;

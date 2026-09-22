@@ -279,9 +279,9 @@
     "scraper_boxart_clear_body": "다운로드/복사한 2D 커버를 삭제합니다. 합성 타일(로고 + 배경)으로 돌아갑니다. 계속하시겠습니까?",
     "scraper_boxart_cleared": "박스아트 캐시를 지웠습니다: {0}개.",
     "scraper_boxart_style": "박스아트 스타일",
-    "scraper_boxart_style_cover": "커버",
-    "scraper_boxart_style_shot": "스크린샷",
-    "scraper_boxart_style_title": "타이틀",
     "scraper_rename_title": "ROM 이름 바꾸기",
-    "scraper_rename_done": "ROM 이름 변경됨: {0}/{1}."
+    "scraper_rename_done": "ROM 이름 변경됨: {0}/{1}.",
+    "scraper_boxart_style_locale": "로컬",
+    "scraper_boxart_style_2d": "2D",
+    "scraper_boxart_style_3d": "3D"
 }

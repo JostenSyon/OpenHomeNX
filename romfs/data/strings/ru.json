@@ -279,9 +279,9 @@
     "scraper_boxart_clear_body": "Удаляет скачанные/скопированные 2D-обложки. Вернутся составные плитки (логотип + фон). Продолжить?",
     "scraper_boxart_cleared": "Кэш боксартов очищен: {0} файл(ов).",
     "scraper_boxart_style": "Стиль боксарта",
-    "scraper_boxart_style_cover": "Обложка",
-    "scraper_boxart_style_shot": "Скриншот",
-    "scraper_boxart_style_title": "Заголовок",
     "scraper_rename_title": "Переименовать ROM",
-    "scraper_rename_done": "ROM переименовано: {0}/{1}."
+    "scraper_rename_done": "ROM переименовано: {0}/{1}.",
+    "scraper_boxart_style_locale": "Локальная",
+    "scraper_boxart_style_2d": "2D",
+    "scraper_boxart_style_3d": "3D"
 }

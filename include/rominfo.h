@@ -38,4 +38,9 @@ struct RenamePlan {
 bool planRename(const std::string& romPath, RenamePlan& out);
 bool applyRename(const RenamePlan& plan, std::string& err);
 
+// Elenca le ROM (.gba/.gbc/.gb/.nds, case-insensitive, non ricorsivo)
+// nelle cartelle date, ordinato per path. Usato da Rinomina ROM per
+// passare a setaccio tutte le ROM, anche senza save associato.
+std::vector<std::string> scanRoms(const std::vector<std::string>& dirs);
+
 } // namespace RomInfo

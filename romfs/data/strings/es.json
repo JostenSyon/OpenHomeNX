@@ -279,9 +279,9 @@
     "scraper_boxart_clear_body": "Elimina las carátulas 2D descargadas/copiadas. Vuelven los mosaicos compuestos (logo + fondo). ¿Continuar?",
     "scraper_boxart_cleared": "Caché de boxart borrada: {0} archivo(s).",
     "scraper_boxart_style": "Estilo de boxart",
-    "scraper_boxart_style_cover": "Carátula",
-    "scraper_boxart_style_shot": "Captura",
-    "scraper_boxart_style_title": "Título",
     "scraper_rename_title": "Renombrar ROMs",
-    "scraper_rename_done": "ROMs renombradas: {0}/{1}."
+    "scraper_rename_done": "ROMs renombradas: {0}/{1}.",
+    "scraper_boxart_style_locale": "Local",
+    "scraper_boxart_style_2d": "2D",
+    "scraper_boxart_style_3d": "3D"
 }

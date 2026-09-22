@@ -70,13 +70,14 @@ namespace {
 // Geometria condivisa fra drawGameList_Gallery() e selectorTapGallery():
 // TENERLE IN SYNC se si cambia una delle due.
 #ifdef OH_LINUX
-// Nativo 4:3 (640x480): lista stretta + preview compatto.
-constexpr int GAL_LIST_X = 20, GAL_LIST_Y = 96, GAL_LIST_W = 200;
+// Nativo 4:3 (640x480): lista stretta + preview compatto (80..380,
+// aria sopra il dock a 412).
+constexpr int GAL_LIST_X = 20, GAL_LIST_Y = 80, GAL_LIST_W = 200;
 constexpr int GAL_ROW_H = 42, GAL_VISIBLE_ROWS = 7;
 constexpr int GAL_PREVIEW_X = GAL_LIST_X + GAL_LIST_W + 20;   // 240
-constexpr int GAL_PREVIEW_Y = 96;
-constexpr int GAL_PREVIEW_H = 344;
-constexpr int GAL_BTN_W = 150, GAL_BTN_H = 40, GAL_BTN_MARGIN = 20;
+constexpr int GAL_PREVIEW_Y = 80;
+constexpr int GAL_PREVIEW_H = 300;
+constexpr int GAL_BTN_W = 150, GAL_BTN_H = 36, GAL_BTN_MARGIN = 20;
 #else
 constexpr int GAL_LIST_X = 70, GAL_LIST_Y = 108, GAL_LIST_W = 360;
 constexpr int GAL_ROW_H = 46, GAL_VISIBLE_ROWS = 9;
@@ -321,9 +322,18 @@ void UI::drawGameList_Gallery() {
 #else
     int textX = coverX + COVER + 40;
 #endif
+#ifdef OH_LINUX
+    // 4:3: blocco centrato tra bordo superiore e tasto Avvia.
+    int textY = panelY + GAL_PREVIEW_H / 2 - 46 - 60;
+#else
     int textY = panelY + GAL_PREVIEW_H / 2 - 46;
+#endif
     std::string name = gameDisplayNameOf(selGame);
     if (name.substr(0, 8) == "Pokemon ") name = name.substr(8);
+#ifdef OH_LINUX
+    // Pannello stretto: tronca titoli lunghi (display-only).
+    if (name.length() > 16) name = name.substr(0, 15) + ".";
+#endif
     // Titolo in fontLarge_ (28pt, gia' usato per i titoli About/errore) reso
     // in grassetto qui sul momento: piu' vicino allo stile "da copertina"
     // del mockup del font di sistema normale usato ovunque nell'app. Lo
@@ -358,17 +368,23 @@ void UI::drawGameList_Gallery() {
     {
         int partyY = textY + 46;
 #ifdef OH_LINUX
+        // 4:3: "Squadra" su riga propria, sprite sotto ingranditi (26px,
+        // 6x26 = 156px nei 160 disponibili).
         int rightEdge = GAL_PREVIEW_X + previewW - 20;
-        int partyW = 5 * 30 + 26;
+        int partyXFixed = textX;
+        int spriteY = partyY + 20;
+        int spritePitch = 26, spriteSize = 26;
 #else
         int rightEdge = GAL_PREVIEW_X + previewW - 40;
         int partyW = 5 * 36 + 32;
-#endif
         int partyXFixed = rightEdge - partyW;
         if (partyXFixed < textX) partyXFixed = textX;
+        int spriteY = partyY - 4;
+        int spritePitch = 36, spriteSize = 32;
+#endif
         auto pit = galPartyCache_.find(selGame);
         if (pit == galPartyCache_.end()) {
-            drawText("…", partyXFixed, partyY, T().textDim, fontSmall_);
+            drawText("…", partyXFixed, spriteY, T().textDim, fontSmall_);
         } else {
             for (int k = 0; k < 6; k++) {
                 const PartyPreviewMon& m = pit->second.mons[k];
@@ -390,17 +406,17 @@ void UI::drawGameList_Gallery() {
                     SDL_SetTextureColorMod(spr, 110, 110, 110);
                     SDL_SetTextureAlphaMod(spr, 110);
                 }
-#ifdef OH_LINUX
-                drawSpriteFit(partyXFixed + k * 30, partyY - 4, 26, 26, spr);
-#else
-                drawSpriteFit(partyXFixed + k * 36, partyY - 4, 32, 32, spr);
-#endif
+                drawSpriteFit(partyXFixed + k * spritePitch, spriteY, spriteSize, spriteSize, spr);
                 if (isEmpty) {
                     SDL_SetTextureColorMod(spr, 255, 255, 255);
                     SDL_SetTextureAlphaMod(spr, 255);
                 }
             }
+#ifdef OH_LINUX
+            int statRowY = partyY + 54; // 4:3: dopo la riga sprite, bottone sotto libero
+#else
             int statRowY = partyY + 40;
+#endif
             if (!pit->second.otName.empty()) {
                 std::string lbl = i18n::get(StrKey::FilterOT);
                 drawText(lbl, textX, statRowY, T().textDim, fontSmall_);
@@ -415,7 +431,11 @@ void UI::drawGameList_Gallery() {
                 }
                 const auto& ve = getTextEntry(ot, fontSmall_, T().text);
                 drawText(ot, rightEdge - (int)ve.w, statRowY, T().text, fontSmall_);
+#ifdef OH_LINUX
+                statRowY += 22;
+#else
                 statRowY += 26;
+#endif
             }
             if (pit->second.dexSupported) {
                 // Non tradotto di proposito: e' lo stesso trattamento che
@@ -429,7 +449,11 @@ void UI::drawGameList_Gallery() {
                                    std::to_string(pit->second.dexTotal);
                 const auto& ve = getTextEntry(val, fontSmall_, T().text);
                 drawText(val, rightEdge - (int)ve.w, statRowY, T().text, fontSmall_);
+#ifdef OH_LINUX
+                statRowY += 22;
+#else
                 statRowY += 26;
+#endif
             }
             if (pit->second.playTimeSeconds >= 0) {
                 // Sotto il Pokédex, stesso trattamento label/valore. Solo

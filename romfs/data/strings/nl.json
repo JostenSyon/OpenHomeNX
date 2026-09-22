@@ -279,9 +279,9 @@
     "scraper_boxart_clear_body": "Verwijdert gedownloade/gekopieerde 2D-covers. Samengestelde tegels (logo + achtergrond) keren terug. Doorgaan?",
     "scraper_boxart_cleared": "Boxartcache gewist: {0} bestand(en).",
     "scraper_boxart_style": "Boxartstijl",
-    "scraper_boxart_style_cover": "Boxart",
-    "scraper_boxart_style_shot": "Screenshot",
-    "scraper_boxart_style_title": "Titel",
     "scraper_rename_title": "ROMs hernoemen",
-    "scraper_rename_done": "ROMs hernoemd: {0}/{1}."
+    "scraper_rename_done": "ROMs hernoemd: {0}/{1}.",
+    "scraper_boxart_style_locale": "Lokaal",
+    "scraper_boxart_style_2d": "2D",
+    "scraper_boxart_style_3d": "3D"
 }

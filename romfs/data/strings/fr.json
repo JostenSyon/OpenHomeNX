@@ -279,9 +279,9 @@
     "scraper_boxart_clear_body": "Supprime les pochettes 2D téléchargées/copiées. Les tuiles composées (logo + fond) reviennent. Continuer ?",
     "scraper_boxart_cleared": "Cache des boxarts vidé : {0} fichier(s).",
     "scraper_boxart_style": "Style de boxart",
-    "scraper_boxart_style_cover": "Pochette",
-    "scraper_boxart_style_shot": "Capture",
-    "scraper_boxart_style_title": "Titre",
     "scraper_rename_title": "Renommer les ROMs",
-    "scraper_rename_done": "ROMs renommées : {0}/{1}."
+    "scraper_rename_done": "ROMs renommées : {0}/{1}.",
+    "scraper_boxart_style_locale": "Locale",
+    "scraper_boxart_style_2d": "2D",
+    "scraper_boxart_style_3d": "3D"
 }

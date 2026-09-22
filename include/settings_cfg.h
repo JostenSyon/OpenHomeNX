@@ -49,6 +49,6 @@ std::string remoteSyncUser(); // default "ark" (credenziale di default ArkOS)
 void setRemoteSyncUser(const std::string& v);
 std::string remoteSyncPass(); // default "ark"
 void setRemoteSyncPass(const std::string& v);
-int boxartStyle(); // Sviluppatore -> Stile boxart: 0=Copertina, 1=Screenshot, 2=Titolo
+int boxartStyle(); // Sviluppatore -> Stile boxart: 0=Locale, 1=2D, 2=3D
 void setBoxartStyle(int v);
 } // namespace Settings

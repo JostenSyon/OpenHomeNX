@@ -334,9 +334,16 @@ void UI::showSplash(int holdMs, bool fadeOut) {
     int texW, texH;
     SDL_QueryTexture(tex, nullptr, nullptr, &texW, &texH);
 
+#ifdef OH_LINUX
+    // 4:3 fullscreen: riempi lo schermo mantenendo il rapporto,
+    // tagliando i laterali (l'immagine e' centrata).
+    float scale = std::max(static_cast<float>(SCREEN_W) / texW,
+                           static_cast<float>(SCREEN_H) / texH);
+#else
     // Scale to fit screen while preserving aspect ratio
     float scale = std::min(static_cast<float>(SCREEN_W) / texW,
                            static_cast<float>(SCREEN_H) / texH);
+#endif
     int dstW = static_cast<int>(texW * scale);
     int dstH = static_cast<int>(texH * scale);
     SDL_Rect dst = {(SCREEN_W - dstW) / 2, (SCREEN_H - dstH) / 2, dstW, dstH};

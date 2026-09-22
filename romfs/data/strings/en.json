@@ -491,9 +491,9 @@
     "scraper_boxart_clear_body": "Removes downloaded/copied 2D covers. Composed tiles (logo + background) return. Continue?",
     "scraper_boxart_cleared": "Boxart cache cleared: {0} file(s).",
     "scraper_boxart_style": "Boxart style",
-    "scraper_boxart_style_cover": "Boxart",
-    "scraper_boxart_style_shot": "Screenshot",
-    "scraper_boxart_style_title": "Title",
     "scraper_rename_title": "Rename ROMs",
-    "scraper_rename_done": "ROMs renamed: {0}/{1}."
+    "scraper_rename_done": "ROMs renamed: {0}/{1}.",
+    "scraper_boxart_style_locale": "Local",
+    "scraper_boxart_style_2d": "2D",
+    "scraper_boxart_style_3d": "3D"
 }

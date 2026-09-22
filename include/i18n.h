@@ -491,9 +491,9 @@ namespace StrKey {
     constexpr const char* ScraperBoxartClearBody = "scraper_boxart_clear_body";
     constexpr const char* ScraperBoxartCleared = "scraper_boxart_cleared";
     constexpr const char* ScraperBoxartStyle   = "scraper_boxart_style";
-    constexpr const char* ScraperBoxartStyleCover = "scraper_boxart_style_cover";
-    constexpr const char* ScraperBoxartStyleShot = "scraper_boxart_style_shot";
-    constexpr const char* ScraperBoxartStyleTitle = "scraper_boxart_style_title";
+    constexpr const char* ScraperBoxartStyleLocale = "scraper_boxart_style_locale";
+    constexpr const char* ScraperBoxartStyle2d = "scraper_boxart_style_2d";
+    constexpr const char* ScraperBoxartStyle3d = "scraper_boxart_style_3d";
     constexpr const char* ScraperRenameTitle = "scraper_rename_title";
     constexpr const char* ScraperRenameDone  = "scraper_rename_done";
     constexpr const char* SetNormalizeSave     = "set_normalize_save";

@@ -491,9 +491,9 @@
     "scraper_boxart_clear_body": "Rimuove le cover 2D scaricate/copiate. Tornano le tile composte (logo + sfondo). Continuare?",
     "scraper_boxart_cleared": "Cache boxart pulita: {0} file.",
     "scraper_boxart_style": "Stile boxart",
-    "scraper_boxart_style_cover": "Copertina",
-    "scraper_boxart_style_shot": "Screenshot",
-    "scraper_boxart_style_title": "Titolo",
     "scraper_rename_title": "Rinomina ROM",
-    "scraper_rename_done": "ROM rinominate: {0}/{1}."
+    "scraper_rename_done": "ROM rinominate: {0}/{1}.",
+    "scraper_boxart_style_locale": "Locale",
+    "scraper_boxart_style_2d": "2D",
+    "scraper_boxart_style_3d": "3D"
 }

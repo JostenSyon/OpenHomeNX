@@ -279,9 +279,9 @@
     "scraper_boxart_clear_body": "Entfernt heruntergeladene/kopierte 2D-Cover. Zusammengesetzte Kacheln (Logo + Hintergrund) kehren zurück. Fortfahren?",
     "scraper_boxart_cleared": "Boxart-Cache geleert: {0} Datei(en).",
     "scraper_boxart_style": "Boxart-Stil",
-    "scraper_boxart_style_cover": "Boxart",
-    "scraper_boxart_style_shot": "Screenshot",
-    "scraper_boxart_style_title": "Titel",
     "scraper_rename_title": "ROMs umbenennen",
-    "scraper_rename_done": "ROMs umbenannt: {0}/{1}."
+    "scraper_rename_done": "ROMs umbenannt: {0}/{1}.",
+    "scraper_boxart_style_locale": "Lokal",
+    "scraper_boxart_style_2d": "2D",
+    "scraper_boxart_style_3d": "3D"
 }

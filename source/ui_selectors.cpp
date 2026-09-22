@@ -183,7 +183,11 @@ static bool removeRecursive(const std::string& p);
 // Stato persistito in settings.cfg (dock_order CSV + dock_visible). Disegno,
 // tap e navigazione sono tutti guidati da dockLayout(), cosi' l'ordine utente
 // non desincronizza mai le tre cose (era il bug del menu popup v0.1.37).
+#ifdef OH_LINUX
+static constexpr int DOCK_ROW_DX = 80; // 4:3: 7 voci x 80 = 560 <= 640
+#else
 static constexpr int DOCK_ROW_DX = 104; // spaziatura icone dock (condivisa con la molla)
+#endif
 
 void UI::dockStateLoad() {
     dockState_.customOrder.clear();
@@ -357,9 +361,9 @@ static void writeQuickMenu(const std::string& basePath, bool on);
 // passato dal chiamante perche' questa e' una funzione libera senza `this`.
 static std::string normalizeRowLabel() { return i18n::get(StrKey::SetNormalizeSave); }
 static std::string boxartStyleLabel(int v) {
-    if (v == 1) return i18n::get(StrKey::ScraperBoxartStyleShot);
-    if (v == 2) return i18n::get(StrKey::ScraperBoxartStyleTitle);
-    return i18n::get(StrKey::ScraperBoxartStyleCover);
+    if (v == 1) return i18n::get(StrKey::ScraperBoxartStyle2d);
+    if (v == 2) return i18n::get(StrKey::ScraperBoxartStyle3d);
+    return i18n::get(StrKey::ScraperBoxartStyleLocale);
 }
 static std::vector<std::string> saveMenuRows(GameType g, bool canSend) {
     std::vector<std::string> r = { "Backup save", "Browse backups", "Clean old backups" };
@@ -1370,9 +1374,16 @@ void UI::drawDock() {
         for (int i = 0; i < MAX_DOCK_SLOTS; i++) { dockSlide_[i] = 0.0f; dockSlideVel_[i] = 0.0f; }
         return;
     }
+#ifdef OH_LINUX
+    // 4:3: dock compatto sopra la status bar (445), sotto il preview (384).
+    constexpr int R = 26;
+    constexpr int ICON_R = 20;
+    constexpr int BTN_Y = 412;
+#else
     constexpr int R = 34;
     constexpr int ICON_R = 24;
     constexpr int BTN_Y = SCREEN_H - 110;
+#endif
     auto slots = dockLayout();
     if (slots.empty()) {
         dockClearFocus();
@@ -1380,7 +1391,7 @@ void UI::drawDock() {
     }
     // Animazione espelli (come la vecchia riga fissa): il target e' la
     // posizione della voce Eject nel layout, o fuori schermo se nascosta.
-    int ejectTarget = SCREEN_W / 2 + 104;
+    int ejectTarget = SCREEN_W / 2 + DOCK_ROW_DX;
     for (auto& s : slots)
         if (s.item == DockState::Item::Eject) ejectTarget = s.cx;
     float ejectAlphaT =
@@ -1482,7 +1493,12 @@ void UI::drawDock() {
             }
             if (lblKey) {
                 std::string lbl = i18n::get(lblKey);
+#ifdef OH_LINUX
+                // 4:3: sotto c'e' la status bar, label sopra l'icona.
+                int ly = BTN_Y - R - 32;
+#else
                 int ly = BTN_Y + R + 19; // un paio di px sotto l'icona, come nel radial
+#endif
                 SDL_Color sh = {0, 0, 0, 220};
                 // ombra rinforzata: alone 8 direzioni + leggero offset per staccare dal fondo
                 drawTextCentered(lbl, cx + 1, ly + 1, sh, font_);
@@ -1501,8 +1517,13 @@ void UI::drawDock() {
         }
     }
     if (dockState_.reorderMode) {
+#ifdef OH_LINUX
+        drawTextCentered("Sposta: L/R  Conferma: A  Annulla: B", SCREEN_W / 2,
+                         BTN_Y - R - 32, T().textDim, fontSmall_);
+#else
         drawTextCentered("Sposta: L/R  Conferma: A  Annulla: B", SCREEN_W / 2,
                          BTN_Y + R + 17, T().textDim, fontSmall_);
+#endif
     }
 }
 
@@ -1705,9 +1726,16 @@ void UI::drawGameSelectorFrame() {
     // Ingranaggio impostazioni in basso a destra, stessa riga delle banche.
     // Apre lo stesso menu del tasto + (menu dedicato in futuro).
     {
+#ifdef OH_LINUX
+        // 4:3: stessa riga del dock (BTN_Y=412 in drawDock()).
+        constexpr int GR = 22;
+        int gcx = SCREEN_W - 48;
+        int gcy = 412;
+#else
         constexpr int GR = 26;
         int gcx = SCREEN_W - 64;
         int gcy = SCREEN_H - 110;
+#endif
         drawRoundSelect(gcx, gcy, GR + 1, gsFocus_ == GSFocus::Settings);
         if (iconSettings_) {
             constexpr int SET_R = 20;
@@ -1814,16 +1842,26 @@ void UI::selectorTap(float px, float py, bool& running) {
         markDirty();
         return;
     }
+#ifdef OH_LINUX
+    constexpr float BTN_Y = 412; // sync con drawDock()
+    constexpr float HIT_R = 34; // spacing 80: raggio ridotto per non sovrapporre i vicini
+#else
     constexpr float BTN_Y = SCREEN_H - 110;
+    constexpr float HIT_R = 45;
+#endif
     for (auto& s : dockLayout()) {
         if (s.item == DockState::Item::Eject && ejectBtnA_ <= 128) continue; // in fade: non cliccabile
-        if (dist2(px, py, (float)s.cx, BTN_Y) < 45 * 45) {
+        if (dist2(px, py, (float)s.cx, BTN_Y) < HIT_R * HIT_R) {
             dockFocusItem(s.item); // setter unico: azzera avatar/gear/launch/chevron
             dockActivateFocused(running);
             return;
         }
     }
+#ifdef OH_LINUX
+    if (dist2(px, py, SCREEN_W - 48, 412) < 34 * 34) {
+#else
     if (dist2(px, py, SCREEN_W - 64, BTN_Y) < 40 * 40) {
+#endif
         openSettings(); // il gear apre SEMPRE le impostazioni
         markDirty();
         return;
@@ -1907,7 +1945,7 @@ bool UI::bottomButtonsAnim() {
 #else
     bool vis = false;
 #endif
-    float et = (float)SCREEN_W / 2 + 104.0f;
+    float et = (float)SCREEN_W / 2 + (float)DOCK_ROW_DX;
     float at = vis ? 255.0f : 0.0f;
     if (ejectBtnX_ < 0) return true;
     if (ejectAnimStage_ != 0) return true;
@@ -3086,14 +3124,24 @@ bool UI::isGameLaunchableAt(int idx) {
 // (dove disegnare i bottoni) e il puntamento analogico in
 // handleRadialMenuInput() (quale voce "punta" lo stick) cosi' restano
 // sempre coerenti fra loro.
-static float radialItemAngleDeg(int j, int n) {
-    // Passo fisso fra voci adiacenti: l'arco totale cresce con n invece di
-    // restare fisso, cosi' le icone non si stringono mai fra loro (vedi nota
-    // sopra radialItemCenter). Sempre centrato in alto (270).
+// Centro del ventaglio in base all'ancora: al centro apre in alto,
+// ai bordi apre di lato (4:3: ai lati non c'e' spazio per l'arco orizzontale).
+// Su Switch resta sempre 270 (comportamento originale invariato).
+static float radialCenterDeg(int ax) {
+#ifdef OH_LINUX
+    constexpr int SCREEN_W = 640;
+    if (ax < SCREEN_W / 3) return 0.0f;        // bordo sinistro: apri a destra
+    if (ax > SCREEN_W * 2 / 3) return 180.0f;  // bordo destro: apri a sinistra
+#endif
+    (void)ax;
+    return 270.0f;
+}
+
+static float radialItemAngleOriented(int j, int n, float centerDeg) {
     constexpr float ANGLE_STEP = 45.0f;
-    if (n <= 1) return 270.0f;
+    if (n <= 1) return centerDeg;
     float span = ANGLE_STEP * (n - 1);
-    return (270.0f - span / 2.0f) + ANGLE_STEP * j;
+    return (centerDeg - span / 2.0f) + ANGLE_STEP * j;
 }
 
 // Centro del bottone j su n intorno all'ancora (ax, ay). Clampata a
@@ -3104,10 +3152,22 @@ static void radialItemCenter(int ax, int ay, int j, int n, int& cx, int& cy) {
     // SCREEN_W/H ridichiarati localmente (sono private in UI, non
     // raggiungibili da una funzione libera) -- stessa convenzione delle
     // altre costanti di layout duplicate per funzione in questo file.
+#ifdef OH_LINUX
+    constexpr int SCREEN_W = 640, SCREEN_H = 480;
+#else
     constexpr int SCREEN_W = 1280, SCREEN_H = 720;
+#endif
+#ifdef OH_LINUX
+    // 4:3: ventaglio compatto (card piccole, schermo stretto).
+    constexpr int EDGE = 8, HALF = 32;
+    float R = 84.0f;
+#else
     constexpr int EDGE = 12, HALF = 42; // 42 ~= raggio bottone (34) + alone fuoco
     float R = 112.0f; // fisso, un po' piu' distante ora che l'ancora e' il centro vero della card (era 99)
-    float rad = radialItemAngleDeg(j, n) * 3.14159265f / 180.0f;
+#endif
+    // 4:3: il ventaglio e' orientato (centro/alto, bordi/lato) e resta
+    // centrato sull'ancora; il clamp sotto e' solo sicurezza residua.
+    float rad = radialItemAngleOriented(j, n, radialCenterDeg(ax)) * 3.14159265f / 180.0f;
     int x = ax + (int)(R * std::cos(rad));
     int y = ay + (int)(R * std::sin(rad));
     if (x < EDGE + HALF) x = EDGE + HALF;
@@ -3119,7 +3179,12 @@ static void radialItemCenter(int ax, int ay, int j, int n, int& cx, int& cy) {
 
 void UI::openRadialMenu(int idx) {
     if (idx < 0 || idx >= (int)availableGames_.size()) return;
+    // TENERE IN SYNC con la griglia Classica in drawGameSelectorFrame().
+#ifdef OH_LINUX
+    constexpr int COLS = 4, CARD_W = 140, CARD_H = 190, CARD_GAP = 15, GAMES_PER_PAGE = 8;
+#else
     constexpr int COLS = 6, CARD_W = 160, CARD_H = 200, CARD_GAP = 20, GAMES_PER_PAGE = 12;
+#endif
     int numGames = (int)availableGames_.size();
     int pageStart = selPageShown_ * GAMES_PER_PAGE;
     int pageEnd = std::min(pageStart + GAMES_PER_PAGE, numGames);
@@ -3228,7 +3293,7 @@ void UI::handleRadialMenuInput(const SDL_Event& event, bool& running) {
         }
     } else if (event.type == SDL_CONTROLLERAXISMOTION) {
         // Puntamento analogico vero: la voce evidenziata segue l'angolo
-        // dello stick (stessa convenzione di radialItemAngleDeg), non
+        // dello stick (stessa convenzione di radialItemAngleOriented), non
         // scatta a sinistra/destra come un tasto digitale. Leggo entrambi
         // gli assi da SDL_GameControllerGetAxis (non solo quello che ha
         // generato l'evento) per avere sempre il vettore 2D completo.
@@ -3247,8 +3312,12 @@ void UI::handleRadialMenuInput(const SDL_Event& event, bool& running) {
         if (ang < 0.0f) ang += 360.0f;
         int best = 0;
         float bestDiff = 1e9f;
+        float center = radialCenterDeg(radialAnchorX_);
         for (int j = 0; j < n; j++) {
-            float diff = std::fabs(ang - radialItemAngleDeg(j, n));
+            float ia = radialItemAngleOriented(j, n, center);
+            if (ia < 0.0f) ia += 360.0f;
+            if (ia >= 360.0f) ia -= 360.0f;
+            float diff = std::fabs(ang - ia);
             if (diff > 180.0f) diff = 360.0f - diff;
             if (diff < bestDiff) { bestDiff = diff; best = j; }
         }
@@ -3346,7 +3415,11 @@ void UI::drawRadialMenu() {
     int n = (int)radialItems_.size();
     if (n <= 0) return;
     float ease = 1.0f - (1.0f - radialAnim_) * (1.0f - radialAnim_) * (1.0f - radialAnim_); // ease-out cubic
+#ifdef OH_LINUX
+    constexpr int BTN_R = 26, ICON_R = 18;
+#else
     constexpr int BTN_R = 34, ICON_R = 24;
+#endif
     for (int j = 0; j < n; j++) {
         int tx, ty;
         radialItemCenter(radialAnchorX_, radialAnchorY_, j, n, tx, ty);
@@ -6463,14 +6536,23 @@ void UI::settingsRowActivate(int cat, int row, int dir, bool& running) {
         if (tag == DevRow::DevSync) {
             remoteSyncTestRow();
         } else if (tag == DevRow::Rename) {
-            // Rinomina ROM: rileva lingua dall'header e propone nomi No-Intro;
-            // conferma prima di toccare i file (ROM + save/stati + gamelist).
+            // Rinomina ROM: passa a setaccio TUTTE le ROM nei path import
+            // abilitati (anche senza save), rileva lingua dall'header e
+            // propone nomi No-Intro; salta quelle gia' corrette; conferma
+            // prima di toccare i file (ROM + save/stati + gamelist).
             std::vector<RomInfo::RenamePlan> plans;
-            for (const auto& g : importedGames_) {
-                std::string rom = Emulator::findRomForSave(g.filePath, g.type);
-                if (rom.empty()) continue;
-                RomInfo::RenamePlan p;
-                if (RomInfo::planRename(rom, p)) plans.push_back(p);
+            {
+                std::vector<std::string> dirs;
+                for (const auto& e : importPaths_)
+                    if (e.enabled && !e.path.empty()) dirs.push_back(e.path);
+                size_t scanned = 0;
+                for (const auto& rom : RomInfo::scanRoms(dirs)) {
+                    scanned++;
+                    RomInfo::RenamePlan p;
+                    if (RomInfo::planRename(rom, p)) plans.push_back(p);
+                }
+                DebugLog::line("rominfo: rename scan %zu ROM -> %zu da rinominare",
+                               scanned, plans.size());
             }
             std::string rtitle = i18n::get(StrKey::ScraperRenameTitle);
             if (plans.empty()) {
@@ -6599,10 +6681,19 @@ void UI::settingsRowActivate(int cat, int row, int dir, bool& running) {
 
 void UI::drawSettingsPopup() {
     drawRect(0, 0, SCREEN_W, SCREEN_H, T().overlay);
+#ifdef OH_LINUX
+    // 4:3 (640x480): popup compatto, stessa struttura (12 righe max
+    // in Sviluppatore x 32px + titolo = 454 <= 460).
+    constexpr int POP_W = 620;
+    constexpr int POP_H = 460;
+    constexpr int ROW_H = 32;
+    constexpr int CAT_W = 170;
+#else
     constexpr int POP_W = 1000;
     constexpr int POP_H = 560;
     constexpr int ROW_H = 44;
     constexpr int CAT_W = 280;
+#endif
     int popX = (SCREEN_W - POP_W) / 2;
     int popY = (SCREEN_H - POP_H) / 2;
     drawRect(popX, popY, POP_W, POP_H, T().panelBg);
@@ -6623,7 +6714,11 @@ void UI::drawSettingsPopup() {
     // Divisore verticale
     SDL_SetRenderDrawColor(renderer_, T().popupBorder.r, T().popupBorder.g, T().popupBorder.b, T().popupBorder.a);
     int divX = popX + CAT_W + 10;
+#ifdef OH_LINUX
+    SDL_RenderDrawLine(renderer_, divX, listY, divX, popY + POP_H - 20);
+#else
     SDL_RenderDrawLine(renderer_, divX, listY, divX, popY + POP_H - 50);
+#endif
     int rx = divX + 24;
     if (setCat_ == 1) {
         // Aspetto: le voci "Zoom giochi" (3) e "Menu radiale" (4) sono voci
