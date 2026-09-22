@@ -1,0 +1,15 @@
+# Artefatti build R36S (rigenerabili, mai in git)
+build/
+build-r36s/
+rust-target/
+OpenHomeNX
+*.o
+*.d
+*.log
+debug.log
+debug.enable
+settings.cfg
+cache/
+import/
+romfs:/
+sdmc:/

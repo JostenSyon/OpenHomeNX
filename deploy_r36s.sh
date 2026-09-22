@@ -10,8 +10,10 @@ PASS="${3:-ark}"
 if [ -z "$IP" ]; then echo "Uso: $0 <IP_R36S> [user] [pass]"; exit 1; fi
 
 PROJ="$(cd "$(dirname "$0")" && pwd)"
-R36SDIR="$PROJ/../r36s/OpenHomeNX"
-if [ ! -d "$R36SDIR" ]; then R36SDIR="$PROJ/r36s/OpenHomeNX"; fi
+# Build infra versionata in platform/r36s (fallback: vecchia dir fuori repo).
+R36SDIR="$PROJ/platform/r36s"
+if [ ! -f "$R36SDIR/Makefile" ]; then R36SDIR="$PROJ/../r36s/OpenHomeNX"; fi
+if [ ! -f "$R36SDIR/Makefile" ]; then R36SDIR="$PROJ/r36s/OpenHomeNX"; fi
 if [ ! -f "$R36SDIR/Makefile" ]; then echo "R36S dir non trovata: $R36SDIR"; exit 1; fi
 
 echo "==> clean build R36S"

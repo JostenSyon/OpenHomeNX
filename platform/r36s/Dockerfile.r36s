@@ -1,0 +1,27 @@
+# OpenHomeNX - build container per R36S (aarch64-linux-gnu).
+# Su Mac arm64 questo container gira a velocita' nativa (nessuna emulazione).
+# Compila sia il crate Rust (libopenhome_switch.a) sia il C++ di OpenHomeNX,
+# producendo il binario OpenHomeNX per ArkOS.
+FROM debian:bookworm-slim
+
+# Toolchain + SDL2 + dipendenze grafiche (per SDL2_image/ttf: png/jpeg/webp)
+# + rete (curl/mbedtls per update_net/remote_sync/autoupdate su Linux)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential g++ gcc make pkg-config curl ca-certificates git \
+        libsdl2-dev libsdl2-image-dev libsdl2-ttf-dev \
+        libfreetype-dev libharfbuzz-dev \
+        libpng-dev libjpeg-dev libwebp-dev \
+        libcurl4-openssl-dev libmbedtls-dev \
+        && rm -rf /var/lib/apt/lists/*
+
+# Rust (nightly) per il target aarch64-unknown-linux-gnu
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain nightly \
+    && . $HOME/.cargo/env \
+    && rustup target add aarch64-unknown-linux-gnu \
+    && rustup component add rustfmt
+
+ENV PATH="/root/.cargo/bin:${PATH}"
+ENV CARGO_TARGET_DIR=/build/rust-target
+
+WORKDIR /src
+CMD ["/bin/bash"]
