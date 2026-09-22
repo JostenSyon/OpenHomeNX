@@ -189,13 +189,41 @@ int fuzzyScore(const std::string& query, const std::string& cand) {
     return 0;
 }
 
+// Separa suffisso arte noto dallo stem ("Foo-image" -> {"Foo","-image"}).
+// Suffisso "" se nessuno (es. "Foo").
+std::pair<std::string, std::string> splitArtSuffix(const std::string& stem) {
+    static const char* kSuf[] = {"-thumb", "-image", "-marquee", "-screenshot",
+                                 "-boxart", "-cover", "-title", "-wheel", "-fanart", "-logo",
+                                 "-box", "-3d", "-front", "-back", "-spine", "-snap"};
+    std::string slow = toLowerStr(stem);
+    for (const char* s : kSuf) {
+        std::string ss = s;
+        if (slow.size() > ss.size() &&
+            slow.compare(slow.size() - ss.size(), ss.size(), ss) == 0)
+            return {stem.substr(0, stem.size() - ss.size()), ss};
+    }
+    return {stem, ""};
+}
+
+// Suffissi mai usabili come copertina (banner, screenshot, loghi, dorsi...).
+bool isJunkSuffix(const std::string& suf) {
+    return suf == "-marquee" || suf == "-screenshot" || suf == "-logo" ||
+           suf == "-fanart" || suf == "-wheel" || suf == "-title" ||
+           suf == "-back" || suf == "-spine" || suf == "-snap";
+}
+
+// Suffissi con arte da copertina vera (frontali/box dello scraper ES).
+bool isCoverSuffix(const std::string& suf) {
+    return suf.empty() || suf == "-image" || suf == "-boxart" ||
+           suf == "-cover" || suf == "-box" || suf == "-3d" || suf == "-front";
+}
+
 // Match fuzzy sui file in images/: toglie suffissi d'arte noti e confronta
 // lo stem col base ROM (score>=70, es. "Pokemon Rosso Fuoco-thumb" vs
 // "Pokemon - Versione Rosso Fuoco (Italy)"). Serve quando i nomi non
 // coincidono alla lettera (Skyscraper inaffidabile sui nomi).
+// I file con suffissi spazzatura (marquee/screenshot/...) sono esclusi.
 std::string imagesFuzzy(const std::string& romDir, const std::string& base) {
-    static const char* kSuf[] = {"-thumb", "-image", "-marquee", "-screenshot",
-                                 "-boxart", "-cover", "-title", "-wheel", "-fanart", "-logo"};
     static const char* kExt[] = {".png", ".jpg", ".jpeg"};
     std::string imgDir = romDir + "/images";
     DIR* d = opendir(imgDir.c_str());
@@ -218,16 +246,8 @@ std::string imagesFuzzy(const std::string& romDir, const std::string& base) {
             }
         }
         if (ext.empty()) continue;
-        std::string stem = name.substr(0, name.size() - ext.size());
-        std::string slow = toLowerStr(stem);
-        for (const char* s : kSuf) {
-            std::string ss = s;
-            if (slow.size() > ss.size() &&
-                slow.compare(slow.size() - ss.size(), ss.size(), ss) == 0) {
-                stem = stem.substr(0, stem.size() - ss.size());
-                break;
-            }
-        }
+        auto [stem, suf] = splitArtSuffix(name.substr(0, name.size() - ext.size()));
+        if (isJunkSuffix(suf)) continue;
         int sc = fuzzyScore(stem, base);
         if (sc < 70 || sc < best) continue;
         size_t nw = splitWords(normName(stem)).size();
@@ -250,43 +270,10 @@ static Style curStyle() {
     return (Style)v;
 }
 
-// Dimensioni IHDR di un PNG (solo .png). false se non leggibile.
-bool pngDims(const std::string& path, unsigned& w, unsigned& h) {
-    std::ifstream f(path, std::ios::binary);
-    if (!f.good()) return false;
-    unsigned char hdr[24] = {0};
-    f.read((char*)hdr, 24);
-    if (f.gcount() != 24) return false;
-    static const unsigned char kPng[8] =
-        {0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A};
-    if (memcmp(hdr, kPng, 8) != 0) return false;
-    w = ((unsigned)hdr[16] << 24) | ((unsigned)hdr[17] << 16) |
-        ((unsigned)hdr[18] << 8) | (unsigned)hdr[19];
-    h = ((unsigned)hdr[20] << 24) | ((unsigned)hdr[21] << 16) |
-        ((unsigned)hdr[22] << 8) | (unsigned)hdr[23];
-    return w > 0 && h > 0;
-}
-
-// "3D-ish": nome con box/3d, oppure PNG quadrato (tipico dei render 3D;
-// le 2D frontali sono portrait, gli screenshot landscape).
-bool is3dFile(const std::string& fullPath, const std::string& stem) {
-    std::string low = toLowerStr(stem);
-    if (low.find("box") != std::string::npos) return true;
-    if (low.find("3d") != std::string::npos) return true;
-    std::string llow = toLowerStr(fullPath);
-    if (llow.size() < 4 ||
-        llow.compare(llow.size() - 4, 4, ".png") != 0)
-        return false;
-    unsigned w = 0, h = 0;
-    if (!pngDims(fullPath, w, h)) return false;
-    double r = (double)w / (double)h;
-    return r > 0.85 && r < 1.15;
-}
-
-// Come imagesFuzzy ma solo candidati 3D-ish (score>=70).
-std::string imagesFuzzy3d(const std::string& romDir, const std::string& base) {
-    static const char* kSuf[] = {"-thumb", "-image", "-marquee", "-screenshot",
-                                 "-boxart", "-cover", "-title", "-wheel", "-fanart", "-logo"};
+// Come imagesFuzzy ma solo file con arte da copertina vera (niente thumb,
+// marquee, screenshot...): e' da qui che lo scraper ES mette i box 3D
+// (suffissi -image/-boxart/-cover/-box/-3d/-front o nessun suffisso).
+std::string imagesFuzzyImage(const std::string& romDir, const std::string& base) {
     static const char* kExt[] = {".png", ".jpg", ".jpeg"};
     std::string imgDir = romDir + "/images";
     DIR* d = opendir(imgDir.c_str());
@@ -309,29 +296,19 @@ std::string imagesFuzzy3d(const std::string& romDir, const std::string& base) {
             }
         }
         if (ext.empty()) continue;
-        std::string stem = name.substr(0, name.size() - ext.size());
-        std::string slow = toLowerStr(stem);
-        for (const char* s : kSuf) {
-            std::string ss = s;
-            if (slow.size() > ss.size() &&
-                slow.compare(slow.size() - ss.size(), ss.size(), ss) == 0) {
-                stem = stem.substr(0, stem.size() - ss.size());
-                break;
-            }
-        }
-        std::string full = imgDir + "/" + name;
-        if (!is3dFile(full, name)) continue;
+        auto [stem, suf] = splitArtSuffix(name.substr(0, name.size() - ext.size()));
+        if (!isCoverSuffix(suf)) continue;
         int sc = fuzzyScore(stem, base);
         if (sc < 70 || sc < best) continue;
         size_t nw = splitWords(normName(stem)).size();
         if (sc == best && nw >= bestWords) continue;
         best = sc;
         bestWords = nw;
-        bestPath = full;
+        bestPath = imgDir + "/" + name;
     }
     closedir(d);
     if (!bestPath.empty())
-        DebugLog::line("boxart: %s fuzzy-3d images '%s' (score %d)",
+        DebugLog::line("boxart: %s fuzzy-image images '%s' (score %d)",
                        base.c_str(), bestPath.c_str(), best);
     return bestPath;
 }
@@ -341,7 +318,9 @@ std::string imagesFuzzy3d(const std::string& romDir, const std::string& base) {
 //  Locale: 1. images/<base>[-image] 2. gamelist (mai screenshot)
 //           3. images/<base>-thumb 4. fuzzy su images/ (nomi diversi)
 //  Box2d: niente locale (solo download) -> "" sempre qui.
-//  Box3d: solo arte 3D locale (nomi box/3d o PNG quadrato).
+//  Box3d: solo file con arte da copertina (lo scraper ES ci mette i box 3D):
+//         exact "", "-image", poi gamelist (mai screenshot), poi fuzzy
+//         ristretto ai suffissi cover. Niente thumb/marquee/screenshot.
 std::string localCover(const std::string& romPath, Style style) {
     std::string dir = parentDir(romPath);
     std::string file = fileName(romPath);
@@ -349,7 +328,11 @@ std::string localCover(const std::string& romPath, Style style) {
     if (dir.empty() || file.empty()) return "";
     if (style == Style::Box2d) return ""; // solo download
     if (style == Style::Box3d) {
-        std::string hit = imagesFuzzy3d(dir, base);
+        std::string hit = imagesDirHit(dir, base, false);
+        if (!hit.empty()) return hit;
+        hit = gamelistImage(dir, file);
+        if (!hit.empty() && !isScreenshotPath(hit)) return hit;
+        hit = imagesFuzzyImage(dir, base);
         if (hit.empty())
             DebugLog::line("boxart: %s 3D non trovato in locale", base.c_str());
         return hit;
