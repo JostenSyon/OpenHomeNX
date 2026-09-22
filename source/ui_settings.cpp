@@ -885,7 +885,7 @@ void UI::drawSettingsPopup() {
             drawRect(popX + 20, rowY, CAT_W - 20, ROW_H - 4, T().menuHighlight);
             drawRectOutline(popX + 20, rowY, CAT_W - 20, ROW_H - 4, T().cursor, 2);
         }
-        drawText(i18n::get(cats[c]), popX + 36, rowY + 8, T().text, font_);
+        drawText(i18n::get(cats[c]), popX + 26, rowY + 8, T().text, font_);
     }
     // Divisore verticale
     SDL_SetRenderDrawColor(renderer_, T().popupBorder.r, T().popupBorder.g, T().popupBorder.b, T().popupBorder.a);
@@ -996,8 +996,35 @@ void UI::drawSettingsPopup() {
         }
     } else {
         int n = settingsRowCount(setCat_);
-        for (int r = 0; r < n; r++) {
-            int rowY = listY + r * ROW_H;
+        // Finestra scorrevole: centra la selezione, lascia spazio per footer.
+        // visRows viene dallo spazio POPUP davvero disponibile (gia' meno
+        // margine footer via -30/-40) -- niente cap fisso sopra: un cap
+        // piu' stretto dello spazio reale (5 su Switch, 8 su R36S) era
+        // rimasto da quando Sviluppatore aveva meno voci, e con lo scroll
+        // ora coerente (vedi break sotto) tagliava righe che c'entravano
+        // benissimo invece di scrollare solo quando serve davvero.
+#ifdef OH_LINUX
+        int visRows = (popY + POP_H - 30 - listY) / ROW_H;
+#else
+        int visRows = (popY + POP_H - 40 - listY) / ROW_H;
+#endif
+        if (visRows < 1) visRows = 1;
+        int first = 0;
+        if (n > visRows) {
+            first = setRow_ - visRows / 2;
+            if (first < 0) first = 0;
+            if (first + visRows > n) first = n - visRows;
+        }
+        // Frecce di scroll (come liste banche e popup): indicano le voci sopra/sotto.
+        if (first > 0)
+            drawTextCentered("^", rx + (POP_W - (rx - popX) - 28) / 2, listY - 14, T().arrow, font_);
+        if (first + visRows < n)
+            drawTextCentered("v", rx + (POP_W - (rx - popX) - 28) / 2, listY + visRows * ROW_H + 2, T().arrow, font_);
+        for (int r = first; r < n; r++) {
+            int vy = r - first;
+            if (vy >= visRows) break; // rispetta il cap che decide anche dove va la freccia sotto
+            int rowY = listY + vy * ROW_H;
+            if (rowY + ROW_H > popY + POP_H) break;
             if (r == setRow_ && !setFocusLeft_) {
                 drawRect(rx - 8, rowY, POP_W - (rx - popX) - 28, ROW_H - 4, T().menuHighlight);
                 drawRectOutline(rx - 8, rowY, POP_W - (rx - popX) - 28, ROW_H - 4, T().cursor, 2);
@@ -1006,7 +1033,17 @@ void UI::drawSettingsPopup() {
             std::string v = settingsRowValue(setCat_, r);
             if (!v.empty()) {
                 const auto& e = getTextEntry(v, font_, T().selected);
-                drawText(v, popX + POP_W - 36 - e.w, rowY + 8, T().selected, font_);
+                // Tronca a larghezza utile (evita che "Aggiornamento" spinga fuori).
+                std::string vt = v;
+                int maxV = popX + POP_W - 36 - (rx + 8) - 12;
+                while (vt.size() > 4 && e.w > maxV) {
+                    vt = vt.substr(0, vt.size() - 5) + "..";
+                    // ricalcola su vt, non su v
+                    auto ee = getTextEntry(vt, font_, T().selected);
+                    if (ee.w <= maxV) break;
+                }
+                const auto& ee = getTextEntry(vt, font_, T().selected);
+                drawText(vt, popX + POP_W - 36 - ee.w, rowY + 8, T().selected, font_);
             }
         }
     }
