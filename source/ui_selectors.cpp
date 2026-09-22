@@ -6581,14 +6581,16 @@ void UI::settingsRowActivate(int cat, int row, int dir, bool& running) {
                 }
             }
         } else if (tag == DevRow::Style) {
-            // Stile boxart: B/X cicla lo stile.
+            // Stile boxart: B/X cicla lo stile e ricarica subito le tile
+            // dalla cache dello stile (altrimenti restano quelle vecchie
+            // finche' non si fa Aggiorna).
             int v = (Settings::boxartStyle() + dir + 3) % 3;
             Settings::setBoxartStyle(v);
             DebugLog::line("settings: boxart_style=%d", v);
+            loadGameIcons();
         } else if (tag == DevRow::Update) {
-            // Aggiorna boxart (ROM).
-            // R36S: riuso solo locale (Skyscraper images/gamelist -> cache).
-            // Switch: cache hit, altrimenti download se la rete e' pronta.
+            // Aggiorna boxart (ROM): cache hit, poi locale (stile), poi
+            // download 2D se la rete e' pronta (entrambe le piattaforme).
             bool netOk = true;
 #ifndef OH_LINUX
             netOk = updateNetEnsureReady();
