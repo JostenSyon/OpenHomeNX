@@ -1573,6 +1573,16 @@ void UI::drawGameSelectorFrame() {
         drawGameList_Gallery();
     } else {
     int numGames = (int)availableGames_.size();
+#ifdef OH_LINUX
+    // Nativo 4:3 (640px): 4 colonne, card compatte (riga da 605px centrata).
+    constexpr int COLS = 4;
+    constexpr int ROWS_PER_PAGE = 2;
+    constexpr int GAMES_PER_PAGE = COLS * ROWS_PER_PAGE;
+    constexpr int CARD_W = 140;
+    constexpr int CARD_H = 190;
+    constexpr int CARD_GAP = 15;
+    constexpr int ICON_SIZE = 110;
+#else
     constexpr int COLS = 6;
     constexpr int ROWS_PER_PAGE = 2;
     constexpr int GAMES_PER_PAGE = COLS * ROWS_PER_PAGE;
@@ -1580,6 +1590,7 @@ void UI::drawGameSelectorFrame() {
     constexpr int CARD_H = 200;
     constexpr int CARD_GAP = 20;
     constexpr int ICON_SIZE = 128;
+#endif
 
     totalPages = (numGames + GAMES_PER_PAGE - 1) / GAMES_PER_PAGE;
     // Slide orizzontale tipo Switch: la pagina disegnata insegue il target.

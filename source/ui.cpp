@@ -71,9 +71,8 @@ bool UI::init() {
     SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_BLEND);
 
 #ifdef OH_LINUX
-    // Logica: tutto il codice disegna in coordinate SCREEN_W x SCREEN_H
-    // (1280x720). Su display più piccoli (640x480 R36S) SDL applica lo
-    // scaling automatico con proporzioni preservate.
+    // Nativo 4:3 (640x480): logical 1:1, niente letterbox. Il layout
+    // usa SCREEN_W/H ovunque, quindi centrature e barre seguono da sole.
     SDL_RenderSetLogicalSize(renderer_, SCREEN_W, SCREEN_H);
     SDL_RenderSetIntegerScale(renderer_, SDL_FALSE);
 #endif
@@ -89,13 +88,12 @@ bool UI::init() {
     plGetSharedFontByType(&fontData, PlSharedFontType_Standard);
     SDL_RWops* rw = SDL_RWFromMem(fontData.address, fontData.size);
 #ifdef OH_LINUX
-    // Build Linux: la UI è disegnata a SCREEN_W/H (1280x720) e downscalata
-    // al display più piccolo (R36S 640x480), quindi i font vanno ingranditi
-    // in proporzione (~1.8x) per restare leggibili dopo lo scaling.
-    font_ = TTF_OpenFontRW(rw, 0, 32);
-    fontSmall_ = TTF_OpenFontRW(SDL_RWFromMem(fontData.address, fontData.size), 0, 25);
-    fontLarge_ = TTF_OpenFontRW(SDL_RWFromMem(fontData.address, fontData.size), 0, 40);
-    fontAbout_ = TTF_OpenFontRW(SDL_RWFromMem(fontData.address, fontData.size), 0, 30);
+    // Nativo 4:3: nessuna downscale, dimensioni originali (le celle del
+    // layout sono disegnate per queste misure).
+    font_ = TTF_OpenFontRW(rw, 0, 18);
+    fontSmall_ = TTF_OpenFontRW(SDL_RWFromMem(fontData.address, fontData.size), 0, 14);
+    fontLarge_ = TTF_OpenFontRW(SDL_RWFromMem(fontData.address, fontData.size), 0, 28);
+    fontAbout_ = TTF_OpenFontRW(SDL_RWFromMem(fontData.address, fontData.size), 0, 20);
 #else
     font_ = TTF_OpenFontRW(rw, 0, 18);
     fontSmall_ = TTF_OpenFontRW(SDL_RWFromMem(fontData.address, fontData.size), 0, 14);
@@ -106,9 +104,9 @@ bool UI::init() {
     if (!font_ || !fontSmall_) {
 #ifdef OH_LINUX
         if (!font_)
-            font_ = TTF_OpenFont("romfs:/fonts/default.ttf", 32);
+            font_ = TTF_OpenFont("romfs:/fonts/default.ttf", 18);
         if (!fontSmall_)
-            fontSmall_ = TTF_OpenFont("romfs:/fonts/default.ttf", 25);
+            fontSmall_ = TTF_OpenFont("romfs:/fonts/default.ttf", 14);
 #else
         if (!font_)
             font_ = TTF_OpenFont("romfs:/fonts/default.ttf", 18);
@@ -118,9 +116,9 @@ bool UI::init() {
     }
 #ifdef OH_LINUX
     if (!fontLarge_)
-        fontLarge_ = TTF_OpenFont("romfs:/fonts/default.ttf", 40);
+        fontLarge_ = TTF_OpenFont("romfs:/fonts/default.ttf", 28);
     if (!fontAbout_)
-        fontAbout_ = TTF_OpenFont("romfs:/fonts/default.ttf", 30);
+        fontAbout_ = TTF_OpenFont("romfs:/fonts/default.ttf", 20);
 #else
     if (!fontLarge_)
         fontLarge_ = TTF_OpenFont("romfs:/fonts/default.ttf", 28);

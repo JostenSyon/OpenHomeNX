@@ -456,8 +456,14 @@ const std::vector<UI::SlotDisplay>& UI::getSlotDisplays(Panel panel, int box) {
         sd.level   = pkm.level();
         sd.ball    = pkm.ball();
         sd.name    = pkm.displayName();
+#ifdef OH_LINUX
+        // Celle 4:3 da 47px: nomi troncati corti (display-only, dati intatti).
+        if (sd.name.length() > 6)
+            sd.name = sd.name.substr(0, 5) + ".";
+#else
         if (sd.name.length() > 10)
             sd.name = sd.name.substr(0, 9) + ".";
+#endif
     }
     return slotDisplayCache_.emplace(key, std::move(displays)).first->second;
 }

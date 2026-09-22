@@ -317,11 +317,35 @@ private:
     // color rect (which stays as fallback), e.g. Emerald artwork.
     std::unordered_map<GameType, SDL_Texture*> tileBgCache_;
 
-    // Screen dimensions (Switch: 1280x720)
+    // Screen dimensions (Switch: 1280x720, R36S nativo 4:3: 640x480)
+#ifdef OH_LINUX
+    static constexpr int SCREEN_W = 640;
+    static constexpr int SCREEN_H = 480;
+#else
     static constexpr int SCREEN_W = 1280;
     static constexpr int SCREEN_H = 720;
+#endif
 
     // Layout
+#ifdef OH_LINUX
+    // Nativo 4:3 (640px): due pannelli affiancati come da originale,
+    // scalati per stare fianco a fianco (305+305). Colonne fisse da save.
+    static constexpr int PANEL_W   = 305;
+    static constexpr int PANEL_X_L = 10;
+    static constexpr int PANEL_X_R = 325;
+    static constexpr int BOX_HDR_Y = 10;
+    static constexpr int BOX_HDR_H = 40;
+    static constexpr int GRID_Y    = 55;
+
+    // Grid cells scalate: 6 col x 47px = 302 <= 305; 5 righe x 70 = 366
+    // (55+366=421, status bar a 445).
+    static constexpr int CELL_W   = 47;
+    static constexpr int CELL_H   = 70;
+    static constexpr int CELL_PAD = 4;
+
+    // Sprite size within a cell
+    static constexpr int SPRITE_SIZE = 34;
+#else
     static constexpr int PANEL_W   = 610;
     static constexpr int PANEL_X_L = 15;
     static constexpr int PANEL_X_R = 655;
@@ -336,6 +360,7 @@ private:
 
     // Sprite size within a cell
     static constexpr int SPRITE_SIZE = 68;
+#endif
 
     // Status bar
     static constexpr int STATUS_BAR_H = 40;

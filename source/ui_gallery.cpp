@@ -69,17 +69,31 @@ SDL_Color UI::computeAccentColor(SDL_Surface* surf) const {
 namespace {
 // Geometria condivisa fra drawGameList_Gallery() e selectorTapGallery():
 // TENERLE IN SYNC se si cambia una delle due.
+#ifdef OH_LINUX
+// Nativo 4:3 (640x480): lista stretta + preview compatto.
+constexpr int GAL_LIST_X = 20, GAL_LIST_Y = 96, GAL_LIST_W = 200;
+constexpr int GAL_ROW_H = 42, GAL_VISIBLE_ROWS = 7;
+constexpr int GAL_PREVIEW_X = GAL_LIST_X + GAL_LIST_W + 20;   // 240
+constexpr int GAL_PREVIEW_Y = 96;
+constexpr int GAL_PREVIEW_H = 344;
+constexpr int GAL_BTN_W = 150, GAL_BTN_H = 40, GAL_BTN_MARGIN = 20;
+#else
 constexpr int GAL_LIST_X = 70, GAL_LIST_Y = 108, GAL_LIST_W = 360;
 constexpr int GAL_ROW_H = 46, GAL_VISIBLE_ROWS = 9;
 constexpr int GAL_PREVIEW_X = GAL_LIST_X + GAL_LIST_W + 40;   // 470
 constexpr int GAL_PREVIEW_Y = 100;
 constexpr int GAL_PREVIEW_H = 460;
 constexpr int GAL_BTN_W = 190, GAL_BTN_H = 50, GAL_BTN_MARGIN = 34;
+#endif
 // Stessa X del blocco di testo (titolo/party/statistiche) del pannello:
 // coverX + COVER + 40, vedi textX in drawGameList_Gallery -- TENERLA IN
 // SYNC se cambia quel calcolo. Il pulsante sta sotto quel blocco, non
 // appeso al bordo destro del pannello.
+#ifdef OH_LINUX
+constexpr int GAL_BTN_X = GAL_PREVIEW_X + 20 + 140 + 20;
+#else
 constexpr int GAL_BTN_X = GAL_PREVIEW_X + 46 + 260 + 40;
+#endif
 
 // Rettangolo del pulsante "Avvia" nel pannello anteprima: stessa geometria
 // sia in drawGameList_Gallery() (disegno) sia in selectorTapGallery() (tap)
@@ -130,7 +144,11 @@ void UI::drawGameList_Gallery() {
     int numGames = (int)availableGames_.size();
     if (numGames == 0) return;
 
+#ifdef OH_LINUX
+    const int previewW = SCREEN_W - GAL_PREVIEW_X - 20;
+#else
     const int previewW = SCREEN_W - GAL_PREVIEW_X - 70;
+#endif
 
     int sel = galClampSel(gameSelCursor_, numGames);
     int scrollT = galScrollFor(sel, numGames);
@@ -288,12 +306,21 @@ void UI::drawGameList_Gallery() {
     // fa gia' al suo interno il lookup su gameIconCache_, quindi le formule
     // (gia' espresse come percentuali di IS) scalano da sole a COVER senza
     // bisogno di duplicare qui il ramo "copertina trovata".
+#ifdef OH_LINUX
+    constexpr int COVER = 140;
+    int coverX = GAL_PREVIEW_X + 20;
+#else
     constexpr int COVER = 260;
     int coverX = GAL_PREVIEW_X + 46;
+#endif
     int coverY = panelY + (GAL_PREVIEW_H - COVER) / 2;
     drawGameArt(shown, coverX, coverY, COVER, true);
 
+#ifdef OH_LINUX
+    int textX = coverX + COVER + 20;
+#else
     int textX = coverX + COVER + 40;
+#endif
     int textY = panelY + GAL_PREVIEW_H / 2 - 46;
     std::string name = gameDisplayNameOf(selGame);
     if (name.substr(0, 8) == "Pokemon ") name = name.substr(8);
@@ -303,9 +330,14 @@ void UI::drawGameList_Gallery() {
     // stile e' globale sul font_ pointer (SDL_ttf), quindi va ripristinato
     // subito dopo per non sporcare gli altri usi di fontLarge_ nello stesso
     // frame (es. il popup About sopra questa stessa schermata).
+#ifdef OH_LINUX
+    // 4:3: titolo in font_ (il pannello preview e' stretto, fontLarge_ sborderebbe).
+    drawText(name, textX, textY, T().text, font_);
+#else
     TTF_SetFontStyle(fontLarge_, TTF_STYLE_BOLD);
     drawText(name, textX, textY, T().text, fontLarge_);
     TTF_SetFontStyle(fontLarge_, TTF_STYLE_NORMAL);
+#endif
 
     drawText(i18n::get(StrKey::PartyPokemon), textX, textY + 46, T().textDim, fontSmall_);
 
@@ -325,8 +357,13 @@ void UI::drawGameList_Gallery() {
     }
     {
         int partyY = textY + 46;
+#ifdef OH_LINUX
+        int rightEdge = GAL_PREVIEW_X + previewW - 20;
+        int partyW = 5 * 30 + 26;
+#else
         int rightEdge = GAL_PREVIEW_X + previewW - 40;
         int partyW = 5 * 36 + 32;
+#endif
         int partyXFixed = rightEdge - partyW;
         if (partyXFixed < textX) partyXFixed = textX;
         auto pit = galPartyCache_.find(selGame);
@@ -353,7 +390,11 @@ void UI::drawGameList_Gallery() {
                     SDL_SetTextureColorMod(spr, 110, 110, 110);
                     SDL_SetTextureAlphaMod(spr, 110);
                 }
+#ifdef OH_LINUX
+                drawSpriteFit(partyXFixed + k * 30, partyY - 4, 26, 26, spr);
+#else
                 drawSpriteFit(partyXFixed + k * 36, partyY - 4, 32, 32, spr);
+#endif
                 if (isEmpty) {
                     SDL_SetTextureColorMod(spr, 255, 255, 255);
                     SDL_SetTextureAlphaMod(spr, 255);
