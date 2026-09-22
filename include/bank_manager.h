@@ -42,9 +42,6 @@ public:
     bool initAll(const std::string& basePath);
     bool isAllMode() const { return allMode_; }
 
-    // Visual row helpers for grouped display (headers + bank entries)
-    // Returns the visual row index for a given bank index (accounting for group headers)
-    int bankToVisualRow(int bankIdx) const;
     // Returns total visual rows (banks + group headers)
     int totalVisualRows() const;
 

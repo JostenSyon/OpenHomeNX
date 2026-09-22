@@ -271,5 +271,17 @@
     "gal_play_time": "游戏时长",
     "cleargalcache_title": "清除画廊缓存",
     "cleargalcache_body": "下次打开每个游戏时，强制从存档重新生成画廊预览卡片（队伍、图鉴、游戏时长）。不会修改游戏本身的任何内容。继续吗？",
-    "cleargalcache_done": "画廊缓存已清除。"
+    "cleargalcache_done": "画廊缓存已清除。",
+    "scraper_boxart_title": "更新封面 (ROM)",
+    "scraper_boxart_done": "封面: 找到 {0}/{1}。",
+    "scraper_boxart_offline": "网络不可用: 仅使用本地封面。",
+    "scraper_boxart_clear": "清除封面缓存",
+    "scraper_boxart_clear_body": "删除已下载/复制的2D封面。恢复合成磁贴（logo + 背景）。继续吗？",
+    "scraper_boxart_cleared": "封面缓存已清除: {0} 个文件。",
+    "scraper_boxart_style": "封面样式",
+    "scraper_boxart_style_cover": "封面",
+    "scraper_boxart_style_shot": "截图",
+    "scraper_boxart_style_title": "标题",
+    "scraper_rename_title": "重命名ROM",
+    "scraper_rename_done": "ROM已重命名: {0}/{1}。"
 }

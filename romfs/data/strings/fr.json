@@ -271,5 +271,17 @@
     "gal_play_time": "Temps de jeu",
     "cleargalcache_title": "Vider le cache de la Galerie",
     "cleargalcache_body": "Force la reconstruction des fiches d'aperçu de la Galerie (équipe, Pokédex, temps de jeu) à partir des sauvegardes à la prochaine ouverture de chaque jeu. Rien n'est modifié dans les jeux eux-mêmes. Continuer ?",
-    "cleargalcache_done": "Cache de la Galerie vidé."
+    "cleargalcache_done": "Cache de la Galerie vidé.",
+    "scraper_boxart_title": "Mettre à jour les boxarts (ROM)",
+    "scraper_boxart_done": "Boxarts : {0}/{1} trouvées.",
+    "scraper_boxart_offline": "Réseau indisponible : seules les pochettes locales sont utilisées.",
+    "scraper_boxart_clear": "Vider le cache des boxarts",
+    "scraper_boxart_clear_body": "Supprime les pochettes 2D téléchargées/copiées. Les tuiles composées (logo + fond) reviennent. Continuer ?",
+    "scraper_boxart_cleared": "Cache des boxarts vidé : {0} fichier(s).",
+    "scraper_boxart_style": "Style de boxart",
+    "scraper_boxart_style_cover": "Pochette",
+    "scraper_boxart_style_shot": "Capture",
+    "scraper_boxart_style_title": "Titre",
+    "scraper_rename_title": "Renommer les ROMs",
+    "scraper_rename_done": "ROMs renommées : {0}/{1}."
 }

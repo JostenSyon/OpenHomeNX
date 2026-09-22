@@ -271,5 +271,17 @@
     "gal_play_time": "遊戲時長",
     "cleargalcache_title": "清除畫廋快取",
     "cleargalcache_body": "下次打開每個遊戲時，強制從存檔重新產生畫廋預覽卡片（隊伍、圖鑑、遊戲時長）。不會修改遊戲本身的任何內容。繼續嗎？",
-    "cleargalcache_done": "畫廋快取已清除。"
+    "cleargalcache_done": "畫廋快取已清除。",
+    "scraper_boxart_title": "更新封面 (ROM)",
+    "scraper_boxart_done": "封面: 找到 {0}/{1}。",
+    "scraper_boxart_offline": "網路無法使用: 僅使用本機封面。",
+    "scraper_boxart_clear": "清除封面快取",
+    "scraper_boxart_clear_body": "刪除已下載/複製的2D封面。恢復合成磁磚（logo + 背景）。繼續嗎？",
+    "scraper_boxart_cleared": "封面快取已清除: {0} 個檔案。",
+    "scraper_boxart_style": "封面樣式",
+    "scraper_boxart_style_cover": "封面",
+    "scraper_boxart_style_shot": "螢幕截圖",
+    "scraper_boxart_style_title": "標題",
+    "scraper_rename_title": "重新命名ROM",
+    "scraper_rename_done": "ROM已重新命名: {0}/{1}。"
 }

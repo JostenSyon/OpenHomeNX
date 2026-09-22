@@ -271,5 +271,17 @@
     "gal_play_time": "플레이 시간",
     "cleargalcache_title": "갤러리 캐시 지우기",
     "cleargalcache_body": "다음에 각 게임을 열 때 갤러리 미리보기 카드(파티, 도감, 플레이 시간)를 세이브 파일에서 다시 만듭니다. 게임 자체는 변경되지 않습니다. 계속하시겠습니까?",
-    "cleargalcache_done": "갤러리 캐시를 지웠습니다."
+    "cleargalcache_done": "갤러리 캐시를 지웠습니다.",
+    "scraper_boxart_title": "박스아트 업데이트 (ROM)",
+    "scraper_boxart_done": "박스아트: {0}/{1}개 찾음.",
+    "scraper_boxart_offline": "네트워크를 사용할 수 없음: 로컬 커버만 사용합니다.",
+    "scraper_boxart_clear": "박스아트 캐시 지우기",
+    "scraper_boxart_clear_body": "다운로드/복사한 2D 커버를 삭제합니다. 합성 타일(로고 + 배경)으로 돌아갑니다. 계속하시겠습니까?",
+    "scraper_boxart_cleared": "박스아트 캐시를 지웠습니다: {0}개.",
+    "scraper_boxart_style": "박스아트 스타일",
+    "scraper_boxart_style_cover": "커버",
+    "scraper_boxart_style_shot": "스크린샷",
+    "scraper_boxart_style_title": "타이틀",
+    "scraper_rename_title": "ROM 이름 바꾸기",
+    "scraper_rename_done": "ROM 이름 변경됨: {0}/{1}."
 }

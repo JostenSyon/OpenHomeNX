@@ -257,7 +257,7 @@
     "set_backupmax": "Max. Auto-Backups",
     "set_backupclean": "Backups loeschen",
     "set_checkupdate": "Nach Update suchen",
-    "set_update_boot": "Updates beim Start pr\u00fcfen",
+    "set_update_boot": "Updates beim Start prüfen",
     "set_source": "Quelle",
     "set_editurl": "Adresse bearbeiten",
     "set_debugtoggle": "Debug-Funktionen",
@@ -271,5 +271,17 @@
     "gal_play_time": "Spielzeit",
     "cleargalcache_title": "Galerie-Cache leeren",
     "cleargalcache_body": "Erzwingt, dass die Vorschaukarten der Galerie (Team, Pokédex, Spielzeit) beim nächsten Öffnen jedes Spiels neu aus den Spielständen erstellt werden. Die Spiele selbst werden nicht verändert. Fortfahren?",
-    "cleargalcache_done": "Galerie-Cache geleert."
+    "cleargalcache_done": "Galerie-Cache geleert.",
+    "scraper_boxart_title": "Boxart aktualisieren (ROM)",
+    "scraper_boxart_done": "Boxart: {0}/{1} gefunden.",
+    "scraper_boxart_offline": "Netzwerk nicht verfügbar: nur lokale Cover werden verwendet.",
+    "scraper_boxart_clear": "Boxart-Cache leeren",
+    "scraper_boxart_clear_body": "Entfernt heruntergeladene/kopierte 2D-Cover. Zusammengesetzte Kacheln (Logo + Hintergrund) kehren zurück. Fortfahren?",
+    "scraper_boxart_cleared": "Boxart-Cache geleert: {0} Datei(en).",
+    "scraper_boxart_style": "Boxart-Stil",
+    "scraper_boxart_style_cover": "Boxart",
+    "scraper_boxart_style_shot": "Screenshot",
+    "scraper_boxart_style_title": "Titel",
+    "scraper_rename_title": "ROMs umbenennen",
+    "scraper_rename_done": "ROMs umbenannt: {0}/{1}."
 }

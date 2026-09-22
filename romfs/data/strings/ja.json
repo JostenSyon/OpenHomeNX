@@ -271,5 +271,17 @@
     "gal_play_time": "プレイ時間",
     "cleargalcache_title": "ギャラリーキャッシュを消去",
     "cleargalcache_body": "次に各ゲームを開いたときに、ギャラリーのプレビューカード(手持ち、図鑑、プレイ時間)をセーブデータから再構築します。ゲーム本体には影響しません。続けますか?",
-    "cleargalcache_done": "ギャラリーキャッシュを消去しました。"
+    "cleargalcache_done": "ギャラリーキャッシュを消去しました。",
+    "scraper_boxart_title": "ボックスアートを更新 (ROM)",
+    "scraper_boxart_done": "ボックスアート: {0}/{1} 件見つかりました。",
+    "scraper_boxart_offline": "ネットワーク利用不可: ローカルカバーのみ使用します。",
+    "scraper_boxart_clear": "ボックスアートキャッシュを消去",
+    "scraper_boxart_clear_body": "ダウンロード/コピーした2Dカバーを削除します。合成タイル(ロゴ+背景)に戻ります。続けますか?",
+    "scraper_boxart_cleared": "ボックスアートキャッシュを消去しました: {0}件。",
+    "scraper_boxart_style": "ボックスアート形式",
+    "scraper_boxart_style_cover": "カバー",
+    "scraper_boxart_style_shot": "スクリーンショット",
+    "scraper_boxart_style_title": "タイトル",
+    "scraper_rename_title": "ROM名を変更",
+    "scraper_rename_done": "ROM名を変更しました: {0}/{1}。"
 }

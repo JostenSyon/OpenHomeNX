@@ -337,16 +337,6 @@ std::string BankManager::pathFor(const std::string& name) const {
     return "";
 }
 
-int BankManager::bankToVisualRow(int bankIdx) const {
-    if (!allMode_ || bankList_.empty()) return bankIdx;
-    int headers = 0;
-    for (int i = 0; i <= bankIdx && i < (int)bankList_.size(); i++) {
-        if (i == 0 || !bankSameSection(bankList_[i], bankList_[i - 1]))
-            headers++;
-    }
-    return bankIdx + headers;
-}
-
 int BankManager::totalVisualRows() const {
     if (!allMode_ || bankList_.empty()) return (int)bankList_.size();
     int headers = 0;

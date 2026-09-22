@@ -271,5 +271,17 @@
     "gal_play_time": "Время игры",
     "cleargalcache_title": "Очистить кэш Галереи",
     "cleargalcache_body": "Заставляет карточки предпросмотра Галереи (команда, Покедекс, время игры) пересобраться из сохранений при следующем открытии каждой игры. Сами игры не затрагиваются. Продолжить?",
-    "cleargalcache_done": "Кэш Галереи очищен."
+    "cleargalcache_done": "Кэш Галереи очищен.",
+    "scraper_boxart_title": "Обновить боксарты (ROM)",
+    "scraper_boxart_done": "Боксарты: {0}/{1} найдено.",
+    "scraper_boxart_offline": "Сеть недоступна: используются только локальные обложки.",
+    "scraper_boxart_clear": "Очистить кэш боксартов",
+    "scraper_boxart_clear_body": "Удаляет скачанные/скопированные 2D-обложки. Вернутся составные плитки (логотип + фон). Продолжить?",
+    "scraper_boxart_cleared": "Кэш боксартов очищен: {0} файл(ов).",
+    "scraper_boxart_style": "Стиль боксарта",
+    "scraper_boxart_style_cover": "Обложка",
+    "scraper_boxart_style_shot": "Скриншот",
+    "scraper_boxart_style_title": "Заголовок",
+    "scraper_rename_title": "Переименовать ROM",
+    "scraper_rename_done": "ROM переименовано: {0}/{1}."
 }

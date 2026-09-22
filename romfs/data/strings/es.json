@@ -271,5 +271,17 @@
     "gal_play_time": "Tiempo de juego",
     "cleargalcache_title": "Borrar caché de Galería",
     "cleargalcache_body": "Obliga a reconstruir las tarjetas de vista previa de la Galería (equipo, Pokédex, tiempo de juego) desde las partidas la próxima vez que abras cada juego. No se modifica nada en los juegos. ¿Continuar?",
-    "cleargalcache_done": "Caché de Galería borrada."
+    "cleargalcache_done": "Caché de Galería borrada.",
+    "scraper_boxart_title": "Actualizar boxart (ROM)",
+    "scraper_boxart_done": "Boxart: {0}/{1} encontradas.",
+    "scraper_boxart_offline": "Red no disponible: solo se usan carátulas locales.",
+    "scraper_boxart_clear": "Borrar caché de boxart",
+    "scraper_boxart_clear_body": "Elimina las carátulas 2D descargadas/copiadas. Vuelven los mosaicos compuestos (logo + fondo). ¿Continuar?",
+    "scraper_boxart_cleared": "Caché de boxart borrada: {0} archivo(s).",
+    "scraper_boxart_style": "Estilo de boxart",
+    "scraper_boxart_style_cover": "Carátula",
+    "scraper_boxart_style_shot": "Captura",
+    "scraper_boxart_style_title": "Título",
+    "scraper_rename_title": "Renombrar ROMs",
+    "scraper_rename_done": "ROMs renombradas: {0}/{1}."
 }

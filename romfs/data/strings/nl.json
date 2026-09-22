@@ -271,5 +271,17 @@
     "gal_play_time": "Speeltijd",
     "cleargalcache_title": "Galerijcache wissen",
     "cleargalcache_body": "Dwingt af dat de voorbeeldkaarten van de Galerij (team, Pokédex, speeltijd) opnieuw worden opgebouwd uit de saves de volgende keer dat je elk spel opent. Er wordt niets in de spellen zelf aangepast. Doorgaan?",
-    "cleargalcache_done": "Galerijcache gewist."
+    "cleargalcache_done": "Galerijcache gewist.",
+    "scraper_boxart_title": "Boxart bijwerken (ROM)",
+    "scraper_boxart_done": "Boxart: {0}/{1} gevonden.",
+    "scraper_boxart_offline": "Netwerk niet beschikbaar: alleen lokale covers worden gebruikt.",
+    "scraper_boxart_clear": "Boxartcache wissen",
+    "scraper_boxart_clear_body": "Verwijdert gedownloade/gekopieerde 2D-covers. Samengestelde tegels (logo + achtergrond) keren terug. Doorgaan?",
+    "scraper_boxart_cleared": "Boxartcache gewist: {0} bestand(en).",
+    "scraper_boxart_style": "Boxartstijl",
+    "scraper_boxart_style_cover": "Boxart",
+    "scraper_boxart_style_shot": "Screenshot",
+    "scraper_boxart_style_title": "Titel",
+    "scraper_rename_title": "ROMs hernoemen",
+    "scraper_rename_done": "ROMs hernoemd: {0}/{1}."
 }

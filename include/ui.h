@@ -285,7 +285,6 @@ private:
     void dockStateLoad();
     void dockStateSave() const;
     void dockStateResetToDefault();
-    bool dockStateCanReorder() const;
     void dockStateEnterReorderMode(int startIdx);
     void dockStateExitReorderMode(bool save);
     void dockStateSwapItems(int i, int j);

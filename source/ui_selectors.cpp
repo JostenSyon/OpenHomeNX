@@ -258,10 +258,6 @@ void UI::dockStateResetToDefault() {
     dockState_.reorderEnterTime = 0;
 }
 
-bool UI::dockStateCanReorder() const {
-    return dockLayout().size() >= 2 && !dockState_.reorderMode;
-}
-
 void UI::dockStateEnterReorderMode(int startIdx) {
     if (!dockLoaded_) dockStateLoad();
     auto slots = dockLayout();
@@ -4899,6 +4895,35 @@ bool UI::writeUpdateCfgUrl(const std::string& basePath, const std::string& url) 
     return true;
 }
 
+// Righe categoria 5 (Sviluppatore) in ordine di visualizzazione.
+// UNICA fonte di verita' per count/label/value/activate di cat.5:
+// aggiungere una voce = un enumeratore qui + un push_back sotto + un case
+// nelle tre funzioni. Niente piu' aritmetica settingsRowCount(5)-N sparsa
+// (era fragile: 11 siti da tenere in sync a mano).
+enum class DevRow {
+    DbgToggle, QuickMenu,
+    ClearBp, Normalize, ClearGal,
+    SendLog, Crash,
+    Rename, Style, Update, Clear, DevSync,
+};
+static std::vector<DevRow> devRowList(bool debugOn, bool sendOn) {
+    std::vector<DevRow> v = { DevRow::DbgToggle, DevRow::QuickMenu };
+    if (debugOn) { v.push_back(DevRow::ClearBp); v.push_back(DevRow::Normalize); v.push_back(DevRow::ClearGal); }
+    if (sendOn) { v.push_back(DevRow::SendLog); v.push_back(DevRow::Crash); }
+    v.push_back(DevRow::Rename);
+    v.push_back(DevRow::Style);
+    v.push_back(DevRow::Update);
+    v.push_back(DevRow::Clear);
+    v.push_back(DevRow::DevSync);
+    return v;
+}
+static DevRow devRowAt(const std::vector<DevRow>& v, int row) {
+    if (v.empty()) return DevRow::DevSync; // non succede mai, difensivo
+    if (row < 0) return v.front();
+    if (row >= (int)v.size()) return v.back();
+    return v[(size_t)row];
+}
+
 int UI::settingsRowCount(int cat) const {
     switch (cat) {
         case 0: return 1; // Utente predefinito
@@ -4914,18 +4939,8 @@ int UI::settingsRowCount(int cat) const {
             if (DebugLog::enabled() && hasCustomUrlFile(basePath_)) n = 5;
             return n; // Boot, Check, Sorgente, Canale [, Modifica]
         }
-        case 5: {
-            // Debug, Menu + [, Pulisci cronologia zaino] [, Normalize save] [, Pulisci cache Galleria] [, Invia log, Crash report] + Aggiorna boxart (ROM) + Pulisci boxart + Ricerca dispositivi
-            int n = 2;
-            if (DebugLog::enabled()) n += 1 + 1 + 1; // + ClearBp, + Normalize, + ClearGalCache
-            if (sendAvailable()) n += 2;
-            n += 1; // + Rinomina ROM, sempre quintultima riga
-            n += 1; // + Stile boxart, sempre quartultima riga
-            n += 1; // + Aggiorna boxart (ROM), sempre terzultima riga
-            n += 1; // + Pulisci boxart, sempre penultima riga
-            n += 1; // + Ricerca dispositivi (sempre ultima riga, vedi remoteSyncTestRow)
-            return n;
-        }
+        case 5: // vedi devRowList() sopra: unica fonte di verita'
+            return (int)devRowList(DebugLog::enabled(), sendAvailable()).size();
         default: return 2; // Versione, Crediti
     }
 }
@@ -4972,23 +4987,23 @@ std::string UI::settingsRowLabel(int cat, int row) const {
         return i18n::get(StrKey::SetEditUrl);
     }
     if (cat == 5) {
-        // Ricerca dispositivi e' sempre l'ultima riga della categoria,
-        // qualunque sia il numero di righe extra sbloccate da debug/rete
-        // (vedi settingsRowCount): va controllata per prima o finirebbe per
-        // combaciare con uno degli indici fissi sotto quando le righe extra
-        // non ci sono tutte. Aggiorna boxart e' sempre la penultima.
-        if (row == settingsRowCount(5) - 1) return i18n::get(StrKey::DevSyncTitle);
-        if (row == settingsRowCount(5) - 2) return i18n::get(StrKey::ScraperBoxartClear);
-        if (row == settingsRowCount(5) - 3) return i18n::get(StrKey::ScraperBoxartTitle);
-        if (row == settingsRowCount(5) - 4) return i18n::get(StrKey::ScraperBoxartStyle);
-        if (row == settingsRowCount(5) - 5) return i18n::get(StrKey::ScraperRenameTitle);
-        if (row == 0) return i18n::get(StrKey::SetDebugToggle);
-        if (row == 1) return i18n::get(StrKey::SetDbgMenu);
-        if (row == 2) return i18n::get(StrKey::ClearBpHistTitle);
-        if (row == 3) return normalizeRowLabel();
-        if (row == 4) return i18n::get(StrKey::ClearGalCacheTitle);
-        if (row == 5) return i18n::get(StrKey::SendLogTitle);
-        return i18n::get(StrKey::CrashReportTitle);
+        // Dispatch per tag (devRowList): robusto a debug on/off e rete on/off,
+        // niente piu' collisioni tra indici di testa e settingsRowCount(5)-N.
+        switch (devRowAt(devRowList(DebugLog::enabled(), sendAvailable()), row)) {
+            case DevRow::DevSync: return i18n::get(StrKey::DevSyncTitle);
+            case DevRow::Clear: return i18n::get(StrKey::ScraperBoxartClear);
+            case DevRow::Update: return i18n::get(StrKey::ScraperBoxartTitle);
+            case DevRow::Style: return i18n::get(StrKey::ScraperBoxartStyle);
+            case DevRow::Rename: return i18n::get(StrKey::ScraperRenameTitle);
+            case DevRow::DbgToggle: return i18n::get(StrKey::SetDebugToggle);
+            case DevRow::QuickMenu: return i18n::get(StrKey::SetDbgMenu);
+            case DevRow::ClearBp: return i18n::get(StrKey::ClearBpHistTitle);
+            case DevRow::Normalize: return normalizeRowLabel();
+            case DevRow::ClearGal: return i18n::get(StrKey::ClearGalCacheTitle);
+            case DevRow::SendLog: return i18n::get(StrKey::SendLogTitle);
+            case DevRow::Crash: return i18n::get(StrKey::CrashReportTitle);
+        }
+        return i18n::get(StrKey::CrashReportTitle); // irraggiungibile, difensivo
     }
     if (row == 0) return i18n::get(StrKey::SetVersion);
     return i18n::get(StrKey::SetCredits);
@@ -5066,13 +5081,16 @@ std::string UI::settingsRowValue(int cat, int row) {
         return h;
     }
     if (cat == 5) {
-        if (row == 0)
-            return DebugLog::enabled() ? i18n::get(StrKey::SetOn) : i18n::get(StrKey::SetOff);
-        if (row == 1)
-            return readQuickMenu(basePath_) ? i18n::get(StrKey::SetOn) : i18n::get(StrKey::SetOff);
-        if (row == settingsRowCount(5) - 4)
-            return boxartStyleLabel(Settings::boxartStyle());
-        return "";
+        switch (devRowAt(devRowList(DebugLog::enabled(), sendAvailable()), row)) {
+            case DevRow::DbgToggle:
+                return DebugLog::enabled() ? i18n::get(StrKey::SetOn) : i18n::get(StrKey::SetOff);
+            case DevRow::QuickMenu:
+                return readQuickMenu(basePath_) ? i18n::get(StrKey::SetOn) : i18n::get(StrKey::SetOff);
+            case DevRow::Style:
+                return boxartStyleLabel(Settings::boxartStyle());
+            default:
+                return ""; // righe azione, niente valore a destra
+        }
     }
     if (row == 0) {
 #ifdef BUILD_SHA
@@ -6427,14 +6445,15 @@ void UI::settingsRowActivate(int cat, int row, int dir, bool& running) {
             beginTextInput(TextInputPurpose::EditUpdateUrl);
         }
     } else if (cat == 5) {
-        if (row == settingsRowCount(5) - 1) {
-            // Ricerca dispositivi: sempre l'ultima riga, va controllata per
-            // prima per lo stesso motivo spiegato in settingsRowLabel.
+        // Dispatch per tag (devRowList): l'ordine delle righe vive in UN solo
+        // posto. I corpi sotto sono invariati rispetto alla vecchia versione
+        // a indici (solo ri-ancorati ai tag).
+        DevRow tag = devRowAt(devRowList(DebugLog::enabled(), sendAvailable()), row);
+        if (tag == DevRow::DevSync) {
             remoteSyncTestRow();
-        } else if (row == settingsRowCount(5) - 5) {
-            // Rinomina ROM: sempre la quintultima riga. Rileva lingua
-            // dall'header e propone nomi No-Intro; conferma prima di toccare
-            // i file (ROM + save/stati associati + patch gamelist.xml).
+        } else if (tag == DevRow::Rename) {
+            // Rinomina ROM: rileva lingua dall'header e propone nomi No-Intro;
+            // conferma prima di toccare i file (ROM + save/stati + gamelist).
             std::vector<RomInfo::RenamePlan> plans;
             for (const auto& g : importedGames_) {
                 std::string rom = Emulator::findRomForSave(g.filePath, g.type);
@@ -6466,13 +6485,13 @@ void UI::settingsRowActivate(int cat, int row, int dir, bool& running) {
                     loadGameIcons();
                 }
             }
-        } else if (row == settingsRowCount(5) - 4) {
-            // Stile boxart: sempre la quartultima riga. B/X cicla lo stile.
+        } else if (tag == DevRow::Style) {
+            // Stile boxart: B/X cicla lo stile.
             int v = (Settings::boxartStyle() + dir + 3) % 3;
             Settings::setBoxartStyle(v);
             DebugLog::line("settings: boxart_style=%d", v);
-        } else if (row == settingsRowCount(5) - 3) {
-            // Aggiorna boxart (ROM): sempre la terzultima riga.
+        } else if (tag == DevRow::Update) {
+            // Aggiorna boxart (ROM).
             // R36S: riuso solo locale (Skyscraper images/gamelist -> cache).
             // Switch: cache hit, altrimenti download se la rete e' pronta.
             bool netOk = true;
@@ -6492,9 +6511,9 @@ void UI::settingsRowActivate(int cat, int row, int dir, bool& running) {
                         std::to_string(res.found), std::to_string(res.total)));
                 loadGameIcons(); // le nuove cover in cache appaiono subito
             }
-        } else if (row == settingsRowCount(5) - 2) {
-            // Pulisci boxart: sempre la penultima riga. Cancella cache/covers/
-            // cosi' tornano le tile composte logo+sfondo+label da romfs.
+        } else if (tag == DevRow::Clear) {
+            // Pulisci boxart: cancella cache/covers/ cosi' tornano le tile
+            // composte logo+sfondo+label da romfs.
             if (showConfirmDialog(i18n::get(StrKey::ScraperBoxartClear),
                     i18n::get(StrKey::ScraperBoxartClearBody))) {
                 int n = Boxart::clearCache(basePath_);
@@ -6502,7 +6521,7 @@ void UI::settingsRowActivate(int cat, int row, int dir, bool& running) {
                     i18n::fmt(StrKey::ScraperBoxartCleared, std::to_string(n)));
                 loadGameIcons(); // le tile composte riappaiono subito
             }
-        } else if (row == 0) {
+        } else if (tag == DevRow::DbgToggle) {
             bool on = !DebugLog::enabled();
             DebugLog::setEnabled(on);
             std::string flag = basePath_ + "debug.enable";
@@ -6513,17 +6532,17 @@ void UI::settingsRowActivate(int cat, int row, int dir, bool& running) {
                 std::remove(flag.c_str());
                 if (setRow_ > 1) setRow_ = 0; // le righe extra spariscono
             }
-        } else if (row == 1) {
+        } else if (tag == DevRow::QuickMenu) {
             // Menu debug rapido: ON = gear apre il + classico, OFF = impostazioni.
             writeQuickMenu(basePath_, !readQuickMenu(basePath_));
-        } else if (row == 2) {
+        } else if (tag == DevRow::ClearBp) {
             if (showConfirmDialog(i18n::get(StrKey::ClearBpHistTitle), i18n::get(StrKey::ClearBpHistBody))) {
                 if (Backpack::clearJournal(basePath_))
                     showMessageAndWait(i18n::get(StrKey::ClearBpHistTitle), i18n::get(StrKey::ClearBpHistDone));
                 else
                     showMessageAndWait(i18n::get(StrKey::ClearBpHistTitle), i18n::get(StrKey::ClearBpHistFailed));
             }
-        } else if (row == 3) {
+        } else if (tag == DevRow::Normalize) {
             // Normalize save: analizza tutti i save salvati in sdmc e
             // corregge i Delta GBA con i 16B extra.  TODO: estendere a
             // scan cartelle ROM per corruzione/normalizzazione.
@@ -6540,7 +6559,7 @@ void UI::settingsRowActivate(int cat, int row, int dir, bool& running) {
                 normalizeRowLabel().c_str(), fixed, count,
                 fixed > 0 ? "corretti" : "tutto OK");
             showMessageAndWait(normalizeRowLabel(), buf);
-        } else if (row == 4) {
+        } else if (tag == DevRow::ClearGal) {
             // Pulisci cache Galleria: svuota la mappa in RAM + il file su
             // disco (gallery_cache.dat). Non tocca i save dei giochi -- si
             // ricostruisce da sola al primo giro su ogni gioco (stesso
@@ -6551,9 +6570,11 @@ void UI::settingsRowActivate(int cat, int row, int dir, bool& running) {
                 std::remove((basePath_ + "gallery_cache.dat").c_str());
                 showMessageAndWait(i18n::get(StrKey::ClearGalCacheTitle), i18n::get(StrKey::ClearGalCacheDone));
             }
-        } else if (row == 5) {
+        } else if (tag == DevRow::SendLog) {
             sendLogNow();
         } else {
+            // DevRow::Crash: ultima rimasta, niente tag ambiguo possibile
+            // (devRowAt mappa sempre dentro la lista).
             openCrashList();
         }
     } else {
