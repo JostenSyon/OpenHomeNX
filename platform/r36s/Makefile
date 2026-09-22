@@ -61,6 +61,7 @@ SRC_CORE := \
   md5 move_types poke_crypto pokedex pokedex_ffi pokemon pokemon_ffi \
   save_file save_file_ffi sc_block settings_cfg species_converter swish_crypto \
   theme trade_evo wondercard rominfo ui ui_backpack ui_bank ui_gallery ui_input ui_render ui_selectors \
+  ui_update ui_backups ui_settings ui_remotesync \
   update_net autoupdate remote_sync
 
 STUB_SRC := stub_system stub_forwarder stub_account

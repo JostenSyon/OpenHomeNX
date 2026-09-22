@@ -94,6 +94,19 @@ struct Cursor {
     int slot(int cols = 6) const { return row * cols + col; }
 };
 
+// update.cfg parsed in memory (vedi commento sul formato accanto a
+// parseUpdateCfgFile() in ui_update.cpp). Era locale all'anonymous
+// namespace di ui_selectors.cpp prima dello split in piu' file -- serve
+// sia a ui_update.cpp (parsing) sia a ui_selectors.cpp/ui_backups.cpp/
+// ui_settings.cpp (lettura), quindi ora e' un tipo condiviso qui.
+struct UpdateCfg {
+    std::string url, token;
+    std::string channel;   // "" o "stable" = release stabili, "beta" = pre-release
+    long backupMb = 256;   // tetto CUMULATIVO auto-backup titoli installati
+    long backupMbSd = 32;  // tetto cumulativo save file-backed (SD, piccoli)
+    bool autoOn = true;    // check al boot: default ON se la chiave `auto` manca
+};
+
 // Main UI class - manages rendering and input for the two-panel box viewer.
 class UI {
 public:
