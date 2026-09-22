@@ -18,11 +18,11 @@
 namespace {
 #ifdef OH_LINUX
 // 4:3 nativo (620x440): due colonne strette (350+210), tab su due righe
-// (9 tab non entrano in una riga da 350px), 7 righe visibili.
+// (9 tab non entrano in una riga da 350px), 8 righe a tutta altezza.
 constexpr int BP_POP_W = 620;
 constexpr int BP_POP_H = 440;
 constexpr int BP_ROW_H = 38;
-constexpr int BP_VISIBLE = 7;
+constexpr int BP_VISIBLE = 8;
 constexpr int BP_LEFT_W = 350;
 #else
 constexpr int BP_POP_W = 1120;
@@ -31,11 +31,17 @@ constexpr int BP_ROW_H = 38;
 constexpr int BP_VISIBLE = 12;
 constexpr int BP_LEFT_W = 660;
 #endif
-// Barra tab categoria sopra al catalogo: una riga in meno per farle
+// Barra tab categoria sopra al catalogo: cede righe di lista per farle
 // posto (vedi BP_VISIBLE_LEFT). Alta abbastanza da non far toccare il
 // testo al bordo (richiesto esplicitamente).
+#ifdef OH_LINUX
+constexpr int BP_TAB_H = 38; // 4:3: tab piu' alte, su due righe
+// 4:3: due righe di tab -> il catalogo cede due righe di lista.
+constexpr int BP_VISIBLE_LEFT = BP_VISIBLE - 2;
+#else
 constexpr int BP_TAB_H = 34;
 constexpr int BP_VISIBLE_LEFT = BP_VISIBLE - 1;
+#endif
 // Tab del catalogo (diverse dai pocket del gioco: TM e MN condividono
 // il pocket "tm", qui li separiamo; le Bacche hanno una tab propria
 // invece di stare con gli Oggetti). Richiesto esplicitamente: con

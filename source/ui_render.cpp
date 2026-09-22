@@ -1043,16 +1043,25 @@ void UI::drawDetailPopup(const Pokemon& pkm) {
 
     // Popup rect centered. Grow by one line when the optional HT row is shown
     // so the Moves/Ribbons region keeps the same layout as the no-HT case.
+#ifdef OH_LINUX
+    // 4:3 nativo (620x440): stessa struttura, misure ridotte.
+    constexpr int POP_W = 620;
+    const int POP_H = 440 + (pkm.hasHandlingTrainer() ? 28 : 0);
+    constexpr int LARGE_SPRITE = 96;
+    constexpr int MOVE_COL_W = 190;
+#else
     constexpr int POP_W = 900;
     const int POP_H = 550 + (pkm.hasHandlingTrainer() ? 28 : 0);
+    constexpr int LARGE_SPRITE = 128;
+    constexpr int MOVE_COL_W = 230;
+#endif
     int popX = (SCREEN_W - POP_W) / 2;
     int popY = (SCREEN_H - POP_H) / 2;
 
     drawRect(popX, popY, POP_W, POP_H, T().panelBg);
     drawRectOutline(popX, popY, POP_W, POP_H, T().cursor, 2);
 
-    // Large sprite (128x128) top-left
-    constexpr int LARGE_SPRITE = 128;
+    // Large sprite top-left (128 Switch, 96 su 4:3: vedi sopra)
     int sprX = popX + 20;
     int sprY = popY + 20;
 
@@ -1185,7 +1194,7 @@ void UI::drawDetailPopup(const Pokemon& pkm) {
     constexpr int TYPE_ICON_W = 25;
     constexpr int TYPE_ICON_H = 25;
     constexpr int MOVE_ROW_H = 32;
-    constexpr int MOVE_COL_W = 230;
+    // MOVE_COL_W dalla testa funzione (190 su 4:3, 230 Switch).
     int textH = TTF_FontHeight(font_);
     uint16_t moves[4] = {pkm.move1(), pkm.move2(), pkm.move3(), pkm.move4()};
     for (int i = 0; i < 4; i++) {
@@ -1219,7 +1228,7 @@ void UI::drawDetailPopup(const Pokemon& pkm) {
 
         // Two columns, small font with sprite icons
         int col1X = movesX + 4;
-        int col2X = movesX + 230;
+        int col2X = movesX + MOVE_COL_W;
         int ribbonY = movesY;
         constexpr int RIB_ROW_H = 30;
         constexpr int ICON_SZ = 18;
@@ -1261,17 +1270,31 @@ void UI::drawDetailPopup(const Pokemon& pkm) {
     // --- Right column: IV and EV radar charts ---
     // Order: HP, Atk, Def, Spe, SpD, SpA (clockwise from top)
     int chartCX = popX + POP_W * 3 / 4;
+#ifdef OH_LINUX
+    // 4:3: chart compatti affiancati alle info (moves/ribbon stanno a sinistra).
+    constexpr int CHART_RADIUS = 40;
+#else
     constexpr int CHART_RADIUS = 65;
+#endif
 
     // IVs radar chart
     drawTextCentered(i18n::get(StrKey::IVs), chartCX, popY + 18, T().text, font_);
     int ivsRadar[] = {pkm.ivHp(), pkm.ivAtk(), pkm.ivDef(), pkm.ivSpe(), pkm.ivSpD(), pkm.ivSpA()};
+#ifdef OH_LINUX
+    drawRadarChart(chartCX, popY + 100, CHART_RADIUS, ivsRadar, 31);
+#else
     drawRadarChart(chartCX, popY + 150, CHART_RADIUS, ivsRadar, 31);
+#endif
 
     // EVs radar chart
-    drawTextCentered(i18n::get(StrKey::EVs), chartCX, popY + 283, T().text, font_);
     int evsRadar[] = {pkm.evHp(), pkm.evAtk(), pkm.evDef(), pkm.evSpe(), pkm.evSpD(), pkm.evSpA()};
+#ifdef OH_LINUX
+    drawTextCentered(i18n::get(StrKey::EVs), chartCX, popY + 168, T().text, font_);
+    drawRadarChart(chartCX, popY + 228, CHART_RADIUS, evsRadar, 252);
+#else
+    drawTextCentered(i18n::get(StrKey::EVs), chartCX, popY + 283, T().text, font_);
     drawRadarChart(chartCX, popY + 415, CHART_RADIUS, evsRadar, 252);
+#endif
 
     // PID, EC, ID, TSV (bottom-left, small font, two lines)
     uint16_t tsv = (pkm.tid() ^ pkm.sid()) >> 4;
