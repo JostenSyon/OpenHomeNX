@@ -1287,7 +1287,7 @@ void UI::drawDetailPopup(const Pokemon& pkm) {
     // Order: HP, Atk, Def, Spe, SpD, SpA (clockwise from top)
     // 4:3: colonna destra (mosse/ribbon a sinistra finiscono a ~380).
 #ifdef OH_LINUX
-    int chartCX = popX + POP_W - 115;
+    int chartCX = popX + POP_W - 122;
     // Chart compatti distribuiti in verticale: titoli vicini ai grafici,
     // label PS/Velocita' senza overlap, tutto sopra il footer hint.
     constexpr int CHART_RADIUS = 42;
@@ -1296,20 +1296,20 @@ void UI::drawDetailPopup(const Pokemon& pkm) {
     constexpr int CHART_RADIUS = 65;
 #endif
 
-    // IVs radar chart
-    drawTextCentered(i18n::get(StrKey::IVs), chartCX, popY + 18, T().text, font_);
+    // IVs radar chart — 4:3: compatto e vicino al suo header
+    drawTextCentered(i18n::get(StrKey::IVs), chartCX, popY + 17, T().text, font_);
     int ivsRadar[] = {pkm.ivHp(), pkm.ivAtk(), pkm.ivDef(), pkm.ivSpe(), pkm.ivSpD(), pkm.ivSpA()};
 #ifdef OH_LINUX
-    drawRadarChart(chartCX, popY + 140, CHART_RADIUS, ivsRadar, 31);
+    drawRadarChart(chartCX, popY + 112, CHART_RADIUS, ivsRadar, 31);
 #else
     drawRadarChart(chartCX, popY + 150, CHART_RADIUS, ivsRadar, 31);
 #endif
 
-    // EVs radar chart
+    // EVs radar chart — 4:3: alzato per non toccare il footer hint
     int evsRadar[] = {pkm.evHp(), pkm.evAtk(), pkm.evDef(), pkm.evSpe(), pkm.evSpD(), pkm.evSpA()};
 #ifdef OH_LINUX
-    drawTextCentered(i18n::get(StrKey::EVs), chartCX, popY + 228, T().text, font_);
-    drawRadarChart(chartCX, popY + 340, CHART_RADIUS, evsRadar, 252);
+    drawTextCentered(i18n::get(StrKey::EVs), chartCX, popY + 225, T().text, font_);
+    drawRadarChart(chartCX, popY + 320, CHART_RADIUS, evsRadar, 252);
 #else
     drawTextCentered(i18n::get(StrKey::EVs), chartCX, popY + 283, T().text, font_);
     drawRadarChart(chartCX, popY + 415, CHART_RADIUS, evsRadar, 252);
@@ -2423,8 +2423,13 @@ void UI::drawTradeListPopup() {
 void UI::drawLearnsetPopup() {
     drawRect(0, 0, SCREEN_W, SCREEN_H, T().overlay);
 
+#ifdef OH_LINUX
+    constexpr int POP_W = 600;
+    constexpr int POP_H = 420;
+#else
     constexpr int POP_W = 700;
     constexpr int POP_H = 550;
+#endif
     int popX = (SCREEN_W - POP_W) / 2;
     int popY = (SCREEN_H - POP_H) / 2;
 
