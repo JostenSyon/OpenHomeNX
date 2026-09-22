@@ -495,5 +495,7 @@
     "scraper_rename_done": "ROMs renamed: {0}/{1}.",
     "scraper_boxart_style_locale": "Local",
     "scraper_boxart_style_2d": "2D",
-    "scraper_boxart_style_3d": "3D"
+    "scraper_boxart_style_3d": "3D",
+    "show_roms_no_save_title": "Show ROMs without save",
+    "show_roms_no_save_desc": "Show games even without a save file (ROM only)."
 }

@@ -474,22 +474,37 @@ std::string styleTag() {
     }
 }
 
-std::string coverCachePath(const std::string& basePath, const std::string& romPath) {
+static std::string coverCachePathTag(const std::string& basePath, const std::string& romPath,
+                                     const std::string& tag) {
     if (romPath.empty()) return "";
     std::string sys = toLowerStr(dirName(parentDir(romPath)));
     if (sys.empty()) sys = "rom";
-    return basePath + "cache/covers/" + sys + "/" + stemOf(romPath) +
-           "." + styleTag() + ".png";
+    return basePath + "cache/covers/" + sys + "/" + stemOf(romPath) + "." + tag + ".png";
+}
+
+std::string coverCachePath(const std::string& basePath, const std::string& romPath) {
+    return coverCachePathTag(basePath, romPath, styleTag());
 }
 
 std::string findCachedCover(const std::string& basePath, const std::string& romPath) {
     if (romPath.empty()) return "";
     std::string sys = toLowerStr(dirName(parentDir(romPath)));
     if (sys.empty()) sys = "rom";
-    std::string stem = basePath + "cache/covers/" + sys + "/" + stemOf(romPath) +
-                           "." + styleTag();
+    std::string base = basePath + "cache/covers/" + sys + "/" + stemOf(romPath);
+    std::string stem = base + "." + styleTag();
     for (const char* e : {".png", ".jpg", ".jpeg"}) {
         if (fileExists(stem + e)) return stem + e;
+    }
+    // Box3d senza un vero render 3D in cache: mostra comunque il 2D salvato
+    // sotto il proprio tag ".2d" (vedi scrape(), fallback libretro-
+    // thumbnails) invece di lasciare la tile senza copertina. Il 2D non
+    // finisce mai in cache sotto ".3d" -- se lo trovasse qui non si
+    // ritenterebbe mai piu' il vero box-3D quando lo scraper lo aggiunge.
+    if (curStyle() == Style::Box3d) {
+        std::string stem2d = base + ".2d";
+        for (const char* e : {".png", ".jpg", ".jpeg"}) {
+            if (fileExists(stem2d + e)) return stem2d + e;
+        }
     }
     return "";
 }
@@ -498,26 +513,15 @@ ScrapeResult scrape(const std::string& basePath,
                     const std::vector<ImportedGame>& games) {
     ScrapeResult r;
     Style style = curStyle();
-    // Raccogli tutte le ROM da considerare: quelle con save + quelle orfane
-    // quando l'utente vuole vederle (toggle). Evita duplicati per ROM.
+    // Raccogli tutte le ROM da considerare: `games` include gia' sia i save
+    // reali sia -- con Settings::showRomsWithoutSave() -- le ROM orfane
+    // (ImportedGame.hasSave=false, filePath e' gia' il path della ROM,
+    // scanImportPaths() le ha risolte una sola volta). Evita duplicati.
     std::vector<std::string> roms;
     std::set<std::string> seenRom;
     for (const auto& g : games) {
-        std::string rom = Emulator::findRomForSave(g.filePath, g.type);
+        std::string rom = g.hasSave ? Emulator::findRomForSave(g.filePath, g.type) : g.filePath;
         if (!rom.empty() && seenRom.insert(rom).second) roms.push_back(rom);
-    }
-    if (Settings::showRomsWithoutSave()) {
-        std::vector<std::string> romDirs;
-        // Usa gli stessi importPaths della UI (sono globali via scan, ma qui
-        // li ricostruiamo dal basePath per non dipendere dallo stato UI).
-        // Per semplicità, scansiona i path standard di R36S/Switch.
-        // Su Switch: sdmc:/roms è vuoto, ma non fa male provarci.
-        std::vector<std::string> dirs = {"/roms/gba", "/roms/gbc", "/roms/gb", "/roms/nds", "sdmc:/roms/gba", "sdmc:/roms/gbc", "sdmc:/roms/gb", "sdmc:/roms/nds"};
-        // Filtra solo quelli abilitati se importPaths è disponibile? Per ora
-        // scansiona tutti i candidati, tanto i non esistenti vengono ignorati.
-        for (const auto& rom : RomInfo::scanRoms(dirs)) {
-            if (seenRom.insert(rom).second) roms.push_back(rom);
-        }
     }
     for (const auto& rom : roms) {
         r.total++;
@@ -528,38 +532,43 @@ ScrapeResult scrape(const std::string& basePath,
             r.found++;
             continue;
         }
-        std::string local = localCover(rom, style);
-        if (!local.empty()) {
-            std::string dst = coverCachePath(basePath, rom);
-            if (ensureDir(parentDir(dst)) && copyFile(local, dst)) {
-                DebugLog::line("boxart: %s local %s", base.c_str(), local.c_str());
-                r.found++;
-            } else {
-                DebugLog::line("boxart: %s copia FALLITA (%s -> %s)",
-                               base.c_str(), local.c_str(), dst.c_str());
-            }
-            continue;
-        }
-        // Download 2D on-demand se la rete e' pronta (entrambe le piattaforme).
-        // Locale senza hit e Box3d senza 3D locale arrivano qui.
-        if (style == Style::Box3d)
-            DebugLog::line("boxart: %s 3D non trovato, uso 2D", base.c_str());
-        if (!updateNetEnsureReady()) {
-            DebugLog::line("boxart: %s miss (rete off)", base.c_str());
-            continue;
-        }
+
         std::string sys = toLowerStr(dirName(parentDir(rom)));
         std::string repo = libretroRepo(sys);
         std::string ssSysId = ssSystemId(sys);
-        if (repo.empty() && ssSysId.empty()) {
-            DebugLog::line("boxart: %s miss (sistema '%s' non mappato)",
-                           base.c_str(), sys.c_str());
-            continue;
-        }
-        std::string dst = coverCachePath(basePath, rom);
-        std::string err;
-        bool ok = false;
-        if (ensureDir(parentDir(dst))) {
+
+        // Copia l'arte locale (images/ dello scraper ES) in cache cosi'
+        // com'e'. L'ORDINE in cui viene provata rispetto al download dipende
+        // dallo stile (vedi sotto): qui c'e' solo il "come".
+        auto tryLocal = [&]() -> bool {
+            std::string local = localCover(rom, style);
+            if (local.empty()) return false;
+            std::string dst = coverCachePath(basePath, rom);
+            if (ensureDir(parentDir(dst)) && copyFile(local, dst)) {
+                DebugLog::line("boxart: %s local %s", base.c_str(), local.c_str());
+                return true;
+            }
+            DebugLog::line("boxart: %s copia FALLITA (%s -> %s)",
+                           base.c_str(), local.c_str(), dst.c_str());
+            return false;
+        };
+
+        // Download vero: ScreenScraper box-2D/box-3D per primo se il
+        // sistema e' coperto, poi libretro-thumbnails 2D come fallback.
+        auto tryDownload = [&]() -> bool {
+            if (repo.empty() && ssSysId.empty()) {
+                DebugLog::line("boxart: %s miss (sistema '%s' non mappato)",
+                               base.c_str(), sys.c_str());
+                return false;
+            }
+            if (!updateNetEnsureReady()) {
+                DebugLog::line("boxart: %s miss (rete off)", base.c_str());
+                return false;
+            }
+            std::string dst = coverCachePath(basePath, rom);
+            std::string err;
+            bool ok = false;
+            if (!ensureDir(parentDir(dst))) return false;
             // 0. ScreenScraper: box-2D/box-3D veri (non i nomi No-Intro di
             //    libretro-thumbnails sotto). Provato per primo se il sistema
             //    e' coperto; libretro-thumbnails resta fallback se il gioco
@@ -577,83 +586,90 @@ ScrapeResult scrape(const std::string& basePath,
             // nulla sopra (miss/rete off/sistema non coperto da SS) e il
             // sistema e' comunque mappato qui (repo non vuoto).
             if (!ok && !repo.empty()) {
-            // 1. Nomi esatti (veloce): convenzione RetroArch, prima senza
-            //    poi con estensione ROM.
-            std::string url = "https://raw.githubusercontent.com/libretro-thumbnails/"
-                              + repo + "/master/Named_Boxarts/" +
-                              urlEncodePath(base + ".png");
-            ok = updateNetDownload(url, "", dst, "", err);
-            if (!ok) {
-                std::string url2 = "https://raw.githubusercontent.com/libretro-thumbnails/"
-                                   + repo + "/master/Named_Boxarts/" +
-                                   urlEncodePath(fileName(rom) + ".png");
-                ok = updateNetDownload(url2, "", dst, "", err);
-            }
-            // 2. Match fuzzy via elenco repo (nomi No-Intro vs nome ROM).
-            if (!ok) {
-                std::string api = "https://api.github.com/repos/libretro-thumbnails/"
-                                  + repo + "/contents/Named_Boxarts";
-                std::string listPath = basePath + "cache/covers/.listing_" + sys + ".json";
-                std::string apiErr;
-                if (updateNetDownload(api, "", listPath, "", apiErr)) {
-                    std::ifstream lf(listPath, std::ios::binary);
-                    std::string js((std::istreambuf_iterator<char>(lf)),
-                                   std::istreambuf_iterator<char>());
-                    auto arr = nlohmann::json::parse(js, nullptr, false);
-                    // Query extra: nome canonico da header ROM (lingua reale)
-                    // + quello inglese per lo stesso gioco (per match cross-lingua:
-                    // ROM italiana "Smeraldo" vs repo file inglese "Emerald").
-                    std::string canon, canonEn;
-                    {
-                        RomInfo::Info ri;
-                        if (RomInfo::detect(rom, ri)) {
-                            canon = RomInfo::canonicalName(ri);
-                            // Genera anche il canon inglese per lo stesso gioco
-                            RomInfo::Info riEn = ri;
-                            riEn.lang = "en";
-                            std::string ce = RomInfo::canonicalName(riEn);
-                            if (!ce.empty() && ce != canon) canonEn = ce;
-                        }
-                    }
-                    if (!arr.is_discarded() && arr.is_array()) {
-                        int best = 0;
-                        std::string bestUrl, bestName;
-                        for (const auto& it : arr) {
-                            std::string nm = it.value("name", std::string());
-                            std::string dl = it.value("download_url", std::string());
-                            if (nm.size() < 5 || dl.empty()) continue;
-                            std::string stem = nm.substr(0, nm.size() - 4); // via .png
-                            int s = fuzzyScore(base, stem);
-                            if (!canon.empty()) {
-                                int s2 = fuzzyScore(canon, stem);
-                                if (s2 > s) s = s2;
-                            }
-                            if (!canonEn.empty()) {
-                                int s3 = fuzzyScore(canonEn, stem);
-                                if (s3 > s) s = s3;
-                            }
-                            if (s <= best) continue;
-                            // Tiebreak: meno parole = nome piu' pulito.
-                            if (s == best && !bestName.empty() &&
-                                splitWords(normName(stem)).size() >=
-                                splitWords(normName(bestName)).size())
-                                continue;
-                            best = s;
-                            bestUrl = dl;
-                            bestName = stem;
-                        }
-                        if (best > 0) {
-                            DebugLog::line("boxart: %s fuzzy '%s' (score %d)",
-                                           base.c_str(), bestName.c_str(), best);
-                            ok = updateNetDownload(bestUrl, "", dst, "", err);
-                        }
-                    }
-                    std::remove(listPath.c_str());
-                } else {
-                    DebugLog::line("boxart: %s listing FAIL (%s)",
-                                   base.c_str(), apiErr.c_str());
+                // libretro-thumbnails e' sempre box-art 2D piatta (mai un vero
+                // render 3D): se lo stile richiesto e' Box3d, salva qui sotto
+                // il tag ".2d", non ".3d" -- altrimenti la tile resta "finto
+                // 3D" per sempre (vedi findCachedCover()) e non si ritenta mai
+                // piu' il vero box-3D in un prossimo Aggiorna BoxArt.
+                if (style == Style::Box3d)
+                    dst = coverCachePathTag(basePath, rom, "2d");
+                // 1. Nomi esatti (veloce): convenzione RetroArch, prima senza
+                //    poi con estensione ROM.
+                std::string url = "https://raw.githubusercontent.com/libretro-thumbnails/"
+                                  + repo + "/master/Named_Boxarts/" +
+                                  urlEncodePath(base + ".png");
+                ok = updateNetDownload(url, "", dst, "", err);
+                if (!ok) {
+                    std::string url2 = "https://raw.githubusercontent.com/libretro-thumbnails/"
+                                       + repo + "/master/Named_Boxarts/" +
+                                       urlEncodePath(fileName(rom) + ".png");
+                    ok = updateNetDownload(url2, "", dst, "", err);
                 }
-            }
+                // 2. Match fuzzy via elenco repo (nomi No-Intro vs nome ROM).
+                if (!ok) {
+                    std::string api = "https://api.github.com/repos/libretro-thumbnails/"
+                                      + repo + "/contents/Named_Boxarts";
+                    std::string listPath = basePath + "cache/covers/.listing_" + sys + ".json";
+                    std::string apiErr;
+                    if (updateNetDownload(api, "", listPath, "", apiErr)) {
+                        std::ifstream lf(listPath, std::ios::binary);
+                        std::string js((std::istreambuf_iterator<char>(lf)),
+                                       std::istreambuf_iterator<char>());
+                        auto arr = nlohmann::json::parse(js, nullptr, false);
+                        // Query extra: nome canonico da header ROM (lingua reale)
+                        // + quello inglese per lo stesso gioco (per match cross-lingua:
+                        // ROM italiana "Smeraldo" vs repo file inglese "Emerald").
+                        std::string canon, canonEn;
+                        {
+                            RomInfo::Info ri;
+                            if (RomInfo::detect(rom, ri)) {
+                                canon = RomInfo::canonicalName(ri);
+                                // Genera anche il canon inglese per lo stesso gioco
+                                RomInfo::Info riEn = ri;
+                                riEn.lang = "en";
+                                std::string ce = RomInfo::canonicalName(riEn);
+                                if (!ce.empty() && ce != canon) canonEn = ce;
+                            }
+                        }
+                        if (!arr.is_discarded() && arr.is_array()) {
+                            int best = 0;
+                            std::string bestUrl, bestName;
+                            for (const auto& it : arr) {
+                                std::string nm = it.value("name", std::string());
+                                std::string dl = it.value("download_url", std::string());
+                                if (nm.size() < 5 || dl.empty()) continue;
+                                std::string stem = nm.substr(0, nm.size() - 4); // via .png
+                                int s = fuzzyScore(base, stem);
+                                if (!canon.empty()) {
+                                    int s2 = fuzzyScore(canon, stem);
+                                    if (s2 > s) s = s2;
+                                }
+                                if (!canonEn.empty()) {
+                                    int s3 = fuzzyScore(canonEn, stem);
+                                    if (s3 > s) s = s3;
+                                }
+                                if (s <= best) continue;
+                                // Tiebreak: meno parole = nome piu' pulito.
+                                if (s == best && !bestName.empty() &&
+                                    splitWords(normName(stem)).size() >=
+                                    splitWords(normName(bestName)).size())
+                                    continue;
+                                best = s;
+                                bestUrl = dl;
+                                bestName = stem;
+                            }
+                            if (best > 0) {
+                                DebugLog::line("boxart: %s fuzzy '%s' (score %d)",
+                                               base.c_str(), bestName.c_str(), best);
+                                ok = updateNetDownload(bestUrl, "", dst, "", err);
+                            }
+                        }
+                        std::remove(listPath.c_str());
+                    } else {
+                        DebugLog::line("boxart: %s listing FAIL (%s)",
+                                       base.c_str(), apiErr.c_str());
+                    }
+                }
             } // !ok && !repo.empty()
             // 3. Mai cache spazzatura: verifica firma PNG.
             if (ok) {
@@ -669,13 +685,32 @@ ScrapeResult scrape(const std::string& basePath,
                     err = "not a PNG";
                 }
             }
+            if (ok) DebugLog::line("boxart: %s download ok", base.c_str());
+            else DebugLog::line("boxart: %s download FAIL (%s)", base.c_str(), err.c_str());
+            return ok;
+        };
+
+        if (style == Style::Box3d) {
+            // Box3d: il locale (images/ dello scraper ES) non e' garantito
+            // essere davvero un render 3D -- puo' essere una copertina 2D
+            // finita li' da uno scrape precedente o messa a mano dall'utente
+            // (caso reale: Rossa/Blu/Gialla con arte locale 2D). Fidarsi del
+            // locale per primo la incollerebbe per sempre sotto il tag ".3d"
+            // (mai piu' ritentato, vedi findCachedCover()), shadowando un
+            // vero box-3D magari disponibile su ScreenScraper. Qui la rete
+            // va provata per prima; il locale resta un fallback per quando
+            // non c'e' rete o ScreenScraper non ha quel gioco.
+            if (tryDownload()) { r.found++; continue; }
+            if (tryLocal()) r.found++;
+            continue;
         }
-        if (ok) {
-            DebugLog::line("boxart: %s download ok", base.c_str());
-            r.found++;
-        } else {
-            DebugLog::line("boxart: %s download FAIL (%s)", base.c_str(), err.c_str());
-        }
+
+        // Locale/Box2d: locale prima (Box2d ritorna sempre "" da
+        // localCover(), va dritto al download), poi download 2D -- qui il
+        // locale e' quello che l'utente si aspetta di vedere per questi
+        // stili, nessuna ambiguita' da risolvere.
+        if (tryLocal()) { r.found++; continue; }
+        if (tryDownload()) r.found++;
     }
     DebugLog::line("boxart: scrape %d/%d", r.found, r.total);
     return r;

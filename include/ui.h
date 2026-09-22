@@ -487,8 +487,21 @@ private:
 
     void appendImportedGames();               // scans importPaths_, extends availableGames_
     void rescanImportedGames();      // re-scan in place + popup on newly found games
+    // "" if this occurrence has no save (native title, or a ROM-only entry
+    // from Settings::showRomsWithoutSave() -- see hasSave on ImportedGame).
     std::string importedSavePath(GameType game, int occurrence = 0) const;
     std::string importedSourceTag(GameType game, int occurrence = 0) const; // small on-tile badge text
+    // The actual playable ROM path for this occurrence, whichever way it's
+    // known: derived from its save (Emulator::findRomForSave) when hasSave,
+    // or the ROM path stored directly for a save-less entry. "" if this
+    // occurrence isn't an import at all (native title, no ImportedGame).
+    // Single place both loadGameIcons() (cover lookup) and the launcher
+    // (requestLaunchGame/isGameLaunchableAt) resolve the ROM from, so they
+    // can never drift onto two different files for the same tile.
+    std::string importedRomPath(GameType game, int occurrence = 0) const;
+    // True only for a save-less ROM-only entry (Settings::showRomsWithoutSave()):
+    // launch-only tile, no box/party/items/trade to show for it.
+    bool importedIsRomOnly(GameType game, int occurrence = 0) const;
     // Which occurrence of `game` is the tile at availableGames_[cursor]?
     // Counts same-type tiles before it (duplicates = same game, other device).
     int importedOccurrence(int cursor) const;
@@ -1155,6 +1168,11 @@ private:
     // (altrimenti l'animazione avanza di un solo passo per evento).
     bool galleryPreviewAnim();
     void selectGame(GameType game, int occurrence = 0);
+    // "A" diretto sulla griglia (non dal radiale, gia' filtrato a monte in
+    // openRadialMenu()): una ROM-only entry (importedIsRomOnly()) non ha
+    // nulla da editare, la si avvia direttamente invece di fallire su
+    // Mount Error dentro selectGame().
+    void selectOrLaunchGame(GameType game, int occurrence, bool& running);
     std::string buildBackupDir(GameType game) const;
     bool saveBankFiles();
     // Write the game save (+ account commit + "Saving…" mask + LED) only when a

@@ -51,4 +51,6 @@ std::string remoteSyncPass(); // default "ark"
 void setRemoteSyncPass(const std::string& v);
 int boxartStyle(); // Sviluppatore -> Stile boxart: 0=Locale, 1=2D, 2=3D
 void setBoxartStyle(int v);
+bool showRomsWithoutSave(); // Sviluppatore -> Mostra ROM senza save
+void setShowRomsWithoutSave(bool v);
 } // namespace Settings

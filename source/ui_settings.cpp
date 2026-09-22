@@ -250,7 +250,7 @@ enum class DevRow {
     DbgToggle, QuickMenu,
     ClearBp, Normalize, ClearGal,
     SendLog, Crash,
-    Rename, Style, Update, Clear, DevSync,
+    Rename, Style, Update, Clear, ShowRomsNoSave, DevSync,
 };
 static std::vector<DevRow> devRowList(bool debugOn, bool sendOn) {
     std::vector<DevRow> v = { DevRow::DbgToggle, DevRow::QuickMenu };
@@ -260,6 +260,7 @@ static std::vector<DevRow> devRowList(bool debugOn, bool sendOn) {
     v.push_back(DevRow::Style);
     v.push_back(DevRow::Update);
     v.push_back(DevRow::Clear);
+    v.push_back(DevRow::ShowRomsNoSave);
     v.push_back(DevRow::DevSync);
     return v;
 }
@@ -341,6 +342,7 @@ std::string UI::settingsRowLabel(int cat, int row) const {
             case DevRow::Update: return i18n::get(StrKey::ScraperBoxartTitle);
             case DevRow::Style: return i18n::get(StrKey::ScraperBoxartStyle);
             case DevRow::Rename: return i18n::get(StrKey::ScraperRenameTitle);
+            case DevRow::ShowRomsNoSave: return i18n::get(StrKey::ShowRomsNoSaveTitle);
             case DevRow::DbgToggle: return i18n::get(StrKey::SetDebugToggle);
             case DevRow::QuickMenu: return i18n::get(StrKey::SetDbgMenu);
             case DevRow::ClearBp: return i18n::get(StrKey::ClearBpHistTitle);
@@ -434,6 +436,8 @@ std::string UI::settingsRowValue(int cat, int row) {
                 return readQuickMenu(basePath_) ? i18n::get(StrKey::SetOn) : i18n::get(StrKey::SetOff);
             case DevRow::Style:
                 return boxartStyleLabel(Settings::boxartStyle());
+            case DevRow::ShowRomsNoSave:
+                return Settings::showRomsWithoutSave() ? i18n::get(StrKey::SetOn) : i18n::get(StrKey::SetOff);
             default:
                 return ""; // righe azione, niente valore a destra
         }
@@ -759,6 +763,17 @@ void UI::settingsRowActivate(int cat, int row, int dir, bool& running) {
             int v = (Settings::boxartStyle() + dir + 3) % 3;
             Settings::setBoxartStyle(v);
             DebugLog::line("settings: boxart_style=%d", v);
+            loadGameIcons();
+        } else if (tag == DevRow::ShowRomsNoSave) {
+            // Stesso pattern di DevRow::Style: toggle + rescan + ricarica tile,
+            // effetto immediato senza riavvio ne' popup di conferma.
+            // rescanImportedGames() droppa prima tutti gli import correnti e
+            // rifa' la scan con il nuovo valore di showRomsWithoutSave(), quindi
+            // gestisce da solo sia l'aggiunta che la rimozione delle ROM orfane.
+            bool on = !Settings::showRomsWithoutSave();
+            Settings::setShowRomsWithoutSave(on);
+            DebugLog::line("settings: show_roms_without_save=%d", on ? 1 : 0);
+            rescanImportedGames();
             loadGameIcons();
         } else if (tag == DevRow::Update) {
             // Aggiorna boxart (ROM): cache hit, poi locale (stile), poi

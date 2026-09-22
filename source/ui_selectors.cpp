@@ -403,7 +403,7 @@ void UI::selectProfile(int index) {
 // --- File import (save SD/USB da emulatori o dump) ---
 
 void UI::appendImportedGames() {
-    importedGames_ = scanImportPaths(importPaths_, autoCheckUsb_);
+    importedGames_ = scanImportPaths(importPaths_, autoCheckUsb_, Settings::showRomsWithoutSave());
     for (const auto& ig : importedGames_) {
         // FireRed/LeafGreen sono l'unica famiglia import che puo' anche
         // avere un GameType nativo con titleId reale (NSO GBA) gia' in
@@ -429,7 +429,7 @@ std::string UI::importedSavePath(GameType game, int occurrence) const {
     for (const auto& ig : importedGames_)
         if (ig.type == game) {
             if (seen == occurrence)
-                return ig.filePath;
+                return ig.hasSave ? ig.filePath : std::string();
             seen++;
         }
     return "";
@@ -444,6 +444,28 @@ std::string UI::importedSourceTag(GameType game, int occurrence) const {
             seen++;
         }
     return "";
+}
+
+std::string UI::importedRomPath(GameType game, int occurrence) const {
+    int seen = 0;
+    for (const auto& ig : importedGames_)
+        if (ig.type == game) {
+            if (seen == occurrence)
+                return ig.hasSave ? Emulator::findRomForSave(ig.filePath, game) : ig.filePath;
+            seen++;
+        }
+    return "";
+}
+
+bool UI::importedIsRomOnly(GameType game, int occurrence) const {
+    int seen = 0;
+    for (const auto& ig : importedGames_)
+        if (ig.type == game) {
+            if (seen == occurrence)
+                return !ig.hasSave;
+            seen++;
+        }
+    return false;
 }
 
 int UI::importedOccurrence(int cursor) const {
@@ -481,7 +503,7 @@ void UI::rescanImportedGames() {
                        }),
         availableGames_.end());
 
-    importedGames_ = scanImportPaths(importPaths_, autoCheckUsb_);
+    importedGames_ = scanImportPaths(importPaths_, autoCheckUsb_, Settings::showRomsWithoutSave());
     for (const auto& ig : importedGames_)
         availableGames_.push_back(ig.type);
     applyFavoritesOrder();
@@ -699,55 +721,22 @@ void UI::loadGameIcons() {
     bool needSystem = false;
     for (size_t ai = 0; ai < availableGames_.size(); ai++) {
         GameType game = availableGames_[ai];
-        // Imported games (RSE/Gen1/Gen2 from a scanned file) have no
-        // real titleId and no NS control data — they always use the abbrev.
-        // placeholder, a meno che cache/covers/ abbia una cover 2D.
-        // FRLG is special: can be both native (installed, with titleId) and
-        // imported (GBA file). At parity, prefer native with its NS icon
-        // (max quality). Check if this GameType entry corresponds to an
-        // imported save; if not, it's native and should try NS.
-        bool isFRLGImport = false;
-        if (isFRLG(game)) {
-            size_t occ = 0;
-            for (size_t aj = 0; aj < ai; aj++)
-                if (availableGames_[aj] == game) occ++;
-            std::string ipath = importedSavePath(game, (int)occ);
-            isFRLGImport = !ipath.empty();
-            // For native FRLG (no imported save), fall through to NS fetch
-            // below (native cover max quality). For imported, try boxart.
-            if (isFRLGImport) {
-                std::string romPath = Emulator::findRomForSave(ipath, game);
-                std::string cover = Boxart::findCachedCover(basePath_, romPath);
-                if (!cover.empty()) {
-                    SDL_Surface* csurf = IMG_Load(cover.c_str());
-                    if (csurf) gameAccentCache_[game] = computeAccentColor(csurf);
-                    if (csurf) {
-                        if (SDL_Surface* rr = roundCornersSurface(csurf, std::min(csurf->w, csurf->h) / 12)) {
-                            SDL_FreeSurface(csurf);
-                            csurf = rr;
-                        }
-                    }
-                    if (csurf) {
-                        SDL_Texture* ctex = SDL_CreateTextureFromSurface(renderer_, csurf);
-                        SDL_FreeSurface(csurf);
-                        if (ctex) {
-                            SDL_SetTextureBlendMode(ctex, SDL_BLENDMODE_BLEND);
-                            gameIconCache_[game] = ctex;
-                            DebugLog::line("icons: %s cover %s",
-                                gameInfo(game).gameTag, cover.c_str());
-                        }
-                    }
-                }
-                continue;
-            }
-            // Native FRLG: fall through to NS icon fetch below
-        }
-        if (isImportedFile(game) || isGen1File(game) || isGen2File(game)) {
-            size_t occ = 0;
-            for (size_t aj = 0; aj < ai; aj++)
-                if (availableGames_[aj] == game) occ++;
-            std::string romPath = Emulator::findRomForSave(
-                importedSavePath(game, (int)occ), game);
+        // Imported games (RSE/Gen1/Gen2/FRLG from a scanned save, OR a
+        // save-less ROM via Settings::showRomsWithoutSave()) have no
+        // titleId and no NS control data — always try their boxart cover,
+        // never the NS fetch below. FRLG is the only ambiguous type here:
+        // it's ALSO the native Switch title's GameType (real titleId), so
+        // it only takes this path when THIS occurrence really is
+        // import-backed (importedRomPath() resolves it via importedGames_
+        // regardless of hasSave) — a native FRLG occurrence has no
+        // importedGames_ entry at all, romPath stays "", falls through to
+        // NS fetch below like every other native title.
+        size_t occ = 0;
+        for (size_t aj = 0; aj < ai; aj++)
+            if (availableGames_[aj] == game) occ++;
+        std::string romPath = importedRomPath(game, (int)occ);
+        if (isImportedFile(game) || isGen1File(game) || isGen2File(game) ||
+            (isFRLG(game) && !romPath.empty())) {
             std::string cover = Boxart::findCachedCover(basePath_, romPath);
             if (!cover.empty()) {
                 SDL_Surface* csurf = IMG_Load(cover.c_str());
@@ -1833,7 +1822,7 @@ void UI::selectorTap(float px, float py, bool& running) {
             if (Settings::radialMenu()) {
                 openRadialMenu(i);
             } else {
-                selectGame(availableGames_[i], importedOccurrence(i));
+                selectOrLaunchGame(availableGames_[i], importedOccurrence(i), running);
             }
             markDirty();
             return;
@@ -2104,15 +2093,29 @@ void UI::handleGameSelectorInput(bool& running) {
             return;
         }
 
-        // Navigate to chevrons when going past grid edges (only if page exists)
+        // Navigate to chevrons when going past grid edges (only if page exists).
+        // Su R36S (poche card/pagina, 4) si scorre subito la pagina invece di
+        // mettere a fuoco la freccina e aspettare una seconda pressione: con
+        // cosi' poche card per riga il doppio passaggio sarebbe fastidioso.
+        // Su Switch resta il focus-poi-conferma originale.
         if (totalPages > 1) {
             if (col < 0 && gameSelPage_ > 0) {
+#ifdef OH_LINUX
+                gameSelPage_--;
+                gameSelCursor_ = gameSelPage_ * GAMES_PER_PAGE;
+#else
                 gsSetFocus(GSFocus::ChevLeft);
+#endif
                 return;
             }
             int rowItems = std::min(COLS, pageCount - row * COLS);
             if (col >= rowItems && gameSelPage_ < totalPages - 1) {
+#ifdef OH_LINUX
+                gameSelPage_++;
+                gameSelCursor_ = gameSelPage_ * GAMES_PER_PAGE;
+#else
                 gsSetFocus(GSFocus::ChevRight);
+#endif
                 return;
             }
         }
@@ -2682,7 +2685,8 @@ void UI::handleGameSelectorInput(bool& running) {
                     else if (!gallerySel_ && Settings::radialMenu())
                         openRadialMenu(gameSelCursor_);
                     else
-                        selectGame(availableGames_[gameSelCursor_], importedOccurrence(gameSelCursor_));
+                        selectOrLaunchGame(availableGames_[gameSelCursor_],
+                                           importedOccurrence(gameSelCursor_), running);
                     break;
                 case SDL_CONTROLLER_BUTTON_A: // Switch B = back
                     if (dockState_.reorderMode) { dockStateExitReorderMode(false); break; } // B annulla il riordino
@@ -3034,36 +3038,7 @@ bool UI::isGameLaunchableAt(int idx) {
     if (isTitle) return true;
     ensureMgbaChecked();
     if (mgbaPath_.empty()) return false;
-    std::string sp = importedSavePath(g, importedOccurrence(idx));
-    if (!sp.empty()) return !Emulator::findRomForSave(sp, g).empty();
-    // ROM senza save (toggle Sviluppatore): launchabile se esiste una ROM per questo gioco
-    if (Settings::showRomsWithoutSave()) {
-        std::vector<std::string> dirs;
-        for (const auto& e : importPaths_)
-            if (e.enabled && !e.path.empty()) dirs.push_back(e.path);
-        for (const auto& rom : RomInfo::scanRoms(dirs)) {
-            RomInfo::Info info;
-            if (!RomInfo::detect(rom, info) || info.game.empty()) continue;
-            // Mappa info.game a GameType come in ui.cpp
-            auto toGt = [](const std::string& s) -> GameType {
-                std::string t = s; for (auto& c : t) c = (char)tolower((unsigned char)c);
-                if (t == "emerald") return GameType::EMERALD;
-                if (t == "ruby") return GameType::RUBY;
-                if (t == "sapphire") return GameType::SAPPHIRE;
-                if (t == "firered") return GameType::FR;
-                if (t == "leafgreen") return GameType::LG;
-                if (t == "red") return GameType::RED;
-                if (t == "blue") return GameType::BLUE;
-                if (t == "yellow") return GameType::YELLOW;
-                if (t == "gold") return GameType::GOLD;
-                if (t == "silver") return GameType::SILVER;
-                if (t == "crystal") return GameType::CRYSTAL;
-                return GameType::EMERALD;
-            };
-            if (toGt(info.game) == g) return true;
-        }
-    }
-    return false;
+    return !importedRomPath(g, importedOccurrence(idx)).empty();
 }
 
 // ---------------------------------------------------------------------------
@@ -3081,15 +3056,12 @@ bool UI::isGameLaunchableAt(int idx) {
 // (dove disegnare i bottoni) e il puntamento analogico in
 // handleRadialMenuInput() (quale voce "punta" lo stick) cosi' restano
 // sempre coerenti fra loro.
-// Centro del ventaglio in base all'ancora: al centro apre in alto,
-// ai bordi apre di lato (4:3: ai lati non c'e' spazio per l'arco orizzontale).
-// Su Switch resta sempre 270 (comportamento originale invariato).
+// Sempre in alto (270), su entrambe le piattaforme -- l'apertura di lato
+// ai bordi (4:3) e' stata provata e tolta: con la griglia Classica R36S
+// ridotta a 4 card/pagina il ventaglio non sfora piu' nemmeno per le card
+// di bordo, e aprire sempre verso l'alto e' piu' prevedibile (niente voci
+// "storte" sulla prima/ultima colonna).
 static float radialCenterDeg(int ax) {
-#ifdef OH_LINUX
-    constexpr int SCREEN_W = 640;
-    if (ax < SCREEN_W / 3) return 0.0f;        // bordo sinistro: apri a destra
-    if (ax > SCREEN_W * 2 / 3) return 180.0f;  // bordo destro: apri a sinistra
-#endif
     (void)ax;
     return 270.0f;
 }
@@ -3162,11 +3134,16 @@ void UI::openRadialMenu(int idx) {
 
     radialItems_.clear();
     if (isGameLaunchableAt(idx)) radialItems_.push_back((int)RadialAction::Launch);
-    radialItems_.push_back((int)RadialAction::Backpack);
-    radialItems_.push_back((int)RadialAction::Bank);
-    radialItems_.push_back((int)RadialAction::SaveMenu);
-    if (!isDualBankMode() && TradeEvo::supported(availableGames_[idx]))
-        radialItems_.push_back((int)RadialAction::Trade);
+    // ROM senza save (Settings::showRomsWithoutSave()): niente da modificare
+    // finche' non esiste un save -- solo avvio, come una voce da launcher.
+    GameType radialGame = availableGames_[idx];
+    if (!importedIsRomOnly(radialGame, importedOccurrence(idx))) {
+        radialItems_.push_back((int)RadialAction::Backpack);
+        radialItems_.push_back((int)RadialAction::Bank);
+        radialItems_.push_back((int)RadialAction::SaveMenu);
+        if (!isDualBankMode() && TradeEvo::supported(radialGame))
+            radialItems_.push_back((int)RadialAction::Trade);
+    }
 
     radialGameIdx_ = idx;
     radialCursor_ = -1; // nessuna voce a fuoco finche' D-pad o stick non puntano da qualche parte
@@ -3471,10 +3448,8 @@ void UI::requestLaunchGame(bool& running) {
     ensureMgbaChecked();
     if (mgbaPath_.empty()) return;
     int occ = importedOccurrence(gameSelCursor_);
-    std::string savePath = importedSavePath(g, occ);
-    if (savePath.empty()) return;
-    std::string romPath = Emulator::findRomForSave(savePath, g);
-    if (romPath.empty()) return; // rom non trovata accanto al save
+    std::string romPath = importedRomPath(g, occ);
+    if (romPath.empty()) return; // nessuna rom risolvibile per questa occorrenza
     if (!showConfirmDialog(i18n::get(StrKey::LaunchGameTitle),
                             i18n::fmt(StrKey::LaunchGameConfirm, gameDisplayNameOf(g))))
         return;

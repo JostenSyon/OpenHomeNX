@@ -8,6 +8,9 @@
 #include "autoupdate.h"
 #include "remote_sync.h"
 #include "settings_cfg.h"
+#include "rominfo.h"
+#include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -1086,6 +1089,10 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
         DebugLog::line("r36s: fillPresentGames present=%zu avail(before import)=%zu", present.size(), availableGames_.size());
 #endif
         appendImportedGames();
+        // Le ROM senza save (Settings::showRomsWithoutSave()) sono gia'
+        // incluse qui sopra: scanImportPaths() le produce come ImportedGame
+        // hasSave=false, e appendImportedGames() le aggiunge ad
+        // availableGames_ come ogni altro import.
         applyFavoritesOrder();
 #ifdef OH_LINUX
         DebugLog::line("r36s: fillPresentGames dopo import=%zu", availableGames_.size());
@@ -1697,6 +1704,21 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
 
     account_.unmountSave();
     account_.shutdown();
+}
+
+// Wrapper per i punti di "conferma" sul selettore giochi (tap/A sulla card
+// quando il menu radiale e' disattivo): una ROM senza save (Settings::
+// showRomsWithoutSave()) non ha alcun box da aprire, quindi selectGame()
+// fallirebbe con un Mount Error -- qui si comporta invece come il pulsante
+// "Avvia" del launcher. Il chiamante deve aver gia' impostato gameSelCursor_
+// sull'indice giusto (requestLaunchGame() legge da li'), come fanno gia'
+// tutti i call-site esistenti prima di selezionare/lanciare.
+void UI::selectOrLaunchGame(GameType game, int occurrence, bool& running) {
+    if (importedIsRomOnly(game, occurrence)) {
+        requestLaunchGame(running);
+        return;
+    }
+    selectGame(game, occurrence);
 }
 
 void UI::selectGame(GameType game, int occurrence) {

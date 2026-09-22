@@ -1,6 +1,7 @@
 #include "import_scan.h"
 #include "save_file.h"
 #include "debug_log.h"
+#include "rominfo.h"
 #ifdef OH_USB_UPDATE
 #include <usbhsfs.h>
 #endif
@@ -442,9 +443,60 @@ void scanDir(const std::string& dir, std::vector<ImportedGame>& out, std::set<st
                     dir.c_str(), filesSeen, regularFiles, gbaSized, matched);
 }
 
+// RomInfo::detect()'s Info.game ("emerald", "firered", ...) -> GameType.
+// Unica implementazione: prima duplicata a mano in tre punti diversi
+// (ui.cpp boot, ui_selectors.cpp isGameLaunchableAt, e il commento in
+// ui_settings.cpp) -- ognuna rifaceva anche la scansione directory da capo
+// ad ogni chiamata invece di leggere il risultato di uno scan gia' fatto.
+// GameType::EMERALD di fallback per un "game" riconosciuto da RomInfo ma non
+// (ancora) elencato qui non dovrebbe mai capitare: i valori possibili sono
+// tutti quelli assegnati in rominfo.cpp (GBA: emerald/firered/leafgreen/
+// ruby/sapphire; GB/GBC: red/blue/yellow/gold/silver/crystal).
+GameType gameTypeFromRomInfoGame(const std::string& g) {
+    if (g == "emerald")   return GameType::EMERALD;
+    if (g == "ruby")      return GameType::RUBY;
+    if (g == "sapphire")  return GameType::SAPPHIRE;
+    if (g == "firered")   return GameType::FR;
+    if (g == "leafgreen") return GameType::LG;
+    if (g == "red")       return GameType::RED;
+    if (g == "blue")      return GameType::BLUE;
+    if (g == "yellow")    return GameType::YELLOW;
+    if (g == "gold")      return GameType::GOLD;
+    if (g == "silver")    return GameType::SILVER;
+    if (g == "crystal")   return GameType::CRYSTAL;
+    return GameType::EMERALD; // fallback difensivo, non dovrebbe accadere
+}
+
+// Seconda passata (Settings::showRomsWithoutSave()): ROM GBA/GB/GBC senza
+// alcun save trovato sopra. Stesso `claimed` della passata save -- una ROM
+// il cui gioco ha gia' un save reale (in questa o altra cartella) non
+// produce mai un doppione orfano.
+void scanRomsWithoutSave(const std::vector<ImportPathEntry>& paths,
+                         std::vector<ImportedGame>& out, std::set<std::string>& claimed) {
+    std::vector<std::string> dirs;
+    for (const auto& e : paths)
+        if (e.enabled && !e.path.empty() && e.path.rfind("usb:", 0) != 0)
+            dirs.push_back(e.path);
+    for (const auto& rom : RomInfo::scanRoms(dirs)) {
+        RomInfo::Info info;
+        if (!RomInfo::detect(rom, info) || info.game.empty())
+            continue; // NDS/3DS (kind riconosciuto, game no) o ROM ignota
+        GameType type = gameTypeFromRomInfoGame(info.game);
+        size_t slash = rom.find_last_of('/');
+        std::string tag = sourceTagFor(slash == std::string::npos ? rom : rom.substr(0, slash));
+        std::string key = std::to_string(static_cast<int>(type)) + '\x1f' + tag;
+        if (claimed.count(key) != 0)
+            continue; // gia' coperto da un save reale (o da un'altra ROM prima)
+        claimed.insert(key);
+        out.push_back({type, rom, tag, /*hasSave=*/false});
+        DebugLog::line("import scan: %s -> %s (senza save)", rom.c_str(), gameInfo(type).gameTag);
+    }
+}
+
 } // namespace
 
-std::vector<ImportedGame> scanImportPaths(const std::vector<ImportPathEntry>& paths, bool autoCheckUsb) {
+std::vector<ImportedGame> scanImportPaths(const std::vector<ImportPathEntry>& paths, bool autoCheckUsb,
+                                          bool includeRomsWithoutSave) {
     std::vector<ImportedGame> out;
     std::set<std::string> claimed;
 
@@ -505,6 +557,9 @@ std::vector<ImportedGame> scanImportPaths(const std::vector<ImportPathEntry>& pa
         DebugLog::line("import scan: autocheck USB enabled but built without OH_USB_UPDATE, skipped");
 #endif
     }
+
+    if (includeRomsWithoutSave)
+        scanRomsWithoutSave(paths, out, claimed);
 
     DebugLog::line("import scan: done, %zu game(s) found", out.size());
     return out;

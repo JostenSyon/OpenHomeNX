@@ -177,6 +177,8 @@ void setBoxartStyle(int v) {
     if (v > 2) v = 2;
     setInt("boxart_style", v);
 }
+bool showRomsWithoutSave() { return getInt("show_roms_without_save", 0) != 0; }
+void setShowRomsWithoutSave(bool v) { setInt("show_roms_without_save", v ? 1 : 0); }
 std::string remoteSyncHost() {
     auto it = g_kv.find("remotesync_host");
     return (it == g_kv.end()) ? "" : it->second;
