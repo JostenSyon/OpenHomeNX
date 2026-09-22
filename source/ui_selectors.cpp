@@ -699,14 +699,50 @@ void UI::loadGameIcons() {
     bool needSystem = false;
     for (size_t ai = 0; ai < availableGames_.size(); ai++) {
         GameType game = availableGames_[ai];
-        // Imported games (RSE/FRLG/Gen1/Gen2 from a scanned file) have no
+        // Imported games (RSE/Gen1/Gen2 from a scanned file) have no
         // real titleId and no NS control data — they always use the abbrev.
-        // placeholder in drawGameSelectorFrame() instead of a fetched icon,
-        // a meno che cache/covers/ abbia una cover 2D (Sviluppatore ->
-        // Aggiorna boxart): in quel caso la usano come le icone di sistema.
-        // isFRLG incluso: FireRed/LeafGreen esistono solo da import (GBA),
-        // mai installati con titleId (su Switch il fetch NS fallirebbe comunque).
-        if (isImportedFile(game) || isGen1File(game) || isGen2File(game) || isFRLG(game)) {
+        // placeholder, a meno che cache/covers/ abbia una cover 2D.
+        // FRLG is special: can be both native (installed, with titleId) and
+        // imported (GBA file). At parity, prefer native with its NS icon
+        // (max quality). Check if this GameType entry corresponds to an
+        // imported save; if not, it's native and should try NS.
+        bool isFRLGImport = false;
+        if (isFRLG(game)) {
+            size_t occ = 0;
+            for (size_t aj = 0; aj < ai; aj++)
+                if (availableGames_[aj] == game) occ++;
+            std::string ipath = importedSavePath(game, (int)occ);
+            isFRLGImport = !ipath.empty();
+            // For native FRLG (no imported save), fall through to NS fetch
+            // below (native cover max quality). For imported, try boxart.
+            if (isFRLGImport) {
+                std::string romPath = Emulator::findRomForSave(ipath, game);
+                std::string cover = Boxart::findCachedCover(basePath_, romPath);
+                if (!cover.empty()) {
+                    SDL_Surface* csurf = IMG_Load(cover.c_str());
+                    if (csurf) gameAccentCache_[game] = computeAccentColor(csurf);
+                    if (csurf) {
+                        if (SDL_Surface* rr = roundCornersSurface(csurf, std::min(csurf->w, csurf->h) / 12)) {
+                            SDL_FreeSurface(csurf);
+                            csurf = rr;
+                        }
+                    }
+                    if (csurf) {
+                        SDL_Texture* ctex = SDL_CreateTextureFromSurface(renderer_, csurf);
+                        SDL_FreeSurface(csurf);
+                        if (ctex) {
+                            SDL_SetTextureBlendMode(ctex, SDL_BLENDMODE_BLEND);
+                            gameIconCache_[game] = ctex;
+                            DebugLog::line("icons: %s cover %s",
+                                gameInfo(game).gameTag, cover.c_str());
+                        }
+                    }
+                }
+                continue;
+            }
+            // Native FRLG: fall through to NS icon fetch below
+        }
+        if (isImportedFile(game) || isGen1File(game) || isGen2File(game)) {
             size_t occ = 0;
             for (size_t aj = 0; aj < ai; aj++)
                 if (availableGames_[aj] == game) occ++;
@@ -715,10 +751,6 @@ void UI::loadGameIcons() {
             std::string cover = Boxart::findCachedCover(basePath_, romPath);
             if (!cover.empty()) {
                 SDL_Surface* csurf = IMG_Load(cover.c_str());
-                // Mancava qui (presente nel ramo NS sotto): senza questo le
-                // cover da import/scraper restano sull'accent flat generico
-                // invece del colore vero della copertina (sfondo "vetro" +
-                // pallino in Galleria mai colorati in base alla boxart).
                 if (csurf) gameAccentCache_[game] = computeAccentColor(csurf);
                 if (csurf) {
                     if (SDL_Surface* rr = roundCornersSurface(csurf, std::min(csurf->w, csurf->h) / 12)) {
@@ -777,8 +809,13 @@ void UI::loadGameIcons() {
     if (needSystem) {
         nsInitialize();
         for (GameType game : availableGames_) {
-            if (isImportedFile(game) || isGen1File(game) || isGen2File(game) || isFRLG(game))
+            if (isImportedFile(game) || isGen1File(game) || isGen2File(game))
                 continue; // no titleId, no NS control data — placeholder only
+            // FRLG: can be native (with NS icon) or imported (with boxart).
+            // If it's FRLG and already has a cover from the earlier boxart
+            // loop (imported with cover), skip NS. If not, try NS for native.
+            if (isFRLG(game) && gameIconCache_.count(game))
+                continue;
             if (gameIconCache_.count(game))
                 continue; // already loaded from cache
 
@@ -1459,14 +1496,23 @@ void UI::drawGameSelectorFrame() {
     } else {
     int numGames = (int)availableGames_.size();
 #ifdef OH_LINUX
-    // Nativo 4:3 (640px): 4 colonne, card compatte (riga da 605px centrata).
+    // Nativo 4:3 (640px): 4 colonne, UNA riga sola (4/pagina). Con 2 righe
+    // lo spazio verticale restava stretto qualunque fosse CARD_W (il fondo
+    // griglia toccava esattamente il bordo del dock, zero margine) --
+    // con una riga sola CARD_H puo' tornare grande senza quel vincolo,
+    // niente piu' schiacciamento ne' icone a ridosso del dock.
+    // Rapporto vicino a quello originale (140x190, 0.737) -- la prima prova
+    // (132x220, 0.6) era troppo stretta/allungata. Margine orizzontale
+    // verificato contro le frecce pagina ridotte per R36S qui sotto (AR=16,
+    // x=22): riga da 533px centrata lascia 53px per lato, le frecce
+    // arrivano a 38px -- 15px di respiro reale, non solo sulla carta.
     constexpr int COLS = 4;
-    constexpr int ROWS_PER_PAGE = 2;
+    constexpr int ROWS_PER_PAGE = 1;
     constexpr int GAMES_PER_PAGE = COLS * ROWS_PER_PAGE;
-    constexpr int CARD_W = 140;
-    constexpr int CARD_H = 190;
+    constexpr int CARD_W = 122;
+    constexpr int CARD_H = 166;
     constexpr int CARD_GAP = 15;
-    constexpr int ICON_SIZE = 110;
+    constexpr int ICON_SIZE = 98;
 #else
     constexpr int COLS = 6;
     constexpr int ROWS_PER_PAGE = 2;
@@ -1615,7 +1661,14 @@ void UI::drawGameSelectorFrame() {
     // Frecce pagine: icona diretta senza riquadro (dx = stessa ruotata 180).
     // Grigia se non disponibile, colore tema se attiva, cursor se evidenziata.
     if (totalPages > 1 && iconArrow_) {
+        // Come la posizione (34 / SCREEN_W-34) sotto: mai stata platform-
+        // specific, andava bene sul margine largo di Switch (1280px) ma su
+        // R36S (640px) mangiava lo stesso spazio della griglia -> overlap.
+#ifdef OH_LINUX
+        constexpr int AR = 16;
+#else
         constexpr int AR = 24;
+#endif
         int midY = SCREEN_H / 2;
         auto arrow = [&](int cx, bool flip, bool can, bool focused) {
             SDL_Color c = !can ? SDL_Color{110, 110, 110, 255}
@@ -1631,8 +1684,13 @@ void UI::drawGameSelectorFrame() {
         };
         bool leftFocused = gsFocus_ == GSFocus::ChevLeft;
         bool rightFocused = gsFocus_ == GSFocus::ChevRight;
-        arrow(34, false, gameSelPage_ > 0, leftFocused);
-        arrow(SCREEN_W - 34, true, gameSelPage_ < totalPages - 1, rightFocused);
+#ifdef OH_LINUX
+        constexpr int ARROW_X = 22;
+#else
+        constexpr int ARROW_X = 34;
+#endif
+        arrow(ARROW_X, false, gameSelPage_ > 0, leftFocused);
+        arrow(SCREEN_W - ARROW_X, true, gameSelPage_ < totalPages - 1, rightFocused);
     }
 
     // "X: Espelli USB" suffix only while a device is actually mounted.
@@ -1848,9 +1906,17 @@ void UI::handleGameSelectorInput(bool& running) {
     if (numGames == 0) return;
 
     const bool gallerySel_ = (gameSelectorLayout_ == GameSelectorLayout::Gallery);
+#ifdef OH_LINUX
+    // TENERE IN SYNC con la griglia Classica in drawGameSelectorFrame():
+    // era rimasta ai valori Switch (6/12), quindi su R36S (griglia 4x2=8)
+    // L/R non cambiava mai pagina -- il conteggio pagine pensava che
+    // entrassero sempre 12 giochi per pagina, non gli 8 davvero disegnati.
+    const int COLS = gallerySel_ ? 1 : 4;
+    const int GAMES_PER_PAGE = gallerySel_ ? numGames : 4;
+#else
     const int COLS = gallerySel_ ? 1 : 6;
-
     const int GAMES_PER_PAGE = gallerySel_ ? numGames : 12;
+#endif
 
     int totalPages = (numGames + GAMES_PER_PAGE - 1) / GAMES_PER_PAGE;
 
@@ -2969,8 +3035,35 @@ bool UI::isGameLaunchableAt(int idx) {
     ensureMgbaChecked();
     if (mgbaPath_.empty()) return false;
     std::string sp = importedSavePath(g, importedOccurrence(idx));
-    if (sp.empty()) return false;
-    return !Emulator::findRomForSave(sp, g).empty();
+    if (!sp.empty()) return !Emulator::findRomForSave(sp, g).empty();
+    // ROM senza save (toggle Sviluppatore): launchabile se esiste una ROM per questo gioco
+    if (Settings::showRomsWithoutSave()) {
+        std::vector<std::string> dirs;
+        for (const auto& e : importPaths_)
+            if (e.enabled && !e.path.empty()) dirs.push_back(e.path);
+        for (const auto& rom : RomInfo::scanRoms(dirs)) {
+            RomInfo::Info info;
+            if (!RomInfo::detect(rom, info) || info.game.empty()) continue;
+            // Mappa info.game a GameType come in ui.cpp
+            auto toGt = [](const std::string& s) -> GameType {
+                std::string t = s; for (auto& c : t) c = (char)tolower((unsigned char)c);
+                if (t == "emerald") return GameType::EMERALD;
+                if (t == "ruby") return GameType::RUBY;
+                if (t == "sapphire") return GameType::SAPPHIRE;
+                if (t == "firered") return GameType::FR;
+                if (t == "leafgreen") return GameType::LG;
+                if (t == "red") return GameType::RED;
+                if (t == "blue") return GameType::BLUE;
+                if (t == "yellow") return GameType::YELLOW;
+                if (t == "gold") return GameType::GOLD;
+                if (t == "silver") return GameType::SILVER;
+                if (t == "crystal") return GameType::CRYSTAL;
+                return GameType::EMERALD;
+            };
+            if (toGt(info.game) == g) return true;
+        }
+    }
+    return false;
 }
 
 // ---------------------------------------------------------------------------
@@ -3045,7 +3138,7 @@ void UI::openRadialMenu(int idx) {
     if (idx < 0 || idx >= (int)availableGames_.size()) return;
     // TENERE IN SYNC con la griglia Classica in drawGameSelectorFrame().
 #ifdef OH_LINUX
-    constexpr int COLS = 4, CARD_W = 140, CARD_H = 190, CARD_GAP = 15, GAMES_PER_PAGE = 8;
+    constexpr int COLS = 4, CARD_W = 122, CARD_H = 166, CARD_GAP = 15, GAMES_PER_PAGE = 4;
 #else
     constexpr int COLS = 6, CARD_W = 160, CARD_H = 200, CARD_GAP = 20, GAMES_PER_PAGE = 12;
 #endif
