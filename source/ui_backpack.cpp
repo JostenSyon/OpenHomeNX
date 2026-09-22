@@ -16,33 +16,21 @@
 #include <cstdio>
 
 namespace {
+#ifdef OH_LINUX
+// 4:3 nativo (620x440): due colonne strette (350+210), tab su due righe
+// (9 tab non entrano in una riga da 350px), 7 righe visibili.
+constexpr int BP_POP_W = 620;
+constexpr int BP_POP_H = 440;
+constexpr int BP_ROW_H = 38;
+constexpr int BP_VISIBLE = 7;
+constexpr int BP_LEFT_W = 350;
+#else
 constexpr int BP_POP_W = 1120;
 constexpr int BP_POP_H = 600;
-#ifdef OH_LINUX
-// 4:3: scala l'intero popup per farlo entrare in 640x480 (stesso look
-// del downscale 16:9 che era apprezzato). RAII: ripristina viewport e
-// scala all'uscita, compreso il return anticipato dell'audit. R36S senza
-// touch: la navigazione gamepad usa coordinate logiche, inalterata.
-struct BackpackScaleGuard {
-    SDL_Renderer* r;
-    SDL_Rect oldVp;
-    float osx, osy;
-    BackpackScaleGuard(SDL_Renderer* rr, float s, int vw, int vh, int sw, int sh) : r(rr) {
-        SDL_RenderGetViewport(r, &oldVp);
-        SDL_RenderGetScale(r, &osx, &osy);
-        SDL_Rect nv = {(sw - vw) / 2, (sh - vh) / 2, vw, vh};
-        SDL_RenderSetViewport(r, &nv);
-        SDL_RenderSetScale(r, s, s);
-    }
-    ~BackpackScaleGuard() {
-        SDL_RenderSetViewport(r, &oldVp);
-        SDL_RenderSetScale(r, osx, osy);
-    }
-};
-#endif
 constexpr int BP_ROW_H = 38;
 constexpr int BP_VISIBLE = 12;
 constexpr int BP_LEFT_W = 660;
+#endif
 // Barra tab categoria sopra al catalogo: una riga in meno per farle
 // posto (vedi BP_VISIBLE_LEFT). Alta abbastanza da non far toccare il
 // testo al bordo (richiesto esplicitamente).
@@ -847,17 +835,8 @@ void UI::backpackDoFixSelected() {
 
 void UI::drawBackpackPopup() {
     drawRect(0, 0, SCREEN_W, SCREEN_H, T().overlay);
-#ifdef OH_LINUX
-    // Origine virtuale (0,0): viewport+scale la centrano a schermo.
-    constexpr float BP_SCALE = 0.55f; // 1120x600 -> 616x330
-    int popX = 0, popY = 0;
-    BackpackScaleGuard guard(renderer_, BP_SCALE,
-        (int)(BP_POP_W * BP_SCALE), (int)(BP_POP_H * BP_SCALE),
-        SCREEN_W, SCREEN_H);
-#else
     int popX = (SCREEN_W - BP_POP_W) / 2;
     int popY = (SCREEN_H - BP_POP_H) / 2;
-#endif
     drawRect(popX, popY, BP_POP_W, BP_POP_H, T().panelBg);
     drawRectOutline(popX, popY, BP_POP_W, BP_POP_H, T().cursor, 2);
 
@@ -884,9 +863,17 @@ void UI::drawBackpackPopup() {
         }
     };
 
-    // Il catalogo cede una riga di lista alla barra tab sopra di se'
+    // Il catalogo cede spazio alla barra tab sopra di se'
     // (solo lui: destra e verifica restano allineate a listY).
+#ifdef OH_LINUX
+    // 4:3: tab su due righe (9 tab non entrano in 350px).
+    // tabRows() = 1 se ci stanno in una riga, 2 altrimenti.
+    int tabN0 = bpTabCount(backpackGame_);
+    int tabRows0 = (tabN0 * 70 <= BP_LEFT_W) ? 1 : 2;
+    int leftListY = listY + tabRows0 * BP_TAB_H;
+#else
     int leftListY = listY + BP_TAB_H;
+#endif
     if (!backpackAudit_) {
         // --- Barra tab categoria: ZL/ZR scritti ai due estremi (il
         // tasto che le cambia), bordi superiori arrotondati, quella
@@ -901,6 +888,38 @@ void UI::drawBackpackPopup() {
         drawTextCentered("ZR", lx + BP_LEFT_W - zrTe.w / 2 - 2, barCy, T().textDim, fontSmall_);
         int tabsX = lx + sideW;
         int tabN = bpTabCount(backpackGame_);
+#ifdef OH_LINUX
+        // 4:3: tab su una o due righe (vedi tabRows0 sopra). Attiva
+        // evidenziata nella sua riga, senza fusione inter-riga.
+        int perRow = (tabN <= 5) ? tabN : (tabN + 1) / 2;
+        if (perRow < 1) perRow = 1;
+        int tabW = (BP_LEFT_W - 2 * sideW) / perRow;
+        int tabR = 6;
+        for (int t = 0; t < tabN; t++) {
+            int tr = t / perRow, tc = t % perRow;
+            int tx = tabsX + tc * tabW;
+            int ty = listY + tr * BP_TAB_H;
+            bool active = (t == backpackCatTab_);
+            int w = tabW - 4;
+            SDL_Color fill = active ? T().menuHighlight : T().statusBarBg;
+            drawRoundRect(tx, ty, w, BP_TAB_H - 4, tabR, fill);
+            std::string tlbl = i18n::get(bpCatTabKey(backpackGame_, t));
+            // Tronca in larghezza (UTF-8 safe) se eccede la tab.
+            while (getTextEntry(tlbl, fontSmall_, T().textDim).w > w - 8 && tlbl.size() > 4) {
+                size_t n = tlbl.size();
+                // togli un carattere UTF-8 dalla fine (prima del punto eventuale)
+                std::string base = tlbl;
+                if (base.size() >= 2 && base.substr(base.size() - 2) == "..")
+                    base = base.substr(0, base.size() - 2);
+                size_t m = base.size();
+                while (m > 0 && (static_cast<unsigned char>(base[m - 1]) & 0xC0) == 0x80) m--;
+                if (m > 0) m--;
+                tlbl = base.substr(0, m) + "..";
+            }
+            drawTextCentered(tlbl, tx + w / 2, ty + BP_TAB_H / 2 - 2,
+                             active ? T().text : T().textDim, fontSmall_);
+        }
+#else
         int tabW = (BP_LEFT_W - 2 * sideW) / tabN;
         int tabR = 7; // raggio angoli superiori
         for (int t = 0; t < tabN; t++) {
@@ -916,6 +935,7 @@ void UI::drawBackpackPopup() {
             drawTextCentered(i18n::get(bpCatTabKey(backpackGame_, t)), tx + w / 2, listY + fillH / 2,
                              active ? T().text : T().textDim, fontSmall_);
         }
+#endif
         // --- Sinistra: catalogo trasferibili, sempre visibile ---
         int n = (int)backpackLeft_.size();
         if (n == 0)
@@ -1009,7 +1029,12 @@ void UI::drawBackpackPopup() {
                 std::string mode = (jr.pocket == "key") ? "Base" : "Cons.";
                 txt = nm + " x" + std::to_string(jr.qty) + " [" + mode + "]";
             }
+#ifdef OH_LINUX
+            // 4:3: colonna 350px, tronca prima.
+            if (txt.length() > 44) txt = txt.substr(0, 43) + ".";
+#else
             if (txt.length() > 52) txt = txt.substr(0, 51) + ".";
+#endif
             drawText(txt, lx + 8, rowY + 7, T().text, fontSmall_);
         }
     }

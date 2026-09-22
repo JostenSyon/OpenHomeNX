@@ -981,7 +981,11 @@ void UI::handleStickRepeat() {
             tradeCursor_ += stickDirY_ > 0 ? 1 : -1;
             if (tradeCursor_ < 0) tradeCursor_ = count - 1;
             if (tradeCursor_ >= count) tradeCursor_ = 0;
+#ifdef OH_LINUX
+            constexpr int VISIBLE = 4; // sync con drawTradeListPopup()
+#else
             constexpr int VISIBLE = 6;
+#endif
             if (tradeCursor_ < tradeScroll_) tradeScroll_ = tradeCursor_;
             else if (tradeCursor_ >= tradeScroll_ + VISIBLE) tradeScroll_ = tradeCursor_ - VISIBLE + 1;
         }
@@ -3645,7 +3649,11 @@ void UI::playTradeEvolveAnim(uint16_t fromSpecies, uint16_t toSpecies) {
 
 void UI::handleTradeListInput(const SDL_Event& event) {
     int count = (int)tradeCandidates_.size();
+#ifdef OH_LINUX
+    constexpr int VISIBLE = 4; // sync con drawTradeListPopup()
+#else
     constexpr int VISIBLE = 6;
+#endif
     auto scrollIntoView = [&]() {
         if (tradeCursor_ < tradeScroll_)
             tradeScroll_ = tradeCursor_;
@@ -3671,6 +3679,7 @@ void UI::handleTradeListInput(const SDL_Event& event) {
                 break;
             case SDL_CONTROLLER_BUTTON_A: // Switch B = chiudi
                 showTradeList_ = false;
+                markDirty(); // senza refresh resta il frame stale del popup
                 break;
         }
     }
