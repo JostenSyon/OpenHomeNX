@@ -36,7 +36,7 @@ esac
 
 # Con IP: il deploy ricompila da solo, inutile buildare due volte
 if [ -n "$DEPLOY_IP" ]; then
-  DEPLOY_SH="$(cd "$(dirname "$0")/../.." && pwd)/OpenHomeNX/deploy_r36s.sh"
+  DEPLOY_SH="$(cd "$(dirname "$0")/../.." && pwd)/deploy_r36s.sh"
   if [ ! -f "$DEPLOY_SH" ]; then
     echo "deploy_r36s.sh non trovato, compilo solo locale."
   else
