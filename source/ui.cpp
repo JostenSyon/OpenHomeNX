@@ -529,7 +529,7 @@ void UI::showMessageAndWait(const std::string& title, const std::string& body) {
     const int topY = SCREEN_H / 2 + 5;
     const int bottomY = SCREEN_H - 56;
     std::vector<std::string> lines = wrapBodyLines(body);
-    int first = 0, maxFirst = 0;
+    int first = 0;
     uint32_t lastTick = 0;
     int lastDir = 0;
     bool waiting = true;
@@ -574,7 +574,7 @@ bool UI::showConfirmDialog(const std::string& title, const std::string& body) {
     const int topY = SCREEN_H / 2 + 5;
     const int bottomY = SCREEN_H - 56;
     std::vector<std::string> lines = wrapBodyLines(body);
-    int first = 0, maxFirst = 0;
+    int first = 0;
     uint32_t lastTick = 0;
     int lastDir = 0;
     int result = -1; // -1 = undecided

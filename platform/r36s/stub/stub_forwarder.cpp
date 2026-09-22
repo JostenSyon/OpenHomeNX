@@ -1,8 +1,8 @@
 // OpenHomeNX - stub forwarder (installazione launcher NCA) per build Linux/macOS.
 #include <string>
 #include <functional>
-#include "../../OpenHomeNX/include/forwarder.h"
-#include "../../OpenHomeNX/include/debug_log.h"
+#include "forwarder.h"
+#include "debug_log.h"
 
 void forwarderNotifyProgress(const std::string&) {}
 

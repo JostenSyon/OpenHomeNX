@@ -618,11 +618,20 @@ void UI::rescanImportedGames() {
     // Unlike appendImportedGames(), availableGames_ isn't being rebuilt from
     // scratch here — drop the previous imported entries first so re-running
     // this on every hotplug doesn't pile up duplicates.
+    // FRLG e' l'unica famiglia ambigua type-level (isFRLG() vale sia per il
+    // nativo Switch con titleId reale, aggiunto da selectProfile() via
+    // hasSaveData(), sia per l'import da file): va tolto qui SOLO se
+    // proveniva davvero da import (era gia' in oldTypes), altrimenti un
+    // hotplug USB qualsiasi cancella in silenzio un FireRed/LeafGreen
+    // nativo dalla lista finche' non si torna al selettore profilo.
     availableGames_.erase(
         std::remove_if(availableGames_.begin(), availableGames_.end(),
-                       [](GameType g) { return isImportedFile(g) || isGen1File(g) || isGen2File(g) ||
-                                               isFRLG(g) || // FRLG da import: senza questo sopravvive e duplica a ogni rescan
-                                               isGen45File(g) || isGen6XY(g) || isGen6ORAS(g) || isGen7SM(g) || isGen7USUM(g); }),
+                       [&oldTypes](GameType g) {
+                           if (isFRLG(g))
+                               return std::find(oldTypes.begin(), oldTypes.end(), g) != oldTypes.end();
+                           return isImportedFile(g) || isGen1File(g) || isGen2File(g) ||
+                                  isGen45File(g) || isGen6XY(g) || isGen6ORAS(g) || isGen7SM(g) || isGen7USUM(g);
+                       }),
         availableGames_.end());
 
     importedGames_ = scanImportPaths(importPaths_, autoCheckUsb_);

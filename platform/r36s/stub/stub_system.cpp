@@ -1,9 +1,9 @@
 // OpenHomeNX - stub LED + misc system per build Linux/macOS.
 #include <string>
-#include "../../OpenHomeNX/include/led.h"
-#include "../../OpenHomeNX/include/nro_version.h"
-#include "../../OpenHomeNX/include/autocheck_usb.h"
-#include "../../OpenHomeNX/include/debug_log.h"
+#include "led.h"
+#include "nro_version.h"
+#include "autocheck_usb.h"
+#include "debug_log.h"
 
 void ledInit() {}
 void ledInitWithPath(const char*) {}
