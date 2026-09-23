@@ -788,8 +788,13 @@ void UI::settingsRowActivate(int cat, int row, int dir, bool& running) {
                 showMessageAndWait(i18n::get(StrKey::ScraperBoxartTitle),
                     i18n::get(StrKey::ScraperBoxartOffline));
             } else {
+                // Barra di progresso per-ROM su entrambe le piattaforme: lo
+                // scrape puo' metterci diversi secondi per gioco (rete +
+                // fuzzy/GitHub), senza feedback sembra bloccato. Stesso
+                // pattern del download update (showWorking con "%" -> barra).
                 showWorking(i18n::get(StrKey::ScraperBoxartTitle));
-                Boxart::ScrapeResult res = Boxart::scrape(basePath_, importedGames_);
+                Boxart::ScrapeResult res = Boxart::scrape(basePath_, importedGames_,
+                    [this](const std::string& s){ showWorking(s); });
                 showMessageAndWait(i18n::get(StrKey::ScraperBoxartTitle),
                     i18n::fmt(StrKey::ScraperBoxartDone,
                         std::to_string(res.found), std::to_string(res.total)));

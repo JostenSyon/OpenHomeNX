@@ -928,9 +928,13 @@ void UI::showWorking(const std::string& msg) {
     {
         size_t p = msg.find('%');
         if (p != std::string::npos && p > 0) {
-            size_t s = msg.rfind(' ', p);
-            if (s != std::string::npos) {
-                pct = std::atoi(msg.substr(s + 1, p - s - 1).c_str());
+            // Cerca l'inizio del numero prima di '%', tollera '(' e spazi
+            // (es. " (10%) 1/10" o " 10% (1/10)") cosi' la prima riga
+            // stabile non deve per forza essere " 10%".
+            size_t s = p;
+            while (s > 0 && std::isdigit((unsigned char)msg[s - 1])) s--;
+            if (s < p) {
+                pct = std::atoi(msg.substr(s, p - s).c_str());
                 if (pct < 0) pct = -1;
                 if (pct > 100) pct = 100;
             }

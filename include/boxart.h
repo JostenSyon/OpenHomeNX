@@ -1,6 +1,7 @@
 #pragma once
 #include <string>
 #include <vector>
+#include <functional>
 #include "import_scan.h" // ImportedGame (save path + GameType)
 
 // Copertine per i giochi file-backed (ROM GBA/GBC/GB/NDS).
@@ -29,9 +30,14 @@ std::string coverCachePath(const std::string& basePath, const std::string& romPa
 std::string findCachedCover(const std::string& basePath, const std::string& romPath);
 
 // Riempie cache/covers per ogni gioco importato con ROM risolvibile.
-// progress(msg) puo' essere nullptr; e' chiamata per mostrare showWorking().
+// `progress` puo' essere nullptr: se presente viene chiamata per ogni
+// ROM (anche cache-hit) con msg formattato "Titolo\n  33%  (2/6) - nome"
+// cosi' showWorking() mostra la barra senza che lo scrape sembri bloccato.
+// Stessa shape di UpdateProgressFn (std::function<void(const std::string&)>).
+using ScrapeProgressFn = std::function<void(const std::string&)>;
 ScrapeResult scrape(const std::string& basePath,
-                    const std::vector<ImportedGame>& games);
+                    const std::vector<ImportedGame>& games,
+                    ScrapeProgressFn progress = nullptr);
 
 // Cancella tutti i file in cache/covers/ (tornano le tile composte
 // logo+sfondo+label da romfs). Ritorna il numero di file rimossi.

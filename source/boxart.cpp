@@ -364,6 +364,42 @@ std::string libretroRepo(const std::string& sysdirLower) {
     return "";
 }
 
+std::string ssSystemId(const std::string& sysdirLower); // avanti (definito sotto)
+
+ // Risolve il sistema ("gba"/"gbc"/"gb"/"nds") da una ROM. Prima prova la
+// cartella parent (es. /roms/gba/foo.gba -> "gba"); se non mappa (es.
+// sdmc:/roms/*.gba piatto visto su Switch, log "sistema 'roms' non mappato"
+// 2026-09-22) fa fallback su estensione/header. Evita che flat layout
+// rompi lo scraper intero solo perche' l'utente non ha sottocartelle.
+std::string sysFromRom(const std::string& romPath) {
+    std::string d = toLowerStr(dirName(parentDir(romPath)));
+    if (!libretroRepo(d).empty() || !ssSystemId(d).empty()) return d;
+    // Fallback: estensione file (header RomInfo e' piu' costoso e non serve
+    // per distinguere gba/gbc/gb/nds qui).
+    std::string low = toLowerStr(romPath);
+    size_t dot = low.find_last_of('.');
+    std::string ext = (dot == std::string::npos) ? "" : low.substr(dot);
+    if (ext == ".gba") return "gba";
+    if (ext == ".gbc") return "gbc";
+    if (ext == ".gb")  return "gb";
+    if (ext == ".nds") return "nds";
+    // Ultimo tentativo: RomInfo (per ROM senza estensione standard)
+    RomInfo::Info ri;
+    if (RomInfo::detect(romPath, ri) && !ri.game.empty()) {
+        // GBA: emerald/firered/leafgreen/ruby/sapphire -> gba; GB/GBC ->
+        // red/blue/yellow/gold/silver/crystal -> guess via lang?
+        // Approssimazione sicura: se game e' uno dei noti GBA, torna gba.
+        if (ri.game == "emerald" || ri.game == "ruby" || ri.game == "sapphire" ||
+            ri.game == "firered" || ri.game == "leafgreen")
+            return "gba";
+        if (ri.game == "red" || ri.game == "blue" || ri.game == "yellow")
+            return "gb";
+        if (ri.game == "gold" || ri.game == "silver" || ri.game == "crystal")
+            return "gbc";
+    }
+    return d; // lascia "roms" per il log, ma almeno ci abbiamo provato
+}
+
 std::string urlEncodePath(const std::string& s) {
     static const char* kHex = "0123456789ABCDEF";
     std::string out;
@@ -477,7 +513,7 @@ std::string styleTag() {
 static std::string coverCachePathTag(const std::string& basePath, const std::string& romPath,
                                      const std::string& tag) {
     if (romPath.empty()) return "";
-    std::string sys = toLowerStr(dirName(parentDir(romPath)));
+    std::string sys = sysFromRom(romPath);
     if (sys.empty()) sys = "rom";
     return basePath + "cache/covers/" + sys + "/" + stemOf(romPath) + "." + tag + ".png";
 }
@@ -488,29 +524,51 @@ std::string coverCachePath(const std::string& basePath, const std::string& romPa
 
 std::string findCachedCover(const std::string& basePath, const std::string& romPath) {
     if (romPath.empty()) return "";
-    std::string sys = toLowerStr(dirName(parentDir(romPath)));
+    std::string sys = sysFromRom(romPath);
     if (sys.empty()) sys = "rom";
     std::string base = basePath + "cache/covers/" + sys + "/" + stemOf(romPath);
     std::string stem = base + "." + styleTag();
     for (const char* e : {".png", ".jpg", ".jpeg"}) {
         if (fileExists(stem + e)) return stem + e;
     }
-    // Box3d senza un vero render 3D in cache: mostra comunque il 2D salvato
-    // sotto il proprio tag ".2d" (vedi scrape(), fallback libretro-
-    // thumbnails) invece di lasciare la tile senza copertina. Il 2D non
-    // finisce mai in cache sotto ".3d" -- se lo trovasse qui non si
-    // ritenterebbe mai piu' il vero box-3D quando lo scraper lo aggiunge.
+    // Fallback su 2D scaricato: solo per Box3d. Per Locale la
+    // precedenza e' l'art hardcoded interno (romfs:/boxart/ per
+    // ruby/sapphire/emerald/red/blue/yellow): se Locale tornasse
+    // subito il .2d scaricato, oscurerebbe l'art interno per sempre
+    // e non avrebbe senso (richiesta utente). Box3d invece puo'
+    // mostrare il 2D quando il vero 3D manca. Il 2D non finisce mai
+    // salvato sotto ".3d" (vedi scrape()), quindi qui non si maschera
+    // mai un futuro tentativo 3D.
     if (curStyle() == Style::Box3d) {
         std::string stem2d = base + ".2d";
         for (const char* e : {".png", ".jpg", ".jpeg"}) {
             if (fileExists(stem2d + e)) return stem2d + e;
         }
     }
+    // Locale: fallback su .2d solo se non esiste art hardcoded interno
+    // per questo gioco (es. Cristallo/Oro/Argento non hanno romfs:/boxart/).
+    // Cosi' RSE/RBY restano su interno, gli altri su 2D scaricato.
+    if (curStyle() == Style::Locale) {
+        RomInfo::Info ri;
+        bool hasHardcoded = false;
+        if (RomInfo::detect(romPath, ri)) {
+            hasHardcoded = (ri.game == "emerald" || ri.game == "ruby" ||
+                            ri.game == "sapphire" || ri.game == "red" ||
+                            ri.game == "blue" || ri.game == "yellow");
+        }
+        if (!hasHardcoded) {
+            std::string stem2d = base + ".2d";
+            for (const char* e : {".png", ".jpg", ".jpeg"}) {
+                if (fileExists(stem2d + e)) return stem2d + e;
+            }
+        }
+    }
     return "";
 }
 
 ScrapeResult scrape(const std::string& basePath,
-                    const std::vector<ImportedGame>& games) {
+                    const std::vector<ImportedGame>& games,
+                    ScrapeProgressFn progress) {
     ScrapeResult r;
     Style style = curStyle();
     // Raccogli tutte le ROM da considerare: `games` include gia' sia i save
@@ -523,9 +581,23 @@ ScrapeResult scrape(const std::string& basePath,
         std::string rom = g.hasSave ? Emulator::findRomForSave(g.filePath, g.type) : g.filePath;
         if (!rom.empty() && seenRom.insert(rom).second) roms.push_back(rom);
     }
-    for (const auto& rom : roms) {
+    auto emitProgress = [&](size_t idx, const std::string& base) {
+        if (!progress) return;
+        int pct = roms.empty() ? 100 : (int)((idx * 100) / roms.size());
+        char line[256];
+        // showWorking() entra in modalita' barra solo se msg contiene '%'
+        // (ui.cpp:927): prima riga stabile "(10%) 1/10" con contatore,
+        // seconda riga titolo variabile -- cosi' la label % non balla
+        // quando cambia il nome del gioco (richiesta utente).
+        std::snprintf(line, sizeof(line), "(%d%%) %zu/%zu\n%s",
+                      pct, idx + 1, roms.size(), base.c_str());
+        progress(line);
+    };
+    for (size_t idx = 0; idx < roms.size(); idx++) {
+        const std::string& rom = roms[idx];
         r.total++;
         std::string base = stemOf(rom);
+        emitProgress(idx, base);
         std::string hit = findCachedCover(basePath, rom);
         if (!hit.empty()) {
             DebugLog::line("boxart: %s cache hit", base.c_str());
@@ -533,7 +605,7 @@ ScrapeResult scrape(const std::string& basePath,
             continue;
         }
 
-        std::string sys = toLowerStr(dirName(parentDir(rom)));
+        std::string sys = sysFromRom(rom);
         std::string repo = libretroRepo(sys);
         std::string ssSysId = ssSystemId(sys);
 
