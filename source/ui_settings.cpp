@@ -1051,7 +1051,9 @@ void UI::drawSettingsPopup() {
                         SDL_RenderDrawLine(renderer_, cx - ddx, cy + ddy, cx + ddx, cy + ddy);
                     }
                 };
-                dot(dxp, by + bh / 2, 7, valCol);
+                SDL_Color dotCol = T().selected;
+                dotCol.a = (Uint8)((int)dotCol.a * alphaMul / 255);
+                dot(dxp, by + bh / 2, 7, dotCol);
             }
         }
     } else {
