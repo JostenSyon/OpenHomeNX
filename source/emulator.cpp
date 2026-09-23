@@ -1,4 +1,5 @@
 #include "emulator.h"
+#include "path_utils.h"
 #include <sys/stat.h>
 #include <vector>
 #include <switch.h>
@@ -10,11 +11,6 @@
 
 namespace Emulator {
 namespace {
-
-bool fileExists(const std::string& p) {
-    struct stat st;
-    return stat(p.c_str(), &st) == 0 && S_ISREG(st.st_mode);
-}
 
 // Taglia l'estensione (l'ultimo ".nome" dopo l'ultimo '/'), se c'e'.
 std::string stripExt(const std::string& path) {

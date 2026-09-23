@@ -1,6 +1,7 @@
 #pragma once
 #include <cstdint>
 #include <string>
+#include "string_utils.h"
 
 // Supported game types (sequential enum used as array index)
 enum class GameType { ZA, S, V, Sw, Sh, BD, SP, LA, GP, GE, FR, LG, FR_ES, LG_ES, FR_DE, LG_DE, FR_IT, LG_IT, FR_FR, LG_FR, FR_JA, LG_JA, RUBY, SAPPHIRE, EMERALD, RED, BLUE, YELLOW, GOLD, SILVER, CRYSTAL, DIAMOND, PEARL, PLATINUM, HEARTGOLD, SOULSILVER, BLACK, WHITE, BLACK2, WHITE2, X, Y, OMEGA_RUBY, ALPHA_SAPPHIRE, SUN, MOON, ULTRA_SUN, ULTRA_MOON };
@@ -368,7 +369,7 @@ inline const char* bankGroupNameOf(GameType g)  { return gameInfo(g).bankGroupNa
 inline std::string bankFolderNameOf(GameType g) {
     std::string s = gameInfo(g).bankFolderName;
 #ifdef OH_LINUX
-    for (auto& c : s) c = (char)tolower((unsigned char)c);
+    s = toLowerCopy(s);
 #endif
     return s;
 }

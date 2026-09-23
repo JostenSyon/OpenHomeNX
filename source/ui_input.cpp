@@ -3,6 +3,7 @@
 #include "crypto_engine.h"
 #include "debug_log.h"
 #include "pokemon_ffi.h"
+#include "string_utils.h"
 #include "led.h"
 #include "species_converter.h"
 #include "trade_evo.h"
@@ -2791,11 +2792,7 @@ bool UI::matchesSearchFilter(const Pokemon& pkm,
                              const std::string& filterOT) const {
     if (pkm.isEmpty()) return false;
 
-    auto toLower = [](const std::string& s) {
-        std::string out = s;
-        for (auto& c : out) c = std::tolower(static_cast<unsigned char>(c));
-        return out;
-    };
+    auto toLower = [](const std::string& s) { return toLowerCopy(s); };
 
     // Species filter: exact match by ID if set, otherwise substring match
     if (searchFilter_.speciesId > 0) {
@@ -2863,11 +2860,7 @@ bool UI::matchesSearchFilter(const Pokemon& pkm,
 void UI::executeSearch() {
     searchResults_.clear();
 
-    auto toLower = [](const std::string& s) {
-        std::string out = s;
-        for (auto& c : out) c = std::tolower(static_cast<unsigned char>(c));
-        return out;
-    };
+    auto toLower = [](const std::string& s) { return toLowerCopy(s); };
     std::string filterSpecies = toLower(searchFilter_.speciesName);
     std::string filterOT = toLower(searchFilter_.otName);
 
@@ -3000,11 +2993,7 @@ void UI::refreshHighlightSet() {
     searchMatchSet_.clear();
     searchResults_.clear();
 
-    auto toLower = [](const std::string& s) {
-        std::string out = s;
-        for (auto& c : out) c = std::tolower(static_cast<unsigned char>(c));
-        return out;
-    };
+    auto toLower = [](const std::string& s) { return toLowerCopy(s); };
     std::string filterSpecies = toLower(searchFilter_.speciesName);
     std::string filterOT = toLower(searchFilter_.otName);
 

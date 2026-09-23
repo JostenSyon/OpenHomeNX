@@ -2,6 +2,7 @@
 #include "save_file.h"
 #include "debug_log.h"
 #include "rominfo.h"
+#include "string_utils.h"
 #ifdef OH_USB_UPDATE
 #include <usbhsfs.h>
 #endif
@@ -18,12 +19,6 @@
 #include <vector>
 
 namespace {
-
-std::string toLower(std::string s) {
-    std::transform(s.begin(), s.end(), s.begin(),
-        [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-    return s;
-}
 
 // Ruby and Sapphire share gameCode 0 at sector-0 offset 0xac — real GBA
 // cartridges never recorded which of the two a save came from. OpenHome's own

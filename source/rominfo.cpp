@@ -1,5 +1,7 @@
 #include "rominfo.h"
 #include "debug_log.h"
+#include "path_utils.h"
+#include "string_utils.h"
 #include <algorithm>
 #include <cctype>
 #include <cstdio>
@@ -188,11 +190,6 @@ static const CanonEntry kCanon[] = {
     {"crystal", "de", "Pokemon - Kristall-Edition (Germany)"},
 };
 
-std::string fileNameOf(const std::string& p) {
-    size_t s = p.find_last_of('/');
-    return (s == std::string::npos) ? p : p.substr(s + 1);
-}
-
 } // namespace
 
 bool detect(const std::string& path, Info& out) {
@@ -218,7 +215,7 @@ bool detect(const std::string& path, Info& out) {
             std::string lang, region;
             bool rok = regionOf(code[3], lang, region);
             if (!rok)
-                rok = langFromFilename(fileNameOf(path), lang); // lettera ignota: prova filename
+                rok = langFromFilename(fileName(path), lang); // lettera ignota: prova filename
             out.valid = true;
             out.kind = "gba";
             out.game = game;
@@ -262,7 +259,7 @@ bool detect(const std::string& path, Info& out) {
             // con soglia per non indovinare (es. "crystal" da solo -> ignota).
             if (!game.empty()) {
                 std::string lang;
-                if (langFromFilename(fileNameOf(path), lang)) {
+                if (langFromFilename(fileName(path), lang)) {
                     out.lang = lang;
                 } else {
                     DebugLog::line("rominfo: %s lingua ignota, salto rename",

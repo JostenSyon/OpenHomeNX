@@ -1,4 +1,5 @@
 #include "settings_cfg.h"
+#include "path_utils.h"
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
@@ -30,10 +31,6 @@ void setInt(const char* k, int v) {
     save();
 }
 
-bool fileExists(const std::string& p) {
-    std::ifstream f(p);
-    return f.good();
-}
 std::string readLine(const std::string& p) {
     std::ifstream f(p);
     std::string s;

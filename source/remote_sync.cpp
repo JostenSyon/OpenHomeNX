@@ -2,6 +2,7 @@
 #include "debug_log.h"
 #include "settings_cfg.h"
 #include "update_net.h"
+#include "string_utils.h"
 
 #define JSON_NOEXCEPTION
 #include "json.hpp"
@@ -126,12 +127,6 @@ void applyLanOpts(CURL* c) {
     // http:// in LAN, nessun certificato da verificare.
     curl_easy_setopt(c, CURLOPT_SSL_VERIFYPEER, 0L);
     curl_easy_setopt(c, CURLOPT_SSL_VERIFYHOST, 0L);
-}
-
-std::string toLowerRS(const std::string& s) {
-    std::string out = s;
-    for (char& c : out) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    return out;
 }
 
 // Tempo di parete in secondi, stesso helper (stesso motivo: clock() su

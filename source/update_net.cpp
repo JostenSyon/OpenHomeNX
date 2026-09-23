@@ -1,5 +1,6 @@
 #include "update_net.h"
 #include "debug_log.h"
+#include "string_utils.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -156,11 +157,6 @@ std::string sha256HexBuf(const uint8_t* data, size_t len) {
     return s;
 }
 
-
-std::string toLower(std::string s) {
-    for (char& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    return s;
-}
 
 } // namespace
 
