@@ -339,6 +339,7 @@ void UI::backpackLoadGame(GameType g, int occ) {
         backpackSaveMnt_.clear();
     }
     backpackGame_ = g;
+    backpackOccCurrent_ = occ;
     backpackLoaded_ = false;
     backpackSavePath_.clear();
     backpackSave_.setGameType(g);
@@ -616,7 +617,7 @@ bool UI::backpackPersist(const std::string& why) {
             ok = false;
         }
     }
-    if (ok) galInvalidateParty(backpackGame_);
+    if (ok) galInvalidateParty(backpackGame_, backpackOccCurrent_);
     if (!ok)
         showMessageAndWait(i18n::get(StrKey::SaveFailedTitle),
                            i18n::get(StrKey::SaveFailedBody));

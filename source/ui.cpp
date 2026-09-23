@@ -1736,6 +1736,7 @@ void UI::selectGame(GameType game, int occurrence) {
     exitBackedUp_ = false;
     uint32_t openT0 = SDL_GetTicks();
     selectedGame_ = game;
+    selectedOccurrence_ = occurrence;
     partyCursor_ = -1; // save changes: drop any OT-strip focus
     detailParty_ = -1;
     invalidateAllSlotDisplays();
@@ -1992,7 +1993,7 @@ bool UI::persistGameSaveIfDirty() {
         DebugLog::line("persist: commitSave FALLITO dopo save ok (%s)", savePath_.c_str());
         ok = false;
     }
-    if (ok) galInvalidateParty(selectedGame_); // preview galleria da ricaricare
+    if (ok) galInvalidateParty(selectedGame_, selectedOccurrence_); // preview galleria da ricaricare
     ledOff();
     // Mai fallimento silenzioso: gli errori IO tornano false — l'utente deve
     // saperlo, i dati in memoria restano intatti.

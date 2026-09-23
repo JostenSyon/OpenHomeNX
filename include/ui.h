@@ -1209,7 +1209,20 @@ private:
         bool dexSupported = false; int dexCaught = 0; int dexTotal = 0;
         long playTimeSeconds = -1; // -1 = non disponibile per questo formato (vedi SaveFile::playTimeSeconds)
     };
-    std::unordered_map<GameType, PartyPreview> galPartyCache_;
+    // Chiave cache anteprime: (gioco, occorrenza). occ -1 = nativa, >=0 =
+    // indice fra gli import (vedi importedOccurrence): nativa e ROM dello
+    // stesso GameType hanno anteprime separate, mai sovrascritte.
+    struct GalKey {
+        GameType g = GameType::EMERALD;
+        int8_t occ = -1;
+        bool operator==(const GalKey& o) const { return g == o.g && occ == o.occ; }
+    };
+    struct GalKeyHash {
+        size_t operator()(const GalKey& k) const noexcept {
+            return std::hash<int>()(static_cast<int>(k.g) * 8 + (k.occ + 1));
+        }
+    };
+    std::unordered_map<GalKey, PartyPreview, GalKeyHash> galPartyCache_;
     int galPreviewGame_ = -1;
     uint32_t galPreviewTick_ = 0;
     // Un solo probe (mount+stat) per atterraggio sulla selezione: il save
@@ -1230,9 +1243,14 @@ private:
     // ma taglia la spesa di ~30x.
     uint32_t galOverrideOtTick_ = 0;
     std::string galOverrideOtCached_;
-    long galSaveMtime(GameType g);
-    void galEnsureParty(GameType g);
-    void galInvalidateParty(GameType g);
+    long galSaveMtime(GameType g, int occ);
+    void galEnsureParty(GameType g, int occ);
+    void galInvalidateParty(GameType g, int occ);
+    // Occurrence del gioco aperto (selectGame) e del gioco zaino, per
+    // invalidare la chiave giusta (vedi GalKey): senza, nativa e ROM
+    // condividerebbero l'invalidazione come condividevano la cache.
+    int selectedOccurrence_ = -1;
+    int backpackOccCurrent_ = -1;
     // Persistenza su disco di galPartyCache_ (party/OT/dex): sopravvive al
     // riavvio, cosi' al rientro in Galleria si vede subito l'ultimo party
     // noto invece di "..." finche' non ti fermi di nuovo — galEnsureParty()
