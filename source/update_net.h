@@ -82,7 +82,8 @@ std::string sha256HexFile(const std::string& path);
 // Se `expectSha256` non è vuoto, verifica in RAM e fallisce esplicito.
 bool updateNetDownload(const std::string& url, const std::string& token,
                        const std::string& destPath, const std::string& expectSha256,
-                       std::string& err, UpdateProgressFn progress = nullptr);
+                       std::string& err, UpdateProgressFn progress = nullptr,
+                       const bool* cancel = nullptr);
 
 // POST di `basePath/debug.log` a `baseUrl/upload` (o /upload.log). Richiede debug on.
 bool updateNetUploadLog(const std::string& baseUrl, const std::string& token,

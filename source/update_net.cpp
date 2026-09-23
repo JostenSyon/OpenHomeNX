@@ -399,6 +399,7 @@ double wallSeconds() {
 // Throttle UI a 0.1s (era 0.25s): barra piu fluida senza affamare il socket.
 struct DlProgress {
     UpdateProgressFn cb;
+    const bool* cancel = nullptr; // se alzato, curl abortisce al prossimo tick
     std::string label = "Downloading";
     double lastEmit = 0.0;
     double startTime = 0.0;
@@ -406,6 +407,8 @@ struct DlProgress {
 
 int dlXferInfoUI(void* p, curl_off_t dltotal, curl_off_t dlnow, curl_off_t, curl_off_t) {
     auto* dp = static_cast<DlProgress*>(p);
+    if (dp->cancel && *dp->cancel) return 1; // CURLE_ABORTED_BY_CALLBACK
+    if (!dp->cb) return 0; // solo cancel, niente UI
     double now = wallSeconds();
     if (dp->lastEmit != 0.0 && now - dp->lastEmit < 0.1) return 0;
     dp->lastEmit = now;
@@ -427,7 +430,8 @@ int dlXferInfoUI(void* p, curl_off_t dltotal, curl_off_t dlnow, curl_off_t, curl
 
 bool updateNetDownload(const std::string& url, const std::string& token,
                        const std::string& destPath, const std::string& expectSha256,
-                       std::string& err, UpdateProgressFn progress) {
+                       std::string& err, UpdateProgressFn progress,
+                       const bool* cancel) {
     if (!g_netReady) { err = "rete non inizializzata"; return false; }
 
     // Tutto in RAM (veloce: niente SD nel percorso caldo), poi una sola
@@ -445,8 +449,9 @@ bool updateNetDownload(const std::string& url, const std::string& token,
     curl_easy_setopt(c, CURLOPT_TIMEOUT, 600L);
 
     DlProgress dp;
-    if (progress) {
+    if (progress || cancel) {
         dp.cb = progress;
+        dp.cancel = cancel;
         dp.startTime = wallSeconds();
         curl_easy_setopt(c, CURLOPT_NOPROGRESS, 0L);
         curl_easy_setopt(c, CURLOPT_XFERINFOFUNCTION, dlXferInfoUI);
@@ -470,6 +475,7 @@ bool updateNetDownload(const std::string& url, const std::string& token,
         err = "file oltre il tetto RAM 256MB, download abortito";
         return false;
     }
+    if (rc == CURLE_ABORTED_BY_CALLBACK) { err = "annullato"; return false; }
     if (rc != CURLE_OK) {
         err = std::string("download: ") + curl_easy_strerror(rc);
         return false;
