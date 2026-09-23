@@ -23,9 +23,6 @@ struct ScrapeResult {
     int total = 0; // ROM risolte dai save importati
 };
 
-// Path cache per una ROM ("" se romPath vuoto). L'estensione segue il
-// file sorgente (.png/.jpg); findCachedCover prova entrambe.
-std::string coverCachePath(const std::string& basePath, const std::string& romPath);
 // "" se nessuna cover in cache, altrimenti il path esistente.
 std::string findCachedCover(const std::string& basePath, const std::string& romPath);
 

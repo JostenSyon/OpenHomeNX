@@ -22,6 +22,7 @@
 #include <ctime>
 #include <dirent.h>
 #include <fstream>
+#include <unordered_map>
 #include <sys/stat.h>
 #ifdef OH_USB_UPDATE
 #include <usbhsfs.h>
@@ -719,6 +720,7 @@ void UI::loadGameIcons() {
     }
 
     bool needSystem = false;
+    std::unordered_map<GameType, int> occCount;
     for (size_t ai = 0; ai < availableGames_.size(); ai++) {
         GameType game = availableGames_[ai];
         // Imported games (RSE/Gen1/Gen2/FRLG from a scanned save, OR a
@@ -731,10 +733,8 @@ void UI::loadGameIcons() {
         // regardless of hasSave) — a native FRLG occurrence has no
         // importedGames_ entry at all, romPath stays "", falls through to
         // NS fetch below like every other native title.
-        size_t occ = 0;
-        for (size_t aj = 0; aj < ai; aj++)
-            if (availableGames_[aj] == game) occ++;
-        std::string romPath = importedRomPath(game, (int)occ);
+        int occ = occCount[game]++;
+        std::string romPath = importedRomPath(game, occ);
         if (isImportedFile(game) || isGen1File(game) || isGen2File(game) ||
             (isFRLG(game) && !romPath.empty())) {
             std::string cover = Boxart::findCachedCover(basePath_, romPath);
@@ -1193,10 +1193,6 @@ bool UI::dockFocusFirst() {
     if (slots.empty()) return false;
     dockFocusItem(slots[0].item);
     return true;
-}
-
-bool UI::dockFocusBanksOrFirst() {
-    return dockFocusFirst();
 }
 
 bool UI::dockFocusLast() {
@@ -1931,7 +1927,7 @@ void UI::handleGameSelectorInput(bool& running) {
             }
             if (dy > 0) {
                 gsSetFocus(GSFocus::Grid);
-                dockFocusBanksOrFirst(); // giu' dai chevron: banche o prima voce
+                dockFocusFirst(); // giu' dai chevron: banche o prima voce
             }
             if (dy < 0) {
                 gsUnfocus(GSFocus::ChevLeft);
@@ -2057,7 +2053,7 @@ void UI::handleGameSelectorInput(bool& running) {
                 if (selectedProfile_ >= 0) {
                     gsSetFocus(GSFocus::Avatar);
                 } else {
-                    dockFocusBanksOrFirst();
+                    dockFocusFirst();
                 }
             } else {
                 // Destra: se il gioco evidenziato e' lanciabile, prima il
@@ -2088,7 +2084,7 @@ void UI::handleGameSelectorInput(bool& running) {
             if (gallerySel_) {
                 dockFocusFirst();
             } else {
-                dockFocusBanksOrFirst();
+                dockFocusFirst();
             }
             return;
         }
@@ -2136,7 +2132,7 @@ void UI::handleGameSelectorInput(bool& running) {
             if (selectedProfile_ >= 0) {
                 gsSetFocus(GSFocus::Avatar);
             } else {
-                dockFocusBanksOrFirst();
+                dockFocusFirst();
             }
             return;
         }

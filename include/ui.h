@@ -329,7 +329,6 @@ private:
     // Prima/ultima voce visibile (atterraggi e ripartenza gear).
     bool dockFocusFirst();
     bool dockFocusLast();
-    bool dockFocusBanksOrFirst();
     // Attiva la voce puntata (stesse azioni del tap/conferma).
     void dockActivateFocused(bool& running);
 

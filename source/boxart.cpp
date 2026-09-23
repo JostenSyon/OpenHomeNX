@@ -498,11 +498,9 @@ bool screenScraperFetch(const std::string& basePath, const std::string& rom,
     return updateNetDownload(mediaUrl, "", dst, "", err);
 }
 
-} // namespace
-
 // Cache separata per stile (<base>.locale/.2d/.3d): cambiare stile
 // in Sviluppatore deve mostrare arte diversa, non il cache hit di un altro.
-std::string styleTag() {
+static std::string styleTag() {
     switch (curStyle()) {
         case Style::Box2d: return "2d";
         case Style::Box3d: return "3d";
@@ -518,9 +516,11 @@ static std::string coverCachePathTag(const std::string& basePath, const std::str
     return basePath + "cache/covers/" + sys + "/" + stemOf(romPath) + "." + tag + ".png";
 }
 
-std::string coverCachePath(const std::string& basePath, const std::string& romPath) {
+static std::string coverCachePath(const std::string& basePath, const std::string& romPath) {
     return coverCachePathTag(basePath, romPath, styleTag());
 }
+
+} // namespace
 
 std::string findCachedCover(const std::string& basePath, const std::string& romPath) {
     if (romPath.empty()) return "";

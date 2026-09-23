@@ -631,12 +631,9 @@ void UI::drawPanel(int panelX, const std::string& boxName, int boxIdx,
             tw = getTextEntry(left, fontSmall_, hdrColor).w;
         }
         drawText(left, panelX + 45, BOX_HDR_Y + (BOX_HDR_H - 14) / 2, hdrColor, fontSmall_);
-        // Party minis right after the OT text: show only when party has data.
-        // Before: always 6 grey balls even on empty saves — misleading. Now:
-        // empty party = just OT, no placeholders.
         const auto& party = save->dsParty();
         // Party boxes always visible (6 slots) even when empty — serve da target per drop quando party è vuoto
-        if (true) {
+        {
             int mx = panelX + 45 + tw + 12;
             SDL_Texture* emptyFallback = iconBoxEmpty_;
             for (int pi = 0; pi < 6; pi++) {
