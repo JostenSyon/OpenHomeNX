@@ -24,10 +24,12 @@ VERSION="$(grep -m1 '^APP_VERSION' Makefile | sed -E 's/^APP_VERSION[[:space:]]*
 echo "==> package R36S (v$VERSION)"
 ./platform/r36s/package_r36s.sh
 
+# Chiave "nro" (non "zip"): il fetcher legge version/nro/sha256 come
+# latest.json, il valore e' l'URL del payload (qui lo zip). Zero rami in piu'.
 ZIP="OpenHomeNX-r36s-v$VERSION.zip"
 [ -f "dist/$ZIP" ] || { echo "Zip mancante: dist/$ZIP"; exit 1; }
 SHA="$(shasum -a 256 "dist/$ZIP" | cut -d' ' -f1)"
-printf '{\n  "version": "%s",\n  "zip": "%s",\n  "sha256": "%s"\n}\n' \
+printf '{\n  "version": "%s",\n  "nro": "%s",\n  "sha256": "%s"\n}\n' \
   "$VERSION" "$ZIP" "$SHA" > dist/latest-r36s.json
 echo "release_r36s -> dist/ (v$VERSION)"; cat dist/latest-r36s.json
 echo ""

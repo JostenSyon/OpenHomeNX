@@ -86,14 +86,14 @@ if __name__ == "__main__":
     # i file sono letti da disco a ogni richiesta).
     def watch():
         seen = {}
-        for name in ("OpenHomeNX.nro", "latest.json"):
+        for name in ("OpenHomeNX.nro", "latest.json", "latest-r36s.json"):
             try:
                 seen[name] = (DIST / name).stat().st_mtime
             except OSError:
                 seen[name] = 0
         while True:
             time.sleep(2)
-            for name in ("OpenHomeNX.nro", "latest.json"):
+            for name in ("OpenHomeNX.nro", "latest.json", "latest-r36s.json"):
                 try:
                     mt = (DIST / name).stat().st_mtime
                 except OSError:

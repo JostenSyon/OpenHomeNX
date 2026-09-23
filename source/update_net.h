@@ -63,7 +63,8 @@ inline std::string githubReleasesUrl(const std::string& owner, const std::string
 // false + `err` su qualunque problema (rete, HTTP != 200, JSON senza i campi).
 bool updateNetFetchInfo(const std::string& baseUrl, const std::string& token,
                         RemoteUpdateInfo& out, std::string& err,
-                        const bool* cancel = nullptr);
+                        const bool* cancel = nullptr,
+                        const char* infoFile = "latest.json");
 
 // Canale beta: interroga la GitHub API releases, prende la prima
 // pre-release (la più recente) e ne restituisce la base download

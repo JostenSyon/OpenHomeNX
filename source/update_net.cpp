@@ -1,6 +1,7 @@
 #include "update_net.h"
 #include "debug_log.h"
 #include "string_utils.h"
+#include "path_utils.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -284,9 +285,9 @@ const char* updateNetLinkStr() {
 
 bool updateNetFetchInfo(const std::string& baseUrl, const std::string& token,
                         RemoteUpdateInfo& out, std::string& err,
-                        const bool* cancel) {
+                        const bool* cancel, const char* infoFile) {
     if (!g_netReady) { err = "rete non inizializzata"; return false; }
-    const std::string url = joinUrl(baseUrl, "latest.json");
+    const std::string url = joinUrl(baseUrl, infoFile ? infoFile : "latest.json");
 
     CURL* c = curl_easy_init();
     if (!c) { err = "curl_easy_init fallito"; return false; }
@@ -532,6 +533,9 @@ bool updateNetDownload(const std::string& url, const std::string& token,
         DebugLog::line("update-net: sha256 ok");
     }
 
+    // La cartella di destinazione puo' non esistere (visto su R36S con
+    // update/ mai creata): senza non si scrive nulla e sembra rete rotta.
+    if (!ensureDir(parentDir(destPath))) { err = "impossibile creare cartella per " + destPath; return false; }
     const std::string tmp = destPath + ".part";
     std::remove(tmp.c_str());
     FILE* f = std::fopen(tmp.c_str(), "wb");

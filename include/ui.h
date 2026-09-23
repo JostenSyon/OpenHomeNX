@@ -154,6 +154,10 @@ class UI {
 public:
     bool init();
     void shutdown();
+    // Exit code con cui main() deve uscire (0 = normale; 42 = R36S: update
+    // installato, il launcher rilancia una volta sola).
+    void setExitCode(int c) { exitCode_ = c; }
+    int exitCode() const { return exitCode_; }
     // holdMs: how long the logo stays up (pumps events meanwhile).
     // fadeOut=false leaves the last logo frame on screen so init work below
     // doesn't play over a black gap; call showSplash(0, true) when ready.
@@ -1337,18 +1341,24 @@ private:
     // se l'USB non ha niente di più recente torna silenzioso senza toccare
     // SD/rete. Il menu manuale usa la catena completa (default).
     bool checkForUpdate(bool usbOnly = false);
+#ifdef OH_LINUX
+    // Updater R36S (zip + unzip + exit 42): vedi checkForUpdateR36S.
+    bool checkForUpdateR36S(const std::string& curVer);
+#endif
     // Rete updater su worker (job.h) con pump-loop modale + B-annulla.
     // Ok = fatto, Failed = errore (dialog dal chiamante), Cancelled = B
     // (loggato, niente dialog). Il download scrive .part + rename atomico:
     // annullare non tocca mai il binario buono.
     enum class NetCancelResult { Ok, Failed, Cancelled };
     NetCancelResult fetchInfoCancel(const std::string& url, const std::string& token,
-                                   RemoteUpdateInfo& info, std::string& err);
+                                   RemoteUpdateInfo& info, std::string& err,
+                                   const char* infoFile = "latest.json");
     NetCancelResult fetchBetaCancel(const std::string& token,
                                    std::string& outBase, std::string& outTag, std::string& err);
-    NetCancelResult downloadNroCancel(const std::string& url, const std::string& token,
-                                     const std::string& dst, const std::string& sha,
-                                     const std::string& ver, std::string& err);
+    NetCancelResult downloadFileCancel(const std::string& url, const std::string& token,
+                                      const std::string& dst, const std::string& sha,
+                                      const std::string& ver, std::string& err);
+    int exitCode_ = 0;
     // Pump-loop modale condivisa: barra (idle o ultima riga) + hint B,
     // eventi (B = cancel, QUIT = cancel + ripubblicata), join alla fine.
     void pumpJobCancel(class BackgroundJob& job, bool& cancel, const std::string& idle);

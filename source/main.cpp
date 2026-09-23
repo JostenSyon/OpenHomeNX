@@ -288,5 +288,5 @@ int main(int argc, char* argv[]) {
     appletUnhook(&s_exitHookCookie);
     romfsExit();
     DebugLog::line("exit: shutdown complete");
-    return 0;
+    return ui.exitCode();
 }

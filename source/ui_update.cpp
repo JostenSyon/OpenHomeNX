@@ -24,6 +24,10 @@
 #include <dirent.h>
 #include <fstream>
 #include <sys/stat.h>
+#ifdef OH_LINUX
+#include <unistd.h>
+#include <sys/wait.h>
+#endif
 #ifdef OH_USB_UPDATE
 #include <usbhsfs.h>
 #endif
@@ -348,16 +352,17 @@ void UI::pumpJobCancel(BackgroundJob& job, bool& cancel, const std::string& idle
 }
 
 UI::NetCancelResult UI::fetchInfoCancel(const std::string& url, const std::string& token,
-                                       RemoteUpdateInfo& info, std::string& err) {
+                                       RemoteUpdateInfo& info, std::string& err,
+                                       const char* infoFile) {
     bool cancel = false;
     bool ok = false;
     BackgroundJob job;
     if (!job.start([&](BackgroundJob&) {
-            ok = updateNetFetchInfo(url, token, info, err, &cancel);
+            ok = updateNetFetchInfo(url, token, info, err, &cancel, infoFile);
         })) {
         DebugLog::line("update: job.start fallita, fetch sincrona");
-        return updateNetFetchInfo(url, token, info, err) ? NetCancelResult::Ok
-                                                         : NetCancelResult::Failed;
+        return updateNetFetchInfo(url, token, info, err, nullptr, infoFile) ? NetCancelResult::Ok
+                                                                            : NetCancelResult::Failed;
     }
     pumpJobCancel(job, cancel, i18n::fmt(StrKey::UpdateContacting, updateSourceLabel(url)));
     if (cancel) { DebugLog::line("update: fetch info annullata"); return NetCancelResult::Cancelled; }
@@ -382,7 +387,7 @@ UI::NetCancelResult UI::fetchBetaCancel(const std::string& token,
     return ok ? NetCancelResult::Ok : NetCancelResult::Failed;
 }
 
-UI::NetCancelResult UI::downloadNroCancel(const std::string& url, const std::string& token,
+UI::NetCancelResult UI::downloadFileCancel(const std::string& url, const std::string& token,
                                          const std::string& dst, const std::string& sha,
                                          const std::string& ver, std::string& err) {
     bool cancel = false;
@@ -406,6 +411,109 @@ UI::NetCancelResult UI::downloadNroCancel(const std::string& url, const std::str
     return ok ? NetCancelResult::Ok : NetCancelResult::Failed;
 }
 
+#ifdef OH_LINUX
+// Scompatta uno zip sopra la root (percorsi home/ark/... dentro l'archivio).
+// fork+exec di /usr/bin/unzip (presente su ArkOS), niente shell.
+static bool unzipToRoot(const std::string& zipPath, std::string& err) {
+    pid_t pid = fork();
+    if (pid < 0) { err = "fork fallita"; return false; }
+    if (pid == 0) {
+        execl("/usr/bin/unzip", "unzip", "-o", "-q", zipPath.c_str(), "-d", "/", (char*)nullptr);
+        _exit(127); // execl fallita
+    }
+    int status = 0;
+    while (waitpid(pid, &status, 0) < 0) {}
+    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+        err = "unzip rc=" + std::to_string(WIFEXITED(status) ? WEXITSTATUS(status) : -1);
+        return false;
+    }
+    return true;
+}
+
+// Updater R36S: manifest latest-r36s.json (stessa release GitHub, asset
+// dedicato), zip scaricato con B-annulla, sha verificata dal download,
+// unzip in place (binario + romfs + script, niente staleness), exit 42 per
+// il rilancio dal launcher. Il binario in esecuzione non viene toccato
+// finche' unzip non lo sovrascrive a freddo (inode nuovo, processo al sicuro).
+bool UI::checkForUpdateR36S(const std::string& curVer) {
+    UpdateCfg cfg;
+    readUpdateCfg(basePath_, cfg);
+    std::string netUrl;
+    if (!cfg.url.empty()) {
+        netUrl = cfg.url;
+    } else if (cfg.channel == "beta") {
+        std::string betaBase, betaTag, betaErr;
+        if (!updateNetEnsureReady()) {
+            showMessageAndWait(i18n::get(StrKey::UpdateTitle),
+                i18n::fmt(StrKey::UpdateNetOff, "GitHub beta"));
+            return false;
+        }
+        NetCancelResult bfr = fetchBetaCancel(cfg.token, betaBase, betaTag, betaErr);
+        if (bfr == NetCancelResult::Cancelled) return false;
+        if (bfr == NetCancelResult::Failed) {
+            if (betaErr == "none") {
+                showMessageAndWait(i18n::get(StrKey::UpdateTitle),
+                    i18n::fmt(StrKey::UpdateBetaNone, curVer));
+            } else {
+                DebugLog::line("update: beta resolve fallito: %s", betaErr.c_str());
+                showMessageAndWait(i18n::get(StrKey::UpdateTitle),
+                    i18n::fmt(StrKey::UpdateUnreachable, betaErr, "GitHub beta"));
+            }
+            return false;
+        }
+        netUrl = betaBase;
+    } else {
+        netUrl = githubReleasesUrl("JostenSyon", "OpenHomeNX");
+    }
+    DebugLog::line("update: r36s url=%s token=%s", netUrl.c_str(), cfg.token.empty() ? "no" : "yes");
+    if (!updateNetEnsureReady()) {
+        showMessageAndWait(i18n::get(StrKey::UpdateTitle),
+            i18n::fmt(StrKey::UpdateNetOff, updateSourceLabel(netUrl)));
+        return false;
+    }
+    RemoteUpdateInfo info;
+    std::string err;
+    NetCancelResult ifr = fetchInfoCancel(netUrl, cfg.token, info, err, "latest-r36s.json");
+    if (ifr == NetCancelResult::Cancelled) return false;
+    if (ifr == NetCancelResult::Failed) {
+        showMessageAndWait(i18n::get(StrKey::UpdateTitle),
+            i18n::fmt(StrKey::UpdateUnreachable, err, updateSourceLabel(netUrl)));
+        return false;
+    }
+    int cmp = compareVersionStrings(info.version, curVer);
+    DebugLog::line("update: r36s remoto v%s cmp=%d", info.version.c_str(), cmp);
+    if (cmp <= 0) {
+        showMessageAndWait(i18n::get(StrKey::UpdateTitle),
+            i18n::fmt(StrKey::UpdateLatestBody, curVer, info.version));
+        return false;
+    }
+    if (!showConfirmDialog(i18n::get(StrKey::UpdateAvailNetTitle),
+            i18n::fmt(StrKey::UpdateAvailNetBody, info.version, curVer, updateSourceLabel(netUrl))))
+        return false;
+    const std::string dst = basePath_ + "update/OpenHomeNX-r36s.zip";
+    NetCancelResult dlr = downloadFileCancel(info.nroUrl, cfg.token, dst, info.sha256, info.version, err);
+    if (dlr == NetCancelResult::Cancelled) return false;
+    if (dlr == NetCancelResult::Failed) {
+        showMessageAndWait(i18n::get(StrKey::UpdateTitle),
+            i18n::fmt(StrKey::UpdateDlFailed, err));
+        return false;
+    }
+    showWorking(i18n::get(StrKey::UpdateUpdating));
+    if (!unzipToRoot(dst, err)) {
+        DebugLog::line("update: r36s unzip fallito: %s", err.c_str());
+        showMessageAndWait(i18n::get(StrKey::UpdateTitle),
+            i18n::fmt(StrKey::UpdateDlFailed, err));
+        return false;
+    }
+    std::remove(dst.c_str());
+    DebugLog::line("update: r36s zip v%s installato, exit 42", info.version.c_str());
+    showWorking(i18n::fmt(StrKey::UpdateUpdatingTo, info.version));
+    SDL_Delay(700);
+    setExitCode(42);
+    return true; // caller stops the loop -> main() returns 42 -> launcher rilancia
+}
+#endif
+
 bool UI::checkForUpdate(bool usbOnly) {
     const std::string runningNro = basePath_ + "OpenHomeNX.nro";
     finalizePendingUpdate();
@@ -417,6 +525,10 @@ bool UI::checkForUpdate(bool usbOnly) {
 #endif
     DebugLog::line("update: check start, running v%s, base=%s, applet=%d",
                    curVer.c_str(), basePath_.c_str(), (int)appletMode_);
+#ifdef OH_LINUX
+    // R36S: niente NRO locali ne' chainloader — manifest zip + unzip + exit 42.
+    return checkForUpdateR36S(curVer);
+#endif
 
     // Candidate NRO locations, checked in order. USB drives (FAT/exFAT) come
     // first when built with OH_USB_UPDATE; the SD "update/" folder always works.
@@ -558,7 +670,7 @@ bool UI::checkForUpdate(bool usbOnly) {
                             return false;
                         removeStaleLocalUpdates(basePath_, runningNro);
                         const std::string dst = basePath_ + "update/OpenHomeNX.nro";
-                        NetCancelResult dlr = downloadNroCancel(info.nroUrl, cfg.token, dst,
+                        NetCancelResult dlr = downloadFileCancel(info.nroUrl, cfg.token, dst,
                                                                 info.sha256, info.version, err);
                         if (dlr == NetCancelResult::Cancelled) return false;
                         if (dlr == NetCancelResult::Failed) {
@@ -582,7 +694,7 @@ bool UI::checkForUpdate(bool usbOnly) {
                                 return false;
                             removeStaleLocalUpdates(basePath_, runningNro);
                             const std::string dst = basePath_ + "update/OpenHomeNX.nro";
-                            NetCancelResult dlr = downloadNroCancel(info.nroUrl, cfg.token, dst,
+                            NetCancelResult dlr = downloadFileCancel(info.nroUrl, cfg.token, dst,
                                                                     info.sha256, info.version, err);
                             if (dlr == NetCancelResult::Cancelled) return false;
                             if (dlr == NetCancelResult::Failed) {
@@ -620,7 +732,7 @@ bool UI::checkForUpdate(bool usbOnly) {
                                               info.version, remoteShort))) {
                                 removeStaleLocalUpdates(basePath_, runningNro);
                                 const std::string dst = basePath_ + "update/OpenHomeNX.nro";
-                                NetCancelResult dlr = downloadNroCancel(info.nroUrl, cfg.token, dst,
+                                NetCancelResult dlr = downloadFileCancel(info.nroUrl, cfg.token, dst,
                                                                         info.sha256, info.version, err);
                                 if (dlr == NetCancelResult::Cancelled) return false;
                                 if (dlr == NetCancelResult::Failed) {
