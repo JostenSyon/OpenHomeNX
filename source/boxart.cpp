@@ -479,20 +479,35 @@ bool screenScraperFetch(const std::string& basePath, const std::string& rom,
 // Mai scritti se la rete non e' stata nemmeno tentata (off/non mappato):
 // quelli restano economici da riprovare.
 static constexpr long kMissTtlSec = 3600;
-static std::string missMarkerPath(const std::string& basePath, const std::string& romPath) {
+static std::string missMarkerPath(const std::string& basePath, const std::string& romPath,
+                                  const std::string& tag) {
     std::string sys = sysFromRom(romPath);
     if (sys.empty()) sys = "rom";
-    return basePath + "cache/covers/" + sys + "/" + stemOf(romPath) + "." + styleTag() + ".miss";
+    return basePath + "cache/covers/" + sys + "/" + stemOf(romPath) + "." + tag + ".miss";
 }
-static bool missFresh(const std::string& basePath, const std::string& romPath) {
+static bool missFresh(const std::string& basePath, const std::string& romPath,
+                      const std::string& tag) {
     struct stat st;
-    if (stat(missMarkerPath(basePath, romPath).c_str(), &st) != 0) return false;
+    if (stat(missMarkerPath(basePath, romPath, tag).c_str(), &st) != 0) return false;
     return (std::time(nullptr) - (long)st.st_mtime) < kMissTtlSec;
 }
-static void writeMissMarker(const std::string& basePath, const std::string& romPath) {
-    std::string p = missMarkerPath(basePath, romPath);
+static void writeMissMarker(const std::string& basePath, const std::string& romPath,
+                            const std::string& tag) {
+    std::string p = missMarkerPath(basePath, romPath, tag);
     if (!ensureDir(parentDir(p))) return;
     if (FILE* f = std::fopen(p.c_str(), "w")) std::fclose(f);
+}
+// Cover presente per il tag (locale/2d/3d), qualunque estensione.
+static bool tagHit(const std::string& basePath, const std::string& romPath,
+                   const std::string& tag) {
+    if (romPath.empty()) return false;
+    std::string sys = sysFromRom(romPath);
+    if (sys.empty()) sys = "rom";
+    std::string stem = basePath + "cache/covers/" + sys + "/" + stemOf(romPath) + "." + tag;
+    for (const char* e : {".png", ".jpg", ".jpeg"}) {
+        if (fileExists(stem + e)) return true;
+    }
+    return false;
 }
 
 // Vero se `romPath` ha arte interna hardcoded in romfs:/boxart/ (solo
@@ -532,16 +547,19 @@ std::string findCachedCover(const std::string& basePath, const std::string& romP
     return "";
 }
 
-ScrapeResult scrape(const std::string& basePath,
+    ScrapeResult scrape(const std::string& basePath,
                     const std::vector<ImportedGame>& games,
                     ScrapeProgressFn progress,
                     const bool* cancel) {
     ScrapeResult r;
-    Style style = curStyle();
-    // Raccogli tutte le ROM da considerare: `games` include gia' sia i save
-    // reali sia -- con Settings::showRomsWithoutSave() -- le ROM orfane
-    // (ImportedGame.hasSave=false, filePath e' gia' il path della ROM,
-    // scanImportPaths() le ha risolte una sola volta). Evita duplicati.
+    // Un giro assicura TUTTI i tag (locale/2d/3d): cambiare stile dopo non
+    // riscarica piu' nulla, legge solo la cache. I tag gia' presenti o con
+    // miss fresca si saltano subito, quindi il costo resta quello dei soli
+    // tag mancanti. Raccogli tutte le ROM da considerare: `games` include
+    // gia' sia i save reali sia -- con Settings::showRomsWithoutSave() --
+    // le ROM orfane (ImportedGame.hasSave=false, filePath e' gia' il path
+    // della ROM, scanImportPaths() le ha risolte una sola volta). Evita
+    // duplicati.
     std::vector<std::string> roms;
     std::set<std::string> seenRom;
     for (const auto& g : games) {
@@ -570,18 +588,6 @@ ScrapeResult scrape(const std::string& basePath,
         r.total++;
         std::string base = stemOf(rom);
         emitProgress(idx, base);
-        std::string hit = findCachedCover(basePath, rom);
-        if (!hit.empty()) {
-            DebugLog::line("boxart: %s cache hit", base.c_str());
-            r.found++;
-            continue;
-        }
-        // Miss recente: salta subito senza rete (marker .miss < 1h).
-        if (missFresh(basePath, rom)) {
-            DebugLog::line("boxart: %s miss recente, salto", base.c_str());
-            r.skipped++;
-            continue;
-        }
         // Vera solo se si tenta davvero la rete (non su sistema non
         // mappato / rete off: quelli restano economici da riprovare).
         bool netAttempted = false;
@@ -590,13 +596,14 @@ ScrapeResult scrape(const std::string& basePath,
         std::string repo = libretroRepo(sys);
         std::string ssSysId = ssSystemId(sys);
 
-        // Copia l'arte locale (images/ dello scraper ES) in cache cosi'
-        // com'e'. L'ORDINE in cui viene provata rispetto al download dipende
-        // dallo stile (vedi sotto): qui c'e' solo il "come".
-        auto tryLocal = [&]() -> bool {
-            std::string local = localCover(rom, style);
+        // Copia l'arte locale (images/ dello scraper ES) sotto il tag dato.
+        // Solo per "locale": il 2D/3D non hanno sorgente locale affidabile
+        // (un 2D finito in images/ non deve mai incollarsi sotto ".3d").
+        auto tryLocal = [&](const std::string& tag) -> bool {
+            if (tag != "locale") return false;
+            std::string local = localCover(rom, Style::Locale);
             if (local.empty()) return false;
-            std::string dst = coverCachePath(basePath, rom);
+            std::string dst = coverCachePathTag(basePath, rom, tag);
             if (ensureDir(parentDir(dst)) && copyFile(local, dst)) {
                 DebugLog::line("boxart: %s local %s", base.c_str(), local.c_str());
                 return true;
@@ -615,9 +622,12 @@ ScrapeResult scrape(const std::string& basePath,
         // controllato una volta sola per ROM, in cima al loop principale).
         auto cancelledNow = [&]() { return cancel && *cancel; };
 
-        // Download vero: ScreenScraper box-2D/box-3D per primo se il
-        // sistema e' coperto, poi libretro-thumbnails 2D come fallback.
-        auto tryDownload = [&]() -> bool {
+        // Download vero sotto il tag dato: ScreenScraper (box-2D o box-3D
+        // veri) per primo se il sistema e' coperto, poi libretro-thumbnails
+        // 2D come fallback (solo per il tag "2d": e' sempre arte piatta,
+        // mai un vero render 3D, e non deve mai finire sotto ".3d").
+        auto tryDownload = [&](const std::string& tag, const std::string& wantType,
+                               bool useLibretro) -> bool {
             if (cancelledNow()) return false;
             if (repo.empty() && ssSysId.empty()) {
                 DebugLog::line("boxart: %s miss (sistema '%s' non mappato)",
@@ -629,7 +639,7 @@ ScrapeResult scrape(const std::string& basePath,
                 return false;
             }
             netAttempted = true;
-            std::string dst = coverCachePath(basePath, rom);
+            std::string dst = coverCachePathTag(basePath, rom, tag);
             std::string err;
             bool ok = false;
             if (!ensureDir(parentDir(dst))) return false;
@@ -638,25 +648,19 @@ ScrapeResult scrape(const std::string& basePath,
             //    e' coperto; libretro-thumbnails resta fallback se il gioco
             //    non e' nel loro database o l'API non risponde.
             if (!ssSysId.empty()) {
-                std::string wantType = (style == Style::Box3d) ? "box-3D" : "box-2D";
                 ok = screenScraperFetch(basePath, rom, ssSysId, wantType, dst, err, cancel);
                 if (ok)
-                    DebugLog::line("boxart: %s ScreenScraper %s ok", base.c_str(), wantType.c_str());
+                    DebugLog::line("boxart: %s [%s] ScreenScraper %s ok",
+                                   base.c_str(), tag.c_str(), wantType.c_str());
                 else
-                    DebugLog::line("boxart: %s ScreenScraper miss (%s)%s", base.c_str(), err.c_str(),
-                                   repo.empty() ? "" : ", provo libretro-thumbnails");
+                    DebugLog::line("boxart: %s [%s] ScreenScraper miss (%s)%s", base.c_str(),
+                                   tag.c_str(), err.c_str(),
+                                   (useLibretro && !repo.empty()) ? ", provo libretro-thumbnails" : "");
             }
-            // 1+2. libretro-thumbnails: solo se ScreenScraper non ha dato
-            // nulla sopra (miss/rete off/sistema non coperto da SS) e il
-            // sistema e' comunque mappato qui (repo non vuoto).
-            if (!ok && !repo.empty() && !cancelledNow()) {
-                // libretro-thumbnails e' sempre box-art 2D piatta (mai un vero
-                // render 3D): se lo stile richiesto e' Box3d, salva qui sotto
-                // il tag ".2d", non ".3d" -- altrimenti la tile resta "finto
-                // 3D" per sempre (vedi findCachedCover()) e non si ritenta mai
-                // piu' il vero box-3D in un prossimo Aggiorna BoxArt.
-                if (style == Style::Box3d)
-                    dst = coverCachePathTag(basePath, rom, "2d");
+            // 1+2. libretro-thumbnails: solo per il 2D, solo se ScreenScraper
+            // non ha dato nulla sopra (miss/rete off/sistema non coperto da
+            // SS) e il sistema e' comunque mappato qui (repo non vuoto).
+            if (!ok && useLibretro && !repo.empty() && !cancelledNow()) {
                 // 1. Nomi esatti (veloce): convenzione RetroArch, prima senza
                 //    poi con estensione ROM.
                 std::string url = "https://raw.githubusercontent.com/libretro-thumbnails/"
@@ -754,33 +758,46 @@ ScrapeResult scrape(const std::string& basePath,
             return ok;
         };
 
-        if (style == Style::Box3d) {
-            // Box3d: il locale (images/ dello scraper ES) non e' garantito
-            // essere davvero un render 3D -- puo' essere una copertina 2D
-            // finita li' da uno scrape precedente o messa a mano dall'utente
-            // (caso reale: Rossa/Blu/Gialla con arte locale 2D). Fidarsi del
-            // locale per primo la incollerebbe per sempre sotto il tag ".3d"
-            // (mai piu' ritentato, vedi findCachedCover()), shadowando un
-            // vero box-3D magari disponibile su ScreenScraper. Qui la rete
-            // va provata per prima; il locale resta un fallback per quando
-            // non c'e' rete o ScreenScraper non ha quel gioco.
-            if (tryDownload()) { r.found++; continue; }
-            if (tryLocal()) { r.found++; continue; }
-            // Niente marker se l'utente ha annullato a meta' di QUESTA ROM:
-            // e' un tentativo abbandonato, non un vero miss di rete -- non
-            // deve costarle 1h di skip silenzioso al prossimo Aggiorna.
-            if (netAttempted && !cancelledNow()) writeMissMarker(basePath, rom);
-            if (cancelledNow()) { DebugLog::line("boxart: scrape annullato (%d/%d)", r.found, r.total); r.cancelled = true; break; }
-            continue;
+        // Un giro assicura tutti i tag, ognuno con hit-skip e marker propri:
+        // - locale: solo copia arte locale (mai rete; a display il fallback
+        //   .2d copre comunque, stessa immagine che si scaricherebbe);
+        // - 2d: ScreenScraper box-2D + libretro-thumbnails;
+        // - 3d: solo ScreenScraper box-3D vero (mai 2D sotto ".3d").
+        // Niente marker se l'utente ha annullato a meta' di QUESTA ROM:
+        // e' un tentativo abbandonato, non un vero miss di rete.
+        emitProgress(idx, base + " [locale]");
+        tryLocal("locale");
+        if (cancelledNow()) { DebugLog::line("boxart: scrape annullato (%d/%d)", r.found, r.total); r.cancelled = true; break; }
+        emitProgress(idx, base + " [2d]");
+        if (!tagHit(basePath, rom, "2d")) {
+            if (missFresh(basePath, rom, "2d")) {
+                DebugLog::line("boxart: %s [2d] miss recente, salto", base.c_str());
+                r.skipped++;
+            } else {
+                netAttempted = false;
+                if (!tryDownload("2d", "box-2D", true) && netAttempted && !cancelledNow())
+                    writeMissMarker(basePath, rom, "2d");
+            }
         }
-
-        // Locale/Box2d: locale prima (Box2d ritorna sempre "" da
-        // localCover(), va dritto al download), poi download 2D -- qui il
-        // locale e' quello che l'utente si aspetta di vedere per questi
-        // stili, nessuna ambiguita' da risolvere.
-        if (tryLocal()) { r.found++; continue; }
-        if (tryDownload()) { r.found++; continue; }
-        if (netAttempted && !cancelledNow()) writeMissMarker(basePath, rom);
+        if (cancelledNow()) { DebugLog::line("boxart: scrape annullato (%d/%d)", r.found, r.total); r.cancelled = true; break; }
+        emitProgress(idx, base + " [3d]");
+        if (!tagHit(basePath, rom, "3d")) {
+            if (missFresh(basePath, rom, "3d")) {
+                DebugLog::line("boxart: %s [3d] miss recente, salto", base.c_str());
+                r.skipped++;
+            } else {
+                netAttempted = false;
+                if (!tryDownload("3d", "box-3D", false) && netAttempted && !cancelledNow())
+                    writeMissMarker(basePath, rom, "3d");
+            }
+        }
+        // Trovata = la tile mostra arte: cache per lo stile corrente OPPURE
+        // interna hardcoded (RSE/RBY, mai in cache ma sempre visibili).
+        if (!findCachedCover(basePath, rom).empty() || hasHardcodedArt(rom)) {
+            r.found++;
+        } else {
+            DebugLog::line("boxart: %s niente cover per lo stile corrente", base.c_str());
+        }
         if (cancelledNow()) { DebugLog::line("boxart: scrape annullato (%d/%d)", r.found, r.total); r.cancelled = true; break; }
     }
     DebugLog::line("boxart: scrape %d/%d", r.found, r.total);

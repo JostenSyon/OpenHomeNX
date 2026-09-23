@@ -28,14 +28,14 @@ struct ScrapeResult {
 // "" se nessuna cover in cache, altrimenti il path esistente.
 std::string findCachedCover(const std::string& basePath, const std::string& romPath);
 
-// Riempie cache/covers per ogni gioco importato con ROM risolvibile.
+// Riempie cache/covers per ogni gioco importato con ROM risolvibile — un
+// giro assicura TUTTI i tag (locale/2d/3d), poi cambiare stile legge solo
+// la cache senza riscaricare. Tag presenti o con miss fresca si saltano.
 // `progress` puo' essere nullptr: se presente viene chiamata per ogni
-// ROM (anche cache-hit) con msg formattato "Titolo\n  33%  (2/6) - nome"
-// cosi' showWorking() mostra la barra senza che lo scrape sembri bloccato.
+// ROM e tag con msg "(%d%%) i/n\nnome [tag]" per la barra di showWorking().
 // Stessa shape di UpdateProgressFn (std::function<void(const std::string&)>).
-// `cancel` (opzionale): flag cooperativo controllato a ogni ROM — la UI lo
-// alza sul tasto B (lo scrape gira sul main thread, rete bloccante a
-// granularita' singola ROM: si ferma dopo la ROM corrente).
+// `cancel` (opzionale): flag cooperativo controllato a ogni ROM e fra i
+// tag — la UI lo alza sul tasto B (si ferma dopo il download corrente).
 using ScrapeProgressFn = std::function<void(const std::string&)>;
 ScrapeResult scrape(const std::string& basePath,
                     const std::vector<ImportedGame>& games,
