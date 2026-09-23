@@ -227,7 +227,7 @@
     "import_add_path": "+ Aggiungi percorso...",
     "import_settings_footer": "A: Attiva/disattiva  X: Rimuovi  B: Chiudi",
     "import_path_input_hdr": "Percorso: sdmc:/... oppure usb:/cartella/ (qualsiasi USB)",
-    "import_found_title": "Nuovi salvataggi trovati su USB",
+    "import_found_title": "Nuovi giochi trovati",
     "import_autocheck_usb": "Autocheck save su USB (roms/saves, roms)",
     "select_language": "Seleziona lingua",
     "search_filter": "Ricerca / Filtro",

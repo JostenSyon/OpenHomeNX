@@ -588,7 +588,7 @@ void UI::rescanImportedGames() {
     if (newlyFound.empty())
         return;
 
-    DebugLog::line("import hotplug: %zu new save(s) found", newlyFound.size());
+    DebugLog::line("import hotplug: %zu new game(s) found", newlyFound.size());
     refreshBankCounts();
     loadGameIcons();
 
