@@ -378,6 +378,7 @@ void UI::selectProfile(int index) {
 
     // Build filtered game list: only games with save data for this profile
     availableGames_.clear();
+    availableGamesNative_.clear();
     constexpr GameType allGames[] = {
         GameType::GP, GameType::GE, GameType::Sw, GameType::Sh,
         GameType::BD, GameType::SP, GameType::LA, GameType::S,
@@ -387,11 +388,14 @@ void UI::selectProfile(int index) {
         GameType::FR_JA, GameType::LG_JA
     };
     for (GameType g : allGames) {
-        if (account_.hasSaveData(index, g))
+        if (account_.hasSaveData(index, g)) {
             availableGames_.push_back(g);
+            availableGamesNative_.push_back(1);
+        }
     }
     appendImportedGames();
     applyFavoritesOrder();
+    assertGamesInSync();
 
     if (availableGames_.empty()) {
         showMessageAndWait(i18n::get(StrKey::NoSaveData),
@@ -433,7 +437,9 @@ void UI::appendImportedGames() {
         }
         if (alreadyNative) continue;
         availableGames_.push_back(ig.type);
+        availableGamesNative_.push_back(0);
     }
+    assertGamesInSync();
     // Non riordino qui: il chiamante (selectProfile/fillPresentGames) fa già apply; rescan fa a parte.
 }
 
@@ -481,13 +487,30 @@ bool UI::importedIsRomOnly(GameType game, int occurrence) const {
     return false;
 }
 
+void UI::assertGamesInSync() const {
+    // Solo debug (NDEBUG lo compila via): in release il confronto resta
+    // ma senza costo di abort. Chiamato a fine di ogni mutazione e in
+    // ingresso ai resolver per-istanza.
+    assert(availableGamesNative_.size() == availableGames_.size());
+}
+
+bool UI::isNativeAt(int idx) const {
+    assertGamesInSync();
+    if (idx < 0 || idx >= (int)availableGames_.size())
+        return true; // fuori range: via nativa (mai un import)
+    return availableGamesNative_[(size_t)idx] != 0;
+}
+
 int UI::importedOccurrence(int cursor) const {
+    assertGamesInSync();
     if (cursor < 0 || cursor >= (int)availableGames_.size())
-        return 0;
+        return -1;
+    if (availableGamesNative_[(size_t)cursor] != 0)
+        return -1; // nativa: mai un indice in importedGames_
     GameType game = availableGames_[cursor];
     int n = 0;
     for (int i = 0; i < cursor; i++)
-        if (availableGames_[i] == game)
+        if (availableGames_[i] == game && availableGamesNative_[(size_t)i] == 0)
             n++;
     return n;
 }
@@ -499,27 +522,37 @@ void UI::rescanImportedGames() {
 
     // Unlike appendImportedGames(), availableGames_ isn't being rebuilt from
     // scratch here — drop the previous imported entries first so re-running
-    // this on every hotplug doesn't pile up duplicates.
-    // FRLG e' l'unica famiglia ambigua type-level (isFRLG() vale sia per il
-    // nativo Switch con titleId reale, aggiunto da selectProfile() via
-    // hasSaveData(), sia per l'import da file): va tolto qui SOLO se
-    // proveniva davvero da import (era gia' in oldTypes), altrimenti un
-    // hotplug USB qualsiasi cancella in silenzio un FireRed/LeafGreen
-    // nativo dalla lista finche' non si torna al selettore profilo.
-    availableGames_.erase(
-        std::remove_if(availableGames_.begin(), availableGames_.end(),
-                       [&oldTypes](GameType g) {
-                           if (isFRLG(g))
-                               return std::find(oldTypes.begin(), oldTypes.end(), g) != oldTypes.end();
-                           return isImportedFile(g) || isGen1File(g) || isGen2File(g) ||
-                                  isGen45File(g) || isGen6XY(g) || isGen6ORAS(g) || isGen7SM(g) || isGen7USUM(g);
-                       }),
-        availableGames_.end());
+    // this on every hotplug doesn't pile up duplicates. Filtro per indice
+    // (non per valore) cosi' il vettore parallelo availableGamesNative_
+    // resta allineato: le native non si toccano mai, qui si toglie solo
+    // import. Stessa semantica di prima per FRLG (via da import solo se il
+    // tipo era gia' fra gli import precedenti).
+    assertGamesInSync();
+    {
+        std::vector<GameType> keptGames;
+        std::vector<char> keptNative;
+        for (size_t i = 0; i < availableGames_.size(); i++) {
+            GameType g = availableGames_[i];
+            bool isPrevImport = availableGamesNative_[i] == 0 &&
+                (isFRLG(g) ? std::find(oldTypes.begin(), oldTypes.end(), g) != oldTypes.end()
+                           : (isImportedFile(g) || isGen1File(g) || isGen2File(g) ||
+                              isGen45File(g) || isGen6XY(g) || isGen6ORAS(g) || isGen7SM(g) || isGen7USUM(g)));
+            if (!isPrevImport) {
+                keptGames.push_back(g);
+                keptNative.push_back(availableGamesNative_[i]);
+            }
+        }
+        availableGames_.swap(keptGames);
+        availableGamesNative_.swap(keptNative);
+    }
 
     importedGames_ = scanImportPaths(importPaths_, autoCheckUsb_, Settings::showRomsWithoutSave());
-    for (const auto& ig : importedGames_)
+    for (const auto& ig : importedGames_) {
         availableGames_.push_back(ig.type);
+        availableGamesNative_.push_back(0);
+    }
     applyFavoritesOrder();
+    assertGamesInSync();
 
     // Clamp cursor/page: removals may have shrunk the list under them, and a
     // stale cursor + A press would OOB-read availableGames_.
@@ -3087,9 +3120,26 @@ void UI::saveFavorites() const {
     std::fclose(f);
 }
 void UI::applyFavoritesOrder() {
-    // Stabile: preferiti in testa mantenendo ordine originale relativo
-    std::stable_partition(availableGames_.begin(), availableGames_.end(),
-        [&](GameType g){ return isFavorite(g); });
+    // Stabile: preferiti in testa mantenendo ordine originale relativo.
+    // Riordina per indici cosi' availableGamesNative_ segue la stessa
+    // permutazione (stable_partition diretto perderebbe l'allineamento).
+    assertGamesInSync();
+    std::vector<size_t> idx(availableGames_.size());
+    for (size_t i = 0; i < idx.size(); i++) idx[i] = i;
+    std::stable_sort(idx.begin(), idx.end(), [&](size_t a, size_t b) {
+        bool fa = isFavorite(availableGames_[a]);
+        bool fb = isFavorite(availableGames_[b]);
+        return fa && !fb;
+    });
+    std::vector<GameType> games(idx.size());
+    std::vector<char> native(idx.size());
+    for (size_t i = 0; i < idx.size(); i++) {
+        games[i] = availableGames_[idx[i]];
+        native[i] = availableGamesNative_[idx[i]];
+    }
+    availableGames_.swap(games);
+    availableGamesNative_.swap(native);
+    assertGamesInSync();
 }
 // Rilevamento mGBA (v1): una tantum, non ogni frame. Vedi Emulator::findMgba().
 void UI::ensureMgbaChecked() {
@@ -3106,8 +3156,10 @@ void UI::ensureMgbaChecked() {
 bool UI::isGameLaunchableAt(int idx) {
     if (idx < 0 || idx >= (int)availableGames_.size()) return false;
     GameType g = availableGames_[idx];
-    bool isTitle = selectedProfile_ >= 0 && titleIdOf(g) >= 0x0100000000010000ULL &&
-                   saveFileNameOf(g)[0] != '\0';
+    // isTitle da solo non basta: una ROM FRLG condivide GameType/titleId
+    // con la nativa — senza isNativeAt la tile ROM lancerebbe il titolo NSO.
+    bool isTitle = isNativeAt(idx) && selectedProfile_ >= 0 &&
+                   titleIdOf(g) >= 0x0100000000010000ULL && saveFileNameOf(g)[0] != '\0';
     if (isTitle) return true;
     ensureMgbaChecked();
     if (mgbaPath_.empty()) return false;
@@ -3501,8 +3553,10 @@ void UI::requestLaunchGame(bool& running) {
     if (gameSelCursor_ < 0 || gameSelCursor_ >= (int)availableGames_.size()) return;
     GameType g = availableGames_[gameSelCursor_];
 
-    bool isTitle = selectedProfile_ >= 0 && titleIdOf(g) >= 0x0100000000010000ULL &&
-                   saveFileNameOf(g)[0] != '\0';
+    // Come isGameLaunchableAt: la tile ROM FRLG non deve mai prendere la
+    // strada del titolo nativo (aprirebbe/lancerebbe il gioco sbagliato).
+    bool isTitle = isNativeAt(gameSelCursor_) && selectedProfile_ >= 0 &&
+                   titleIdOf(g) >= 0x0100000000010000ULL && saveFileNameOf(g)[0] != '\0';
     if (isTitle) {
         if (!showConfirmDialog(i18n::get(StrKey::LaunchGameTitle),
                                 i18n::fmt(StrKey::LaunchGameConfirm, gameDisplayNameOf(g))))

@@ -1080,14 +1080,19 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
     auto fillPresentGames = [&]() {
         std::set<uint64_t> present = account_.presentApplications();
         availableGames_.clear();
+        availableGamesNative_.clear();
         if (!present.empty()) {
             for (GameType g : allGames)
-                if (present.count(titleIdOf(g)))
+                if (present.count(titleIdOf(g))) {
                     availableGames_.push_back(g);
+                    availableGamesNative_.push_back(1);
+                }
         }
 #ifndef OH_LINUX
         if (present.empty() || availableGames_.empty()) {
             availableGames_.assign(std::begin(allGames), std::end(allGames));
+            // Fallback senza profilo: phantom titleId, mai import.
+            availableGamesNative_.assign(availableGames_.size(), 1);
         }
 #else
         DebugLog::line("r36s: fillPresentGames present=%zu avail(before import)=%zu", present.size(), availableGames_.size());
@@ -1767,7 +1772,11 @@ void UI::selectGame(GameType game, int occurrence) {
         // LeafGreen import restava senza nessuna delle due strade valide
         // e cadeva nel ramo finale "else" (path fittizio "basePath_+main",
         // mai esistito), fallendo il load in silenzio.
-        std::string frlgImportPath = isFRLG(game) ? importedSavePath(game, occurrence) : std::string();
+        // occurrence < 0 = tile nativa (vedi importedOccurrence): mai
+        // lookup fra gli import, dritto al mount. Prima la nativa
+        // risolveva occ 0 = primo import, aprendo il save della ROM.
+        std::string frlgImportPath =
+            (isFRLG(game) && occurrence >= 0) ? importedSavePath(game, occurrence) : std::string();
 
         if (isImportedFile(game) || isGen1File(game) || isGen2File(game) ||
             isGen45File(game) || isGen6XY(game) || isGen6ORAS(game) || isGen7SM(game) || isGen7USUM(game) ||

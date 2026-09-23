@@ -13,6 +13,7 @@
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_ttf.h>
 #include <SDL2/SDL_image.h>
+#include <cassert>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -528,6 +529,7 @@ private:
     bool remoteBoxActive_ = false;
     std::vector<RemoteBoxEntry> remoteBoxEntries_;
     std::vector<GameType> savedAvailableGames_;
+    std::vector<char> savedAvailableGamesNative_;
     std::vector<ImportedGame> savedImportedGames_;
 
     void appendImportedGames();               // scans importPaths_, extends availableGames_
@@ -548,8 +550,14 @@ private:
     // launch-only tile, no box/party/items/trade to show for it.
     bool importedIsRomOnly(GameType game, int occurrence = 0) const;
     // Which occurrence of `game` is the tile at availableGames_[cursor]?
-    // Counts same-type tiles before it (duplicates = same game, other device).
+    // -1 se la tile e' nativa (titleId, mai un indice in importedGames_);
+    // altrimenti indice fra gli import (conta solo le tile non-native prima,
+    // mai le native mescolate). -1 e' sicuro con tutti i resolver (seen
+    // parte da 0 e non matcha mai).
     int importedOccurrence(int cursor) const;
+    // Vero se availableGames_[idx] e' un titolo nativo (profilo/titleId),
+    // falso se import da file. Sostituisce l'euristica "path vuoto = nativo".
+    bool isNativeAt(int idx) const;
 
     // Game selector menu state (+ button: Switch Core / Debug log / Exit)
     bool showGameSelMenu_ = false;
@@ -961,6 +969,14 @@ private:
     bool allBanksMode_ = false;       // entered bank selector via "View All Banks"
     bool bankRightCrossGen_ = false;  // right-panel bank selector showing ALL games (cross-gen), normal mode
     std::vector<GameType> availableGames_;
+    // Flag parallelo (char, non vector<bool>): true = tile nativa da
+    // profilo/titleId, false = import da file. VA TENUTO IN SYNC in ogni
+    // punto che muta availableGames_ (push nativi, append/erase import,
+    // applyFavoritesOrder, box remoto); assertGamesInSync() lo controlla.
+    std::vector<char> availableGamesNative_;
+    // Crash immediato in debug se un sito di mutazione dimentica il vettore
+    // parallelo: meglio questo che l'off-by-one silenzioso di prima.
+    void assertGamesInSync() const;
     std::unordered_map<GameType, SDL_Texture*> gameIconCache_;
     // Colore medio della cover (campionato una volta al caricamento in
     // loadGameIcons()): sfondo "vetro" della vista Galleria.

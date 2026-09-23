@@ -1024,12 +1024,17 @@ void UI::openRemoteBox() {
     // Salva lo stato locale della griglia -- si ripristina alla chiusura del
     // box (closeRemoteBox), esattamente come si trovava prima di entrare.
     savedAvailableGames_ = availableGames_;
+    savedAvailableGamesNative_ = availableGamesNative_;
     savedImportedGames_ = importedGames_;
 
     importedGames_ = boxGames;
     availableGames_.clear();
-    for (auto& ig : importedGames_)
+    availableGamesNative_.clear();
+    for (auto& ig : importedGames_) {
         availableGames_.push_back(ig.type);
+        availableGamesNative_.push_back(0); // box remoto: sempre import
+    }
+    assertGamesInSync();
 
     remoteBoxActive_ = true;
 
@@ -1050,9 +1055,12 @@ void UI::openRemoteBox() {
 
 void UI::closeRemoteBox() {
     availableGames_ = savedAvailableGames_;
+    availableGamesNative_ = savedAvailableGamesNative_;
     importedGames_ = savedImportedGames_;
     savedAvailableGames_.clear();
+    savedAvailableGamesNative_.clear();
     savedImportedGames_.clear();
+    assertGamesInSync();
 
     // Save modificati (dimensione/mtime diversi dall'istantanea presa al
     // download, vedi RemoteBoxEntry) che nessuno ha ancora rispedito al
