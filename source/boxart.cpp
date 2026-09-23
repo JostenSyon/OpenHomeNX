@@ -291,15 +291,27 @@ std::string localCover(const std::string& romPath, Style style) {
 }
 
 // ---- download (libretro-thumbnails, repo pubblico usato da RetroArch) ----
-std::string libretroRepo(const std::string& sysdirLower) {
+// Unica tabella sistema -> {repo libretro, systemeid ScreenScraper} sullo
+// stesso dominio (gba/gbc/gb/nds). Prima erano due if-chain parallele
+// (libretroRepo + ssSystemId): aggiungere un sistema richiedeva due edit
+// e il disallineamento era gia' successo (NDS systemeid=15 mancante).
+struct SysInfo { const char* dir; const char* repo; const char* ssId; };
+static constexpr SysInfo kSysTable[] = {
     // Il repo ombrello ha solo submodule: i PNG stanno nei repo per-sistema.
-    if (sysdirLower == "gba") return "Nintendo_-_Game_Boy_Advance";
-    if (sysdirLower == "gbc") return "Nintendo_-_Game_Boy_Color";
-    if (sysdirLower == "gb")  return "Nintendo_-_Game_Boy";
-    if (sysdirLower == "nds") return "Nintendo_-_Nintendo_DS";
+    {"gba", "Nintendo_-_Game_Boy_Advance", "12"},
+    {"gbc", "Nintendo_-_Game_Boy_Color", "10"},
+    {"gb",  "Nintendo_-_Game_Boy", "9"},
+    {"nds", "Nintendo_-_Nintendo_DS", "15"},
+};
+static const SysInfo* lookupSys(const std::string& sysdirLower) {
+    for (const auto& e : kSysTable)
+        if (sysdirLower == e.dir) return &e;
+    return nullptr;
+}
+std::string libretroRepo(const std::string& sysdirLower) {
+    if (const SysInfo* e = lookupSys(sysdirLower)) return e->repo;
     return "";
 }
-
 std::string ssSystemId(const std::string& sysdirLower); // avanti (definito sotto)
 
  // Risolve il sistema ("gba"/"gbc"/"gb"/"nds") da una ROM. Prima prova la
@@ -366,10 +378,7 @@ constexpr const char* kSsSoftName = "OpenHomeNX";
 // systemeid ScreenScraper per i sistemi coperti (screenscraper.fr, elenco
 // piattaforme). "" se non mappato -> scrape() salta SS e usa solo libretro.
 std::string ssSystemId(const std::string& sysdirLower) {
-    if (sysdirLower == "gba") return "12";
-    if (sysdirLower == "gbc") return "10";
-    if (sysdirLower == "gb")  return "9";
-    if (sysdirLower == "nds") return "15";
+    if (const SysInfo* e = lookupSys(sysdirLower)) return e->ssId;
     return "";
 }
 
