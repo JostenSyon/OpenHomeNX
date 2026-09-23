@@ -68,6 +68,17 @@ struct Theme {
     SDL_Color partyMark;
 };
 
+// Contrasto automatico dal colore base: i temi chiari hanno testo scuro
+// (ombra chiara), quelli scuri testo chiaro (ombra scura). Evita un campo
+// per-tema solo per l'ombra — la scelta segue il testo, mai hardcodata.
+inline int luminanceOf(SDL_Color c) { return (299 * c.r + 587 * c.g + 114 * c.b) / 1000; }
+inline SDL_Color shadowForText(SDL_Color t, Uint8 alpha) {
+    return luminanceOf(t) < 128 ? SDL_Color{255, 255, 255, alpha} : SDL_Color{0, 0, 0, alpha};
+}
+inline SDL_Color contrastTextForBg(SDL_Color bg) {
+    return luminanceOf(bg) < 128 ? SDL_Color{240, 240, 240, 255} : SDL_Color{30, 30, 35, 255};
+}
+
 inline constexpr int THEME_COUNT = 9;
 // Default for fresh installs (existing theme.cfg choices are preserved).
 inline constexpr int DEFAULT_THEME_INDEX = 0; // OH

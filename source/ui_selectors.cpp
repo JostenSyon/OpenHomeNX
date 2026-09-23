@@ -1062,11 +1062,14 @@ void UI::drawGameArt(int i, int iconX, int iconY, int size, bool scaleInner) {
                 }
             }
             if (!drewLogo) {
-                // No logo asset (Gen1 file games): centered game tag.
+                // No logo asset (Gen1/Gen2 file games): centered game tag,
+                // a contrasto con lo sfondo flat della tile (su alcuni
+                // sfondi scuri il T().text dei temi chiari era illeggibile).
                 const char* tag = gameInfo(availableGames_[i]).gameTag;
-                const auto& te = getTextEntry(tag, font_, T().text);
+                SDL_Color tagCol = contrastTextForBg(bg);
+                const auto& te = getTextEntry(tag, font_, tagCol);
                 drawText(tag, iconX + (IS - te.w) / 2, iconY + (IS - te.h) / 2,
-                         T().text, font_);
+                         tagCol, font_);
             }
         }
         // Small source-folder badge (bottom-left corner of the icon) —
@@ -1083,10 +1086,10 @@ void UI::drawGameArt(int i, int iconX, int iconY, int size, bool scaleInner) {
             int badgeW = te.w + 8, badgeH = te.h + 4;
             int badgeX = iconX + 2, badgeY = iconY + IS - badgeH - 2;
             SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_BLEND);
-            SDL_SetRenderDrawColor(renderer_, 0, 0, 0, 160);
-            SDL_Rect badgeRect = {badgeX, badgeY, badgeW, badgeH};
-            SDL_RenderFillRect(renderer_, &badgeRect);
-            drawText(tag, badgeX + 4, badgeY + 2, T().text, fontSmall_);
+            // Pill arrotondata stile "pop" invece del rettangolo secco; il
+            // testo e' sempre chiaro perche' lo sfondo e' sempre nero.
+            drawRoundRect(badgeX, badgeY, badgeW, badgeH, badgeH / 2, {0, 0, 0, 160});
+            drawText(tag, badgeX + 4, badgeY + 2, {240, 240, 240, 255}, fontSmall_);
         }
     } else {
         // Colored placeholder with game abbreviation
@@ -1105,10 +1108,31 @@ void UI::drawGameArt(int i, int iconX, int iconY, int size, bool scaleInner) {
             case GameType::GE: abbr = "GE"; break;
             case GameType::FR: case GameType::FR_ES: case GameType::FR_DE: case GameType::FR_IT: case GameType::FR_FR: case GameType::FR_JA: abbr = "FR"; break;
             case GameType::LG: case GameType::LG_ES: case GameType::LG_DE: case GameType::LG_IT: case GameType::LG_FR: case GameType::LG_JA: abbr = "LG"; break;
+            case GameType::GOLD: abbr = "Go"; break;
+            case GameType::SILVER: abbr = "Si"; break;
+            case GameType::CRYSTAL: abbr = "Cr"; break;
+            case GameType::DIAMOND: abbr = "D"; break;
+            case GameType::PEARL: abbr = "P"; break;
+            case GameType::PLATINUM: abbr = "Pt"; break;
+            case GameType::HEARTGOLD: abbr = "HG"; break;
+            case GameType::SOULSILVER: abbr = "SS"; break;
+            case GameType::BLACK: abbr = "B"; break;
+            case GameType::WHITE: abbr = "W"; break;
+            case GameType::BLACK2: abbr = "B2"; break;
+            case GameType::WHITE2: abbr = "W2"; break;
+            case GameType::X: abbr = "X"; break;
+            case GameType::Y: abbr = "Y"; break;
+            case GameType::OMEGA_RUBY: abbr = "OR"; break;
+            case GameType::ALPHA_SAPPHIRE: abbr = "AS"; break;
+            case GameType::SUN: abbr = "Su"; break;
+            case GameType::MOON: abbr = "Mo"; break;
+            case GameType::ULTRA_SUN: abbr = "US"; break;
+            case GameType::ULTRA_MOON: abbr = "UM"; break;
             default: break;
         }
+        // Testo a contrasto con lo sfondo placeholder (temi chiari/scuro).
         drawTextCentered(abbr, iconX + IS / 2, iconY + IS / 2,
-                         T().text, font_);
+                         contrastTextForBg(T().iconPlaceholder), font_);
     }
 }
 
@@ -1385,7 +1409,7 @@ void UI::drawDock() {
 #else
                 int ly = BTN_Y + R + 19; // un paio di px sotto l'icona, come nel radial
 #endif
-                SDL_Color sh = {0, 0, 0, 220};
+                SDL_Color sh = shadowForText(T().text, 220);
                 // ombra rinforzata: alone 8 direzioni + leggero offset per staccare dal fondo
                 drawTextCentered(lbl, cx + 1, ly + 1, sh, font_);
                 drawTextCentered(lbl, cx - 1, ly + 1, sh, font_);
@@ -1395,7 +1419,7 @@ void UI::drawDock() {
                 drawTextCentered(lbl, cx, ly - 1, sh, font_);
                 drawTextCentered(lbl, cx + 1, ly, sh, font_);
                 drawTextCentered(lbl, cx - 1, ly, sh, font_);
-                SDL_Color sh2 = {0, 0, 0, 140};
+                SDL_Color sh2 = shadowForText(T().text, 140);
                 drawTextCentered(lbl, cx + 2, ly + 2, sh2, font_);
                 drawTextCentered(lbl, cx - 2, ly + 2, sh2, font_);
                 drawTextCentered(lbl, cx, ly, T().text, font_);
@@ -3382,7 +3406,7 @@ void UI::drawRadialMenu() {
             std::string lbl = i18n::get(labelKey);
             bool below = (labelKey == StrKey::LaunchGameButton || labelKey == StrKey::RadialTrade);
             int ly = below ? cy + BTN_R + 26 : cy - BTN_R - 24;
-            SDL_Color sh = {0, 0, 0, 220};
+            SDL_Color sh = shadowForText(T().text, 220);
             // ombra rinforzata: alone 8 direzioni + leggero offset per staccare dal fondo
             drawTextCentered(lbl, cx + 1, ly + 1, sh, font_);
             drawTextCentered(lbl, cx - 1, ly + 1, sh, font_);
@@ -3392,7 +3416,7 @@ void UI::drawRadialMenu() {
             drawTextCentered(lbl, cx, ly - 1, sh, font_);
             drawTextCentered(lbl, cx + 1, ly, sh, font_);
             drawTextCentered(lbl, cx - 1, ly, sh, font_);
-            SDL_Color sh2 = {0, 0, 0, 140};
+            SDL_Color sh2 = shadowForText(T().text, 140);
             drawTextCentered(lbl, cx + 2, ly + 2, sh2, font_);
             drawTextCentered(lbl, cx - 2, ly + 2, sh2, font_);
             drawTextCentered(lbl, cx, ly, T().text, font_);

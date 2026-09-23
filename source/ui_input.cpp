@@ -3606,7 +3606,7 @@ void UI::playTradeEvolveAnim(uint16_t fromSpecies, uint16_t toSpecies) {
             SDL_RenderDrawLine(renderer_, ix, iy - arm, ix, iy + arm);
         }
 
-        SDL_Color shadow = {0, 0, 0, 200};
+        SDL_Color shadow = shadowForText(T().text, 200);
         if (elapsed < PHASE_MS) {
             // Primo Pokemon (quello che se ne va): corsia blu, dal
             // basso-sinistra verso l'alto-destra della propria corsia.
