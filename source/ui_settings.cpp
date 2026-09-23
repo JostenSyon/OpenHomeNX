@@ -271,9 +271,13 @@ static std::vector<DevRow> devRowList(bool debugOn, bool sendOn) {
     v.push_back(DevRow::Update);
     v.push_back(DevRow::Clear);
     v.push_back(DevRow::ShowRomsNoSave);
+#ifndef OH_LINUX
+    // Solo Switch: su R36S non esistono tile native, quindi doppioni FRLG
+    // e sync nativo<->ROM non possono mai succedere (tutte no-op).
     v.push_back(DevRow::ShowFrlgRoms);
     v.push_back(DevRow::SyncFrlg);
     v.push_back(DevRow::AutoSyncFrlg);
+#endif
     v.push_back(DevRow::DevSync);
     return v;
 }
