@@ -131,9 +131,9 @@ r36s: docker-image
 		-w /src/OpenHomeNX \
 		-e CARGO_TARGET_DIR=/src/r36s/rust-target \
 		-e PKG_CONFIG_PATH=/usr/lib/aarch64-linux-gnu/pkgconfig \
-		$(IMG) bash -lc "git config --global --add safe.directory /src/OpenHomeNX && \
-			cd /src/r36s && \
-			make PROJ=/src/OpenHomeNX CXX=g++ TARGET_OS=unknown-linux-gnu \
+	$(IMG) bash -lc "git config --global --add safe.directory /src/OpenHomeNX && \
+		cd /src/r36s && \
+		make -j$$(nproc) PROJ=/src/OpenHomeNX CXX=g++ TARGET_OS=unknown-linux-gnu \
 				BUILD=/src/r36s/build-r36s \
 				SDL2IMG=SDL2_image SDL2TTF=SDL2_ttf \
 				RUST_TARGET=aarch64-unknown-linux-gnu \

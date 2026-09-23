@@ -39,8 +39,9 @@ if [ -n "$want_clean" ]; then
   echo "==> cambio variante ($VARIANT): make clean"
   MAKE=/usr/bin/make DEVKITPRO=/opt/devkitpro make clean > /dev/null
 fi
-echo "==> make release [$VARIANT] (APP_VERSION=$(grep '^APP_VERSION' Makefile | awk '{print $3}'))"
-MAKE=/usr/bin/make DEVKITPRO=/opt/devkitpro make release $EXTRA
+JOBS=$(sysctl -n hw.ncpu 2>/dev/null || echo 4)
+echo "==> make release [$VARIANT] -j$JOBS (APP_VERSION=$(grep '^APP_VERSION' Makefile | awk '{print $3}'))"
+MAKE=/usr/bin/make DEVKITPRO=/opt/devkitpro make -j$JOBS release $EXTRA
 # Solo DOPO build riuscita: scriverlo prima e interrompere lasciava il flag
 # della variante nuova con oggetti misti, e il giro dopo saltava il clean.
 echo "$VARIANT" > .build-variant
