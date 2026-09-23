@@ -490,6 +490,7 @@
     "scraper_boxart_title": "Aggiorna boxart (ROM)",
     "scraper_boxart_done": "Boxart: {0}/{1} trovate ({2} saltate).",
     "scraper_boxart_cancel": "B: annulla",
+    "scraper_boxart_cancelling": "Annullo...",
     "scraper_boxart_offline": "Rete non disponibile: uso solo cover locali.",
     "scraper_boxart_clear": "Pulisci cache boxart",
     "scraper_boxart_clear_body": "Rimuove le cover 2D scaricate/copiate. Tornano le tile composte (logo + sfondo). Continuare?",

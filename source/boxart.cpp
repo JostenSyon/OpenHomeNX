@@ -603,9 +603,19 @@ ScrapeResult scrape(const std::string& basePath,
             return false;
         };
 
+        // Vero se l'utente ha premuto B durante lo scrape (flag cooperativo,
+        // vedi cancel piu' sopra). Controllato fra una chiamata di rete
+        // bloccante e la successiva dentro tryDownload() -- non puo'
+        // interrompere una singola updateNetDownload() gia' in corso (fino
+        // a 30s di timeout), ma evita di incatenarne altre 4-5 in fila per
+        // la stessa ROM prima che B venga anche solo notato (prima veniva
+        // controllato una volta sola per ROM, in cima al loop principale).
+        auto cancelledNow = [&]() { return cancel && *cancel; };
+
         // Download vero: ScreenScraper box-2D/box-3D per primo se il
         // sistema e' coperto, poi libretro-thumbnails 2D come fallback.
         auto tryDownload = [&]() -> bool {
+            if (cancelledNow()) return false;
             if (repo.empty() && ssSysId.empty()) {
                 DebugLog::line("boxart: %s miss (sistema '%s' non mappato)",
                                base.c_str(), sys.c_str());
@@ -636,7 +646,7 @@ ScrapeResult scrape(const std::string& basePath,
             // 1+2. libretro-thumbnails: solo se ScreenScraper non ha dato
             // nulla sopra (miss/rete off/sistema non coperto da SS) e il
             // sistema e' comunque mappato qui (repo non vuoto).
-            if (!ok && !repo.empty()) {
+            if (!ok && !repo.empty() && !cancelledNow()) {
                 // libretro-thumbnails e' sempre box-art 2D piatta (mai un vero
                 // render 3D): se lo stile richiesto e' Box3d, salva qui sotto
                 // il tag ".2d", non ".3d" -- altrimenti la tile resta "finto
@@ -650,14 +660,14 @@ ScrapeResult scrape(const std::string& basePath,
                                   + repo + "/master/Named_Boxarts/" +
                                   urlEncodePath(base + ".png");
                 ok = updateNetDownload(url, "", dst, "", err);
-                if (!ok) {
+                if (!ok && !cancelledNow()) {
                     std::string url2 = "https://raw.githubusercontent.com/libretro-thumbnails/"
                                        + repo + "/master/Named_Boxarts/" +
                                        urlEncodePath(fileName(rom) + ".png");
                     ok = updateNetDownload(url2, "", dst, "", err);
                 }
                 // 2. Match fuzzy via elenco repo (nomi No-Intro vs nome ROM).
-                if (!ok) {
+                if (!ok && !cancelledNow()) {
                     std::string api = "https://api.github.com/repos/libretro-thumbnails/"
                                       + repo + "/contents/Named_Boxarts";
                     std::string listPath = basePath + "cache/covers/.listing_" + sys + ".json";
@@ -753,7 +763,11 @@ ScrapeResult scrape(const std::string& basePath,
             // non c'e' rete o ScreenScraper non ha quel gioco.
             if (tryDownload()) { r.found++; continue; }
             if (tryLocal()) { r.found++; continue; }
-            if (netAttempted) writeMissMarker(basePath, rom);
+            // Niente marker se l'utente ha annullato a meta' di QUESTA ROM:
+            // e' un tentativo abbandonato, non un vero miss di rete -- non
+            // deve costarle 72h di skip silenzioso al prossimo Aggiorna.
+            if (netAttempted && !cancelledNow()) writeMissMarker(basePath, rom);
+            if (cancelledNow()) { DebugLog::line("boxart: scrape annullato (%d/%d)", r.found, r.total); r.cancelled = true; break; }
             continue;
         }
 
@@ -763,7 +777,8 @@ ScrapeResult scrape(const std::string& basePath,
         // stili, nessuna ambiguita' da risolvere.
         if (tryLocal()) { r.found++; continue; }
         if (tryDownload()) { r.found++; continue; }
-        if (netAttempted) writeMissMarker(basePath, rom);
+        if (netAttempted && !cancelledNow()) writeMissMarker(basePath, rom);
+        if (cancelledNow()) { DebugLog::line("boxart: scrape annullato (%d/%d)", r.found, r.total); r.cancelled = true; break; }
     }
     DebugLog::line("boxart: scrape %d/%d", r.found, r.total);
     return r;

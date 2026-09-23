@@ -1,15 +1,21 @@
 #!/bin/bash
-# deploy_r36s.sh — build + deploy su R36S (ArkOS) in un colpo.
+# deploy_r36s.sh — build pulita + deploy su R36S (ArkOS) in un colpo.
 #
-# Build INCREMENTALE di default (ricompila solo i file toccati, se niente
-# e' cambiato salta diretto al deploy). Pulita solo su richiesta.
+# SEMPRE build pulita (rm -rf build-r36s prima di make). Era stata resa
+# incrementale di default in 74eb33c per velocita', ma il build-r36s viene
+# compilato dentro un container Docker su Linux VM (Docker Desktop Mac):
+# se l'orologio della VM va fuori sincrono con l'host (capita dopo sleep/
+# wake del Mac, problema noto di Docker Desktop) il tracking incrementale
+# di make puo' vedere i sorgenti modificati come "piu' vecchi" degli
+# oggetti gia' compilati e saltare silenziosamente la ricompilazione --
+# esattamente il sintomo "deploy fatto ma non ha la roba aggiornata"
+# visto dal vivo in sessione. In un flusso di iterazione attiva come
+# questo la correttezza vale piu' della velocita': sempre pulita.
 #
 # Uso: ./deploy_r36s.sh 192.168.4.40
 #      ./deploy_r36s.sh 192.168.4.40 ark ark   # user/pass espliciti
-#      ./deploy_r36s.sh -clean 192.168.4.40    # full rebuild + deploy
 set -e
-CLEAN=0
-if [ "$1" = "-clean" ] || [ "$1" = "--clean" ]; then CLEAN=1; shift; fi
+if [ "$1" = "-clean" ] || [ "$1" = "--clean" ]; then shift; fi # retrocompat, ora e' sempre pulita
 IP="${1:-192.168.4.40}"
 USER="${2:-ark}"
 PASS="${3:-ark}"
@@ -22,12 +28,8 @@ if [ ! -f "$R36SDIR/Makefile" ]; then R36SDIR="$PROJ/../r36s/OpenHomeNX"; fi
 if [ ! -f "$R36SDIR/Makefile" ]; then R36SDIR="$PROJ/r36s/OpenHomeNX"; fi
 if [ ! -f "$R36SDIR/Makefile" ]; then echo "R36S dir non trovata: $R36SDIR"; exit 1; fi
 
-if [ "$CLEAN" = "1" ]; then
-  echo "==> clean build R36S"
-  rm -rf "$R36SDIR/build-r36s"
-else
-  echo "==> build incrementale R36S (solo file modificati, -clean per pulita)"
-fi
+echo "==> clean build R36S"
+rm -rf "$R36SDIR/build-r36s"
 make -C "$R36SDIR" r36s
 
 BIN="$R36SDIR/OpenHomeNX"

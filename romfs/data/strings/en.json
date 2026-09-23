@@ -490,6 +490,7 @@
     "scraper_boxart_title": "Update boxart (ROM)",
     "scraper_boxart_done": "Boxart: {0}/{1} found ({2} skipped).",
     "scraper_boxart_cancel": "B: cancel",
+    "scraper_boxart_cancelling": "Cancelling...",
     "scraper_boxart_offline": "Network unavailable: using local covers only.",
     "scraper_boxart_clear": "Clear boxart cache",
     "scraper_boxart_clear_body": "Removes downloaded/copied 2D covers. Composed tiles (logo + background) return. Continue?",

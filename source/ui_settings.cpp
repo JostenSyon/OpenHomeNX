@@ -62,6 +62,15 @@ int UI::defaultUserIndex() const {
 
 static std::vector<DevRow> devRowList(bool debugOn, bool sendOn);
 void UI::openSettings() {
+    // Se si apre Impostazioni da dentro il Box Remoto (es. dal gear, non
+    // dalla B sulla griglia) senza chiuderlo prima, importedGames_/
+    // availableGames_ restano scambiati con la lista remota (1-2 save) per
+    // il resto della sessione -- "Aggiorna BoxArt" vede solo quei pochi
+    // giochi invece di tutti gli import locali (bug reale, causa di
+    // "trova 0 copertine" con un box remoto aperto e mai chiuso). L'unico
+    // altro punto che ripristina lo stato locale era il B sulla griglia
+    // (ui_selectors.cpp) -- stessa guardia qui, unico punto d'ingresso.
+    if (remoteBoxActive_) closeRemoteBox();
     showSettings_ = true;
     setCat_ = 0;
     setRow_ = 0;
@@ -856,20 +865,41 @@ void UI::settingsRowActivate(int cat, int row, int dir, bool& running) {
                 // evita anche che la B dell'annullo chiuda subito il dialogo
                 // del resoconto qui sotto.
                 bool scrapeCancel = false;
+                // Fronte di salita, non livello: SDL_GameControllerGetButton
+                // legge lo stato ATTUALE del pulsante, non una pressione
+                // puntuale. Controllato com'era su questa prima tick (a
+                // ridosso di quando la riga "Aggiorna BoxArt" e' stata
+                // confermata, con B magari ancora "residuo" da una
+                // pressione precedente) annullava lo scrape all'istante,
+                // sempre a 0/1 o 1/1 -- niente a che fare con quante ROM
+                // c'erano da fare (bug reale, non solo un fastidio: sembrava
+                // che lo scraper trovasse 0 copertine su 10 giochi). Ora
+                // serve un rilascio-poi-pressione DOPO l'avvio dello scrape.
+                bool bWasHeld = pad_ && SDL_GameControllerGetButton(pad_, SDL_CONTROLLER_BUTTON_A);
                 std::string cancelHint = i18n::get(StrKey::ScraperBoxartCancel);
                 Boxart::ScrapeResult res = Boxart::scrape(basePath_, importedGames_,
-                    [this, &scrapeCancel, &cancelHint](const std::string& s){
+                    [this, &scrapeCancel, &bWasHeld, &cancelHint](const std::string& s){
                         std::string msg = s;
                         size_t nl = msg.find('\n');
                         if (nl != std::string::npos) msg.insert(nl, "  " + cancelHint);
                         else msg += "  " + cancelHint;
                         showWorking(msg);
                         SDL_PumpEvents();
-                        if (pad_ && SDL_GameControllerGetButton(pad_, SDL_CONTROLLER_BUTTON_A)) {
+                        bool bHeld = pad_ && SDL_GameControllerGetButton(pad_, SDL_CONTROLLER_BUTTON_A);
+                        if (bHeld && !bWasHeld) {
                             scrapeCancel = true;
                             SDL_Event e;
                             while (SDL_PollEvent(&e)) {}
+                            // Feedback immediato: la B viene notata subito,
+                            // anche se lo scrape vero si ferma solo dopo la
+                            // richiesta di rete gia' in volo (fino a 30s,
+                            // limite del networking sincrono -- stesso motivo
+                            // per cui non e' su un thread separato, vedi
+                            // discussione). Senza questo l'utente non ha modo
+                            // di sapere se la pressione e' stata vista.
+                            showWorking(i18n::get(StrKey::ScraperBoxartCancelling));
                         }
+                        bWasHeld = bHeld;
                     }, &scrapeCancel);
                 showMessageAndWait(i18n::get(StrKey::ScraperBoxartTitle),
                     i18n::fmt(StrKey::ScraperBoxartDone,
