@@ -25,6 +25,7 @@ static char s_version[32] = {0};
 static char s_err[160] = {0};
 static std::string s_url, s_token, s_cur;
 static bool s_beta = false;
+static const char* s_infoFile = "latest.json"; // R36S: "latest-r36s.json"
 
 void workerMain(void*) {
     RemoteUpdateInfo info;
@@ -61,7 +62,7 @@ void workerMain(void*) {
             return;
         }
     }
-    bool ok = updateNetFetchInfo(fetchUrl, s_token, info, err);
+    bool ok = updateNetFetchInfo(fetchUrl, s_token, info, err, nullptr, s_infoFile);
     s_stage.store(2, std::memory_order_release);
     if (ok) {
         if (compareVersionStrings(info.version, s_cur) > 0)
@@ -76,7 +77,7 @@ void workerMain(void*) {
 } // namespace
 
 void autoUpdateStart(const std::string& url, const std::string& token,
-                     const std::string& curVer, bool beta) {
+                     const std::string& curVer, bool beta, const char* infoFile) {
     bool expected = false;
     if (!s_started.compare_exchange_strong(expected, true))
         return; // una sola partenza per boot
@@ -84,6 +85,7 @@ void autoUpdateStart(const std::string& url, const std::string& token,
     s_token = token;
     s_cur = curVer;
     s_beta = beta && url.empty(); // custom url vince sempre sul canale
+    s_infoFile = infoFile ? infoFile : "latest.json";
     s_state.store(1, std::memory_order_release);
     Result rcCreate = threadCreate(&s_thread, workerMain, nullptr, nullptr,
                                    kStackSize, 0x2C, -2);

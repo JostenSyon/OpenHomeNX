@@ -178,7 +178,11 @@ int main(int argc, char* argv[]) {
             if (url.empty() && !beta)
                 url = githubReleasesUrl("JostenSyon", "OpenHomeNX");
             DebugLog::line("autoupdate: background check -> %s", beta ? "beta" : url.c_str());
+#ifdef OH_LINUX
+            autoUpdateStart(url, token, APP_VERSION, beta, "latest-r36s.json");
+#else
             autoUpdateStart(url, token, APP_VERSION, beta);
+#endif
         }
     }
 
