@@ -176,6 +176,8 @@ void setBoxartStyle(int v) {
 }
 bool showRomsWithoutSave() { return getInt("show_roms_without_save", 0) != 0; }
 void setShowRomsWithoutSave(bool v) { setInt("show_roms_without_save", v ? 1 : 0); }
+bool showFrlgRoms() { return getInt("show_frlg_roms", 0) != 0; }
+void setShowFrlgRoms(bool v) { setInt("show_frlg_roms", v ? 1 : 0); }
 bool confirmExit() { return getInt("confirm_exit", 0) != 0; }
 void setConfirmExit(bool v) { setInt("confirm_exit", v ? 1 : 0); }
 std::string remoteSyncHost() {

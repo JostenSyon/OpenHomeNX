@@ -503,5 +503,6 @@
     "scraper_boxart_style_2d": "2D",
     "scraper_boxart_style_3d": "3D",
     "show_roms_no_save_title": "Show ROMs without save",
+    "show_frlg_roms_title": "Show FRLG ROM versions",
     "show_roms_no_save_desc": "Show games even without a save file (ROM only)."
 }

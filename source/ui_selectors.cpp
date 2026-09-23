@@ -419,23 +419,24 @@ void UI::selectProfile(int index) {
 
 // --- File import (save SD/USB da emulatori o dump) ---
 
+bool UI::hideFrlgRom(GameType t) const {
+    if (!isFRLG(t) || Settings::showFrlgRoms()) return false;
+    // Solo le native contano (flag esatto, non scansione per valore):
+    // confronta il bankGroupName condiviso da tutte le varianti regionali.
+    for (size_t i = 0; i < availableGames_.size(); i++)
+        if (availableGamesNative_[i] != 0 &&
+            std::strcmp(bankGroupNameOf(availableGames_[i]), bankGroupNameOf(t)) == 0)
+            return true;
+    return false;
+}
+
 void UI::appendImportedGames() {
     importedGames_ = scanImportPaths(importPaths_, autoCheckUsb_, Settings::showRomsWithoutSave());
     for (const auto& ig : importedGames_) {
         // FireRed/LeafGreen sono l'unica famiglia import che puo' anche
         // avere un GameType nativo con titleId reale (NSO GBA) gia' in
-        // availableGames_ (da fillPresentGames()) -- se chi possiede quel
-        // titolo Switch importa ANCHE la ROM GBA, evita la riga doppia per
-        // "lo stesso gioco" confrontando il bankGroupName condiviso da
-        // tutte le varianti regionali FR/LG, non solo il GameType esatto.
-        bool alreadyNative = false;
-        for (GameType g : availableGames_) {
-            if (std::strcmp(bankGroupNameOf(g), bankGroupNameOf(ig.type)) == 0) {
-                alreadyNative = true;
-                break;
-            }
-        }
-        if (alreadyNative) continue;
+        // availableGames_ -- vedi hideFrlgRom() (stesso filtro del rescan).
+        if (hideFrlgRom(ig.type)) continue;
         availableGames_.push_back(ig.type);
         availableGamesNative_.push_back(0);
     }
@@ -548,6 +549,9 @@ void UI::rescanImportedGames() {
 
     importedGames_ = scanImportPaths(importPaths_, autoCheckUsb_, Settings::showRomsWithoutSave());
     for (const auto& ig : importedGames_) {
+        // Stesso filtro di appendImportedGames (qui prima mancava: il rescan
+        // mostrava i doppioni FRLG anche con nativa presente).
+        if (hideFrlgRom(ig.type)) continue;
         availableGames_.push_back(ig.type);
         availableGamesNative_.push_back(0);
     }

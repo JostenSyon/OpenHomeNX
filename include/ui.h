@@ -86,7 +86,7 @@ enum class DevRow {
     DbgToggle, QuickMenu,
     ClearBp, Normalize, ClearGal,
     SendLog, Crash,
-    Rename, Style, Update, Clear, ShowRomsNoSave, DevSync,
+    Rename, Style, Update, Clear, ShowRomsNoSave, ShowFrlgRoms, DevSync,
 };
 
 // Animazione "tendina" per voci di menù che appaiono/scompaiono (copia
@@ -549,6 +549,9 @@ private:
     // True only for a save-less ROM-only entry (Settings::showRomsWithoutSave()):
     // launch-only tile, no box/party/items/trade to show for it.
     bool importedIsRomOnly(GameType game, int occurrence = 0) const;
+    // Vero se la ROM FRLG va nascosta: toggle OFF e nativa dello stesso
+    // gruppo (bankGroupName, copre le varianti regionali) in lista.
+    bool hideFrlgRom(GameType t) const;
     // Which occurrence of `game` is the tile at availableGames_[cursor]?
     // -1 se la tile e' nativa (titleId, mai un indice in importedGames_);
     // altrimenti indice fra gli import (conta solo le tile non-native prima,

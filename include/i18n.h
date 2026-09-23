@@ -505,6 +505,7 @@ namespace StrKey {
     constexpr const char* ScraperRenameTitle = "scraper_rename_title";
     constexpr const char* ScraperRenameDone  = "scraper_rename_done";
     constexpr const char* ShowRomsNoSaveTitle = "show_roms_no_save_title";
+    constexpr const char* ShowFrlgRomsTitle = "show_frlg_roms_title";
     constexpr const char* ShowRomsNoSaveDesc  = "show_roms_no_save_desc";
     constexpr const char* SetNormalizeSave     = "set_normalize_save";
     constexpr const char* ClearLogDone         = "clearlog_done";

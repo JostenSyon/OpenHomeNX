@@ -271,6 +271,7 @@ static std::vector<DevRow> devRowList(bool debugOn, bool sendOn) {
     v.push_back(DevRow::Update);
     v.push_back(DevRow::Clear);
     v.push_back(DevRow::ShowRomsNoSave);
+    v.push_back(DevRow::ShowFrlgRoms);
     v.push_back(DevRow::DevSync);
     return v;
 }
@@ -392,6 +393,7 @@ std::string UI::settingsRowLabel(int cat, int row) const {
             case DevRow::Style: return i18n::get(StrKey::ScraperBoxartStyle);
             case DevRow::Rename: return i18n::get(StrKey::ScraperRenameTitle);
             case DevRow::ShowRomsNoSave: return i18n::get(StrKey::ShowRomsNoSaveTitle);
+            case DevRow::ShowFrlgRoms: return i18n::get(StrKey::ShowFrlgRomsTitle);
             case DevRow::DbgToggle: return i18n::get(StrKey::SetDebugToggle);
             case DevRow::QuickMenu: return i18n::get(StrKey::SetDbgMenu);
             case DevRow::ClearBp: return i18n::get(StrKey::ClearBpHistTitle);
@@ -496,6 +498,8 @@ std::string UI::settingsRowValue(int cat, int row) {
                 return boxartStyleLabel(Settings::boxartStyle());
             case DevRow::ShowRomsNoSave:
                 return Settings::showRomsWithoutSave() ? i18n::get(StrKey::SetOn) : i18n::get(StrKey::SetOff);
+            case DevRow::ShowFrlgRoms:
+                return Settings::showFrlgRoms() ? i18n::get(StrKey::SetOn) : i18n::get(StrKey::SetOff);
             default:
                 return ""; // righe azione, niente valore a destra
         }
@@ -840,6 +844,14 @@ void UI::settingsRowActivate(int cat, int row, int dir, bool& running) {
             bool on = !Settings::showRomsWithoutSave();
             Settings::setShowRomsWithoutSave(on);
             DebugLog::line("settings: show_roms_without_save=%d", on ? 1 : 0);
+            rescanImportedGames();
+            loadGameIcons();
+        } else if (tag == DevRow::ShowFrlgRoms) {
+            // Stesso pattern: toggle + rescan + ricarica tile. Il filtro
+            // vero vive in hideFrlgRom() (ui_selectors.cpp).
+            bool on = !Settings::showFrlgRoms();
+            Settings::setShowFrlgRoms(on);
+            DebugLog::line("settings: show_frlg_roms=%d", on ? 1 : 0);
             rescanImportedGames();
             loadGameIcons();
         } else if (tag == DevRow::Update) {
