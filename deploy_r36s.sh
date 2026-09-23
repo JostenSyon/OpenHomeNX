@@ -1,9 +1,15 @@
 #!/bin/bash
-# deploy_r36s.sh — build pulita + deploy su R36S (ArkOS) in un colpo.
+# deploy_r36s.sh — build + deploy su R36S (ArkOS) in un colpo.
+#
+# Build INCREMENTALE di default (ricompila solo i file toccati, se niente
+# e' cambiato salta diretto al deploy). Pulita solo su richiesta.
 #
 # Uso: ./deploy_r36s.sh 192.168.4.40
 #      ./deploy_r36s.sh 192.168.4.40 ark ark   # user/pass espliciti
+#      ./deploy_r36s.sh -clean 192.168.4.40    # full rebuild + deploy
 set -e
+CLEAN=0
+if [ "$1" = "-clean" ] || [ "$1" = "--clean" ]; then CLEAN=1; shift; fi
 IP="${1:-192.168.4.40}"
 USER="${2:-ark}"
 PASS="${3:-ark}"
@@ -16,8 +22,12 @@ if [ ! -f "$R36SDIR/Makefile" ]; then R36SDIR="$PROJ/../r36s/OpenHomeNX"; fi
 if [ ! -f "$R36SDIR/Makefile" ]; then R36SDIR="$PROJ/r36s/OpenHomeNX"; fi
 if [ ! -f "$R36SDIR/Makefile" ]; then echo "R36S dir non trovata: $R36SDIR"; exit 1; fi
 
-echo "==> clean build R36S"
-rm -rf "$R36SDIR/build-r36s"
+if [ "$CLEAN" = "1" ]; then
+  echo "==> clean build R36S"
+  rm -rf "$R36SDIR/build-r36s"
+else
+  echo "==> build incrementale R36S (solo file modificati, -clean per pulita)"
+fi
 make -C "$R36SDIR" r36s
 
 BIN="$R36SDIR/OpenHomeNX"

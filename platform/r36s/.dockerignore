@@ -1,0 +1,10 @@
+# Il context di build e' solo il Dockerfile: artefatti locali (oggetti,
+# target Rust, binari, test) NON devono essere inviati al daemon a ogni
+# `docker build` (erano ~200MB di context a ogni giro, anche con layer cached).
+build-r36s/
+build/
+rust-target/
+OpenHomeNX
+*.o
+*.d
+rominfo_test

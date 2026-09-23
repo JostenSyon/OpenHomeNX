@@ -5,10 +5,13 @@
 # usando il container docker su Mac arm64 (velocita' nativa, niente qemu).
 # L'output e' OpenHomeNX nella directory corrente (../r36s/OpenHomeNX/).
 #
-# Uso: ./build_linux.sh            -> build (immagine docker creata al primo giro)
+# Uso: ./build_linux.sh            -> build INCREMENTALE (solo file toccati;
+#                                     se invariato finisce subito)
 #      ./build_linux.sh image      -> ricostruisce solo l'immagine toolchain
 #      ./build_linux.sh clean      -> rimuove gli artefatti build locali
-#      ./build_linux.sh 192.168.4.40 [user] [pass] -> build + deploy su R36S
+#      ./build_linux.sh -clean     -> come clean + full rebuild locale
+#      ./build_linux.sh 192.168.4.40 [user] [pass] -> build incrementale + deploy su R36S
+#      ./build_linux.sh -clean 192.168.4.40 [user] [pass] -> full rebuild + deploy
 set -e
 cd "$(dirname "$0")"
 
@@ -24,6 +27,16 @@ if [ "$1" = "clean" ]; then
   echo "==> clean artefatti locali"
   rm -rf build build-r36s OpenHomeNX rust-target
   exit 0
+fi
+
+# -clean: full rebuild (locale o + deploy se segue un IP)
+if [ "$1" = "-clean" ] || [ "$1" = "--clean" ]; then
+  shift
+  echo "==> clean artefatti locali"
+  rm -rf build build-r36s OpenHomeNX rust-target
+  if [ -z "$1" ]; then
+    set -- # nessun IP: solo rebuild locale sotto
+  fi
 fi
 
 # IP come primo argomento -> dopo la build lancia il deploy
