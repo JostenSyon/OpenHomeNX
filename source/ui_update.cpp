@@ -486,6 +486,14 @@ bool UI::checkForUpdateR36S(const std::string& curVer) {
         if (!showConfirmDialog(i18n::get(StrKey::UpdateAvailNetTitle),
                 i18n::fmt(StrKey::UpdateAvailNetBody, info.version, curVer, updateSourceLabel(netUrl))))
             return false;
+    } else if (cmp < 0 && DebugLog::enabled()) {
+        // Downgrade esplicito (debug): come Switch, mai silenzioso.
+        DebugLog::line("update: r36s downgrade remoto v%s < v%s",
+            info.version.c_str(), curVer.c_str());
+        if (!showConfirmDialog(i18n::get(StrKey::UpdateDowngradeTitle),
+                i18n::fmt(StrKey::UpdateDowngradeBody, info.version, curVer,
+                          updateSourceLabel(netUrl))))
+            return false;
     } else if (cmp == 0 && DebugLog::enabled()) {
         // Reinstall stessa versione (debug): come Switch — confronta gli
         // sha live solo per dirtelo, ma chiede sempre se reinstallare.
