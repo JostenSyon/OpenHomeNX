@@ -189,20 +189,19 @@ std::string sha256HexFile(const std::string& path) {
 bool updateNetAvailable() { return g_netReady; }
 void updateNetSetReady(bool ready) { g_netReady = ready; }
 
+void updateNetInitCurl() {
+    // Chiamata una sola volta dal boot (main thread): niente guard, niente
+    // mutex — il chiamante garantisce il contesto single-threaded.
+    if (curl_global_init(CURL_GLOBAL_DEFAULT) != CURLE_OK)
+        DebugLog::line("update-net: curl_global_init FALLITA");
+}
+
 bool updateNetEnsureReady() {
-    static bool curlDone = false;
     if (!g_netReady) {
         Result rc = socketInitializeDefault();
         g_netReady = R_SUCCEEDED(rc);
         DebugLog::line("update-net: retry socket -> 0x%08X (%s)", (unsigned)rc,
                        g_netReady ? "on" : "off");
-    }
-    if (g_netReady && !curlDone) {
-        if (curl_global_init(CURL_GLOBAL_DEFAULT) != CURLE_OK) {
-            g_netReady = false;
-            return false;
-        }
-        curlDone = true;
     }
     return g_netReady;
 }

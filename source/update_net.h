@@ -21,6 +21,11 @@ struct RemoteUpdateInfo {
 // true quando i socket sono pronti (impostato da main dopo socketInitializeDefault).
 bool updateNetAvailable();
 void updateNetSetReady(bool ready);
+// curl_global_init() UNA volta al boot sul main thread, prima che parta un
+// qualunque worker (job.h e gli altri). libcurl lo richiede esplicito prima
+// che esistano altri thread; il vecchio lazy-init in updateNetEnsureReady()
+// (static bool senza mutex) era una race se worker+main lo chiamavano vicini.
+void updateNetInitCurl();
 // Ritenta l'init socket (+curl) se giu: il boot puo fallire la race col WiFi.
 // true se rete usabile. Chiamato dai gate update prima di dichiararla off.
 bool updateNetEnsureReady();

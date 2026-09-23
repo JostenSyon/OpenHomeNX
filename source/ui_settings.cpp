@@ -12,6 +12,7 @@
 #include "emulator.h"
 #include "trade_evo.h"
 #include "boxart.h"
+#include "job.h"
 #include "rominfo.h"
 #include "pokedex.h"
 
@@ -859,48 +860,54 @@ void UI::settingsRowActivate(int cat, int row, int dir, bool& running) {
                 // fuzzy/GitHub), senza feedback sembra bloccato. Stesso
                 // pattern del download update (showWorking con "%" -> barra).
                 showWorking(i18n::get(StrKey::ScraperBoxartTitle));
-                // Annulla con B: lo scrape gira sul main thread, gli eventi
-                // si accumulano — si drenano a ogni progresso e B alza il
-                // flag cooperativo (si ferma dopo la ROM corrente). Il dreno
-                // evita anche che la B dell'annullo chiuda subito il dialogo
-                // del resoconto qui sotto.
+                // Scrape su worker (job.h): il main resta libero per barra
+                // e B in tempo reale. scrape() e' invariato (progress +
+                // cancel cooperativo a granularita' singola ROM). Il fronte
+                // di salita su B viene gratis dalla coda eventi (DOWN una
+                // volta sola): niente piu' falso annullo da livello residuo.
                 bool scrapeCancel = false;
-                // Fronte di salita, non livello: SDL_GameControllerGetButton
-                // legge lo stato ATTUALE del pulsante, non una pressione
-                // puntuale. Controllato com'era su questa prima tick (a
-                // ridosso di quando la riga "Aggiorna BoxArt" e' stata
-                // confermata, con B magari ancora "residuo" da una
-                // pressione precedente) annullava lo scrape all'istante,
-                // sempre a 0/1 o 1/1 -- niente a che fare con quante ROM
-                // c'erano da fare (bug reale, non solo un fastidio: sembrava
-                // che lo scraper trovasse 0 copertine su 10 giochi). Ora
-                // serve un rilascio-poi-pressione DOPO l'avvio dello scrape.
-                bool bWasHeld = pad_ && SDL_GameControllerGetButton(pad_, SDL_CONTROLLER_BUTTON_A);
                 std::string cancelHint = i18n::get(StrKey::ScraperBoxartCancel);
-                Boxart::ScrapeResult res = Boxart::scrape(basePath_, importedGames_,
-                    [this, &scrapeCancel, &bWasHeld, &cancelHint](const std::string& s){
-                        std::string msg = s;
-                        size_t nl = msg.find('\n');
-                        if (nl != std::string::npos) msg.insert(nl, "  " + cancelHint);
-                        else msg += "  " + cancelHint;
-                        showWorking(msg);
-                        SDL_PumpEvents();
-                        bool bHeld = pad_ && SDL_GameControllerGetButton(pad_, SDL_CONTROLLER_BUTTON_A);
-                        if (bHeld && !bWasHeld) {
-                            scrapeCancel = true;
-                            SDL_Event e;
-                            while (SDL_PollEvent(&e)) {}
-                            // Feedback immediato: la B viene notata subito,
-                            // anche se lo scrape vero si ferma solo dopo la
-                            // richiesta di rete gia' in volo (fino a 30s,
-                            // limite del networking sincrono -- stesso motivo
-                            // per cui non e' su un thread separato, vedi
-                            // discussione). Senza questo l'utente non ha modo
-                            // di sapere se la pressione e' stata vista.
-                            showWorking(i18n::get(StrKey::ScraperBoxartCancelling));
+                std::string cancellingMsg = i18n::get(StrKey::ScraperBoxartCancelling);
+                std::string barTitle = i18n::get(StrKey::ScraperBoxartTitle);
+                Boxart::ScrapeResult res;
+                BackgroundJob job;
+                auto scrapeWorker = [&](BackgroundJob& j) {
+                    res = Boxart::scrape(basePath_, importedGames_,
+                        [&](const std::string& s){ j.report(s); }, &scrapeCancel);
+                };
+                if (!job.start(scrapeWorker)) {
+                    // Thread non partito: fallback sincrono senza cancel
+                    // (esplicito, mai hang).
+                    DebugLog::line("boxart: job.start fallita, scrape sincrono");
+                    res = Boxart::scrape(basePath_, importedGames_,
+                        [this](const std::string& s){ showWorking(s); });
+                } else {
+                    std::string line;
+                    while (!job.done()) {
+                        job.poll(line);
+                        if (!scrapeCancel) {
+                            std::string msg = line.empty() ? barTitle : line;
+                            size_t nl = msg.find('\n');
+                            if (nl != std::string::npos) msg.insert(nl, "  " + cancelHint);
+                            else msg += "  " + cancelHint;
+                            showWorking(msg);
+                        } else {
+                            showWorking(cancellingMsg);
                         }
-                        bWasHeld = bHeld;
-                    }, &scrapeCancel);
+                        SDL_Event e;
+                        while (SDL_PollEvent(&e)) {
+                            if (e.type == SDL_QUIT) {
+                                scrapeCancel = true;
+                                SDL_PushEvent(&e); // non mangiarla: la vede il loop esterno
+                            } else if (e.type == SDL_CONTROLLERBUTTONDOWN &&
+                                       e.cbutton.button == SDL_CONTROLLER_BUTTON_A) {
+                                scrapeCancel = true;
+                            }
+                        }
+                        SDL_Delay(16);
+                    }
+                    job.join();
+                }
                 showMessageAndWait(i18n::get(StrKey::ScraperBoxartTitle),
                     i18n::fmt(StrKey::ScraperBoxartDone,
                         std::to_string(res.found), std::to_string(res.total),
