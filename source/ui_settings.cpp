@@ -862,11 +862,9 @@ void UI::settingsRowActivate(int cat, int row, int dir, bool& running) {
                 showWorking(i18n::get(StrKey::ScraperBoxartTitle));
                 // Scrape su worker (job.h): il main resta libero per barra
                 // e B in tempo reale. scrape() e' invariato (progress +
-                // cancel cooperativo a granularita' singola ROM). Il fronte
-                // di salita su B viene gratis dalla coda eventi (DOWN una
-                // volta sola): niente piu' falso annullo da livello residuo.
-                std::string cancelHint = i18n::get(StrKey::JobCancelHint);
-                std::string cancellingMsg = i18n::get(StrKey::JobCancelling);
+                // cancel cooperativo a granularita' singola ROM). Il pump
+                // modale e' quello condiviso (UI::pumpJobCancel, stesso
+                // dell'updater): niente copia locale.
                 std::string barTitle = i18n::get(StrKey::ScraperBoxartTitle);
                 auto doScrape = [&]() -> Boxart::ScrapeResult {
                     bool scrapeCancel = false;
@@ -884,31 +882,7 @@ void UI::settingsRowActivate(int cat, int row, int dir, bool& running) {
                             [this](const std::string& s){ showWorking(s); });
                         return res;
                     }
-                    std::string line;
-                    while (!job.done()) {
-                        job.poll(line);
-                        if (!scrapeCancel) {
-                            std::string msg = line.empty() ? barTitle : line;
-                            size_t nl = msg.find('\n');
-                            if (nl != std::string::npos) msg.insert(nl, "  " + cancelHint);
-                            else msg += "  " + cancelHint;
-                            showWorking(msg);
-                        } else {
-                            showWorking(cancellingMsg);
-                        }
-                        SDL_Event e;
-                        while (SDL_PollEvent(&e)) {
-                            if (e.type == SDL_QUIT) {
-                                scrapeCancel = true;
-                                SDL_PushEvent(&e); // non mangiarla: la vede il loop esterno
-                            } else if (e.type == SDL_CONTROLLERBUTTONDOWN &&
-                                       e.cbutton.button == SDL_CONTROLLER_BUTTON_A) {
-                                scrapeCancel = true;
-                            }
-                        }
-                        SDL_Delay(16);
-                    }
-                    job.join();
+                    pumpJobCancel(job, scrapeCancel, barTitle);
                     return res;
                 };
                 auto doneMsg = [&](const Boxart::ScrapeResult& r) {
