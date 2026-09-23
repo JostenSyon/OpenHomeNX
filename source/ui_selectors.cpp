@@ -2187,11 +2187,13 @@ void UI::handleGameSelectorInput(bool& running) {
             }
         }
 
-        // Wrap columns within the row (single-page fallback)
+        // Stop ai bordi esterni invece di wrap: a prima/ultima pagina
+        // (o pagina unica) sinistra sul primo gioco e destra sull'ultimo
+        // si fermano sull'icona di bordo invece di saltare all'altro capo.
         int rowItems = std::min(COLS, pageCount - row * COLS);
         if (rowItems <= 0) rowItems = COLS;
-        if (col < 0) col = rowItems - 1;
-        if (col >= rowItems) col = 0;
+        if (col < 0) col = 0;
+        if (col >= rowItems) col = rowItems - 1;
 
         // Wrap rows (up from top goes to avatar, down from avatar to grid)
         if (gsFocus_ == GSFocus::Avatar) {
