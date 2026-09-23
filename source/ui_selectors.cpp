@@ -405,6 +405,11 @@ void UI::selectProfile(int index) {
 
     refreshBankCounts();
 
+    // Auto-sync FRLG (spento di default): silenzioso, solo log. A questo
+    // punto nessun gioco e' ancora aperto, quindi niente conflitti RAM.
+    if (Settings::frlgAutoSync())
+        syncFrlgSaves(true);
+
     gameSelCursor_ = 0;
     gameSelPage_ = 0;
     selPageShown_ = 0;

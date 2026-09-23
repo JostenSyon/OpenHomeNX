@@ -86,7 +86,7 @@ enum class DevRow {
     DbgToggle, QuickMenu,
     ClearBp, Normalize, ClearGal,
     SendLog, Crash,
-    Rename, Style, Update, Clear, ShowRomsNoSave, ShowFrlgRoms, DevSync,
+    Rename, Style, Update, Clear, ShowRomsNoSave, ShowFrlgRoms, SyncFrlg, AutoSyncFrlg, DevSync,
 };
 
 // Animazione "tendina" per voci di menù che appaiono/scompaiono (copia
@@ -680,6 +680,10 @@ private:
     // default 256/32; 0 = illimitato). Mai i manuali.
     long backupCapMb(bool fileBacked) const;
     std::vector<std::string> autoBackupEntries(GameType g) const;
+    // Sync FRLG nativo <-> ROM a tempo di gioco (vince il piu' giocato).
+    // silent=true: niente dialoghi (auto-sync). Bottone manuale di default,
+    // auto-sync spento di default finche' non e' provato.
+    void syncFrlgSaves(bool silent);
     bool autoBackupNeeded(GameType g, const std::string& srcFile, uint64_t srcSize, long srcMt, bool haveSrc);
     uint64_t pruneBackupsToCap(GameType g, bool fileBacked);
 

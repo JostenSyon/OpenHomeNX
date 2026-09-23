@@ -272,6 +272,8 @@ static std::vector<DevRow> devRowList(bool debugOn, bool sendOn) {
     v.push_back(DevRow::Clear);
     v.push_back(DevRow::ShowRomsNoSave);
     v.push_back(DevRow::ShowFrlgRoms);
+    v.push_back(DevRow::SyncFrlg);
+    v.push_back(DevRow::AutoSyncFrlg);
     v.push_back(DevRow::DevSync);
     return v;
 }
@@ -394,6 +396,8 @@ std::string UI::settingsRowLabel(int cat, int row) const {
             case DevRow::Rename: return i18n::get(StrKey::ScraperRenameTitle);
             case DevRow::ShowRomsNoSave: return i18n::get(StrKey::ShowRomsNoSaveTitle);
             case DevRow::ShowFrlgRoms: return i18n::get(StrKey::ShowFrlgRomsTitle);
+            case DevRow::SyncFrlg: return i18n::get(StrKey::SyncFrlgTitle);
+            case DevRow::AutoSyncFrlg: return i18n::get(StrKey::AutoSyncFrlgTitle);
             case DevRow::DbgToggle: return i18n::get(StrKey::SetDebugToggle);
             case DevRow::QuickMenu: return i18n::get(StrKey::SetDbgMenu);
             case DevRow::ClearBp: return i18n::get(StrKey::ClearBpHistTitle);
@@ -500,6 +504,10 @@ std::string UI::settingsRowValue(int cat, int row) {
                 return Settings::showRomsWithoutSave() ? i18n::get(StrKey::SetOn) : i18n::get(StrKey::SetOff);
             case DevRow::ShowFrlgRoms:
                 return Settings::showFrlgRoms() ? i18n::get(StrKey::SetOn) : i18n::get(StrKey::SetOff);
+            case DevRow::SyncFrlg:
+                return ""; // bottone: niente valore
+            case DevRow::AutoSyncFrlg:
+                return Settings::frlgAutoSync() ? i18n::get(StrKey::SetOn) : i18n::get(StrKey::SetOff);
             default:
                 return ""; // righe azione, niente valore a destra
         }
@@ -854,6 +862,16 @@ void UI::settingsRowActivate(int cat, int row, int dir, bool& running) {
             DebugLog::line("settings: show_frlg_roms=%d", on ? 1 : 0);
             rescanImportedGames();
             loadGameIcons();
+        } else if (tag == DevRow::SyncFrlg) {
+            // Bottone una-tantum (default reale): conferma esplicita, poi
+            // sync con backup-gate interno. Mai automatico da qui.
+            if (showConfirmDialog(i18n::get(StrKey::SyncFrlgTitle),
+                    i18n::get(StrKey::SyncFrlgConfirm)))
+                syncFrlgSaves(false);
+        } else if (tag == DevRow::AutoSyncFrlg) {
+            bool on = !Settings::frlgAutoSync();
+            Settings::setFrlgAutoSync(on);
+            DebugLog::line("settings: frlg_auto_sync=%d", on ? 1 : 0);
         } else if (tag == DevRow::Update) {
             // Aggiorna boxart (ROM): cache hit, poi locale (stile), poi
             // download 2D se la rete e' pronta (entrambe le piattaforme).

@@ -504,5 +504,12 @@
     "scraper_boxart_style_3d": "3D",
     "show_roms_no_save_title": "Show ROMs without save",
     "show_frlg_roms_title": "Show FRLG ROM versions",
+    "sync_frlg_title": "Sync FRLG saves",
+    "sync_frlg_confirm": "Copy the most-played save over the other (native <-> ROM)? Backups are made first.",
+    "sync_frlg_done": "{0} pair(s) synced:\n{1}",
+    "sync_frlg_none": "Nothing to sync (no native+ROM pairs, or equal play time).",
+    "sync_frlg_no_profile": "No profile selected: no native saves.",
+    "sync_frlg_need_close": "Close the open FRLG game first (B).",
+    "autosync_frlg_title": "Auto-sync FRLG",
     "show_roms_no_save_desc": "Show games even without a save file (ROM only)."
 }

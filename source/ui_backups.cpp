@@ -14,6 +14,7 @@
 #include "boxart.h"
 #include "rominfo.h"
 #include "pokedex.h"
+#include "path_utils.h"
 
 #include <algorithm>
 #include <cerrno>
@@ -496,6 +497,100 @@ std::vector<std::string> UI::autoBackupEntries(GameType g) const {
     std::sort(entries.begin(), entries.end(), std::greater<std::string>());
     entries.erase(std::unique(entries.begin(), entries.end()), entries.end());
     return entries;
+}
+
+// --- Sync FRLG nativo <-> ROM (stesso gruppo bankGroupName) ---
+// Regola: vince il save con piu' tempo di gioco (playTimeSeconds, stesso
+// container GBA da ambo i lati, gia' verificato). Mai copie alla cieca: se
+// un playtime e' illeggibile la coppia si salta con log. Prima di OGNI
+// scrittura entrambi i lati devono avere un backup (creato qui sul momento
+// se manca: backupTitleNow per il nativo, autoBackupFileSave per la ROM).
+// Orfane (ROM senza save): solo destinazione (nome che mGBA si aspetta:
+// stessa cartella della ROM, stesso basename, .sav).
+void UI::syncFrlgSaves(bool silent) {
+    auto msg = [&](const char* k) {
+        if (!silent) showMessageAndWait(i18n::get(StrKey::SyncFrlgTitle), i18n::get(k));
+    };
+    if (selectedProfile_ < 0) {
+        DebugLog::line("frlg-sync: nessun profilo, niente native");
+        msg(StrKey::SyncFrlgNoProfile);
+        return;
+    }
+    if (isFRLG(selectedGame_) && save_.isLoaded()) {
+        // Il save aperto vive in RAM: copiarci sopra/sotto divergerebbe.
+        DebugLog::line("frlg-sync: gioco FRLG aperto, chiuderlo prima");
+        msg(StrKey::SyncFrlgNeedClose);
+        return;
+    }
+    // Native FRLG in lista (flag esatto, mai per euristica).
+    assertGamesInSync();
+    std::vector<GameType> natives;
+    for (size_t i = 0; i < availableGames_.size(); i++)
+        if (availableGamesNative_[i] != 0 && isFRLG(availableGames_[i]) &&
+            std::find(natives.begin(), natives.end(), availableGames_[i]) == natives.end())
+            natives.push_back(availableGames_[i]);
+    int synced = 0;
+    std::string detail;
+    for (const auto& ig : importedGames_) {
+        if (!isFRLG(ig.type)) continue;
+        const char* grp = bankGroupNameOf(ig.type);
+        GameType nat = GameType::FR;
+        bool haveNat = false;
+        for (GameType n : natives)
+            if (std::strcmp(bankGroupNameOf(n), grp) == 0) { nat = n; haveNat = true; break; }
+        if (!haveNat) continue;
+        std::string mnt = account_.mountSave(selectedProfile_, nat);
+        if (mnt.empty()) {
+            DebugLog::line("frlg-sync: mount nativo fallito");
+            continue;
+        }
+        std::string natFile = mnt + saveFileNameOf(nat);
+        std::string romFile = ig.hasSave ? ig.filePath
+            : parentDir(ig.filePath) + "/" + stemOf(ig.filePath) + ".sav";
+        SaveFile a, b;
+        a.setGameType(nat);
+        b.setGameType(ig.type);
+        long ta = -1, tb = -1;
+        if (a.load(natFile)) ta = a.playTimeSeconds();
+        if (ig.hasSave && b.load(romFile)) tb = b.playTimeSeconds();
+        if (ta < 0 && tb < 0) {
+            DebugLog::line("frlg-sync: playtime illeggibile ambo i lati, salto");
+            account_.unmountSave();
+            continue;
+        }
+        if (ta == tb) {
+            account_.unmountSave();
+            continue; // pari: niente da fare
+        }
+        // Backup-gate: crea i mancanti ADESSO, mai scrivere senza rete.
+        if (autoBackupEntries(nat).empty())
+            backupTitleNow(nat, mnt, natFile);
+        if (ig.hasSave) {
+            std::string base = romFile.substr(romFile.find_last_of("/\\") + 1);
+            bool haveRomBk = false;
+            for (auto& e : autoBackupEntries(ig.type))
+                if (e.find(base) != std::string::npos) { haveRomBk = true; break; }
+            if (!haveRomBk) autoBackupFileSave(ig.type, romFile);
+        }
+        bool natWins = ta > tb;
+        if (copyFileTo(natWins ? natFile : romFile, natWins ? romFile : natFile)) {
+            synced++;
+            DebugLog::line("frlg-sync: %s -> %s (%ld vs %ld s)",
+                (natWins ? "nativo" : "rom"), (natWins ? "rom" : "nativo"), ta, tb);
+            if (!detail.empty()) detail += "\n";
+            detail += std::string(natWins ? "NSO -> ROM" : "ROM -> NSO") + " (" +
+                      std::to_string((natWins ? ta : tb) / 3600) + "h)";
+        } else {
+            DebugLog::line("frlg-sync: copia FALLITA");
+        }
+        account_.unmountSave();
+    }
+    if (!silent) {
+        if (synced == 0) msg(StrKey::SyncFrlgNone);
+        else showMessageAndWait(i18n::get(StrKey::SyncFrlgTitle),
+                i18n::fmt(StrKey::SyncFrlgDone, std::to_string(synced), detail));
+    }
+    if (synced > 0) loadGameIcons();
 }
 
 // Throttle 30 min + skip se invariato. Solo auto (i manuali sempre).
