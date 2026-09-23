@@ -449,6 +449,10 @@ namespace StrKey {
     constexpr const char* Right                = "right";
 
     // Updater (ui_selectors.cpp checkForUpdate + Send log)
+    // Hint B-annulla generico per i job (scraper, updater, ...): stesso
+    // testo ovunque, una sola coppia di chiavi.
+    constexpr const char* JobCancelHint        = "job_cancel_hint";
+    constexpr const char* JobCancelling        = "job_cancelling";
     constexpr const char* UpdateTitle          = "update_title";
     constexpr const char* UpdateNetOff         = "update_net_off";
     constexpr const char* UpdateContacting     = "update_contacting";
@@ -489,8 +493,6 @@ namespace StrKey {
     constexpr const char* ClearGalCacheDone    = "cleargalcache_done";
     constexpr const char* ScraperBoxartTitle   = "scraper_boxart_title";
     constexpr const char* ScraperBoxartDone    = "scraper_boxart_done";
-    constexpr const char* ScraperBoxartCancel  = "scraper_boxart_cancel";
-    constexpr const char* ScraperBoxartCancelling = "scraper_boxart_cancelling";
     constexpr const char* ScraperBoxartRetry = "scraper_boxart_retry";
     constexpr const char* ScraperBoxartOffline = "scraper_boxart_offline";
     constexpr const char* ScraperBoxartClear   = "scraper_boxart_clear";

@@ -12,6 +12,7 @@
 #include "emulator.h"
 #include "trade_evo.h"
 #include "boxart.h"
+#include "job.h"
 #include "rominfo.h"
 #include "pokedex.h"
 
@@ -316,6 +317,95 @@ static void removeStaleLocalUpdates(const std::string& basePath, const std::stri
     }
 }
 
+void UI::pumpJobCancel(BackgroundJob& job, bool& cancel, const std::string& idle) {
+    std::string hint = i18n::get(StrKey::JobCancelHint);
+    std::string cancelling = i18n::get(StrKey::JobCancelling);
+    std::string line;
+    while (!job.done()) {
+        job.poll(line);
+        if (!cancel) {
+            std::string msg = line.empty() ? idle : line;
+            size_t nl = msg.find('\n');
+            if (nl != std::string::npos) msg.insert(nl, "  " + hint);
+            else msg += "  " + hint;
+            showWorking(msg);
+        } else {
+            showWorking(cancelling);
+        }
+        SDL_Event e;
+        while (SDL_PollEvent(&e)) {
+            if (e.type == SDL_QUIT) {
+                cancel = true;
+                SDL_PushEvent(&e); // non mangiarla: la vede il loop esterno
+            } else if (e.type == SDL_CONTROLLERBUTTONDOWN &&
+                       e.cbutton.button == SDL_CONTROLLER_BUTTON_A) {
+                cancel = true;
+            }
+        }
+        SDL_Delay(16);
+    }
+    job.join();
+}
+
+UI::NetCancelResult UI::fetchInfoCancel(const std::string& url, const std::string& token,
+                                       RemoteUpdateInfo& info, std::string& err) {
+    bool cancel = false;
+    bool ok = false;
+    BackgroundJob job;
+    if (!job.start([&](BackgroundJob&) {
+            ok = updateNetFetchInfo(url, token, info, err, &cancel);
+        })) {
+        DebugLog::line("update: job.start fallita, fetch sincrona");
+        return updateNetFetchInfo(url, token, info, err) ? NetCancelResult::Ok
+                                                         : NetCancelResult::Failed;
+    }
+    pumpJobCancel(job, cancel, i18n::fmt(StrKey::UpdateContacting, updateSourceLabel(url)));
+    if (cancel) { DebugLog::line("update: fetch info annullata"); return NetCancelResult::Cancelled; }
+    return ok ? NetCancelResult::Ok : NetCancelResult::Failed;
+}
+
+UI::NetCancelResult UI::fetchBetaCancel(const std::string& token,
+                                       std::string& outBase, std::string& outTag, std::string& err) {
+    bool cancel = false;
+    bool ok = false;
+    BackgroundJob job;
+    if (!job.start([&](BackgroundJob&) {
+            ok = updateNetFetchBetaBase("JostenSyon", "OpenHomeNX", token, outBase, outTag, err, &cancel);
+        })) {
+        DebugLog::line("update: job.start fallita, fetch beta sincrona");
+        return updateNetFetchBetaBase("JostenSyon", "OpenHomeNX", token, outBase, outTag, err)
+                   ? NetCancelResult::Ok
+                   : NetCancelResult::Failed;
+    }
+    pumpJobCancel(job, cancel, i18n::fmt(StrKey::UpdateContacting, "GitHub beta"));
+    if (cancel) { DebugLog::line("update: fetch beta annullata"); return NetCancelResult::Cancelled; }
+    return ok ? NetCancelResult::Ok : NetCancelResult::Failed;
+}
+
+UI::NetCancelResult UI::downloadNroCancel(const std::string& url, const std::string& token,
+                                         const std::string& dst, const std::string& sha,
+                                         const std::string& ver, std::string& err) {
+    bool cancel = false;
+    bool ok = false;
+    BackgroundJob job;
+    if (!job.start([&](BackgroundJob& j) {
+            ok = updateNetDownload(url, token, dst, sha, err,
+                [&](const std::string& s){ j.report(s); }, &cancel);
+        })) {
+        DebugLog::line("update: job.start fallita, download sincrono");
+        return updateNetDownload(url, token, dst, sha, err,
+                   [this](const std::string& s){ showWorking(s); })
+                   ? NetCancelResult::Ok
+                   : NetCancelResult::Failed;
+    }
+    pumpJobCancel(job, cancel, i18n::fmt(StrKey::UpdateDownloading, ver));
+    if (cancel) {
+        DebugLog::line("update: download v%s annullato, binario vecchio intatto", ver.c_str());
+        return NetCancelResult::Cancelled;
+    }
+    return ok ? NetCancelResult::Ok : NetCancelResult::Failed;
+}
+
 bool UI::checkForUpdate(bool usbOnly) {
     const std::string runningNro = basePath_ + "OpenHomeNX.nro";
     finalizePendingUpdate();
@@ -426,9 +516,9 @@ bool UI::checkForUpdate(bool usbOnly) {
                     i18n::fmt(StrKey::UpdateNetOff, "GitHub beta"));
                 return false;
             }
-            showWorking(i18n::fmt(StrKey::UpdateContacting, "GitHub beta"));
-            if (!updateNetFetchBetaBase("JostenSyon", "OpenHomeNX", cfg.token,
-                                        betaBase, betaTag, betaErr)) {
+            NetCancelResult bfr = fetchBetaCancel(cfg.token, betaBase, betaTag, betaErr);
+            if (bfr == NetCancelResult::Cancelled) return false;
+            if (bfr == NetCancelResult::Failed) {
                 if (betaErr == "none") {
                     showMessageAndWait(i18n::get(StrKey::UpdateTitle),
                         i18n::fmt(StrKey::UpdateBetaNone, curVer));
@@ -451,10 +541,11 @@ bool UI::checkForUpdate(bool usbOnly) {
                 showMessageAndWait(i18n::get(StrKey::UpdateTitle),
                     i18n::fmt(StrKey::UpdateNetOff, updateSourceLabel(netUrl)));
             } else {
-                showWorking(i18n::fmt(StrKey::UpdateContacting, updateSourceLabel(netUrl)));
                 RemoteUpdateInfo info;
                 std::string err;
-                if (!updateNetFetchInfo(netUrl, cfg.token, info, err)) {
+                NetCancelResult ifr = fetchInfoCancel(netUrl, cfg.token, info, err);
+                if (ifr == NetCancelResult::Cancelled) return false;
+                if (ifr == NetCancelResult::Failed) {
                     DebugLog::line("update: fetch info fallito: %s", err.c_str());
                     showMessageAndWait(i18n::get(StrKey::UpdateTitle),
                         i18n::fmt(StrKey::UpdateUnreachable, err, updateSourceLabel(netUrl)));
@@ -466,10 +557,11 @@ bool UI::checkForUpdate(bool usbOnly) {
                                 i18n::fmt(StrKey::UpdateAvailNetBody, info.version, curVer, updateSourceLabel(netUrl))))
                             return false;
                         removeStaleLocalUpdates(basePath_, runningNro);
-                        showWorking(i18n::fmt(StrKey::UpdateDownloading, info.version));
                         const std::string dst = basePath_ + "update/OpenHomeNX.nro";
-                        if (!updateNetDownload(info.nroUrl, cfg.token, dst, info.sha256, err,
-                                [this](const std::string& s){ showWorking(s); })) {
+                        NetCancelResult dlr = downloadNroCancel(info.nroUrl, cfg.token, dst,
+                                                                info.sha256, info.version, err);
+                        if (dlr == NetCancelResult::Cancelled) return false;
+                        if (dlr == NetCancelResult::Failed) {
                             showMessageAndWait(i18n::get(StrKey::UpdateTitle),
                                 i18n::fmt(StrKey::UpdateDlFailed, err));
                             return false;
@@ -489,10 +581,11 @@ bool UI::checkForUpdate(bool usbOnly) {
                                               updateSourceLabel(netUrl))))
                                 return false;
                             removeStaleLocalUpdates(basePath_, runningNro);
-                            showWorking(i18n::fmt(StrKey::UpdateDownloading, info.version));
                             const std::string dst = basePath_ + "update/OpenHomeNX.nro";
-                            if (!updateNetDownload(info.nroUrl, cfg.token, dst, info.sha256, err,
-                                    [this](const std::string& s){ showWorking(s); })) {
+                            NetCancelResult dlr = downloadNroCancel(info.nroUrl, cfg.token, dst,
+                                                                    info.sha256, info.version, err);
+                            if (dlr == NetCancelResult::Cancelled) return false;
+                            if (dlr == NetCancelResult::Failed) {
                                 showMessageAndWait(i18n::get(StrKey::UpdateTitle),
                                     i18n::fmt(StrKey::UpdateDlFailed, err));
                                 return false;
@@ -526,10 +619,11 @@ bool UI::checkForUpdate(bool usbOnly) {
                                     i18n::fmt(StrKey::UpdateSameDbgBody, curVer, localShort,
                                               info.version, remoteShort))) {
                                 removeStaleLocalUpdates(basePath_, runningNro);
-                                showWorking(i18n::fmt(StrKey::UpdateDownloading, info.version));
                                 const std::string dst = basePath_ + "update/OpenHomeNX.nro";
-                                if (!updateNetDownload(info.nroUrl, cfg.token, dst, info.sha256, err,
-                                        [this](const std::string& s){ showWorking(s); })) {
+                                NetCancelResult dlr = downloadNroCancel(info.nroUrl, cfg.token, dst,
+                                                                        info.sha256, info.version, err);
+                                if (dlr == NetCancelResult::Cancelled) return false;
+                                if (dlr == NetCancelResult::Failed) {
                                     showMessageAndWait(i18n::get(StrKey::UpdateTitle),
                                         i18n::fmt(StrKey::UpdateDlFailed, err));
                                     return false;

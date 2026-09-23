@@ -206,6 +206,46 @@ bool updateNetEnsureReady() {
     return g_netReady;
 }
 
+namespace {
+// Tempo di parete in secondi. `clock()` su newlib/Switch è tempo CPU: durante un
+// download il processo è bloccato su I/O e `clock()` non avanza → il throttle
+// non scadeva mai e il callback non emetteva. Uso il tick di sistema di libnx.
+double wallSeconds() {
+    return (double)armTicksToNs(armGetSystemTick()) / 1.0e9;
+}
+
+// Throttle UI a 0.1s (era 0.25s): barra piu fluida senza affamare il socket.
+struct DlProgress {
+    UpdateProgressFn cb;
+    const bool* cancel = nullptr; // se alzato, curl abortisce al prossimo tick
+    std::string label = "Downloading";
+    double lastEmit = 0.0;
+    double startTime = 0.0;
+};
+
+int dlXferInfoUI(void* p, curl_off_t dltotal, curl_off_t dlnow, curl_off_t, curl_off_t) {
+    auto* dp = static_cast<DlProgress*>(p);
+    if (dp->cancel && *dp->cancel) return 1; // CURLE_ABORTED_BY_CALLBACK
+    if (!dp->cb) return 0; // solo cancel, niente UI
+    double now = wallSeconds();
+    if (dp->lastEmit != 0.0 && now - dp->lastEmit < 0.1) return 0;
+    dp->lastEmit = now;
+    double elapsed = now - dp->startTime;
+    double mbps = (elapsed > 0.05) ? ((double)dlnow / elapsed / (1024.0 * 1024.0)) : 0.0;
+    char line[160];
+    if (dltotal > 0) {
+        int pct = (int)((dlnow * 100) / dltotal);
+        std::snprintf(line, sizeof(line), "Downloading\n  %d%%  (%.1f / %.1f MB)  -  %.1f MB/s",
+                      pct, dlnow / (1024.0 * 1024.0), dltotal / (1024.0 * 1024.0), mbps);
+    } else {
+        std::snprintf(line, sizeof(line), "Downloading\n  %.1f MB  -  %.1f MB/s",
+                      dlnow / (1024.0 * 1024.0), mbps);
+    }
+    dp->cb(line);
+    return 0;
+}
+} // namespace
+
 // Init nifm:u condivisa (idempotente): usata sia da updateNetLinkStr() qui
 // sotto sia da remoteSyncScanLan() (remote_sync.cpp) per l'IP locale. Presa
 // del lock qui -- vedi ensureNifmLocked() sopra per il perche' non e' lei
@@ -243,7 +283,8 @@ const char* updateNetLinkStr() {
 }
 
 bool updateNetFetchInfo(const std::string& baseUrl, const std::string& token,
-                        RemoteUpdateInfo& out, std::string& err) {
+                        RemoteUpdateInfo& out, std::string& err,
+                        const bool* cancel) {
     if (!g_netReady) { err = "rete non inizializzata"; return false; }
     const std::string url = joinUrl(baseUrl, "latest.json");
 
@@ -256,6 +297,13 @@ bool updateNetFetchInfo(const std::string& baseUrl, const std::string& token,
     curl_easy_setopt(c, CURLOPT_WRITEFUNCTION, writeToString);
     curl_easy_setopt(c, CURLOPT_WRITEDATA, &body);
     curl_easy_setopt(c, CURLOPT_TIMEOUT, 30L);
+    DlProgress dp;
+    if (cancel) {
+        dp.cancel = cancel;
+        curl_easy_setopt(c, CURLOPT_NOPROGRESS, 0L);
+        curl_easy_setopt(c, CURLOPT_XFERINFOFUNCTION, dlXferInfoUI);
+        curl_easy_setopt(c, CURLOPT_XFERINFODATA, &dp);
+    }
 
     CURLcode rc = curl_easy_perform(c);
     long http = 0;
@@ -323,7 +371,8 @@ bool jsonBoolAt(const std::string& body, size_t pos, const char* key) {
 
 bool updateNetFetchBetaBase(const std::string& owner, const std::string& repo,
                             const std::string& token, std::string& outBase,
-                            std::string& outTag, std::string& err) {
+                            std::string& outTag, std::string& err,
+                            const bool* cancel) {
     if (!g_netReady) { err = "rete non inizializzata"; return false; }
     const std::string url = "https://api.github.com/repos/" + owner + "/" + repo + "/releases";
     CURL* c = curl_easy_init();
@@ -355,6 +404,13 @@ bool updateNetFetchBetaBase(const std::string& owner, const std::string& repo,
     curl_easy_setopt(c, CURLOPT_URL, url.c_str());
     curl_easy_setopt(c, CURLOPT_WRITEFUNCTION, writeCapped);
     curl_easy_setopt(c, CURLOPT_WRITEDATA, &sink);
+    DlProgress dp;
+    if (cancel) {
+        dp.cancel = cancel;
+        curl_easy_setopt(c, CURLOPT_NOPROGRESS, 0L);
+        curl_easy_setopt(c, CURLOPT_XFERINFOFUNCTION, dlXferInfoUI);
+        curl_easy_setopt(c, CURLOPT_XFERINFODATA, &dp);
+    }
     CURLcode rc = curl_easy_perform(c);
     long http = 0;
     curl_easy_getinfo(c, CURLINFO_RESPONSE_CODE, &http);
@@ -388,45 +444,6 @@ bool updateNetFetchBetaBase(const std::string& owner, const std::string& repo,
     return false;
 }
 
-namespace {
-// Tempo di parete in secondi. `clock()` su newlib/Switch è tempo CPU: durante un
-// download il processo è bloccato su I/O e `clock()` non avanza → il throttle
-// non scadeva mai e il callback non emetteva. Uso il tick di sistema di libnx.
-double wallSeconds() {
-    return (double)armTicksToNs(armGetSystemTick()) / 1.0e9;
-}
-
-// Throttle UI a 0.1s (era 0.25s): barra piu fluida senza affamare il socket.
-struct DlProgress {
-    UpdateProgressFn cb;
-    const bool* cancel = nullptr; // se alzato, curl abortisce al prossimo tick
-    std::string label = "Downloading";
-    double lastEmit = 0.0;
-    double startTime = 0.0;
-};
-
-int dlXferInfoUI(void* p, curl_off_t dltotal, curl_off_t dlnow, curl_off_t, curl_off_t) {
-    auto* dp = static_cast<DlProgress*>(p);
-    if (dp->cancel && *dp->cancel) return 1; // CURLE_ABORTED_BY_CALLBACK
-    if (!dp->cb) return 0; // solo cancel, niente UI
-    double now = wallSeconds();
-    if (dp->lastEmit != 0.0 && now - dp->lastEmit < 0.1) return 0;
-    dp->lastEmit = now;
-    double elapsed = now - dp->startTime;
-    double mbps = (elapsed > 0.05) ? ((double)dlnow / elapsed / (1024.0 * 1024.0)) : 0.0;
-    char line[160];
-    if (dltotal > 0) {
-        int pct = (int)((dlnow * 100) / dltotal);
-        std::snprintf(line, sizeof(line), "Downloading\n  %d%%  (%.1f / %.1f MB)  -  %.1f MB/s",
-                      pct, dlnow / (1024.0 * 1024.0), dltotal / (1024.0 * 1024.0), mbps);
-    } else {
-        std::snprintf(line, sizeof(line), "Downloading\n  %.1f MB  -  %.1f MB/s",
-                      dlnow / (1024.0 * 1024.0), mbps);
-    }
-    dp->cb(line);
-    return 0;
-}
-} // namespace
 
 bool updateNetDownload(const std::string& url, const std::string& token,
                        const std::string& destPath, const std::string& expectSha256,

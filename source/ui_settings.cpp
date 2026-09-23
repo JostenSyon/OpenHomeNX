@@ -865,8 +865,8 @@ void UI::settingsRowActivate(int cat, int row, int dir, bool& running) {
                 // cancel cooperativo a granularita' singola ROM). Il fronte
                 // di salita su B viene gratis dalla coda eventi (DOWN una
                 // volta sola): niente piu' falso annullo da livello residuo.
-                std::string cancelHint = i18n::get(StrKey::ScraperBoxartCancel);
-                std::string cancellingMsg = i18n::get(StrKey::ScraperBoxartCancelling);
+                std::string cancelHint = i18n::get(StrKey::JobCancelHint);
+                std::string cancellingMsg = i18n::get(StrKey::JobCancelling);
                 std::string barTitle = i18n::get(StrKey::ScraperBoxartTitle);
                 auto doScrape = [&]() -> Boxart::ScrapeResult {
                     bool scrapeCancel = false;

@@ -62,7 +62,8 @@ inline std::string githubReleasesUrl(const std::string& owner, const std::string
 // GET "<baseUrl>/latest.json". `token` non vuoto → header "Authorization: Bearer <token>".
 // false + `err` su qualunque problema (rete, HTTP != 200, JSON senza i campi).
 bool updateNetFetchInfo(const std::string& baseUrl, const std::string& token,
-                        RemoteUpdateInfo& out, std::string& err);
+                        RemoteUpdateInfo& out, std::string& err,
+                        const bool* cancel = nullptr);
 
 // Canale beta: interroga la GitHub API releases, prende la prima
 // pre-release (la più recente) e ne restituisce la base download
@@ -72,7 +73,8 @@ bool updateNetFetchInfo(const std::string& baseUrl, const std::string& token,
 // esplicito invece di ricadere silenzioso sullo stabile).
 bool updateNetFetchBetaBase(const std::string& owner, const std::string& repo,
                             const std::string& token, std::string& outBase,
-                            std::string& outTag, std::string& err);
+                            std::string& outTag, std::string& err,
+                            const bool* cancel = nullptr);
 
 // SHA256 hex di un file (streaming, per NRO grandi). "" se illeggibile.
 std::string sha256HexFile(const std::string& path);

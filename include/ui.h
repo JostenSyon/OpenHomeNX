@@ -19,6 +19,9 @@
 #include <unordered_set>
 #include <functional>
 
+struct RemoteUpdateInfo; // update_net.h (solo ref nei helper cancel)
+class BackgroundJob; // job.h (solo ref nel pump-loop)
+
 // Which panel the cursor is on
 enum class Panel { Game, Bank };
 
@@ -1334,6 +1337,21 @@ private:
     // se l'USB non ha niente di più recente torna silenzioso senza toccare
     // SD/rete. Il menu manuale usa la catena completa (default).
     bool checkForUpdate(bool usbOnly = false);
+    // Rete updater su worker (job.h) con pump-loop modale + B-annulla.
+    // Ok = fatto, Failed = errore (dialog dal chiamante), Cancelled = B
+    // (loggato, niente dialog). Il download scrive .part + rename atomico:
+    // annullare non tocca mai il binario buono.
+    enum class NetCancelResult { Ok, Failed, Cancelled };
+    NetCancelResult fetchInfoCancel(const std::string& url, const std::string& token,
+                                   RemoteUpdateInfo& info, std::string& err);
+    NetCancelResult fetchBetaCancel(const std::string& token,
+                                   std::string& outBase, std::string& outTag, std::string& err);
+    NetCancelResult downloadNroCancel(const std::string& url, const std::string& token,
+                                     const std::string& dst, const std::string& sha,
+                                     const std::string& ver, std::string& err);
+    // Pump-loop modale condivisa: barra (idle o ultima riga) + hint B,
+    // eventi (B = cancel, QUIT = cancel + ripubblicata), join alla fine.
+    void pumpJobCancel(class BackgroundJob& job, bool& cancel, const std::string& idle);
     // Consolidate a pending OpenHomeNX.nro.new from a self-update. Returns true
     // when it just wrote the new bytes onto the canonical .nro while running
     // from the throw-away .new — the caller should then bounce straight into
