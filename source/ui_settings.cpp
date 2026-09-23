@@ -282,8 +282,11 @@ int UI::settingsRowCount(int cat) const {
         case 3: return 4; // Cartelle, Scansiona, Max, Pulisci
         case 4: {
             // Sorgente/edit custom solo con debug: l'utente normale resta su GitHub.
+            // Modifica compare solo a sorgente custom ATTIVA (sendAvailable):
+            // hasCustomUrlFile era vera anche col solo .off residuo dopo il
+            // passaggio a GitHub, e la riga restava visibile a vuoto.
             int n = 4;
-            if (DebugLog::enabled() && hasCustomUrlFile(basePath_)) n = 5;
+            if (sendAvailable()) n = 5;
             return n; // Boot, Check, Sorgente, Canale [, Modifica]
         }
         case 5: // vedi devRowList() sopra: unica fonte di verita'
