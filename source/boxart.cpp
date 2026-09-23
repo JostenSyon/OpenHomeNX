@@ -472,11 +472,13 @@ bool screenScraperFetch(const std::string& basePath, const std::string& rom,
 
 // Marker miss: "<base>.<tag>.miss" (stessa dir delle cover). Una ROM che ha
 // fallito TUTTO (locale + rete tentata davvero) non ribrucia i timeout di
-// rete a ogni Aggiorna: viene saltata finche' il marker e' fresco (72h).
-// "Pulisci boxart" li rimuove insieme alle cover (ritenta tutto), cambiare
-// stile usa un tag diverso (ritenta). Mai scritti se la rete non e' stata
-// nemmeno tentata (off/non mappato): quelli restano economici da riprovare.
-static constexpr long kMissTtlSec = 72 * 3600;
+// rete a ogni Aggiorna: viene saltata finche' il marker e' fresco (1h,
+// abbastanza per non spammare i 404 veri, poco per non nascondere i miss
+// flaky tipo timeout SS poi rientrati). "Pulisci boxart" li rimuove insieme
+// alle cover (ritenta tutto), cambiare stile usa un tag diverso (ritenta).
+// Mai scritti se la rete non e' stata nemmeno tentata (off/non mappato):
+// quelli restano economici da riprovare.
+static constexpr long kMissTtlSec = 3600;
 static std::string missMarkerPath(const std::string& basePath, const std::string& romPath) {
     std::string sys = sysFromRom(romPath);
     if (sys.empty()) sys = "rom";
@@ -574,7 +576,7 @@ ScrapeResult scrape(const std::string& basePath,
             r.found++;
             continue;
         }
-        // Miss recente: salta subito senza rete (marker .miss < 72h).
+        // Miss recente: salta subito senza rete (marker .miss < 1h).
         if (missFresh(basePath, rom)) {
             DebugLog::line("boxart: %s miss recente, salto", base.c_str());
             r.skipped++;
@@ -766,7 +768,7 @@ ScrapeResult scrape(const std::string& basePath,
             if (tryLocal()) { r.found++; continue; }
             // Niente marker se l'utente ha annullato a meta' di QUESTA ROM:
             // e' un tentativo abbandonato, non un vero miss di rete -- non
-            // deve costarle 72h di skip silenzioso al prossimo Aggiorna.
+            // deve costarle 1h di skip silenzioso al prossimo Aggiorna.
             if (netAttempted && !cancelledNow()) writeMissMarker(basePath, rom);
             if (cancelledNow()) { DebugLog::line("boxart: scrape annullato (%d/%d)", r.found, r.total); r.cancelled = true; break; }
             continue;
