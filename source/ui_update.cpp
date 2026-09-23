@@ -482,14 +482,32 @@ bool UI::checkForUpdateR36S(const std::string& curVer) {
     }
     int cmp = compareVersionStrings(info.version, curVer);
     DebugLog::line("update: r36s remoto v%s cmp=%d", info.version.c_str(), cmp);
-    if (cmp <= 0) {
+    if (cmp > 0) {
+        if (!showConfirmDialog(i18n::get(StrKey::UpdateAvailNetTitle),
+                i18n::fmt(StrKey::UpdateAvailNetBody, info.version, curVer, updateSourceLabel(netUrl))))
+            return false;
+    } else if (cmp == 0 && DebugLog::enabled()) {
+        // Reinstall stessa versione (debug): come Switch — confronta gli
+        // sha live solo per dirtelo, ma chiede sempre se reinstallare.
+        std::string localShort = "?", remoteShort = "?";
+        if (!info.sha256.empty()) {
+            showWorking(i18n::fmt(StrKey::UpdateContacting, "sha…"));
+            std::string local = sha256HexFile(basePath_ + "OpenHomeNX");
+            localShort = local.empty() ? "?" : local.substr(0, 8);
+            remoteShort = info.sha256.substr(0, 8);
+            DebugLog::line("update: r36s sha local=%s remote=%.16s same=%d",
+                local.empty() ? "(unreadable)" : local.c_str(),
+                info.sha256.c_str(), local == info.sha256 ? 1 : 0);
+        }
+        if (!showConfirmDialog(i18n::get(StrKey::UpdateSameDbgTitle),
+                i18n::fmt(StrKey::UpdateSameDbgBody, curVer, localShort,
+                          info.version, remoteShort)))
+            return false;
+    } else {
         showMessageAndWait(i18n::get(StrKey::UpdateTitle),
             i18n::fmt(StrKey::UpdateLatestBody, curVer, info.version));
         return false;
     }
-    if (!showConfirmDialog(i18n::get(StrKey::UpdateAvailNetTitle),
-            i18n::fmt(StrKey::UpdateAvailNetBody, info.version, curVer, updateSourceLabel(netUrl))))
-        return false;
     const std::string dst = basePath_ + "update/OpenHomeNX-r36s.zip";
     NetCancelResult dlr = downloadFileCancel(info.nroUrl, cfg.token, dst, info.sha256, info.version, err);
     if (dlr == NetCancelResult::Cancelled) return false;
