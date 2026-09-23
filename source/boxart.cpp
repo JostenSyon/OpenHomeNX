@@ -17,6 +17,7 @@
 #include <set>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <ctime>
 
 namespace Boxart {
 namespace {
@@ -468,6 +469,29 @@ bool screenScraperFetch(const std::string& basePath, const std::string& rom,
 
 } // namespace
 
+// Marker miss: "<base>.<tag>.miss" (stessa dir delle cover). Una ROM che ha
+// fallito TUTTO (locale + rete tentata davvero) non ribrucia i timeout di
+// rete a ogni Aggiorna: viene saltata finche' il marker e' fresco (72h).
+// "Pulisci boxart" li rimuove insieme alle cover (ritenta tutto), cambiare
+// stile usa un tag diverso (ritenta). Mai scritti se la rete non e' stata
+// nemmeno tentata (off/non mappato): quelli restano economici da riprovare.
+static constexpr long kMissTtlSec = 72 * 3600;
+static std::string missMarkerPath(const std::string& basePath, const std::string& romPath) {
+    std::string sys = sysFromRom(romPath);
+    if (sys.empty()) sys = "rom";
+    return basePath + "cache/covers/" + sys + "/" + stemOf(romPath) + "." + styleTag() + ".miss";
+}
+static bool missFresh(const std::string& basePath, const std::string& romPath) {
+    struct stat st;
+    if (stat(missMarkerPath(basePath, romPath).c_str(), &st) != 0) return false;
+    return (std::time(nullptr) - (long)st.st_mtime) < kMissTtlSec;
+}
+static void writeMissMarker(const std::string& basePath, const std::string& romPath) {
+    std::string p = missMarkerPath(basePath, romPath);
+    if (!ensureDir(parentDir(p))) return;
+    if (FILE* f = std::fopen(p.c_str(), "w")) std::fclose(f);
+}
+
 // Vero se `romPath` ha arte interna hardcoded in romfs:/boxart/ (solo
 // Rubino/Zaffiro/Smeraldo/Rosso/Blu/Giallo -- vedi ui.cpp boxArtCache_,
 // disegnata direttamente dalla UI, mai passa da questa cache).
@@ -507,7 +531,8 @@ std::string findCachedCover(const std::string& basePath, const std::string& romP
 
 ScrapeResult scrape(const std::string& basePath,
                     const std::vector<ImportedGame>& games,
-                    ScrapeProgressFn progress) {
+                    ScrapeProgressFn progress,
+                    const bool* cancel) {
     ScrapeResult r;
     Style style = curStyle();
     // Raccogli tutte le ROM da considerare: `games` include gia' sia i save
@@ -533,6 +558,11 @@ ScrapeResult scrape(const std::string& basePath,
         progress(line);
     };
     for (size_t idx = 0; idx < roms.size(); idx++) {
+        if (cancel && *cancel) {
+            DebugLog::line("boxart: scrape annullato (%d/%d)", r.found, r.total);
+            r.cancelled = true;
+            break;
+        }
         const std::string& rom = roms[idx];
         r.total++;
         std::string base = stemOf(rom);
@@ -543,6 +573,15 @@ ScrapeResult scrape(const std::string& basePath,
             r.found++;
             continue;
         }
+        // Miss recente: salta subito senza rete (marker .miss < 72h).
+        if (missFresh(basePath, rom)) {
+            DebugLog::line("boxart: %s miss recente, salto", base.c_str());
+            r.skipped++;
+            continue;
+        }
+        // Vera solo se si tenta davvero la rete (non su sistema non
+        // mappato / rete off: quelli restano economici da riprovare).
+        bool netAttempted = false;
 
         std::string sys = sysFromRom(rom);
         std::string repo = libretroRepo(sys);
@@ -576,6 +615,7 @@ ScrapeResult scrape(const std::string& basePath,
                 DebugLog::line("boxart: %s miss (rete off)", base.c_str());
                 return false;
             }
+            netAttempted = true;
             std::string dst = coverCachePath(basePath, rom);
             std::string err;
             bool ok = false;
@@ -712,7 +752,8 @@ ScrapeResult scrape(const std::string& basePath,
             // va provata per prima; il locale resta un fallback per quando
             // non c'e' rete o ScreenScraper non ha quel gioco.
             if (tryDownload()) { r.found++; continue; }
-            if (tryLocal()) r.found++;
+            if (tryLocal()) { r.found++; continue; }
+            if (netAttempted) writeMissMarker(basePath, rom);
             continue;
         }
 
@@ -721,7 +762,8 @@ ScrapeResult scrape(const std::string& basePath,
         // locale e' quello che l'utente si aspetta di vedere per questi
         // stili, nessuna ambiguita' da risolvere.
         if (tryLocal()) { r.found++; continue; }
-        if (tryDownload()) r.found++;
+        if (tryDownload()) { r.found++; continue; }
+        if (netAttempted) writeMissMarker(basePath, rom);
     }
     DebugLog::line("boxart: scrape %d/%d", r.found, r.total);
     return r;

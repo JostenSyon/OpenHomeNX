@@ -21,6 +21,8 @@ enum class Style { Locale = 0, Box2d = 1, Box3d = 2 };
 struct ScrapeResult {
     int found = 0; // cover in cache (hit + nuove)
     int total = 0; // ROM risolte dai save importati
+    int skipped = 0; // miss recenti saltati senza rete (vedi marker .miss)
+    bool cancelled = false; // interrotto con B
 };
 
 // "" se nessuna cover in cache, altrimenti il path esistente.
@@ -31,10 +33,14 @@ std::string findCachedCover(const std::string& basePath, const std::string& romP
 // ROM (anche cache-hit) con msg formattato "Titolo\n  33%  (2/6) - nome"
 // cosi' showWorking() mostra la barra senza che lo scrape sembri bloccato.
 // Stessa shape di UpdateProgressFn (std::function<void(const std::string&)>).
+// `cancel` (opzionale): flag cooperativo controllato a ogni ROM — la UI lo
+// alza sul tasto B (lo scrape gira sul main thread, rete bloccante a
+// granularita' singola ROM: si ferma dopo la ROM corrente).
 using ScrapeProgressFn = std::function<void(const std::string&)>;
 ScrapeResult scrape(const std::string& basePath,
                     const std::vector<ImportedGame>& games,
-                    ScrapeProgressFn progress = nullptr);
+                    ScrapeProgressFn progress = nullptr,
+                    const bool* cancel = nullptr);
 
 // Cancella tutti i file in cache/covers/ (tornano le tile composte
 // logo+sfondo+label da romfs). Ritorna il numero di file rimossi.

@@ -850,11 +850,31 @@ void UI::settingsRowActivate(int cat, int row, int dir, bool& running) {
                 // fuzzy/GitHub), senza feedback sembra bloccato. Stesso
                 // pattern del download update (showWorking con "%" -> barra).
                 showWorking(i18n::get(StrKey::ScraperBoxartTitle));
+                // Annulla con B: lo scrape gira sul main thread, gli eventi
+                // si accumulano — si drenano a ogni progresso e B alza il
+                // flag cooperativo (si ferma dopo la ROM corrente). Il dreno
+                // evita anche che la B dell'annullo chiuda subito il dialogo
+                // del resoconto qui sotto.
+                bool scrapeCancel = false;
+                std::string cancelHint = i18n::get(StrKey::ScraperBoxartCancel);
                 Boxart::ScrapeResult res = Boxart::scrape(basePath_, importedGames_,
-                    [this](const std::string& s){ showWorking(s); });
+                    [this, &scrapeCancel, &cancelHint](const std::string& s){
+                        std::string msg = s;
+                        size_t nl = msg.find('\n');
+                        if (nl != std::string::npos) msg.insert(nl, "  " + cancelHint);
+                        else msg += "  " + cancelHint;
+                        showWorking(msg);
+                        SDL_PumpEvents();
+                        if (pad_ && SDL_GameControllerGetButton(pad_, SDL_CONTROLLER_BUTTON_A)) {
+                            scrapeCancel = true;
+                            SDL_Event e;
+                            while (SDL_PollEvent(&e)) {}
+                        }
+                    }, &scrapeCancel);
                 showMessageAndWait(i18n::get(StrKey::ScraperBoxartTitle),
                     i18n::fmt(StrKey::ScraperBoxartDone,
-                        std::to_string(res.found), std::to_string(res.total)));
+                        std::to_string(res.found), std::to_string(res.total),
+                        std::to_string(res.skipped)));
                 loadGameIcons(); // le nuove cover in cache appaiono subito
             }
         } else if (tag == DevRow::Clear) {

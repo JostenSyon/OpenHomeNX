@@ -489,6 +489,7 @@ namespace StrKey {
     constexpr const char* ClearGalCacheDone    = "cleargalcache_done";
     constexpr const char* ScraperBoxartTitle   = "scraper_boxart_title";
     constexpr const char* ScraperBoxartDone    = "scraper_boxart_done";
+    constexpr const char* ScraperBoxartCancel  = "scraper_boxart_cancel";
     constexpr const char* ScraperBoxartOffline = "scraper_boxart_offline";
     constexpr const char* ScraperBoxartClear   = "scraper_boxart_clear";
     constexpr const char* ScraperBoxartClearBody = "scraper_boxart_clear_body";
