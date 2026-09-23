@@ -86,7 +86,7 @@ enum class DevRow {
     DbgToggle, QuickMenu,
     ClearBp, Normalize, ClearGal,
     SendLog, Crash,
-    Rename, Style, Update, Clear, ShowRomsNoSave, ShowFrlgRoms, SyncFrlg, AutoSyncFrlg, DevSync,
+    DevSync,
 };
 
 // Animazione "tendina" per voci di menù che appaiono/scompaiono (copia
@@ -583,6 +583,10 @@ private:
     std::string settingsRowLabel(int cat, int row) const;
     std::string settingsRowValue(int cat, int row);
     void settingsRowActivate(int cat, int row, int dir, bool& running);
+    // Azioni boxart/ROM condivise (Dati cat 3): corpi ex-Sviluppatore.
+    void runBoxartRename();
+    void runBoxartUpdate();
+    void clearBoxartCache();
     // Sistema: riga Emulatore (2 se rilevato o ghost in chiusura, -1 se
     // assente) e riga Conferma uscita (3 con emulatore, 2 senza).
     int sysEmuRow() const;

@@ -266,18 +266,7 @@ static std::vector<DevRow> devRowList(bool debugOn, bool sendOn) {
     std::vector<DevRow> v = { DevRow::DbgToggle, DevRow::QuickMenu };
     if (debugOn) { v.push_back(DevRow::ClearBp); v.push_back(DevRow::Normalize); v.push_back(DevRow::ClearGal); }
     if (sendOn) { v.push_back(DevRow::SendLog); v.push_back(DevRow::Crash); }
-    v.push_back(DevRow::Rename);
-    v.push_back(DevRow::Style);
-    v.push_back(DevRow::Update);
-    v.push_back(DevRow::Clear);
-    v.push_back(DevRow::ShowRomsNoSave);
-#ifndef OH_LINUX
-    // Solo Switch: su R36S non esistono tile native, quindi doppioni FRLG
-    // e sync nativo<->ROM non possono mai succedere (tutte no-op).
-    v.push_back(DevRow::ShowFrlgRoms);
-    v.push_back(DevRow::SyncFrlg);
-    v.push_back(DevRow::AutoSyncFrlg);
-#endif
+    // Promosse in Aspetto/Dati: qui restano solo debug vero + DevSync ultimo.
     v.push_back(DevRow::DevSync);
     return v;
 }
@@ -305,12 +294,19 @@ int UI::sysConfirmRow() const {
 int UI::settingsRowCount(int cat) const {
     switch (cat) {
         case 0: return 1; // Utente predefinito
-        case 1: // Tema, Lingua, Layout selettore, [Zoom, Menu radiale,] Animazione scambio, Dock, Reset dock
+        case 1: // Tema, Lingua, Layout, [Zoom, Menu radiale,] Stile boxart, Animazione scambio, Dock, Reset dock
             // Zoom e Menu radiale sono voci morte in Galleria (la vedi non li usa):
             // con il layout Galleria la lista si accorcia di 2 righe.
-            return (gameSelectorLayout_ == GameSelectorLayout::Gallery) ? 6 : 8;
+            return (gameSelectorLayout_ == GameSelectorLayout::Gallery) ? 7 : 9;
         case 2: return sysConfirmRow() + 1; // Core + Launcher [+ Emulatore] + Conferma uscita
-        case 3: return 4; // Cartelle, Scansiona, Max, Pulisci
+        case 3:
+            // Cartelle, Scansiona, Max, Pulisci backup, Rinomina, Aggiorna e
+            // Pulisci boxart, Mostra ROM [+ FRLG x3 solo Switch].
+#ifdef OH_LINUX
+            return 8;
+#else
+            return 11;
+#endif
         case 4: {
             // Sorgente/edit custom solo con debug: l'utente normale resta su GitHub.
             // Modifica compare solo a sorgente custom ATTIVA (sendAvailable):
@@ -366,8 +362,9 @@ std::string UI::settingsRowLabel(int cat, int row) const {
         if (r == 2) return i18n::get(StrKey::SetGalleryLayout);
         if (r == 3) return i18n::get(StrKey::SetZoom);
         if (r == 4) return i18n::get(StrKey::SetRadialMenu);
-        if (r == 5) return i18n::get(StrKey::SetTradeAnim);
-        if (r == 6) return i18n::get(StrKey::SetDockVisible);
+        if (r == 5) return i18n::get(StrKey::ScraperBoxartStyle);
+        if (r == 6) return i18n::get(StrKey::SetTradeAnim);
+        if (r == 7) return i18n::get(StrKey::SetDockVisible);
         return i18n::get(StrKey::SetDockReset);
     }
     if (cat == 2) {
@@ -380,7 +377,17 @@ std::string UI::settingsRowLabel(int cat, int row) const {
         if (row == 0) return i18n::get(StrKey::SetSavePaths);
         if (row == 1) return i18n::get(StrKey::SetScan);
         if (row == 2) return i18n::get(StrKey::SetBackupMax);
-        return i18n::get(StrKey::SetBackupClean);
+        if (row == 3) return i18n::get(StrKey::SetBackupClean);
+        if (row == 4) return i18n::get(StrKey::ScraperRenameTitle);
+        if (row == 5) return i18n::get(StrKey::ScraperBoxartTitle);
+        if (row == 6) return i18n::get(StrKey::ScraperBoxartClear);
+        if (row == 7) return i18n::get(StrKey::ShowRomsNoSaveTitle);
+#ifndef OH_LINUX
+        if (row == 8) return i18n::get(StrKey::ShowFrlgRomsTitle);
+        if (row == 9) return i18n::get(StrKey::SyncFrlgTitle);
+        if (row == 10) return i18n::get(StrKey::AutoSyncFrlgTitle);
+#endif
+        return i18n::get(StrKey::AutoSyncFrlgTitle); // irraggiungibile, difensivo
     }
     if (cat == 4) {
         if (row == 0) return i18n::get(StrKey::SetCheckUpdate);
@@ -394,14 +401,6 @@ std::string UI::settingsRowLabel(int cat, int row) const {
         // niente piu' collisioni tra indici di testa e settingsRowCount(5)-N.
         switch (devRowAt(devShownList(), row)) {
             case DevRow::DevSync: return i18n::get(StrKey::DevSyncTitle);
-            case DevRow::Clear: return i18n::get(StrKey::ScraperBoxartClear);
-            case DevRow::Update: return i18n::get(StrKey::ScraperBoxartTitle);
-            case DevRow::Style: return i18n::get(StrKey::ScraperBoxartStyle);
-            case DevRow::Rename: return i18n::get(StrKey::ScraperRenameTitle);
-            case DevRow::ShowRomsNoSave: return i18n::get(StrKey::ShowRomsNoSaveTitle);
-            case DevRow::ShowFrlgRoms: return i18n::get(StrKey::ShowFrlgRomsTitle);
-            case DevRow::SyncFrlg: return i18n::get(StrKey::SyncFrlgTitle);
-            case DevRow::AutoSyncFrlg: return i18n::get(StrKey::AutoSyncFrlgTitle);
             case DevRow::DbgToggle: return i18n::get(StrKey::SetDebugToggle);
             case DevRow::QuickMenu: return i18n::get(StrKey::SetDbgMenu);
             case DevRow::ClearBp: return i18n::get(StrKey::ClearBpHistTitle);
@@ -430,8 +429,9 @@ std::string UI::settingsRowValue(int cat, int row) {
                  ? i18n::get(StrKey::LayoutGallery) : i18n::get(StrKey::LayoutClassic);
         if (r == 3) return std::to_string(zoomGrow_) + "px";
         if (r == 4) return Settings::radialMenu() ? i18n::get(StrKey::SetOn) : i18n::get(StrKey::SetOff);
-        if (r == 5) return Settings::tradeAnim() ? i18n::get(StrKey::SetOn) : i18n::get(StrKey::SetOff);
-        if (r == 6) {
+        if (r == 5) return boxartStyleLabel(Settings::boxartStyle());
+        if (r == 6) return Settings::tradeAnim() ? i18n::get(StrKey::SetOn) : i18n::get(StrKey::SetOff);
+        if (r == 7) {
             if (!dockLoaded_) dockStateLoad();
             return dockState_.visible ? i18n::get(StrKey::SetOn) : i18n::get(StrKey::SetOff);
         }
@@ -464,6 +464,13 @@ std::string UI::settingsRowValue(int cat, int row) {
         if (row == 1) return "";
         if (row == 2)
             return std::to_string(backupCapMb(false)) + " MB";
+        if (row == 3 || row == 4 || row == 5 || row == 6) return ""; // righe azione
+        if (row == 7) return Settings::showRomsWithoutSave() ? i18n::get(StrKey::SetOn) : i18n::get(StrKey::SetOff);
+#ifndef OH_LINUX
+        if (row == 8) return Settings::showFrlgRoms() ? i18n::get(StrKey::SetOn) : i18n::get(StrKey::SetOff);
+        if (row == 9) return ""; // bottone sync: niente valore
+        if (row == 10) return Settings::frlgAutoSync() ? i18n::get(StrKey::SetOn) : i18n::get(StrKey::SetOff);
+#endif
         return "";
     }
     if (cat == 4) {
@@ -502,16 +509,6 @@ std::string UI::settingsRowValue(int cat, int row) {
                 return DebugLog::enabled() ? i18n::get(StrKey::SetOn) : i18n::get(StrKey::SetOff);
             case DevRow::QuickMenu:
                 return readQuickMenu(basePath_) ? i18n::get(StrKey::SetOn) : i18n::get(StrKey::SetOff);
-            case DevRow::Style:
-                return boxartStyleLabel(Settings::boxartStyle());
-            case DevRow::ShowRomsNoSave:
-                return Settings::showRomsWithoutSave() ? i18n::get(StrKey::SetOn) : i18n::get(StrKey::SetOff);
-            case DevRow::ShowFrlgRoms:
-                return Settings::showFrlgRoms() ? i18n::get(StrKey::SetOn) : i18n::get(StrKey::SetOff);
-            case DevRow::SyncFrlg:
-                return ""; // bottone: niente valore
-            case DevRow::AutoSyncFrlg:
-                return Settings::frlgAutoSync() ? i18n::get(StrKey::SetOn) : i18n::get(StrKey::SetOff);
             default:
                 return ""; // righe azione, niente valore a destra
         }
@@ -593,6 +590,127 @@ std::string UI::promptTextBlocking(const std::string& header, const std::string&
     return std::string(); // annullato dall'utente
 }
 
+// Azioni boxart/ROM condivise fra Dati (cat 3) e le vecchie voci
+// Sviluppatore (ora promosse): corpi spostati qui tali e quali.
+void UI::runBoxartRename() {
+    // Rinomina ROM: passa a setaccio TUTTE le ROM nei path import
+    // abilitati (anche senza save), rileva lingua dall'header e
+    // propone nomi No-Intro; salta quelle gia' corrette; conferma
+    // prima di toccare i file (ROM + save/stati + gamelist).
+    std::vector<RomInfo::RenamePlan> plans;
+    {
+        std::vector<std::string> dirs;
+        for (const auto& e : importPaths_)
+            if (e.enabled && !e.path.empty()) dirs.push_back(e.path);
+        size_t scanned = 0;
+        for (const auto& rom : RomInfo::scanRoms(dirs)) {
+            scanned++;
+            RomInfo::RenamePlan p;
+            if (RomInfo::planRename(rom, p)) plans.push_back(p);
+        }
+        DebugLog::line("rominfo: rename scan %zu ROM -> %zu da rinominare",
+                       scanned, plans.size());
+    }
+    std::string rtitle = i18n::get(StrKey::ScraperRenameTitle);
+    if (plans.empty()) {
+        showMessageAndWait(rtitle,
+            i18n::fmt(StrKey::ScraperRenameDone, "0", "0"));
+    } else {
+        // Niente piu' cap righe: il dialog scrolla (D-pad/analogico).
+        std::string body;
+        for (size_t i = 0; i < plans.size(); i++)
+            body += plans[i].oldBase + plans[i].ext + " -> " +
+                    plans[i].newBase + plans[i].ext + "\n";
+        if (showConfirmDialog(rtitle, body)) {
+            int ok = 0;
+            for (const auto& p : plans) {
+                std::string err;
+                if (RomInfo::applyRename(p, err)) ok++;
+            }
+            showMessageAndWait(rtitle,
+                i18n::fmt(StrKey::ScraperRenameDone,
+                    std::to_string(ok), std::to_string(plans.size())));
+            rescanImportedGames();
+            loadGameIcons();
+        }
+    }
+}
+
+void UI::runBoxartUpdate() {
+    // Aggiorna boxart (ROM): cache hit, poi locale (stile), poi
+    // download 2D se la rete e' pronta (entrambe le piattaforme).
+    bool netOk = true;
+#ifndef OH_LINUX
+    netOk = updateNetEnsureReady();
+#endif
+    if (!netOk) {
+        // Senza rete il download e' impossibile: dirlo subito
+        // invece di un generico 0/N che non spiega nulla.
+        showMessageAndWait(i18n::get(StrKey::ScraperBoxartTitle),
+            i18n::get(StrKey::ScraperBoxartOffline));
+        return;
+    }
+    // Barra di progresso per-ROM su entrambe le piattaforme: lo
+    // scrape puo' metterci diversi secondi per gioco (rete +
+    // fuzzy/GitHub), senza feedback sembra bloccato. Stesso
+    // pattern del download update (showWorking con "%" -> barra).
+    showWorking(i18n::get(StrKey::ScraperBoxartTitle));
+    // Scrape su worker (job.h): il main resta libero per barra
+    // e B in tempo reale. scrape() e' invariato (progress +
+    // cancel cooperativo a granularita' singola ROM). Il pump
+    // modale e' quello condiviso (UI::pumpJobCancel, stesso
+    // dell'updater): niente copia locale.
+    std::string barTitle = i18n::get(StrKey::ScraperBoxartTitle);
+    auto doScrape = [&]() -> Boxart::ScrapeResult {
+        bool scrapeCancel = false;
+        Boxart::ScrapeResult res;
+        BackgroundJob job;
+        auto scrapeWorker = [&](BackgroundJob& j) {
+            res = Boxart::scrape(basePath_, importedGames_,
+                [&](const std::string& s){ j.report(s); }, &scrapeCancel);
+        };
+        if (!job.start(scrapeWorker)) {
+            // Thread non partito: fallback sincrono senza cancel
+            // (esplicito, mai hang).
+            DebugLog::line("boxart: job.start fallita, scrape sincrono");
+            res = Boxart::scrape(basePath_, importedGames_,
+                [this](const std::string& s){ showWorking(s); });
+            return res;
+        }
+        pumpJobCancel(job, scrapeCancel, barTitle);
+        return res;
+    };
+    auto doneMsg = [&](const Boxart::ScrapeResult& r) {
+        return i18n::fmt(StrKey::ScraperBoxartDone,
+            std::to_string(r.found), std::to_string(r.total),
+            std::to_string(r.skipped));
+    };
+    Boxart::ScrapeResult res = doScrape();
+    // Saltate da miss flaky (es. timeout SS poi rientrato):
+    // offri il retry SENZA buttare le cover buone (Pulisci
+    // riscaricherebbe tutto, spreco di API). A = riprova, B = chiudi.
+    if (!res.cancelled && res.skipped > 0 &&
+        showConfirmDialog(barTitle,
+            doneMsg(res) + "\n" + i18n::get(StrKey::ScraperBoxartRetry))) {
+        Boxart::clearMissMarkers(basePath_);
+        res = doScrape();
+    }
+    showMessageAndWait(barTitle, doneMsg(res));
+    loadGameIcons(); // le nuove cover in cache appaiono subito
+}
+
+void UI::clearBoxartCache() {
+    // Pulisci boxart: cancella cache/covers/ cosi' tornano le tile
+    // composte logo+sfondo+label da romfs.
+    if (showConfirmDialog(i18n::get(StrKey::ScraperBoxartClear),
+            i18n::get(StrKey::ScraperBoxartClearBody))) {
+        int n = Boxart::clearCache(basePath_);
+        showMessageAndWait(i18n::get(StrKey::ScraperBoxartClear),
+            i18n::fmt(StrKey::ScraperBoxartCleared, std::to_string(n)));
+        loadGameIcons(); // le tile composte riappaiono subito
+    }
+}
+
 void UI::settingsRowActivate(int cat, int row, int dir, bool& running) {
     if (dir == 0) dir = 1;
     int n = settingsRowCount(cat);
@@ -664,9 +782,16 @@ void UI::settingsRowActivate(int cat, int row, int dir, bool& running) {
             // Menu radiale: solo 2 valori, qualunque dir alterna (come Layout).
             Settings::setRadialMenu(!Settings::radialMenu());
         } else if (r == 5) {
+            // Stile boxart: cicla Locale/2D/3D e ricarica subito le tile
+            // (stesso corpo della vecchia voce Sviluppatore).
+            int v = (Settings::boxartStyle() + dir + 3) % 3;
+            Settings::setBoxartStyle(v);
+            DebugLog::line("settings: boxart_style=%d", v);
+            loadGameIcons();
+        } else if (r == 6) {
             // Animazione scambio: idem, solo on/off.
             Settings::setTradeAnim(!Settings::tradeAnim());
-        } else if (r == 6) {
+        } else if (r == 7) {
             // Dock inferiore: mostra/nascondi (sincronizza lo stato live).
             if (!dockLoaded_) dockStateLoad();
             dockState_.visible = !dockState_.visible;
@@ -711,7 +836,7 @@ void UI::settingsRowActivate(int cat, int row, int dir, bool& running) {
             if (ni > 5) ni = 5;
             if (writeBackupMb(basePath_, STEPS[ni]))
                 DebugLog::line("settings: backup_mb=%ld", STEPS[ni]);
-        } else {
+        } else if (row == 3) {
             if (showConfirmDialog(i18n::get(StrKey::SetTitle),
                     i18n::get(StrKey::SetCleanConfirm))) {
                 uint64_t freed = prunePoolToCap(false) + prunePoolToCap(true);
@@ -720,6 +845,34 @@ void UI::settingsRowActivate(int cat, int row, int dir, bool& running) {
                     i18n::get(StrKey::SetCleanDone).c_str(), freed / 1048576.0);
                 showMessageAndWait(i18n::get(StrKey::SetTitle), msg);
             }
+        } else if (row == 4) {
+            runBoxartRename();
+        } else if (row == 5) {
+            runBoxartUpdate();
+        } else if (row == 6) {
+            clearBoxartCache();
+        } else if (row == 7) {
+            bool on = !Settings::showRomsWithoutSave();
+            Settings::setShowRomsWithoutSave(on);
+            DebugLog::line("settings: show_roms_without_save=%d", on ? 1 : 0);
+            rescanImportedGames();
+            loadGameIcons();
+#ifndef OH_LINUX
+        } else if (row == 8) {
+            bool on = !Settings::showFrlgRoms();
+            Settings::setShowFrlgRoms(on);
+            DebugLog::line("settings: show_frlg_roms=%d", on ? 1 : 0);
+            rescanImportedGames();
+            loadGameIcons();
+        } else if (row == 9) {
+            if (showConfirmDialog(i18n::get(StrKey::SyncFrlgTitle),
+                    i18n::get(StrKey::SyncFrlgConfirm)))
+                syncFrlgSaves(false);
+        } else if (row == 10) {
+            bool on = !Settings::frlgAutoSync();
+            Settings::setFrlgAutoSync(on);
+            DebugLog::line("settings: frlg_auto_sync=%d", on ? 1 : 0);
+#endif
         }
         // Riga Spazio rimossa: il conteggio rallentava tutto (verra rifatta bene).
     } else if (cat == 4) {
@@ -797,156 +950,6 @@ void UI::settingsRowActivate(int cat, int row, int dir, bool& running) {
             return; // ghost in chiusura: nessuna azione
         if (tag == DevRow::DevSync) {
             remoteSyncTestRow();
-        } else if (tag == DevRow::Rename) {
-            // Rinomina ROM: passa a setaccio TUTTE le ROM nei path import
-            // abilitati (anche senza save), rileva lingua dall'header e
-            // propone nomi No-Intro; salta quelle gia' corrette; conferma
-            // prima di toccare i file (ROM + save/stati + gamelist).
-            std::vector<RomInfo::RenamePlan> plans;
-            {
-                std::vector<std::string> dirs;
-                for (const auto& e : importPaths_)
-                    if (e.enabled && !e.path.empty()) dirs.push_back(e.path);
-                size_t scanned = 0;
-                for (const auto& rom : RomInfo::scanRoms(dirs)) {
-                    scanned++;
-                    RomInfo::RenamePlan p;
-                    if (RomInfo::planRename(rom, p)) plans.push_back(p);
-                }
-                DebugLog::line("rominfo: rename scan %zu ROM -> %zu da rinominare",
-                               scanned, plans.size());
-            }
-            std::string rtitle = i18n::get(StrKey::ScraperRenameTitle);
-            if (plans.empty()) {
-                showMessageAndWait(rtitle,
-                    i18n::fmt(StrKey::ScraperRenameDone, "0", "0"));
-            } else {
-                // Niente piu' cap righe: il dialog scrolla (D-pad/analogico).
-                std::string body;
-                for (size_t i = 0; i < plans.size(); i++)
-                    body += plans[i].oldBase + plans[i].ext + " -> " +
-                            plans[i].newBase + plans[i].ext + "\n";
-                if (showConfirmDialog(rtitle, body)) {
-                    int ok = 0;
-                    for (const auto& p : plans) {
-                        std::string err;
-                        if (RomInfo::applyRename(p, err)) ok++;
-                    }
-                    showMessageAndWait(rtitle,
-                        i18n::fmt(StrKey::ScraperRenameDone,
-                            std::to_string(ok), std::to_string(plans.size())));
-                    rescanImportedGames();
-                    loadGameIcons();
-                }
-            }
-        } else if (tag == DevRow::Style) {
-            // Stile boxart: B/X cicla lo stile e ricarica subito le tile
-            // dalla cache dello stile (altrimenti restano quelle vecchie
-            // finche' non si fa Aggiorna).
-            int v = (Settings::boxartStyle() + dir + 3) % 3;
-            Settings::setBoxartStyle(v);
-            DebugLog::line("settings: boxart_style=%d", v);
-            loadGameIcons();
-        } else if (tag == DevRow::ShowRomsNoSave) {
-            // Stesso pattern di DevRow::Style: toggle + rescan + ricarica tile,
-            // effetto immediato senza riavvio ne' popup di conferma.
-            // rescanImportedGames() droppa prima tutti gli import correnti e
-            // rifa' la scan con il nuovo valore di showRomsWithoutSave(), quindi
-            // gestisce da solo sia l'aggiunta che la rimozione delle ROM orfane.
-            bool on = !Settings::showRomsWithoutSave();
-            Settings::setShowRomsWithoutSave(on);
-            DebugLog::line("settings: show_roms_without_save=%d", on ? 1 : 0);
-            rescanImportedGames();
-            loadGameIcons();
-        } else if (tag == DevRow::ShowFrlgRoms) {
-            // Stesso pattern: toggle + rescan + ricarica tile. Il filtro
-            // vero vive in hideFrlgRom() (ui_selectors.cpp).
-            bool on = !Settings::showFrlgRoms();
-            Settings::setShowFrlgRoms(on);
-            DebugLog::line("settings: show_frlg_roms=%d", on ? 1 : 0);
-            rescanImportedGames();
-            loadGameIcons();
-        } else if (tag == DevRow::SyncFrlg) {
-            // Bottone una-tantum (default reale): conferma esplicita, poi
-            // sync con backup-gate interno. Mai automatico da qui.
-            if (showConfirmDialog(i18n::get(StrKey::SyncFrlgTitle),
-                    i18n::get(StrKey::SyncFrlgConfirm)))
-                syncFrlgSaves(false);
-        } else if (tag == DevRow::AutoSyncFrlg) {
-            bool on = !Settings::frlgAutoSync();
-            Settings::setFrlgAutoSync(on);
-            DebugLog::line("settings: frlg_auto_sync=%d", on ? 1 : 0);
-        } else if (tag == DevRow::Update) {
-            // Aggiorna boxart (ROM): cache hit, poi locale (stile), poi
-            // download 2D se la rete e' pronta (entrambe le piattaforme).
-            bool netOk = true;
-#ifndef OH_LINUX
-            netOk = updateNetEnsureReady();
-#endif
-            if (!netOk) {
-                // Senza rete il download e' impossibile: dirlo subito
-                // invece di un generico 0/N che non spiega nulla.
-                showMessageAndWait(i18n::get(StrKey::ScraperBoxartTitle),
-                    i18n::get(StrKey::ScraperBoxartOffline));
-            } else {
-                // Barra di progresso per-ROM su entrambe le piattaforme: lo
-                // scrape puo' metterci diversi secondi per gioco (rete +
-                // fuzzy/GitHub), senza feedback sembra bloccato. Stesso
-                // pattern del download update (showWorking con "%" -> barra).
-                showWorking(i18n::get(StrKey::ScraperBoxartTitle));
-                // Scrape su worker (job.h): il main resta libero per barra
-                // e B in tempo reale. scrape() e' invariato (progress +
-                // cancel cooperativo a granularita' singola ROM). Il pump
-                // modale e' quello condiviso (UI::pumpJobCancel, stesso
-                // dell'updater): niente copia locale.
-                std::string barTitle = i18n::get(StrKey::ScraperBoxartTitle);
-                auto doScrape = [&]() -> Boxart::ScrapeResult {
-                    bool scrapeCancel = false;
-                    Boxart::ScrapeResult res;
-                    BackgroundJob job;
-                    auto scrapeWorker = [&](BackgroundJob& j) {
-                        res = Boxart::scrape(basePath_, importedGames_,
-                            [&](const std::string& s){ j.report(s); }, &scrapeCancel);
-                    };
-                    if (!job.start(scrapeWorker)) {
-                        // Thread non partito: fallback sincrono senza cancel
-                        // (esplicito, mai hang).
-                        DebugLog::line("boxart: job.start fallita, scrape sincrono");
-                        res = Boxart::scrape(basePath_, importedGames_,
-                            [this](const std::string& s){ showWorking(s); });
-                        return res;
-                    }
-                    pumpJobCancel(job, scrapeCancel, barTitle);
-                    return res;
-                };
-                auto doneMsg = [&](const Boxart::ScrapeResult& r) {
-                    return i18n::fmt(StrKey::ScraperBoxartDone,
-                        std::to_string(r.found), std::to_string(r.total),
-                        std::to_string(r.skipped));
-                };
-                Boxart::ScrapeResult res = doScrape();
-                // Saltate da miss flaky (es. timeout SS poi rientrato):
-                // offri il retry SENZA buttare le cover buone (Pulisci
-                // riscaricherebbe tutto, spreco di API). A = riprova, B = chiudi.
-                if (!res.cancelled && res.skipped > 0 &&
-                    showConfirmDialog(barTitle,
-                        doneMsg(res) + "\n" + i18n::get(StrKey::ScraperBoxartRetry))) {
-                    Boxart::clearMissMarkers(basePath_);
-                    res = doScrape();
-                }
-                showMessageAndWait(barTitle, doneMsg(res));
-                loadGameIcons(); // le nuove cover in cache appaiono subito
-            }
-        } else if (tag == DevRow::Clear) {
-            // Pulisci boxart: cancella cache/covers/ cosi' tornano le tile
-            // composte logo+sfondo+label da romfs.
-            if (showConfirmDialog(i18n::get(StrKey::ScraperBoxartClear),
-                    i18n::get(StrKey::ScraperBoxartClearBody))) {
-                int n = Boxart::clearCache(basePath_);
-                showMessageAndWait(i18n::get(StrKey::ScraperBoxartClear),
-                    i18n::fmt(StrKey::ScraperBoxartCleared, std::to_string(n)));
-                loadGameIcons(); // le tile composte riappaiono subito
-            }
         } else if (tag == DevRow::DbgToggle) {
             bool on = !DebugLog::enabled();
             DebugLog::setEnabled(on);
@@ -1067,13 +1070,13 @@ void UI::drawSettingsPopup() {
         if (appearanceAnim_.step(target)) markDirty();
         float collapse = appearanceAnim_.v;
         int selectedLogical = appearanceRow(setRow_, gameSelectorLayout_ == GameSelectorLayout::Gallery);
-        for (int r = 0; r < 8; r++) {
+        for (int r = 0; r < 9; r++) {
             bool hideable = (r == 3 || r == 4);
             float localCollapse = hideable ? appearanceAnim_.v : 0.0f;
             Uint8 alphaMul = hideable ? collapseAlphaMul(localCollapse) : 255;
             if (hideable && alphaMul == 0) continue; // completamente nascosta: niente da disegnare
             float rowShift = collapseRowShift(collapse, 2, ROW_H); // le righe sotto risalgono seguendo la molla (con overshoot)
-            int rowY = listY + (int)(r * ROW_H - (r >= 5 ? rowShift : 0.0f) + 0.5f);
+            int rowY = listY + (int)(r * ROW_H - (r >= 6 ? rowShift : 0.0f) + 0.5f);
             std::string label, value;
             switch (r) {
                 case 0: label = i18n::get(StrKey::SetTheme); value = getThemeName(themeIndex_); break;
@@ -1089,10 +1092,14 @@ void UI::drawSettingsPopup() {
                     value = Settings::radialMenu() ? i18n::get(StrKey::SetOn) : i18n::get(StrKey::SetOff);
                     break;
                 case 5:
+                    label = i18n::get(StrKey::ScraperBoxartStyle);
+                    value = boxartStyleLabel(Settings::boxartStyle());
+                    break;
+                case 6:
                     label = i18n::get(StrKey::SetTradeAnim);
                     value = Settings::tradeAnim() ? i18n::get(StrKey::SetOn) : i18n::get(StrKey::SetOff);
                     break;
-                case 6:
+                case 7:
                     label = i18n::get(StrKey::SetDockVisible);
                     if (!dockLoaded_) dockStateLoad();
                     value = dockState_.visible ? i18n::get(StrKey::SetOn) : i18n::get(StrKey::SetOff);
