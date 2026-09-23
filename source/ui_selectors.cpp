@@ -959,11 +959,46 @@ void UI::drawGameArt(int i, int iconX, int iconY, int size, bool scaleInner) {
     // Unita di riferimento interna: 128 fisso (Classico invariato), oppure
     // size se scaleInner (Galleria: tutto in proporzione).
     const int UU = scaleInner ? size : 128;
+    std::string romPath = importedRomPath(availableGames_[i], importedOccurrence(i));
+    bool isFileBackedRom = isImportedFile(availableGames_[i]) || isGen1File(availableGames_[i]) ||
+                           isGen2File(availableGames_[i]) || (isFRLG(availableGames_[i]) && !romPath.empty());
+    // Badge sorgente (basso-sinistra): stesso identico blocco usato da
+    // sempre per i giochi senza copertina in cache (vedi piu' sotto) --
+    // estratto qui cosi' lo stile Locale puo' richiamarlo ANCHE quando una
+    // copertina c'e', senza duplicare il disegno. Richiesta utente: la
+    // label deve essere esattamente la stessa, non una nuova diversa.
+    auto drawSourceBadge = [&]() {
+        std::string srcTag = importedSourceTag(availableGames_[i], importedOccurrence(i));
+        if (srcTag.empty()) return;
+        if (srcTag.length() > 10) srcTag = srcTag.substr(0, 9) + ".";
+        const auto& te = getTextEntry(srcTag, fontSmall_, T().text);
+        int badgeW = te.w + 8, badgeH = te.h + 4;
+        int badgeX = iconX + 2, badgeY = iconY + IS - badgeH - 2;
+        SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_BLEND);
+        // Pill arrotondata stile "pop" invece del rettangolo secco; il
+        // testo e' sempre chiaro perche' lo sfondo e' sempre nero.
+        drawRoundRect(badgeX, badgeY, badgeW, badgeH, badgeH / 2, {0, 0, 0, 160});
+        drawText(srcTag, badgeX + 4, badgeY + 2, {240, 240, 240, 255}, fontSmall_);
+    };
     auto it = gameIconCache_.find(availableGames_[i]);
     if (it != gameIconCache_.end() && it->second) {
         SDL_Rect dst = {iconX, iconY, IS, IS};
         SDL_RenderCopy(renderer_, it->second, nullptr, &dst);
-    } else if (isImportedFile(availableGames_[i]) || isGen1File(availableGames_[i]) || isGen2File(availableGames_[i])) {
+        // Locale: il badge sorgente c'e' sempre su una ROM importata,
+        // qualunque sia la copertina mostrata (arte locale vera, interna
+        // hardcoded, o fallback 2D scaricato) -- non e' legata al
+        // fallback, e' una proprieta' dello stile Locale stesso (richiesta
+        // utente). Su 2D/3D nessun badge.
+        if (isFileBackedRom && Settings::boxartStyle() == 0) drawSourceBadge();
+    } else if (isFileBackedRom) {
+        // FRLG e' l'unico tipo ambiguo (nativo Switch CON titleId reale, O
+        // import da ROM senza titleId): stessa disambiguazione per-istanza
+        // gia' usata in loadGameIcons() (importedRomPath() risolve "" per
+        // un'occorrenza nativa). Prima mancava qui: un FireRed/LeafGreen
+        // importato senza cover in cache cadeva nel placeholder generico
+        // (sigla "FR"/"LG" su sfondo colore fisso) invece del riquadro
+        // flat+nome-completo usato da RSE/RBY/GSC -- inconsistente, e
+        // "l'etichetta non appare" per quei giochi specifici.
         // No NS control data (no titleId) — a fixed per-game background
         // (Bulbapedia color templates, same values pkm_rs_types uses for
         // OriginGame::color()) plus the OpenHome logo PNG, letterboxed to
@@ -1091,18 +1126,7 @@ void UI::drawGameArt(int i, int iconX, int iconY, int size, bool scaleInner) {
         // than only-on-ambiguity, which would need an extra pass to
         // detect and would still surprise the user the first time a
         // second source shows up.
-        std::string tag = importedSourceTag(availableGames_[i], importedOccurrence(i));
-        if (!tag.empty()) {
-            if (tag.length() > 10) tag = tag.substr(0, 9) + ".";
-            const auto& te = getTextEntry(tag, fontSmall_, T().text);
-            int badgeW = te.w + 8, badgeH = te.h + 4;
-            int badgeX = iconX + 2, badgeY = iconY + IS - badgeH - 2;
-            SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_BLEND);
-            // Pill arrotondata stile "pop" invece del rettangolo secco; il
-            // testo e' sempre chiaro perche' lo sfondo e' sempre nero.
-            drawRoundRect(badgeX, badgeY, badgeW, badgeH, badgeH / 2, {0, 0, 0, 160});
-            drawText(tag, badgeX + 4, badgeY + 2, {240, 240, 240, 255}, fontSmall_);
-        }
+        drawSourceBadge();
     } else {
         // Colored placeholder with game abbreviation
         drawRoundRect(iconX, iconY, IS, IS, 10, T().iconPlaceholder);

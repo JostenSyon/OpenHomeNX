@@ -468,6 +468,16 @@ bool screenScraperFetch(const std::string& basePath, const std::string& rom,
 
 } // namespace
 
+// Vero se `romPath` ha arte interna hardcoded in romfs:/boxart/ (solo
+// Rubino/Zaffiro/Smeraldo/Rosso/Blu/Giallo -- vedi ui.cpp boxArtCache_,
+// disegnata direttamente dalla UI, mai passa da questa cache).
+static bool hasHardcodedArt(const std::string& romPath) {
+    RomInfo::Info ri;
+    if (!RomInfo::detect(romPath, ri)) return false;
+    return ri.game == "emerald" || ri.game == "ruby" || ri.game == "sapphire" ||
+           ri.game == "red" || ri.game == "blue" || ri.game == "yellow";
+}
+
 std::string findCachedCover(const std::string& basePath, const std::string& romPath) {
     if (romPath.empty()) return "";
     std::string sys = sysFromRom(romPath);
@@ -477,36 +487,19 @@ std::string findCachedCover(const std::string& basePath, const std::string& romP
     for (const char* e : {".png", ".jpg", ".jpeg"}) {
         if (fileExists(stem + e)) return stem + e;
     }
-    // Fallback su 2D scaricato: solo per Box3d. Per Locale la
-    // precedenza e' l'art hardcoded interno (romfs:/boxart/ per
-    // ruby/sapphire/emerald/red/blue/yellow): se Locale tornasse
-    // subito il .2d scaricato, oscurerebbe l'art interno per sempre
-    // e non avrebbe senso (richiesta utente). Box3d invece puo'
-    // mostrare il 2D quando il vero 3D manca. Il 2D non finisce mai
-    // salvato sotto ".3d" (vedi scrape()), quindi qui non si maschera
-    // mai un futuro tentativo 3D.
-    if (curStyle() == Style::Box3d) {
+    // Fallback su 2D scaricato: per Box3d (vero 3D mancante) e per Locale
+    // senza arte locale/interna (es. Cristallo/Oro/Argento) -- mai un
+    // riquadro vuoto quando un 2D e' comunque disponibile in cache. Il 2D
+    // non finisce mai salvato sotto ".3d"/".locale" (vedi scrape()), quindi
+    // qui non si maschera mai un futuro vero box-3D o un giro locale che
+    // trova arte dopo. In stile Locale la UI (drawGameArt) sovrappone
+    // comunque l'etichetta col nome su OGNI import, non solo su questo
+    // fallback -- vedi il commento li'.
+    if (curStyle() == Style::Box3d ||
+        (curStyle() == Style::Locale && !hasHardcodedArt(romPath))) {
         std::string stem2d = base + ".2d";
         for (const char* e : {".png", ".jpg", ".jpeg"}) {
             if (fileExists(stem2d + e)) return stem2d + e;
-        }
-    }
-    // Locale: fallback su .2d solo se non esiste art hardcoded interno
-    // per questo gioco (es. Cristallo/Oro/Argento non hanno romfs:/boxart/).
-    // Cosi' RSE/RBY restano su interno, gli altri su 2D scaricato.
-    if (curStyle() == Style::Locale) {
-        RomInfo::Info ri;
-        bool hasHardcoded = false;
-        if (RomInfo::detect(romPath, ri)) {
-            hasHardcoded = (ri.game == "emerald" || ri.game == "ruby" ||
-                            ri.game == "sapphire" || ri.game == "red" ||
-                            ri.game == "blue" || ri.game == "yellow");
-        }
-        if (!hasHardcoded) {
-            std::string stem2d = base + ".2d";
-            for (const char* e : {".png", ".jpg", ".jpeg"}) {
-                if (fileExists(stem2d + e)) return stem2d + e;
-            }
         }
     }
     return "";
