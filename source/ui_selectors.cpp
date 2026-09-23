@@ -328,6 +328,14 @@ void UI::handleProfileSelectorInput(bool& running) {
                 case SDL_CONTROLLER_BUTTON_B: // Switch A = select
                     selectProfile(profileSelCursor_);
                     break;
+                case SDL_CONTROLLER_BUTTON_A: // Switch B = back: esce come START
+                    if (!confirmQuitWithHold()) break;
+                    if (Settings::confirmExit() &&
+                        !showConfirmDialog(i18n::get(StrKey::ConfirmExitTitle),
+                                           i18n::get(StrKey::ConfirmExitBody)))
+                        break;
+                    running = false;
+                    break;
                 case SDL_CONTROLLER_BUTTON_X: // Switch Y = theme
                     showThemeSelector_ = true;
                     themeSelCursor_ = themeIndex_;
