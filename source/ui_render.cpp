@@ -417,6 +417,19 @@ void UI::drawText(const std::string& text, int x, int y, SDL_Color color, TTF_Fo
     SDL_RenderCopy(renderer_, entry.tex, nullptr, &dst);
 }
 
+void UI::drawTextFaded(const std::string& text, int x, int y, SDL_Color color, Uint8 alpha, TTF_Font* f) {
+    if (!f || text.empty() || alpha == 0) return;
+    if (alpha == 255) { drawText(text, x, y, color, f); return; }
+    SDL_Color opaque = color;
+    opaque.a = 255;
+    const auto& entry = getTextEntry(text, f, opaque);
+    if (!entry.tex) return;
+    SDL_SetTextureAlphaMod(entry.tex, alpha);
+    SDL_Rect dst = {x, y, entry.w, entry.h};
+    SDL_RenderCopy(renderer_, entry.tex, nullptr, &dst);
+    SDL_SetTextureAlphaMod(entry.tex, 255); // la entry e' condivisa: ripristina
+}
+
 void UI::drawTextCentered(const std::string& text, int cx, int cy, SDL_Color color, TTF_Font* f) {
     if (!f || text.empty()) return;
     const auto& entry = getTextEntry(text, f, color);

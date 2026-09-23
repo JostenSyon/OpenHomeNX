@@ -1020,16 +1020,16 @@ void UI::drawSettingsPopup() {
                 default: label = i18n::get(StrKey::SetDockReset); value = ""; break;
             }
             int rowX = rx + (hideable ? collapseXShift(localCollapse) : 0); // scivolano a destra mentre sfumano
-            SDL_Color textCol = T().text; textCol.a = (Uint8)((int)textCol.a * alphaMul / 255);
-            SDL_Color valCol = T().selected; valCol.a = (Uint8)((int)valCol.a * alphaMul / 255);
             if (r == selectedLogical && !setFocusLeft_) {
                 drawRect(rx - 8, rowY, POP_W - (rx - popX) - 28, ROW_H - 4, T().menuHighlight);
                 drawRectOutline(rx - 8, rowY, POP_W - (rx - popX) - 28, ROW_H - 4, T().cursor, 2);
             }
-            drawText(label, rowX, rowY + 8, textCol, font_);
+            // Faded via modulate (una texture sola): al primo giro non si
+            // cuoce nessuna variante alpha e non scatta.
+            drawTextFaded(label, rowX, rowY + 8, T().text, alphaMul, font_);
             if (!value.empty()) {
-                const auto& e = getTextEntry(value, font_, valCol);
-                drawText(value, popX + POP_W - 36 - e.w, rowY + 8, valCol, font_);
+                const auto& e = getTextEntry(value, font_, T().selected);
+                drawTextFaded(value, popX + POP_W - 36 - e.w, rowY + 8, T().selected, alphaMul, font_);
             }
             if (r == 3) {
                 // Slider zoom 0..16px con pallino, accanto al valore (stessa riga).
@@ -1164,23 +1164,21 @@ void UI::drawSettingsPopup() {
                 drawRect(rx - 8, rowY, POP_W - (rx - popX) - 28, ROW_H - 4, T().menuHighlight);
                 drawRectOutline(rx - 8, rowY, POP_W - (rx - popX) - 28, ROW_H - 4, T().cursor, 2);
             }
-            SDL_Color tCol = T().text; tCol.a = (Uint8)((int)tCol.a * gMul / 255);
-            SDL_Color vCol = T().selected; vCol.a = (Uint8)((int)vCol.a * gMul / 255);
-            drawText(settingsRowLabel(setCat_, r), growX, rowY + 8, tCol, font_);
+            drawTextFaded(settingsRowLabel(setCat_, r), growX, rowY + 8, T().text, gMul, font_);
             std::string v = settingsRowValue(setCat_, r);
             if (!v.empty()) {
-                const auto& e = getTextEntry(v, font_, vCol);
+                const auto& e = getTextEntry(v, font_, T().selected);
                 // Tronca a larghezza utile (evita che "Aggiornamento" spinga fuori).
                 std::string vt = v;
                 int maxV = popX + POP_W - 36 - (rx + 8) - 12;
                 while (vt.size() > 4 && e.w > maxV) {
                     vt = vt.substr(0, vt.size() - 5) + "..";
                     // ricalcola su vt, non su v
-                    auto ee = getTextEntry(vt, font_, vCol);
+                    auto ee = getTextEntry(vt, font_, T().selected);
                     if (ee.w <= maxV) break;
                 }
-                const auto& ee = getTextEntry(vt, font_, vCol);
-                drawText(vt, popX + POP_W - 36 - ee.w, rowY + 8, vCol, font_);
+                const auto& ee = getTextEntry(vt, font_, T().selected);
+                drawTextFaded(vt, popX + POP_W - 36 - ee.w, rowY + 8, T().selected, gMul, font_);
             }
         }
     }
