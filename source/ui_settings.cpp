@@ -60,15 +60,21 @@ int UI::defaultUserIndex() const {
     return -1;
 }
 
+static std::vector<DevRow> devRowList(bool debugOn, bool sendOn);
 void UI::openSettings() {
     showSettings_ = true;
     setCat_ = 0;
     setRow_ = 0;
     setFocusLeft_ = true;
-    // Aspetto: niente animazione fantasma alla prima apertura -- la molla
-    // parte solo se il layout cambia mentre le impostazioni sono aperte.
-    appearanceCollapse_ = (gameSelectorLayout_ == GameSelectorLayout::Gallery) ? 1.0f : 0.0f;
-    appearanceCollapseVel_ = 0.0f;
+    // Tendine: niente animazione fantasma alla prima apertura -- le molle
+    // partono solo se qualcosa cambia mentre le impostazioni sono aperte.
+    appearanceAnim_.reset((gameSelectorLayout_ == GameSelectorLayout::Gallery) ? 1.0f : 0.0f);
+    emuAnim_.reset(mgbaPath_.empty() ? 1.0f : 0.0f);
+    modUrlAnim_.reset(sendAvailable() ? 0.0f : 1.0f);
+    devDrawList_ = devRowList(DebugLog::enabled(), sendAvailable());
+    devGhosts_.clear();
+    devExpanding_ = false;
+    devAnim_.reset(0.0f);
     showGameSelMenu_ = false;
     if (langList_.empty()) langList_ = i18n::availableLangs();
     // Rilevamento emulatore (v1: solo mGBA): idempotente, gia' fatto al
@@ -243,15 +249,9 @@ bool UI::writeUpdateCfgUrl(const std::string& basePath, const std::string& url) 
 
 // Righe categoria 5 (Sviluppatore) in ordine di visualizzazione.
 // UNICA fonte di verita' per count/label/value/activate di cat.5:
-// aggiungere una voce = un enumeratore qui + un push_back sotto + un case
-// nelle tre funzioni. Niente piu' aritmetica settingsRowCount(5)-N sparsa
-// (era fragile: 11 siti da tenere in sync a mano).
-enum class DevRow {
-    DbgToggle, QuickMenu,
-    ClearBp, Normalize, ClearGal,
-    SendLog, Crash,
-    Rename, Style, Update, Clear, ShowRomsNoSave, DevSync,
-};
+// aggiungere una voce = un enumeratore in ui.h + un push_back sotto + un
+// case nelle tre funzioni. Niente piu' aritmetica settingsRowCount(5)-N
+// sparsa (era fragile: 11 siti da tenere in sync a mano).
 static std::vector<DevRow> devRowList(bool debugOn, bool sendOn) {
     std::vector<DevRow> v = { DevRow::DbgToggle, DevRow::QuickMenu };
     if (debugOn) { v.push_back(DevRow::ClearBp); v.push_back(DevRow::Normalize); v.push_back(DevRow::ClearGal); }
@@ -271,6 +271,20 @@ static DevRow devRowAt(const std::vector<DevRow>& v, int row) {
     return v[(size_t)row];
 }
 
+std::vector<DevRow> UI::devShownList() const {
+    if (!devDrawList_.empty()) return devDrawList_;
+    return devRowList(DebugLog::enabled(), sendAvailable()); // pre-apertura
+}
+
+int UI::sysEmuRow() const {
+    if (!mgbaPath_.empty()) return 2;
+    if (!emuAnim_.settled(1.0f)) return 2; // ghost in chiusura
+    return -1;
+}
+int UI::sysConfirmRow() const {
+    return sysEmuRow() >= 0 ? 3 : 2;
+}
+
 int UI::settingsRowCount(int cat) const {
     switch (cat) {
         case 0: return 1; // Utente predefinito
@@ -278,19 +292,20 @@ int UI::settingsRowCount(int cat) const {
             // Zoom e Menu radiale sono voci morte in Galleria (la vedi non li usa):
             // con il layout Galleria la lista si accorcia di 2 righe.
             return (gameSelectorLayout_ == GameSelectorLayout::Gallery) ? 6 : 8;
-        case 2: return (mgbaPath_.empty() ? 2 : 3) + 1; // Sistema: Core + Installa launcher [+ Emulatore] + Conferma uscita
+        case 2: return sysConfirmRow() + 1; // Core + Launcher [+ Emulatore] + Conferma uscita
         case 3: return 4; // Cartelle, Scansiona, Max, Pulisci
         case 4: {
             // Sorgente/edit custom solo con debug: l'utente normale resta su GitHub.
             // Modifica compare solo a sorgente custom ATTIVA (sendAvailable):
             // hasCustomUrlFile era vera anche col solo .off residuo dopo il
             // passaggio a GitHub, e la riga restava visibile a vuoto.
+            // Ghost tendina: resta finche' la molla non si e' chiusa.
             int n = 4;
-            if (sendAvailable()) n = 5;
+            if (sendAvailable() || !modUrlAnim_.settled(1.0f)) n = 5;
             return n; // Boot, Check, Sorgente, Canale [, Modifica]
         }
         case 5: // vedi devRowList() sopra: unica fonte di verita'
-            return (int)devRowList(DebugLog::enabled(), sendAvailable()).size();
+            return (int)devShownList().size();
         default: return 2; // Versione, Crediti
     }
 }
@@ -321,8 +336,7 @@ std::string UI::settingsRowLabel(int cat, int row) const {
     if (cat == 2) {
         if (row == 0) return i18n::get(StrKey::SetCore);
         if (row == 1) return i18n::get(StrKey::SetInstallLauncher);
-        // Ultima riga: Conferma uscita (indice 2 senza mGBA, 3 con mGBA).
-        if (row == (mgbaPath_.empty() ? 2 : 3)) return i18n::get(StrKey::SetConfirmExit);
+        if (row == sysConfirmRow()) return i18n::get(StrKey::SetConfirmExit);
         return i18n::get(StrKey::SetDefaultEmulator);
     }
     if (cat == 3) {
@@ -341,7 +355,7 @@ std::string UI::settingsRowLabel(int cat, int row) const {
     if (cat == 5) {
         // Dispatch per tag (devRowList): robusto a debug on/off e rete on/off,
         // niente piu' collisioni tra indici di testa e settingsRowCount(5)-N.
-        switch (devRowAt(devRowList(DebugLog::enabled(), sendAvailable()), row)) {
+        switch (devRowAt(devShownList(), row)) {
             case DevRow::DevSync: return i18n::get(StrKey::DevSyncTitle);
             case DevRow::Clear: return i18n::get(StrKey::ScraperBoxartClear);
             case DevRow::Update: return i18n::get(StrKey::ScraperBoxartTitle);
@@ -387,7 +401,7 @@ std::string UI::settingsRowValue(int cat, int row) {
         if (row == 0)
             return useOpenHome() ? i18n::get(StrKey::SetCoreOh) : i18n::get(StrKey::SetCorePk);
         if (row == 1) return ""; // riga azione, come "Scansiona": niente valore a destra
-        if (row == (mgbaPath_.empty() ? 2 : 3))
+        if (row == sysConfirmRow())
             return Settings::confirmExit() ? i18n::get(StrKey::SetOn) : i18n::get(StrKey::SetOff);
 #ifdef OH_LINUX
         // La riga compare solo se rilevato: su R36S findMgba() trova
@@ -443,7 +457,7 @@ std::string UI::settingsRowValue(int cat, int row) {
         return h;
     }
     if (cat == 5) {
-        switch (devRowAt(devRowList(DebugLog::enabled(), sendAvailable()), row)) {
+        switch (devRowAt(devShownList(), row)) {
             case DevRow::DbgToggle:
                 return DebugLog::enabled() ? i18n::get(StrKey::SetOn) : i18n::get(StrKey::SetOff);
             case DevRow::QuickMenu:
@@ -625,9 +639,9 @@ void UI::settingsRowActivate(int cat, int row, int dir, bool& running) {
             setCryptoEngine(useOpenHome() ? CryptoEngine::PK : CryptoEngine::OH);
         } else if (row == 1) {
             installLauncherForwarder();
-        } else if (row == (mgbaPath_.empty() ? 2 : 3)) {
+        } else if (row == sysConfirmRow()) {
             Settings::setConfirmExit(!Settings::confirmExit());
-        } // Emulatore predefinito: riga info, nessuna azione
+        } // Emulatore predefinito (ghost compresa): riga info, nessuna azione
     } else if (cat == 3) {
         if (row == 0) {
             // Stessa lista del menu + (Import): toggle/rimuovi percorsi.
@@ -692,11 +706,15 @@ void UI::settingsRowActivate(int cat, int row, int dir, bool& running) {
                         setKeyInFile(off, "channel", decoy.channel);
                     std::remove(cfg.c_str());
                     DebugLog::line("settings: sorgente -> GitHub (esca %s ripiegata)", cfg.c_str());
+                    if (setRow_ == 4) setRow_ = 3;
                 } else {
                     std::string dst = cfg + ".off";
-                    if (std::rename(cfg.c_str(), dst.c_str()) == 0)
+                    if (std::rename(cfg.c_str(), dst.c_str()) == 0) {
                         DebugLog::line("settings: sorgente -> GitHub (%s disattivato)", cfg.c_str());
-                    else
+                        // La ghost Modifica collassa sotto: il cursore non
+                        // resta sulla riga che sparisce.
+                        if (setRow_ == 4) setRow_ = 3;
+                    } else
                         showMessageAndWait(i18n::get(StrKey::SetTitle), std::string("rename FAIL:\n") + cfg);
                 }
             } else {
@@ -721,13 +739,16 @@ void UI::settingsRowActivate(int cat, int row, int dir, bool& running) {
             if (writeUpdateCfgKey(basePath_, "channel", next))
                 DebugLog::line("settings: channel=%s", next.c_str());
         } else {
+            if (!sendAvailable()) return; // ghost Modifica: nessuna azione
             beginTextInput(TextInputPurpose::EditUpdateUrl);
         }
     } else if (cat == 5) {
         // Dispatch per tag (devRowList): l'ordine delle righe vive in UN solo
         // posto. I corpi sotto sono invariati rispetto alla vecchia versione
         // a indici (solo ri-ancorati ai tag).
-        DevRow tag = devRowAt(devRowList(DebugLog::enabled(), sendAvailable()), row);
+        DevRow tag = devRowAt(devShownList(), row);
+        if (!devExpanding_ && std::find(devGhosts_.begin(), devGhosts_.end(), tag) != devGhosts_.end())
+            return; // ghost in chiusura: nessuna azione
         if (tag == DevRow::DevSync) {
             remoteSyncTestRow();
         } else if (tag == DevRow::Rename) {
@@ -943,26 +964,12 @@ void UI::drawSettingsPopup() {
         // quello istantaneo di sempre (appearanceRow) -- qui e' solo il
         // disegno a interpolare.
         float target = (gameSelectorLayout_ == GameSelectorLayout::Gallery) ? 1.0f : 0.0f;
-        {
-            constexpr float K = 0.35f, D = 0.65f;
-            float disp = appearanceCollapse_ - target;
-            if (disp != 0.0f || appearanceCollapseVel_ != 0.0f) {
-                float force = -disp * K - appearanceCollapseVel_ * D;
-                appearanceCollapseVel_ += force;
-                appearanceCollapse_ += appearanceCollapseVel_;
-                if (std::fabs(appearanceCollapse_ - target) < 0.01f && std::fabs(appearanceCollapseVel_) < 0.01f) {
-                    appearanceCollapse_ = target;
-                    appearanceCollapseVel_ = 0.0f;
-                } else {
-                    markDirty();
-                }
-            }
-        }
-        float collapse = appearanceCollapse_;
+        if (appearanceAnim_.step(target)) markDirty();
+        float collapse = appearanceAnim_.v;
         int selectedLogical = appearanceRow(setRow_, gameSelectorLayout_ == GameSelectorLayout::Gallery);
         for (int r = 0; r < 8; r++) {
             bool hideable = (r == 3 || r == 4);
-            float localCollapse = hideable ? appearanceCollapse_ : 0.0f;
+            float localCollapse = hideable ? appearanceAnim_.v : 0.0f;
             if (localCollapse < 0.0f) localCollapse = 0.0f;
             if (localCollapse > 1.3f) localCollapse = 1.3f; // margine per l'overshoot della molla
             float alphaCollapse = localCollapse > 1.0f ? 1.0f : localCollapse;
@@ -1031,6 +1038,48 @@ void UI::drawSettingsPopup() {
             }
         }
     } else {
+        // Tendine ghost (stessa molla di Aspetto, copiata): Emulatore e
+        // Modifica sfumano scivolando a destra invece di sparire di colpo.
+        // Step qui (una volta per frame), non per-riga: la ghost potrebbe
+        // essere fuori finestra e non verrebbe mai avanzata.
+        if (setCat_ == 2 && emuAnim_.step(mgbaPath_.empty() ? 1.0f : 0.0f)) markDirty();
+        if (setCat_ == 4 && modUrlAnim_.step(sendAvailable() ? 0.0f : 1.0f)) markDirty();
+        if (setCat_ == 5) {
+            // Tendina righe dev (stessa molla): il toggle debug / sorgente
+            // cambia la lista; le righe tolte/aggiunte sono ghost che
+            // collassano/espandono, quelle sotto risalgono/scendono.
+            std::vector<DevRow> cur = devRowList(DebugLog::enabled(), sendAvailable());
+            float devTarget = devExpanding_ ? 0.0f : 1.0f;
+            if (devAnim_.settled(devTarget) && cur != devDrawList_) {
+                std::vector<DevRow> added, removed;
+                for (DevRow t : cur)
+                    if (std::find(devDrawList_.begin(), devDrawList_.end(), t) == devDrawList_.end())
+                        added.push_back(t);
+                for (DevRow t : devDrawList_)
+                    if (std::find(cur.begin(), cur.end(), t) == cur.end())
+                        removed.push_back(t);
+                if (!added.empty()) {
+                    devExpanding_ = true;
+                    devGhosts_ = added;
+                    devDrawList_ = cur;
+                    devAnim_.reset(1.0f);
+                } else if (!removed.empty()) {
+                    devExpanding_ = false;
+                    devGhosts_ = removed;
+                    devAnim_.reset(0.0f); // disegna la vecchia lista
+                } else {
+                    devDrawList_ = cur; // stesso set, ordine mai cambia
+                }
+                devTarget = devExpanding_ ? 0.0f : 1.0f;
+            }
+            if (devAnim_.step(devTarget)) markDirty();
+            if (!devExpanding_ && devAnim_.settled(1.0f) && devDrawList_ != cur) {
+                devDrawList_ = cur; // collasso finito: aggancia la nuova
+                devGhosts_.clear();
+                if (setRow_ >= (int)cur.size()) setRow_ = (int)cur.size() - 1;
+            }
+            if (devExpanding_ && devAnim_.settled(0.0f)) devGhosts_.clear();
+        }
         int n = settingsRowCount(setCat_);
         // Finestra scorrevole: centra la selezione, lascia spazio per footer.
         // visRows viene dallo spazio POPUP davvero disponibile (gia' meno
@@ -1050,6 +1099,7 @@ void UI::drawSettingsPopup() {
             first = setRow_ - visRows / 2;
             if (first < 0) first = 0;
             if (first + visRows > n) first = n - visRows;
+            if (first < 0) first = 0; // cursore oltre la coda (ghost appena chiusa)
         }
         // Frecce di scroll (come liste banche e popup): indicano le voci sopra/sotto.
         if (first > 0)
@@ -1061,25 +1111,66 @@ void UI::drawSettingsPopup() {
             if (vy >= visRows) break; // rispetta il cap che decide anche dove va la freccia sotto
             int rowY = listY + vy * ROW_H;
             if (rowY + ROW_H > popY + POP_H) break;
+            // Frame tendina (copia di Aspetto): solo le ghost sfumano.
+            bool ghost = (setCat_ == 2 && r == 2 && sysEmuRow() == 2 && mgbaPath_.empty()) ||
+                         (setCat_ == 4 && r == 4 && !sendAvailable());
+            float gcol = 0.0f;
+            if (ghost) gcol = (setCat_ == 2) ? emuAnim_.v : modUrlAnim_.v;
+            // Cat 5: ghost = righe in devGhosts_ (stessa molla devAnim_).
+            int ghostsAbove = 0;
+            if (setCat_ == 5 && !devGhosts_.empty()) {
+                DevRow rtag = devRowAt(devDrawList_, r);
+                if (std::find(devGhosts_.begin(), devGhosts_.end(), rtag) != devGhosts_.end()) {
+                    ghost = true;
+                    gcol = devAnim_.v;
+                }
+                for (int k = 0; k < r; k++) {
+                    DevRow ktag = devRowAt(devDrawList_, k);
+                    if (std::find(devGhosts_.begin(), devGhosts_.end(), ktag) != devGhosts_.end())
+                        ghostsAbove++;
+                }
+            }
+            if (gcol < 0.0f) gcol = 0.0f;
+            if (gcol > 1.3f) gcol = 1.3f; // margine per l'overshoot della molla
+            float galpha = gcol > 1.0f ? 1.0f : gcol;
+            Uint8 gMul = ghost ? (Uint8)(((int)(255.0f * (1.0f - galpha)) / 16) * 16) : 255;
+            if (ghost && gMul == 0) continue; // completamente nascosta: niente da disegnare
+            int growX = ghost ? rx + (int)(30.0f * gcol) : rx; // scivola a destra mentre sfuma
+            // Come Aspetto (li' 2 righe -> 2*ROW_H): le righe sotto le ghost
+            // risalgono di una riga per ghost seguendo la molla. Cat 2 ne ha
+            // una (Conferma sotto Emulatore), cat 5 fino a 3 (toggle debug);
+            // Modifica e' sempre ultima.
+            float belowShift = 0.0f;
+            if (setCat_ == 2 && mgbaPath_.empty() && !emuAnim_.settled(1.0f) && r > 2)
+                belowShift = (float)ROW_H * (emuAnim_.v > 1.0f ? 1.0f : (emuAnim_.v < 0.0f ? 0.0f : emuAnim_.v));
+            if (setCat_ == 5 && ghostsAbove > 0) {
+                float dc = devAnim_.v;
+                if (dc > 1.0f) dc = 1.0f;
+                if (dc < 0.0f) dc = 0.0f;
+                belowShift = (float)(ghostsAbove * ROW_H) * dc;
+            }
+            rowY -= (int)(belowShift + 0.5f);
             if (r == setRow_ && !setFocusLeft_) {
                 drawRect(rx - 8, rowY, POP_W - (rx - popX) - 28, ROW_H - 4, T().menuHighlight);
                 drawRectOutline(rx - 8, rowY, POP_W - (rx - popX) - 28, ROW_H - 4, T().cursor, 2);
             }
-            drawText(settingsRowLabel(setCat_, r), rx, rowY + 8, T().text, font_);
+            SDL_Color tCol = T().text; tCol.a = (Uint8)((int)tCol.a * gMul / 255);
+            SDL_Color vCol = T().selected; vCol.a = (Uint8)((int)vCol.a * gMul / 255);
+            drawText(settingsRowLabel(setCat_, r), growX, rowY + 8, tCol, font_);
             std::string v = settingsRowValue(setCat_, r);
             if (!v.empty()) {
-                const auto& e = getTextEntry(v, font_, T().selected);
+                const auto& e = getTextEntry(v, font_, vCol);
                 // Tronca a larghezza utile (evita che "Aggiornamento" spinga fuori).
                 std::string vt = v;
                 int maxV = popX + POP_W - 36 - (rx + 8) - 12;
                 while (vt.size() > 4 && e.w > maxV) {
                     vt = vt.substr(0, vt.size() - 5) + "..";
                     // ricalcola su vt, non su v
-                    auto ee = getTextEntry(vt, font_, T().selected);
+                    auto ee = getTextEntry(vt, font_, vCol);
                     if (ee.w <= maxV) break;
                 }
-                const auto& ee = getTextEntry(vt, font_, T().selected);
-                drawText(vt, popX + POP_W - 36 - ee.w, rowY + 8, T().selected, font_);
+                const auto& ee = getTextEntry(vt, font_, vCol);
+                drawText(vt, popX + POP_W - 36 - ee.w, rowY + 8, vCol, font_);
             }
         }
     }

@@ -73,6 +73,45 @@ struct SearchResult {
     std::string otName;
 };
 
+// Righe categoria 5 (Sviluppatore) in ordine di visualizzazione.
+// UNICA fonte di verita' per count/label/value/activate di cat.5:
+// aggiungere una voce = un enumeratore qui + un push_back in devRowList +
+// un case nelle tre funzioni (era in ui_settings.cpp, spostato qui perche'
+// la tendina tiene la lista disegnata nei membri).
+enum class DevRow {
+    DbgToggle, QuickMenu,
+    ClearBp, Normalize, ClearGal,
+    SendLog, Crash,
+    Rename, Style, Update, Clear, ShowRomsNoSave, DevSync,
+};
+
+// Animazione "tendina" per voci di menù che appaiono/scompaiono (copia
+// esatta della molla di Impostazioni > Aspetto per Zoom/Menu radiale):
+// 0 = visibili, 1 = nascoste, con overshoot durante la transizione.
+// La logica/nav resta istantanea, solo il disegno interpola.
+struct CollapseAnim {
+    float v = 0.0f;
+    float vel = 0.0f;
+    void reset(float target) { v = target; vel = 0.0f; }
+    // Fermi sul target (nessuna ghost da disegnare).
+    bool settled(float target) const { return v == target && vel == 0.0f; }
+    // Avanza verso target con la stessa molla del riordino dock (K/D
+    // uguali). Ritorna true mentre si muove (serve ridisegno).
+    bool step(float target) {
+        constexpr float K = 0.35f, D = 0.65f;
+        float disp = v - target;
+        if (disp == 0.0f && vel == 0.0f) return false;
+        vel += -disp * K - vel * D;
+        v += vel;
+        if (std::fabs(v - target) < 0.01f && std::fabs(vel) < 0.01f) {
+            v = target;
+            vel = 0.0f;
+            return false;
+        }
+        return true;
+    }
+};
+
 // Riepilogo di un lato (locale/remoto) per il popup di confronto della
 // Sincronizza DevSync — vedi UI::showSyncCompareDialog.
 struct SyncSideInfo {
@@ -526,6 +565,10 @@ private:
     std::string settingsRowLabel(int cat, int row) const;
     std::string settingsRowValue(int cat, int row);
     void settingsRowActivate(int cat, int row, int dir, bool& running);
+    // Sistema: riga Emulatore (2 se rilevato o ghost in chiusura, -1 se
+    // assente) e riga Conferma uscita (3 con emulatore, 2 senza).
+    int sysEmuRow() const;
+    int sysConfirmRow() const;
     // Impostazioni -> Sviluppatore -> Ricerca dispositivi (stage 1: login +
     // test di lista sul Filebrowser web di ArkOS/JELOS/ROCKNIX via LAN).
     void remoteSyncTestRow();
@@ -867,11 +910,22 @@ private:
     float dockSlide_[MAX_DOCK_SLOTS] = {};
     float dockSlideVel_[MAX_DOCK_SLOTS] = {};
     void dockSpringStep(std::vector<DockSlot>& slots); // aggiorna dockSlide_ per frame
-    // Stessa molla, applicata al collasso delle voci Zoom/Menu radiale in
-    // Impostazioni > Aspetto (nascoste in layout Galleria): 0 = visibili,
-    // 1 = nascoste, con overshoot durante la transizione (vedi drawSettingsPopup).
-    float appearanceCollapse_ = 0.0f;
-    float appearanceCollapseVel_ = 0.0f;
+    // Tendine (vedi CollapseAnim): una per gruppo di voci che
+    // appaiono/scompaiono — Aspetto (Zoom/Menu radiale in Galleria),
+    // Sistema (Emulatore se rilevato), Aggiornamenti (Modifica se custom),
+    // Sviluppatore (righe da devRowList). Sostituisce i vecchi float
+    // appearanceCollapse_/Vel_ sparsi.
+    CollapseAnim appearanceAnim_;
+    CollapseAnim emuAnim_;
+    CollapseAnim modUrlAnim_;
+    CollapseAnim devAnim_;
+    // Tendina cat 5: lista disegnata (resta la precedente durante la
+    // transizione), ghost in apertura/chiusura, direzione.
+    std::vector<DevRow> devDrawList_;
+    std::vector<DevRow> devGhosts_;
+    bool devExpanding_ = false;
+    // Lista righe Sviluppatore da usare (transizione in corso o live).
+    std::vector<DevRow> devShownList() const;
     // Animazione pulsanti bassi: posizioni/alpha correnti -> target per frame.
     float ejectBtnX_ = -1.0f;
     float ejectBtnA_ = 0.0f;
