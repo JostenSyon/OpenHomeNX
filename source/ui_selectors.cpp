@@ -339,6 +339,10 @@ void UI::handleProfileSelectorInput(bool& running) {
                 case SDL_CONTROLLER_BUTTON_START:
                     // Quit dal selettore profili: la mano (carry) muore qui.
                     if (!confirmQuitWithHold()) break;
+                    if (Settings::confirmExit() &&
+                        !showConfirmDialog(i18n::get(StrKey::ConfirmExitTitle),
+                                           i18n::get(StrKey::ConfirmExitBody)))
+                        break;
                     running = false;
                     break;
             }
@@ -1804,7 +1808,7 @@ void UI::selectorTap(float px, float py, bool& running) {
     if (totalPages > 1) {
         if (dist2(px, py, 34, SCREEN_H / 2) < 34 * 34 && gameSelPage_ > 0) {
             gameSelPage_--;
-            gameSelCursor_ = gameSelPage_ * 12;
+            gameSelCursor_ = pageLastCursor(gameSelPage_);
             gsSetFocus(GSFocus::Grid);
             markDirty();
             return;
@@ -1908,6 +1912,17 @@ void UI::sendLogNow() {
         else
             showMessageAndWait(i18n::get(StrKey::SendLogTitle), i18n::fmt(StrKey::SendLogFailed, err));
     }
+}
+
+int UI::pageLastCursor(int page) const {
+#ifdef OH_LINUX
+    constexpr int kPerPage = 4;
+#else
+    constexpr int kPerPage = 12;
+#endif
+    int n = (int)availableGames_.size();
+    int end = std::min((page + 1) * kPerPage, n);
+    return end > 0 ? end - 1 : 0;
 }
 
 void UI::handleGameSelectorInput(bool& running) {
@@ -2122,7 +2137,7 @@ void UI::handleGameSelectorInput(bool& running) {
             if (col < 0 && gameSelPage_ > 0) {
 #ifdef OH_LINUX
                 gameSelPage_--;
-                gameSelCursor_ = gameSelPage_ * GAMES_PER_PAGE;
+                gameSelCursor_ = pageLastCursor(gameSelPage_);
 #else
                 gsSetFocus(GSFocus::ChevLeft);
 #endif
@@ -2208,7 +2223,7 @@ void UI::handleGameSelectorInput(bool& running) {
                 } else if (dx > 120 && std::fabs(dy) < 200) {
                     if (totalPages > 1 && gameSelPage_ > 0) {
                         gameSelPage_--;
-                        gameSelCursor_ = gameSelPage_ * GAMES_PER_PAGE;
+                        gameSelCursor_ = pageLastCursor(gameSelPage_);
                         gsSetFocus(GSFocus::Grid);
                         markDirty();
                     }
@@ -2683,7 +2698,7 @@ void UI::handleGameSelectorInput(bool& running) {
                     if (dockState_.reorderMode) { dockStateExitReorderMode(true); break; } // A conferma il riordino
                     if (gsFocus_ == GSFocus::ChevLeft && gameSelPage_ > 0) {
                         gameSelPage_--;
-                        gameSelCursor_ = gameSelPage_ * GAMES_PER_PAGE;
+                        gameSelCursor_ = pageLastCursor(gameSelPage_);
                         gsUnfocus(GSFocus::ChevLeft);
                     } else if (gsFocus_ == GSFocus::ChevRight && gameSelPage_ < totalPages - 1) {
                         gameSelPage_++;
@@ -2721,6 +2736,10 @@ void UI::handleGameSelectorInput(bool& running) {
                     } else {
                         // Quit dal selettore giochi: la mano (carry) muore qui.
                         if (!confirmQuitWithHold()) break;
+                        if (Settings::confirmExit() &&
+                            !showConfirmDialog(i18n::get(StrKey::ConfirmExitTitle),
+                                               i18n::get(StrKey::ConfirmExitBody)))
+                            break;
                         running = false;
                     }
                     break;
@@ -2756,7 +2775,7 @@ void UI::handleGameSelectorInput(bool& running) {
                 case SDL_CONTROLLER_BUTTON_LEFTSHOULDER: { // L = previous page
                     if (totalPages > 1 && gameSelPage_ > 0) {
                         gameSelPage_--;
-                        gameSelCursor_ = gameSelPage_ * GAMES_PER_PAGE;
+                        gameSelCursor_ = pageLastCursor(gameSelPage_);
                         gsSetFocus(GSFocus::Grid);
                     }
                     break;

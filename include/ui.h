@@ -857,6 +857,9 @@ private:
     float touchStartX_ = 0, touchStartY_ = 0;
     bool touchDown_ = false, touchMoved_ = false;
     void selectorTap(float px, float py, bool& running);
+    // Ultimo indice cursore della pagina (continuita' tornando indietro con
+    // L / swipe / frecce: si riparte dall'ultima icona, non dalla prima).
+    int pageLastCursor(int page) const;
     // Effetto molla/budino sul riordino dock (entry: Y su icona dock o menu +):
     // offset x per slot, il draw lo insegue con molla smorzata (overshoot +
     // ritorno), azzerato a riposo.

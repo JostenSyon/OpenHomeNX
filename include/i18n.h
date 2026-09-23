@@ -289,6 +289,9 @@ namespace StrKey {
     // Riga "Installa launcher" dentro Sistema (ex Core) + suo dialogo/esiti.
     constexpr const char* SetInstallLauncher      = "set_install_launcher";
     constexpr const char* SetDefaultEmulator      = "set_default_emulator";
+    constexpr const char* SetConfirmExit          = "set_confirm_exit";
+    constexpr const char* ConfirmExitTitle        = "confirm_exit_title";
+    constexpr const char* ConfirmExitBody         = "confirm_exit_body";
     constexpr const char* LaunchGameTitle         = "launch_game_title";
     constexpr const char* LaunchGameConfirm       = "launch_game_confirm";
     constexpr const char* LaunchGameFailed        = "launch_game_failed";

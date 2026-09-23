@@ -278,7 +278,7 @@ int UI::settingsRowCount(int cat) const {
             // Zoom e Menu radiale sono voci morte in Galleria (la vedi non li usa):
             // con il layout Galleria la lista si accorcia di 2 righe.
             return (gameSelectorLayout_ == GameSelectorLayout::Gallery) ? 6 : 8;
-        case 2: return mgbaPath_.empty() ? 2 : 3; // Sistema: Core + Installa launcher [+ Emulatore predefinito]
+        case 2: return (mgbaPath_.empty() ? 2 : 3) + 1; // Sistema: Core + Installa launcher [+ Emulatore] + Conferma uscita
         case 3: return 4; // Cartelle, Scansiona, Max, Pulisci
         case 4: {
             // Sorgente/edit custom solo con debug: l'utente normale resta su GitHub.
@@ -318,6 +318,8 @@ std::string UI::settingsRowLabel(int cat, int row) const {
     if (cat == 2) {
         if (row == 0) return i18n::get(StrKey::SetCore);
         if (row == 1) return i18n::get(StrKey::SetInstallLauncher);
+        // Ultima riga: Conferma uscita (indice 2 senza mGBA, 3 con mGBA).
+        if (row == (mgbaPath_.empty() ? 2 : 3)) return i18n::get(StrKey::SetConfirmExit);
         return i18n::get(StrKey::SetDefaultEmulator);
     }
     if (cat == 3) {
@@ -382,7 +384,16 @@ std::string UI::settingsRowValue(int cat, int row) {
         if (row == 0)
             return useOpenHome() ? i18n::get(StrKey::SetCoreOh) : i18n::get(StrKey::SetCorePk);
         if (row == 1) return ""; // riga azione, come "Scansiona": niente valore a destra
+        if (row == (mgbaPath_.empty() ? 2 : 3))
+            return Settings::confirmExit() ? i18n::get(StrKey::SetOn) : i18n::get(StrKey::SetOff);
+#ifdef OH_LINUX
+        // La riga compare solo se rilevato: su R36S findMgba() trova
+        // retroarch (lanciato poi col core mgba), quindi si mostra
+        // RetroArch e non mGBA per non confondere.
+        return "RetroArch (mgba)"; // riga info: emulatore rilevato, nessuna azione
+#else
         return "mGBA"; // riga info: unico emulatore supportato per ora
+#endif
     }
     if (cat == 3) {
         if (row == 0) {
@@ -611,7 +622,9 @@ void UI::settingsRowActivate(int cat, int row, int dir, bool& running) {
             setCryptoEngine(useOpenHome() ? CryptoEngine::PK : CryptoEngine::OH);
         } else if (row == 1) {
             installLauncherForwarder();
-        } // row 2 (Emulatore predefinito): riga info, nessuna azione
+        } else if (row == (mgbaPath_.empty() ? 2 : 3)) {
+            Settings::setConfirmExit(!Settings::confirmExit());
+        } // Emulatore predefinito: riga info, nessuna azione
     } else if (cat == 3) {
         if (row == 0) {
             // Stessa lista del menu + (Import): toggle/rimuovi percorsi.
