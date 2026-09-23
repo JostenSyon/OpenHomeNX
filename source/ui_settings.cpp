@@ -865,23 +865,25 @@ void UI::settingsRowActivate(int cat, int row, int dir, bool& running) {
                 // cancel cooperativo a granularita' singola ROM). Il fronte
                 // di salita su B viene gratis dalla coda eventi (DOWN una
                 // volta sola): niente piu' falso annullo da livello residuo.
-                bool scrapeCancel = false;
                 std::string cancelHint = i18n::get(StrKey::ScraperBoxartCancel);
                 std::string cancellingMsg = i18n::get(StrKey::ScraperBoxartCancelling);
                 std::string barTitle = i18n::get(StrKey::ScraperBoxartTitle);
-                Boxart::ScrapeResult res;
-                BackgroundJob job;
-                auto scrapeWorker = [&](BackgroundJob& j) {
-                    res = Boxart::scrape(basePath_, importedGames_,
-                        [&](const std::string& s){ j.report(s); }, &scrapeCancel);
-                };
-                if (!job.start(scrapeWorker)) {
-                    // Thread non partito: fallback sincrono senza cancel
-                    // (esplicito, mai hang).
-                    DebugLog::line("boxart: job.start fallita, scrape sincrono");
-                    res = Boxart::scrape(basePath_, importedGames_,
-                        [this](const std::string& s){ showWorking(s); });
-                } else {
+                auto doScrape = [&]() -> Boxart::ScrapeResult {
+                    bool scrapeCancel = false;
+                    Boxart::ScrapeResult res;
+                    BackgroundJob job;
+                    auto scrapeWorker = [&](BackgroundJob& j) {
+                        res = Boxart::scrape(basePath_, importedGames_,
+                            [&](const std::string& s){ j.report(s); }, &scrapeCancel);
+                    };
+                    if (!job.start(scrapeWorker)) {
+                        // Thread non partito: fallback sincrono senza cancel
+                        // (esplicito, mai hang).
+                        DebugLog::line("boxart: job.start fallita, scrape sincrono");
+                        res = Boxart::scrape(basePath_, importedGames_,
+                            [this](const std::string& s){ showWorking(s); });
+                        return res;
+                    }
                     std::string line;
                     while (!job.done()) {
                         job.poll(line);
@@ -907,11 +909,24 @@ void UI::settingsRowActivate(int cat, int row, int dir, bool& running) {
                         SDL_Delay(16);
                     }
                     job.join();
+                    return res;
+                };
+                auto doneMsg = [&](const Boxart::ScrapeResult& r) {
+                    return i18n::fmt(StrKey::ScraperBoxartDone,
+                        std::to_string(r.found), std::to_string(r.total),
+                        std::to_string(r.skipped));
+                };
+                Boxart::ScrapeResult res = doScrape();
+                // Saltate da miss flaky (es. timeout SS poi rientrato):
+                // offri il retry SENZA buttare le cover buone (Pulisci
+                // riscaricherebbe tutto, spreco di API). A = riprova, B = chiudi.
+                if (!res.cancelled && res.skipped > 0 &&
+                    showConfirmDialog(barTitle,
+                        doneMsg(res) + "\n" + i18n::get(StrKey::ScraperBoxartRetry))) {
+                    Boxart::clearMissMarkers(basePath_);
+                    res = doScrape();
                 }
-                showMessageAndWait(i18n::get(StrKey::ScraperBoxartTitle),
-                    i18n::fmt(StrKey::ScraperBoxartDone,
-                        std::to_string(res.found), std::to_string(res.total),
-                        std::to_string(res.skipped)));
+                showMessageAndWait(barTitle, doneMsg(res));
                 loadGameIcons(); // le nuove cover in cache appaiono subito
             }
         } else if (tag == DevRow::Clear) {

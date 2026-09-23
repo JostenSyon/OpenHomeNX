@@ -812,4 +812,32 @@ int clearCache(const std::string& basePath) {
     return n;
 }
 
+static int clearMissFiles(const std::string& dir) {
+    int n = 0;
+    DIR* d = opendir(dir.c_str());
+    if (!d) return 0;
+    struct dirent* e;
+    while ((e = readdir(d)) != nullptr) {
+        std::string name = e->d_name;
+        if (name == "." || name == "..") continue;
+        std::string full = dir + "/" + name;
+        struct stat st;
+        if (stat(full.c_str(), &st) != 0) continue;
+        if (S_ISDIR(st.st_mode)) {
+            n += clearMissFiles(full);
+        } else if (name.size() > 5 && name.compare(name.size() - 5, 5, ".miss") == 0 &&
+                   std::remove(full.c_str()) == 0) {
+            n++;
+        }
+    }
+    closedir(d);
+    return n;
+}
+
+int clearMissMarkers(const std::string& basePath) {
+    int n = clearMissFiles(basePath + "cache/covers");
+    DebugLog::line("boxart: clear %d marker miss", n);
+    return n;
+}
+
 } // namespace Boxart
