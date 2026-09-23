@@ -1076,7 +1076,10 @@ void UI::drawSettingsPopup() {
             Uint8 alphaMul = hideable ? collapseAlphaMul(localCollapse) : 255;
             if (hideable && alphaMul == 0) continue; // completamente nascosta: niente da disegnare
             float rowShift = collapseRowShift(collapse, 2, ROW_H); // le righe sotto risalgono seguendo la molla (con overshoot)
-            int rowY = listY + (int)(r * ROW_H - (r >= 6 ? rowShift : 0.0f) + 0.5f);
+            // Soglia r>=5: le nascoste sono 3,4, quindi Stile (5) e tutte le
+            // sotto risalgono (era rimasta a 6 dallo spostamento, Stile fisso
+            // con le altre che gli scorrevano sotto in sovrapposizione).
+            int rowY = listY + (int)(r * ROW_H - (r >= 5 ? rowShift : 0.0f) + 0.5f);
             std::string label, value;
             switch (r) {
                 case 0: label = i18n::get(StrKey::SetTheme); value = getThemeName(themeIndex_); break;
