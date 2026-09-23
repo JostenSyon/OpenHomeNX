@@ -499,7 +499,11 @@ std::vector<std::string> UI::autoBackupEntries(GameType g) const {
     return entries;
 }
 
-// --- Sync FRLG nativo <-> ROM (stesso gruppo bankGroupName) ---
+// --- Sync FRLG nativo <-> ROM (stesso GIOCO base) ---
+// ATTENZIONE (bug reale 2026-09-24): il pairing NON va fatto per
+// bankGroupName ("FireRed / LeafGreen" copre ENTRAMBI i giochi) ma per gioco
+// base (FR vs LG, regione ignorata) -- prima il save NSO di FireRed veniva
+// copiato anche sulla ROM di LeafGreen, distruggendone il save diverso.
 // Regola: vince il save con piu' tempo di gioco (playTimeSeconds, stesso
 // container GBA da ambo i lati, gia' verificato). Mai copie alla cieca: se
 // un playtime e' illeggibile la coppia si salta con log. Prima di OGNI
@@ -533,11 +537,11 @@ void UI::syncFrlgSaves(bool silent) {
     std::string detail;
     for (const auto& ig : importedGames_) {
         if (!isFRLG(ig.type)) continue;
-        const char* grp = bankGroupNameOf(ig.type);
+        GameType want = frlgBase(ig.type);
         GameType nat = GameType::FR;
         bool haveNat = false;
         for (GameType n : natives)
-            if (std::strcmp(bankGroupNameOf(n), grp) == 0) { nat = n; haveNat = true; break; }
+            if (frlgBase(n) == want) { nat = n; haveNat = true; break; }
         if (!haveNat) continue;
         std::string mnt = account_.mountSave(selectedProfile_, nat);
         if (mnt.empty()) {
@@ -575,10 +579,11 @@ void UI::syncFrlgSaves(bool silent) {
         bool natWins = ta > tb;
         if (copyFileTo(natWins ? natFile : romFile, natWins ? romFile : natFile)) {
             synced++;
-            DebugLog::line("frlg-sync: %s -> %s (%ld vs %ld s)",
-                (natWins ? "nativo" : "rom"), (natWins ? "rom" : "nativo"), ta, tb);
+            DebugLog::line("frlg-sync: %s %s -> %s %s (%ld vs %ld s)",
+                gameInfo(nat).gameTag, (natWins ? "nativo" : "rom"),
+                gameInfo(ig.type).gameTag, (natWins ? "rom" : "nativo"), ta, tb);
             if (!detail.empty()) detail += "\n";
-            detail += std::string(natWins ? "NSO -> ROM" : "ROM -> NSO") + " (" +
+            detail += std::string(gameInfo(nat).gameTag) + (natWins ? " NSO -> ROM (" : " ROM -> NSO (") +
                       std::to_string((natWins ? ta : tb) / 3600) + "h)";
         } else {
             DebugLog::line("frlg-sync: copia FALLITA");

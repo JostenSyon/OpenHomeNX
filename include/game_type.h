@@ -20,6 +20,19 @@ inline bool isFRLG(GameType g) {
            g == GameType::FR_FR || g == GameType::LG_FR ||
            g == GameType::FR_JA || g == GameType::LG_JA;
 }
+// Gioco base FRLG ignorando la regione (FR* -> FR, LG* -> LG). Usato per
+// accoppiare nativo <-> ROM nel sync e nel filtro doppioni: MAI per
+// bankGroupName (il gruppo copre entrambi i giochi e mischiava FR con LG).
+inline GameType frlgBase(GameType g) {
+    switch (g) {
+        case GameType::LG:
+        case GameType::LG_ES: case GameType::LG_DE: case GameType::LG_IT:
+        case GameType::LG_FR: case GameType::LG_JA:
+            return GameType::LG;
+        default:
+            return GameType::FR; // chiamante garantisce isFRLG(g)
+    }
+}
 
 // File-backed games with no Switch titleId: found on SD/USB by scanning
 // configured import paths (see import_paths.h, import_scan.h) rather than

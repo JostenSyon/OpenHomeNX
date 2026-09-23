@@ -426,11 +426,11 @@ void UI::selectProfile(int index) {
 
 bool UI::hideFrlgRom(GameType t) const {
     if (!isFRLG(t) || Settings::showFrlgRoms()) return false;
-    // Solo le native contano (flag esatto, non scansione per valore):
-    // confronta il bankGroupName condiviso da tutte le varianti regionali.
+    // Solo le native contano (flag esatto) e solo dello STESSO gioco base:
+    // una nativa FR non deve mai nascondere una ROM LG (stesso errore del
+    // sync, vedi frlgBase in game_type.h).
     for (size_t i = 0; i < availableGames_.size(); i++)
-        if (availableGamesNative_[i] != 0 &&
-            std::strcmp(bankGroupNameOf(availableGames_[i]), bankGroupNameOf(t)) == 0)
+        if (availableGamesNative_[i] != 0 && frlgBase(availableGames_[i]) == frlgBase(t))
             return true;
     return false;
 }
