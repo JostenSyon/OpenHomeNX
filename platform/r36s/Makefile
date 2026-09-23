@@ -58,7 +58,7 @@ CXXFLAGS    := -std=c++20 -O2 -Wall -DOH_LINUX -DOH_DEBUG_LOG \
 SRC_CORE := \
   backpack bank bank_manager boxart crypto_engine debug_log emulator form_names \
   handler_update handler_update_ffi i18n import_paths import_scan item_locations \
-  md5 move_types poke_crypto pokedex pokedex_ffi pokemon pokemon_ffi \
+  job md5 move_types poke_crypto pokedex pokedex_ffi pokemon pokemon_ffi \
   save_file save_file_ffi sc_block settings_cfg species_converter swish_crypto \
   theme trade_evo wondercard rominfo ui ui_backpack ui_bank ui_gallery ui_input ui_render ui_selectors \
   ui_update ui_backups ui_settings ui_remotesync \

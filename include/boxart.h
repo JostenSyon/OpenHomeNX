@@ -45,5 +45,8 @@ ScrapeResult scrape(const std::string& basePath,
 // Cancella tutti i file in cache/covers/ (tornano le tile composte
 // logo+sfondo+label da romfs). Ritorna il numero di file rimossi.
 int clearCache(const std::string& basePath);
+// Cancella solo i marker .miss (ritenta le saltate SENZA riscaricare le
+// cover buone). Ritorna il numero di marker rimossi.
+int clearMissMarkers(const std::string& basePath);
 
 } // namespace Boxart

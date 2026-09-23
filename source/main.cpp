@@ -163,6 +163,9 @@ int main(int argc, char* argv[]) {
                        (unsigned)netRc, netReady ? "on" : "off", pendingUpdate ? 1 : 0);
         updateNetSetReady(netReady);
     }
+    // curl una volta sola qui (main thread, prima di qualunque worker):
+    // dopo questo punto curl_global_init() non deve piu' essere chiamata.
+    updateNetInitCurl();
     bootMark("rete");
 
     // Auto-check update in parallelo (solo se `auto=1` in update.cfg, mai sul

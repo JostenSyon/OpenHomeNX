@@ -21,6 +21,11 @@ struct RemoteUpdateInfo {
 // true quando i socket sono pronti (impostato da main dopo socketInitializeDefault).
 bool updateNetAvailable();
 void updateNetSetReady(bool ready);
+// curl_global_init() UNA volta al boot sul main thread, prima che parta un
+// qualunque worker (job.h e gli altri). libcurl lo richiede esplicito prima
+// che esistano altri thread; il vecchio lazy-init in updateNetEnsureReady()
+// (static bool senza mutex) era una race se worker+main lo chiamavano vicini.
+void updateNetInitCurl();
 // Ritenta l'init socket (+curl) se giu: il boot puo fallire la race col WiFi.
 // true se rete usabile. Chiamato dai gate update prima di dichiararla off.
 bool updateNetEnsureReady();
@@ -77,7 +82,8 @@ std::string sha256HexFile(const std::string& path);
 // Se `expectSha256` non è vuoto, verifica in RAM e fallisce esplicito.
 bool updateNetDownload(const std::string& url, const std::string& token,
                        const std::string& destPath, const std::string& expectSha256,
-                       std::string& err, UpdateProgressFn progress = nullptr);
+                       std::string& err, UpdateProgressFn progress = nullptr,
+                       const bool* cancel = nullptr);
 
 // POST di `basePath/debug.log` a `baseUrl/upload` (o /upload.log). Richiede debug on.
 bool updateNetUploadLog(const std::string& baseUrl, const std::string& token,

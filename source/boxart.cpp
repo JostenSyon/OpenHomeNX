@@ -409,7 +409,8 @@ std::string ssPickMediaUrl(const nlohmann::json& medias, const std::string& want
 // stessa cache/covers/ e viene rimosso subito dopo, come il listing libretro.
 bool screenScraperFetch(const std::string& basePath, const std::string& rom,
                         const std::string& sysId, const std::string& wantType,
-                        const std::string& dst, std::string& err) {
+                        const std::string& dst, std::string& err,
+                        const bool* cancel = nullptr) {
     struct stat st;
     long long romSize = (stat(rom.c_str(), &st) == 0) ? (long long)st.st_size : 0;
     std::string url = "https://api.screenscraper.fr/api2/jeuInfos.php"
@@ -421,7 +422,7 @@ bool screenScraperFetch(const std::string& basePath, const std::string& rom,
     if (romSize > 0) url += "&romtaille=" + std::to_string(romSize);
 
     std::string jsonPath = basePath + "cache/covers/.ssinfo.json";
-    if (!updateNetDownload(url, "", jsonPath, "", err)) return false;
+    if (!updateNetDownload(url, "", jsonPath, "", err, nullptr, cancel)) return false;
 
     std::ifstream jf(jsonPath, std::ios::binary);
     std::string js((std::istreambuf_iterator<char>(jf)), std::istreambuf_iterator<char>());
@@ -441,7 +442,7 @@ bool screenScraperFetch(const std::string& basePath, const std::string& rom,
         err = wantType + " non disponibile per questo gioco";
         return false;
     }
-    return updateNetDownload(mediaUrl, "", dst, "", err);
+    return updateNetDownload(mediaUrl, "", dst, "", err, nullptr, cancel);
 }
 
 // Cache separata per stile (<base>.locale/.2d/.3d): cambiare stile
@@ -471,11 +472,13 @@ bool screenScraperFetch(const std::string& basePath, const std::string& rom,
 
 // Marker miss: "<base>.<tag>.miss" (stessa dir delle cover). Una ROM che ha
 // fallito TUTTO (locale + rete tentata davvero) non ribrucia i timeout di
-// rete a ogni Aggiorna: viene saltata finche' il marker e' fresco (72h).
-// "Pulisci boxart" li rimuove insieme alle cover (ritenta tutto), cambiare
-// stile usa un tag diverso (ritenta). Mai scritti se la rete non e' stata
-// nemmeno tentata (off/non mappato): quelli restano economici da riprovare.
-static constexpr long kMissTtlSec = 72 * 3600;
+// rete a ogni Aggiorna: viene saltata finche' il marker e' fresco (1h,
+// abbastanza per non spammare i 404 veri, poco per non nascondere i miss
+// flaky tipo timeout SS poi rientrati). "Pulisci boxart" li rimuove insieme
+// alle cover (ritenta tutto), cambiare stile usa un tag diverso (ritenta).
+// Mai scritti se la rete non e' stata nemmeno tentata (off/non mappato):
+// quelli restano economici da riprovare.
+static constexpr long kMissTtlSec = 3600;
 static std::string missMarkerPath(const std::string& basePath, const std::string& romPath) {
     std::string sys = sysFromRom(romPath);
     if (sys.empty()) sys = "rom";
@@ -573,7 +576,7 @@ ScrapeResult scrape(const std::string& basePath,
             r.found++;
             continue;
         }
-        // Miss recente: salta subito senza rete (marker .miss < 72h).
+        // Miss recente: salta subito senza rete (marker .miss < 1h).
         if (missFresh(basePath, rom)) {
             DebugLog::line("boxart: %s miss recente, salto", base.c_str());
             r.skipped++;
@@ -636,7 +639,7 @@ ScrapeResult scrape(const std::string& basePath,
             //    non e' nel loro database o l'API non risponde.
             if (!ssSysId.empty()) {
                 std::string wantType = (style == Style::Box3d) ? "box-3D" : "box-2D";
-                ok = screenScraperFetch(basePath, rom, ssSysId, wantType, dst, err);
+                ok = screenScraperFetch(basePath, rom, ssSysId, wantType, dst, err, cancel);
                 if (ok)
                     DebugLog::line("boxart: %s ScreenScraper %s ok", base.c_str(), wantType.c_str());
                 else
@@ -659,12 +662,12 @@ ScrapeResult scrape(const std::string& basePath,
                 std::string url = "https://raw.githubusercontent.com/libretro-thumbnails/"
                                   + repo + "/master/Named_Boxarts/" +
                                   urlEncodePath(base + ".png");
-                ok = updateNetDownload(url, "", dst, "", err);
+                ok = updateNetDownload(url, "", dst, "", err, nullptr, cancel);
                 if (!ok && !cancelledNow()) {
                     std::string url2 = "https://raw.githubusercontent.com/libretro-thumbnails/"
                                        + repo + "/master/Named_Boxarts/" +
                                        urlEncodePath(fileName(rom) + ".png");
-                    ok = updateNetDownload(url2, "", dst, "", err);
+                    ok = updateNetDownload(url2, "", dst, "", err, nullptr, cancel);
                 }
                 // 2. Match fuzzy via elenco repo (nomi No-Intro vs nome ROM).
                 if (!ok && !cancelledNow()) {
@@ -672,7 +675,7 @@ ScrapeResult scrape(const std::string& basePath,
                                       + repo + "/contents/Named_Boxarts";
                     std::string listPath = basePath + "cache/covers/.listing_" + sys + ".json";
                     std::string apiErr;
-                    if (updateNetDownload(api, "", listPath, "", apiErr)) {
+                    if (updateNetDownload(api, "", listPath, "", apiErr, nullptr, cancel)) {
                         std::ifstream lf(listPath, std::ios::binary);
                         std::string js((std::istreambuf_iterator<char>(lf)),
                                        std::istreambuf_iterator<char>());
@@ -722,7 +725,7 @@ ScrapeResult scrape(const std::string& basePath,
                             if (best > 0) {
                                 DebugLog::line("boxart: %s fuzzy '%s' (score %d)",
                                                base.c_str(), bestName.c_str(), best);
-                                ok = updateNetDownload(bestUrl, "", dst, "", err);
+                                ok = updateNetDownload(bestUrl, "", dst, "", err, nullptr, cancel);
                             }
                         }
                         std::remove(listPath.c_str());
@@ -765,7 +768,7 @@ ScrapeResult scrape(const std::string& basePath,
             if (tryLocal()) { r.found++; continue; }
             // Niente marker se l'utente ha annullato a meta' di QUESTA ROM:
             // e' un tentativo abbandonato, non un vero miss di rete -- non
-            // deve costarle 72h di skip silenzioso al prossimo Aggiorna.
+            // deve costarle 1h di skip silenzioso al prossimo Aggiorna.
             if (netAttempted && !cancelledNow()) writeMissMarker(basePath, rom);
             if (cancelledNow()) { DebugLog::line("boxart: scrape annullato (%d/%d)", r.found, r.total); r.cancelled = true; break; }
             continue;
@@ -808,6 +811,34 @@ static int clearDirFiles(const std::string& dir) {
 int clearCache(const std::string& basePath) {
     int n = clearDirFiles(basePath + "cache/covers");
     DebugLog::line("boxart: clear %d file", n);
+    return n;
+}
+
+static int clearMissFiles(const std::string& dir) {
+    int n = 0;
+    DIR* d = opendir(dir.c_str());
+    if (!d) return 0;
+    struct dirent* e;
+    while ((e = readdir(d)) != nullptr) {
+        std::string name = e->d_name;
+        if (name == "." || name == "..") continue;
+        std::string full = dir + "/" + name;
+        struct stat st;
+        if (stat(full.c_str(), &st) != 0) continue;
+        if (S_ISDIR(st.st_mode)) {
+            n += clearMissFiles(full);
+        } else if (name.size() > 5 && name.compare(name.size() - 5, 5, ".miss") == 0 &&
+                   std::remove(full.c_str()) == 0) {
+            n++;
+        }
+    }
+    closedir(d);
+    return n;
+}
+
+int clearMissMarkers(const std::string& basePath) {
+    int n = clearMissFiles(basePath + "cache/covers");
+    DebugLog::line("boxart: clear %d marker miss", n);
     return n;
 }
 
