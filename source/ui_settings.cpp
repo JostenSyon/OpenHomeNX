@@ -319,6 +319,26 @@ static int appearanceRow(int row, bool gallery) {
     return row;
 }
 
+// Frame tendina UNICO (era duplicato tra Aspetto e loop generico): stessa
+// matematica per tutti — alpha quantizzata, slide 30px a destra, risalita
+// righe sotto con overshoot della molla (collapse grezzo, non clampato).
+static float collapseClamped(float c) {
+    if (c < 0.0f) return 0.0f;
+    if (c > 1.3f) return 1.3f; // margine per l'overshoot della molla
+    return c;
+}
+static Uint8 collapseAlphaMul(float c) {
+    float a = collapseClamped(c);
+    if (a > 1.0f) a = 1.0f;
+    return (Uint8)(((int)(255.0f * (1.0f - a)) / 16) * 16);
+}
+static int collapseXShift(float c) {
+    return (int)(30.0f * collapseClamped(c));
+}
+static float collapseRowShift(float rawCollapse, int hiddenRows, int rowH) {
+    return (float)(hiddenRows * rowH) * rawCollapse;
+}
+
 static std::string readDefaultUser(const std::string& basePath);
 std::string UI::settingsRowLabel(int cat, int row) const {
     if (cat == 0) return i18n::get(StrKey::SetDefaultUser);
@@ -970,12 +990,9 @@ void UI::drawSettingsPopup() {
         for (int r = 0; r < 8; r++) {
             bool hideable = (r == 3 || r == 4);
             float localCollapse = hideable ? appearanceAnim_.v : 0.0f;
-            if (localCollapse < 0.0f) localCollapse = 0.0f;
-            if (localCollapse > 1.3f) localCollapse = 1.3f; // margine per l'overshoot della molla
-            float alphaCollapse = localCollapse > 1.0f ? 1.0f : localCollapse;
-            Uint8 alphaMul = hideable ? (Uint8)(((int)(255.0f * (1.0f - alphaCollapse)) / 16) * 16) : 255;
+            Uint8 alphaMul = hideable ? collapseAlphaMul(localCollapse) : 255;
             if (hideable && alphaMul == 0) continue; // completamente nascosta: niente da disegnare
-            float rowShift = 2.0f * ROW_H * collapse; // le righe sotto risalgono seguendo la molla (con overshoot)
+            float rowShift = collapseRowShift(collapse, 2, ROW_H); // le righe sotto risalgono seguendo la molla (con overshoot)
             int rowY = listY + (int)(r * ROW_H - (r >= 5 ? rowShift : 0.0f) + 0.5f);
             std::string label, value;
             switch (r) {
@@ -1002,7 +1019,7 @@ void UI::drawSettingsPopup() {
                     break;
                 default: label = i18n::get(StrKey::SetDockReset); value = ""; break;
             }
-            int rowX = rx + (hideable ? (int)(30.0f * localCollapse) : 0); // scivolano a destra mentre sfumano
+            int rowX = rx + (hideable ? collapseXShift(localCollapse) : 0); // scivolano a destra mentre sfumano
             SDL_Color textCol = T().text; textCol.a = (Uint8)((int)textCol.a * alphaMul / 255);
             SDL_Color valCol = T().selected; valCol.a = (Uint8)((int)valCol.a * alphaMul / 255);
             if (r == selectedLogical && !setFocusLeft_) {
@@ -1111,7 +1128,7 @@ void UI::drawSettingsPopup() {
             if (vy >= visRows) break; // rispetta il cap che decide anche dove va la freccia sotto
             int rowY = listY + vy * ROW_H;
             if (rowY + ROW_H > popY + POP_H) break;
-            // Frame tendina (copia di Aspetto): solo le ghost sfumano.
+            // Frame tendina UNICO (stessi helper di Aspetto): solo le ghost sfumano.
             bool ghost = (setCat_ == 2 && r == 2 && sysEmuRow() == 2 && mgbaPath_.empty()) ||
                          (setCat_ == 4 && r == 4 && !sendAvailable());
             float gcol = 0.0f;
@@ -1130,25 +1147,18 @@ void UI::drawSettingsPopup() {
                         ghostsAbove++;
                 }
             }
-            if (gcol < 0.0f) gcol = 0.0f;
-            if (gcol > 1.3f) gcol = 1.3f; // margine per l'overshoot della molla
-            float galpha = gcol > 1.0f ? 1.0f : gcol;
-            Uint8 gMul = ghost ? (Uint8)(((int)(255.0f * (1.0f - galpha)) / 16) * 16) : 255;
+            Uint8 gMul = ghost ? collapseAlphaMul(gcol) : 255;
             if (ghost && gMul == 0) continue; // completamente nascosta: niente da disegnare
-            int growX = ghost ? rx + (int)(30.0f * gcol) : rx; // scivola a destra mentre sfuma
-            // Come Aspetto (li' 2 righe -> 2*ROW_H): le righe sotto le ghost
-            // risalgono di una riga per ghost seguendo la molla. Cat 2 ne ha
-            // una (Conferma sotto Emulatore), cat 5 fino a 3 (toggle debug);
-            // Modifica e' sempre ultima.
+            int growX = ghost ? rx + collapseXShift(gcol) : rx; // scivola a destra mentre sfuma
+            // Stesso helper di Aspetto: le righe sotto le ghost risalgono
+            // di una riga per ghost seguendo la molla (con overshoot).
+            // Cat 2 ne ha una (Conferma sotto Emulatore), cat 5 fino a 3
+            // (toggle debug); Modifica e' sempre ultima.
             float belowShift = 0.0f;
             if (setCat_ == 2 && mgbaPath_.empty() && !emuAnim_.settled(1.0f) && r > 2)
-                belowShift = (float)ROW_H * (emuAnim_.v > 1.0f ? 1.0f : (emuAnim_.v < 0.0f ? 0.0f : emuAnim_.v));
-            if (setCat_ == 5 && ghostsAbove > 0) {
-                float dc = devAnim_.v;
-                if (dc > 1.0f) dc = 1.0f;
-                if (dc < 0.0f) dc = 0.0f;
-                belowShift = (float)(ghostsAbove * ROW_H) * dc;
-            }
+                belowShift = collapseRowShift(emuAnim_.v, 1, ROW_H);
+            if (setCat_ == 5 && ghostsAbove > 0)
+                belowShift = collapseRowShift(devAnim_.v, ghostsAbove, ROW_H);
             rowY -= (int)(belowShift + 0.5f);
             if (r == setRow_ && !setFocusLeft_) {
                 drawRect(rx - 8, rowY, POP_W - (rx - popX) - 28, ROW_H - 4, T().menuHighlight);
