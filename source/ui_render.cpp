@@ -112,6 +112,9 @@ void UI::freeSprites() {
     if (iconRocket_)       { SDL_DestroyTexture(iconRocket_);       iconRocket_ = nullptr; }
     if (iconFloppy_)       { SDL_DestroyTexture(iconFloppy_);       iconFloppy_ = nullptr; }
     if (iconTrade_)        { SDL_DestroyTexture(iconTrade_);        iconTrade_ = nullptr; }
+    if (iconDevBox_)       { SDL_DestroyTexture(iconDevBox_);       iconDevBox_ = nullptr; }
+    if (iconDevSync_)      { SDL_DestroyTexture(iconDevSync_);      iconDevSync_ = nullptr; }
+    if (iconDevLink_)      { SDL_DestroyTexture(iconDevLink_);      iconDevLink_ = nullptr; }
 }
 
 SDL_Texture* UI::getRibbonSprite(const std::string& filename) {
@@ -414,6 +417,19 @@ void UI::drawText(const std::string& text, int x, int y, SDL_Color color, TTF_Fo
     SDL_RenderCopy(renderer_, entry.tex, nullptr, &dst);
 }
 
+void UI::drawTextFaded(const std::string& text, int x, int y, SDL_Color color, Uint8 alpha, TTF_Font* f) {
+    if (!f || text.empty() || alpha == 0) return;
+    if (alpha == 255) { drawText(text, x, y, color, f); return; }
+    SDL_Color opaque = color;
+    opaque.a = 255;
+    const auto& entry = getTextEntry(text, f, opaque);
+    if (!entry.tex) return;
+    SDL_SetTextureAlphaMod(entry.tex, alpha);
+    SDL_Rect dst = {x, y, entry.w, entry.h};
+    SDL_RenderCopy(renderer_, entry.tex, nullptr, &dst);
+    SDL_SetTextureAlphaMod(entry.tex, 255); // la entry e' condivisa: ripristina
+}
+
 void UI::drawTextCentered(const std::string& text, int cx, int cy, SDL_Color color, TTF_Font* f) {
     if (!f || text.empty()) return;
     const auto& entry = getTextEntry(text, f, color);
@@ -456,8 +472,14 @@ const std::vector<UI::SlotDisplay>& UI::getSlotDisplays(Panel panel, int box) {
         sd.level   = pkm.level();
         sd.ball    = pkm.ball();
         sd.name    = pkm.displayName();
+#ifdef OH_LINUX
+        // Celle 4:3 da 47px: nomi troncati corti (display-only, dati intatti).
+        if (sd.name.length() > 6)
+            sd.name = sd.name.substr(0, 5) + ".";
+#else
         if (sd.name.length() > 10)
             sd.name = sd.name.substr(0, 9) + ".";
+#endif
     }
     return slotDisplayCache_.emplace(key, std::move(displays)).first->second;
 }
@@ -531,9 +553,15 @@ void UI::drawSlot(int x, int y, const SlotDisplay& sd, bool isCursor, int select
             SDL_RenderCopy(renderer_, sprite, nullptr, &dst);
         }
 
-        // Species name below sprite
+        // Species name below sprite — normalize all-caps Gen3 nicknames to Title Case
+        std::string dispName = sd.name;
+        bool allCaps = !dispName.empty();
+        for (char c : dispName) if (c >= 'a' && c <= 'z') { allCaps = false; break; }
+        if (allCaps && dispName.size() > 1) {
+            for (size_t i = 1; i < dispName.size(); ++i) dispName[i] = (char)tolower((unsigned char)dispName[i]);
+        }
         SDL_Color nameColor = sd.shiny ? T().shiny : T().text;
-        drawTextCentered(sd.name, x + CELL_W / 2, y + SPRITE_SIZE + 10, nameColor, fontSmall_);
+        drawTextCentered(dispName, x + CELL_W / 2, y + SPRITE_SIZE + 10, nameColor, fontSmall_);
 
         // Level at the bottom
         if (!sd.egg) {
@@ -619,12 +647,9 @@ void UI::drawPanel(int panelX, const std::string& boxName, int boxIdx,
             tw = getTextEntry(left, fontSmall_, hdrColor).w;
         }
         drawText(left, panelX + 45, BOX_HDR_Y + (BOX_HDR_H - 14) / 2, hdrColor, fontSmall_);
-        // Party minis right after the OT text: show only when party has data.
-        // Before: always 6 grey balls even on empty saves — misleading. Now:
-        // empty party = just OT, no placeholders.
         const auto& party = save->dsParty();
         // Party boxes always visible (6 slots) even when empty — serve da target per drop quando party è vuoto
-        if (true) {
+        {
             int mx = panelX + 45 + tw + 12;
             SDL_Texture* emptyFallback = iconBoxEmpty_;
             for (int pi = 0; pi < 6; pi++) {
@@ -1031,16 +1056,25 @@ void UI::drawDetailPopup(const Pokemon& pkm) {
 
     // Popup rect centered. Grow by one line when the optional HT row is shown
     // so the Moves/Ribbons region keeps the same layout as the no-HT case.
+#ifdef OH_LINUX
+    // 4:3 nativo (620x440): stessa struttura, misure ridotte.
+    constexpr int POP_W = 620;
+    const int POP_H = 440 + (pkm.hasHandlingTrainer() ? 28 : 0);
+    constexpr int LARGE_SPRITE = 96;
+    constexpr int MOVE_COL_W = 170;
+#else
     constexpr int POP_W = 900;
     const int POP_H = 550 + (pkm.hasHandlingTrainer() ? 28 : 0);
+    constexpr int LARGE_SPRITE = 128;
+    constexpr int MOVE_COL_W = 230;
+#endif
     int popX = (SCREEN_W - POP_W) / 2;
     int popY = (SCREEN_H - POP_H) / 2;
 
     drawRect(popX, popY, POP_W, POP_H, T().panelBg);
     drawRectOutline(popX, popY, POP_W, POP_H, T().cursor, 2);
 
-    // Large sprite (128x128) top-left
-    constexpr int LARGE_SPRITE = 128;
+    // Large sprite top-left (128 Switch, 96 su 4:3: vedi sopra)
     int sprX = popX + 20;
     int sprY = popY + 20;
 
@@ -1089,6 +1123,12 @@ void UI::drawDetailPopup(const Pokemon& pkm) {
     // --- Left column info (next to sprite) ---
     int infoX = sprX + LARGE_SPRITE + 30;
     int infoY = sprY + 4;
+#ifdef OH_LINUX
+    // 4:3: righe info compatte (c'e' spazio in verticale).
+    constexpr int INFO_DY = 28;
+#else
+    constexpr int INFO_DY = 34;
+#endif
 
     // Ball icon + Species name + level + gender
     constexpr int BALL_SZ = 24;
@@ -1122,18 +1162,28 @@ void UI::drawDetailPopup(const Pokemon& pkm) {
     else if (g == 1)
         drawText("\xe2\x99\x80", afterLvl, infoY, T().genderFemale, font_);
 
-    infoY += 34;
+    infoY += INFO_DY;
 
     // National dex ID
     std::string idStr = i18n::get(StrKey::NationalDexPrefix) + std::to_string(pkm.species());
     drawText(idStr, infoX, infoY, T().textDim, font_);
-    infoY += 34;
+    infoY += INFO_DY;
 
     // OT + TID/SID
+#ifdef OH_LINUX
+    // 4:3: OT e TID/SID su due righe (in una sola invadono il grafico IVs).
+    drawText(i18n::get(StrKey::OTPrefix) + pkm.otName(), infoX, infoY, T().textDim, font_);
+    infoY += INFO_DY;
+    drawText(i18n::get(StrKey::TIDPrefix) + std::to_string(pkm.displayTid())
+             + " | " + i18n::get(StrKey::SIDPrefix) + std::to_string(pkm.displaySid()),
+             infoX, infoY, T().textDim, font_);
+    infoY += INFO_DY;
+#else
     std::string otStr = i18n::get(StrKey::OTPrefix) + pkm.otName() + " | " + i18n::get(StrKey::TIDPrefix) + std::to_string(pkm.displayTid())
                         + " | " + i18n::get(StrKey::SIDPrefix) + std::to_string(pkm.displaySid());
     drawText(otStr, infoX, infoY, T().textDim, font_);
-    infoY += 34;
+    infoY += INFO_DY;
+#endif
 
     // HT (handling trainer) — only for formats that store one
     if (pkm.hasHandlingTrainer()) {
@@ -1141,18 +1191,18 @@ void UI::drawDetailPopup(const Pokemon& pkm) {
         std::string htStr = i18n::get(StrKey::HTPrefix) +
                             (ht.empty() ? i18n::get(StrKey::NoneItem) : ht);
         drawText(htStr, infoX, infoY, T().textDim, font_);
-        infoY += 34;
+        infoY += INFO_DY;
     }
 
     // Nature
     std::string natureStr = i18n::get(StrKey::NaturePrefix) + NatureName::get(pkm.nature());
     drawText(natureStr, infoX, infoY, T().textDim, font_);
-    infoY += 34;
+    infoY += INFO_DY;
 
     // Ability
     std::string abilityStr = i18n::get(StrKey::AbilityPrefix) + AbilityName::get(pkm.ability());
     drawText(abilityStr, infoX, infoY, T().textDim, font_);
-    infoY += 34;
+    infoY += INFO_DY;
 
     // Held item — Gen2/Gen3 raw → modern per nome corretto (Quick Claw 183→217, non Belue Berry)
     uint16_t item = pkm.heldItem();
@@ -1173,7 +1223,7 @@ void UI::drawDetailPopup(const Pokemon& pkm) {
     constexpr int TYPE_ICON_W = 25;
     constexpr int TYPE_ICON_H = 25;
     constexpr int MOVE_ROW_H = 32;
-    constexpr int MOVE_COL_W = 230;
+    // MOVE_COL_W dalla testa funzione (190 su 4:3, 230 Switch).
     int textH = TTF_FontHeight(font_);
     uint16_t moves[4] = {pkm.move1(), pkm.move2(), pkm.move3(), pkm.move4()};
     for (int i = 0; i < 4; i++) {
@@ -1207,7 +1257,7 @@ void UI::drawDetailPopup(const Pokemon& pkm) {
 
         // Two columns, small font with sprite icons
         int col1X = movesX + 4;
-        int col2X = movesX + 230;
+        int col2X = movesX + MOVE_COL_W;
         int ribbonY = movesY;
         constexpr int RIB_ROW_H = 30;
         constexpr int ICON_SZ = 18;
@@ -1248,18 +1298,35 @@ void UI::drawDetailPopup(const Pokemon& pkm) {
 
     // --- Right column: IV and EV radar charts ---
     // Order: HP, Atk, Def, Spe, SpD, SpA (clockwise from top)
+    // 4:3: colonna destra (mosse/ribbon a sinistra finiscono a ~380).
+#ifdef OH_LINUX
+    int chartCX = popX + POP_W - 122;
+    // Chart compatti distribuiti in verticale: titoli vicini ai grafici,
+    // label PS/Velocita' senza overlap, tutto sopra il footer hint.
+    constexpr int CHART_RADIUS = 42;
+#else
     int chartCX = popX + POP_W * 3 / 4;
     constexpr int CHART_RADIUS = 65;
+#endif
 
-    // IVs radar chart
-    drawTextCentered(i18n::get(StrKey::IVs), chartCX, popY + 18, T().text, font_);
+    // IVs radar chart — 4:3: compatto e vicino al suo header
+    drawTextCentered(i18n::get(StrKey::IVs), chartCX, popY + 17, T().text, font_);
     int ivsRadar[] = {pkm.ivHp(), pkm.ivAtk(), pkm.ivDef(), pkm.ivSpe(), pkm.ivSpD(), pkm.ivSpA()};
+#ifdef OH_LINUX
+    drawRadarChart(chartCX, popY + 112, CHART_RADIUS, ivsRadar, 31);
+#else
     drawRadarChart(chartCX, popY + 150, CHART_RADIUS, ivsRadar, 31);
+#endif
 
-    // EVs radar chart
-    drawTextCentered(i18n::get(StrKey::EVs), chartCX, popY + 283, T().text, font_);
+    // EVs radar chart — 4:3: alzato per non toccare il footer hint
     int evsRadar[] = {pkm.evHp(), pkm.evAtk(), pkm.evDef(), pkm.evSpe(), pkm.evSpD(), pkm.evSpA()};
+#ifdef OH_LINUX
+    drawTextCentered(i18n::get(StrKey::EVs), chartCX, popY + 225, T().text, font_);
+    drawRadarChart(chartCX, popY + 320, CHART_RADIUS, evsRadar, 252);
+#else
+    drawTextCentered(i18n::get(StrKey::EVs), chartCX, popY + 283, T().text, font_);
     drawRadarChart(chartCX, popY + 415, CHART_RADIUS, evsRadar, 252);
+#endif
 
     // PID, EC, ID, TSV (bottom-left, small font, two lines)
     uint16_t tsv = (pkm.tid() ^ pkm.sid()) >> 4;
@@ -1285,7 +1352,12 @@ int UI::menuVisibleCount() const {
     // indice 9 (solo normal, mai dual) = Scambio self-trade (solo Gen3: Pk3).
     bool hasWC = gameInfo(selectedGame_).hasWondercards;
     bool hasExport = !selectedSlots_.empty();
-    bool hasSend = !isDualBankMode() && save_.isLoaded();
+    // "Send current save" solo a save caricato, mai dual-bank, e SOLO con
+    // override rete attivo (debug + url custom). Senza questo, debug off o
+    // sorgente GitHub mostrerebbero comunque la voce, che finirebbe per
+    // proporre l'upload verso GitHub venendo pero' rifiutato a runtime.
+    // Vedi UI::sendAvailable() — stessa logica del `+` radiale, estesa qui.
+    bool hasSend = !isDualBankMode() && save_.isLoaded() && sendAvailable();
     bool hasGen = DebugLog::enabled() && !isDualBankMode();
     bool hasTrade = !isDualBankMode() && save_.isLoaded() && TradeEvo::supported(save_.gameType());
     int allCount = isDualBankMode() ? 12 : 14;
@@ -1309,8 +1381,12 @@ void UI::drawMenuPopup() {
     // SV/SwSh games get a "Wondercard" item after Search — +1 Crypto (M3d)
     bool hasWC = gameInfo(selectedGame_).hasWondercards;
     bool hasExport = !selectedSlots_.empty();
-    // "Send current save": solo a save caricato e mai in dual-bank.
-    bool hasSend = !isDualBankMode() && save_.isLoaded();
+    // "Send current save": solo a save caricato, mai dual-bank, e SOLO con
+    // override rete attivo (debug + url custom). Senza questo, debug off o
+    // sorgente GitHub mostrerebbero comunque la voce, che finirebbe per
+    // proporre l'upload verso GitHub venendo pero' rifiutato a runtime.
+    // Vedi UI::sendAvailable() — stessa logica del `+` radiale, estesa qui.
+    bool hasSend = !isDualBankMode() && save_.isLoaded() && sendAvailable();
     // "Generate test mons": solo debug, mai dual-bank.
     bool hasGen = DebugLog::enabled() && !isDualBankMode();
     // "Scambio": solo a save Gen3 caricato (record Pk3, Fase 1), mai dual-bank.
@@ -2234,9 +2310,16 @@ void UI::drawPkImportListPopup() {
 void UI::drawTradeListPopup() {
     drawRect(0, 0, SCREEN_W, SCREEN_H, T().overlay);
 
+#ifdef OH_LINUX
+    // 4:3: popup contenuto, colonne compresse (vedi TX_ITEM/TX_EVO sotto).
+    constexpr int POP_W = 600;
+    constexpr int ROW_H = 56;
+    constexpr int VISIBLE = 4;
+#else
     constexpr int POP_W = 900;
     constexpr int ROW_H = 64;
     constexpr int VISIBLE = 6;
+#endif
     int count = (int)tradeCandidates_.size();
     int rows = count > 0 ? std::min(count, VISIBLE) : 1;
     int POP_H = 60 + rows * ROW_H + 40;
@@ -2255,6 +2338,14 @@ void UI::drawTradeListPopup() {
     int listY = popY + 60;
     int listX = popX + 20;
     int listW = POP_W - 40;
+#ifdef OH_LINUX
+    // 4:3: colonne compresse (item/evo piu' vicini, testi troncati sotto).
+    constexpr int TX_ITEM = 140;
+    constexpr int TX_EVO = 280;
+#else
+    constexpr int TX_ITEM = 220;
+    constexpr int TX_EVO = 430;
+#endif
 
     for (int r = 0; r < rows; r++) {
         int i = tradeScroll_ + r;
@@ -2299,14 +2390,21 @@ void UI::drawTradeListPopup() {
         SDL_Color labelCol = outOfRange ? T().genderFemale : (rule ? T().text : T().textDim);
         drawText(label, x, textY, labelCol, font_);
         drawText(loc, x, textY + 20, T().textDim, fontSmall_);
-        drawText(itemStr, x + 220, textY, T().textDim, fontSmall_);
+        // 4:3: tronca i testi lunghi per non invadere lo sprite ricevuto a destra.
+        auto truncFit = [&](std::string t, TTF_Font* f, SDL_Color c, int maxW) {
+            while (t.size() > 4 && getTextEntry(t, f, c).w > maxW)
+                t = t.substr(0, t.size() - 5) + "..";
+            return t;
+        };
+        int evoMaxW = listX + listW - (ROW_H - 10) - 10 - 8 - (x + TX_EVO);
+        drawText(itemStr, x + TX_ITEM, textY, T().textDim, fontSmall_);
         if (outOfRange) {
-            drawText("! " + i18n::get(StrKey::TradeOutOfRange), x + 430, textY, T().genderFemale, fontSmall_);
+            drawText("! " + i18n::get(StrKey::TradeOutOfRange), x + TX_EVO, textY, T().genderFemale, fontSmall_);
         } else if (rule) {
             std::string arr = "-> " + SpeciesName::get(rule->to);
             if (isPaired) arr += " *";
-            drawText(arr, x + 430, textY, T().cursor, font_);
-            if (isPaired) drawText(i18n::get(StrKey::TradePairedHint), x + 430, textY + 20, T().textDim, fontSmall_);
+            drawText(truncFit(arr, font_, T().cursor, evoMaxW), x + TX_EVO, textY, T().cursor, font_);
+            if (isPaired) drawText(i18n::get(StrKey::TradePairedHint), x + TX_EVO, textY + 20, T().textDim, fontSmall_);
             // Sprite del Pokémon ricevuto (a destra): così si vedono entrambi i lati dello scambio
             SDL_Texture* sprite2 = getSprite(rule->to, 0);
             if (sprite2) {
@@ -2324,11 +2422,11 @@ void UI::drawTradeListPopup() {
             }
         } else if (base && base->heldModern != 0) {
             std::string need = ItemLocations::itemName(base->heldModern);
-            drawText(i18n::get(StrKey::TradeNeedsItem) + " (" + need + ")", x + 430, textY, T().textDim, fontSmall_);
+            drawText(truncFit(i18n::get(StrKey::TradeNeedsItem) + " (" + need + ")", fontSmall_, T().textDim, evoMaxW), x + TX_EVO, textY, T().textDim, fontSmall_);
             std::string where = ItemLocations::footerLine(base->heldModern);
-            if (!where.empty()) drawText(where, x + 430, textY + 20, T().textDim, fontSmall_);
+            if (!where.empty()) drawText(where, x + TX_EVO, textY + 20, T().textDim, fontSmall_);
         } else {
-            drawText(i18n::get(StrKey::TradeNeedsItem), x + 430, textY, T().textDim, fontSmall_);
+            drawText(i18n::get(StrKey::TradeNeedsItem), x + TX_EVO, textY, T().textDim, fontSmall_);
         }
     }
 
@@ -2338,8 +2436,13 @@ void UI::drawTradeListPopup() {
 void UI::drawLearnsetPopup() {
     drawRect(0, 0, SCREEN_W, SCREEN_H, T().overlay);
 
+#ifdef OH_LINUX
+    constexpr int POP_W = 600;
+    constexpr int POP_H = 420;
+#else
     constexpr int POP_W = 700;
     constexpr int POP_H = 550;
+#endif
     int popX = (SCREEN_W - POP_W) / 2;
     int popY = (SCREEN_H - POP_H) / 2;
 
@@ -2399,10 +2502,17 @@ void UI::drawLearnsetPopup() {
 }
 
 void UI::drawAboutPopup() {
-    drawRect(0, 0, SCREEN_W, SCREEN_H, T().overlayDark);
+    drawRect(0, 0, SCREEN_W, SCREEN_H, T().overlay);
 
+#ifdef OH_LINUX
+    // R36S 640x480: popup compatto, stessa struttura. Senza sezione Comandi
+    // (layout tasti Switch, non applicabile); credits incl. pkHouse mantenuti.
+    constexpr int POP_W = 600;
+    constexpr int POP_H = 460;
+#else
     constexpr int POP_W = 700;
     constexpr int POP_H = 600;
+#endif
     int px = (SCREEN_W - POP_W) / 2;
     int py = (SCREEN_H - POP_H) / 2;
 
@@ -2410,11 +2520,19 @@ void UI::drawAboutPopup() {
     drawRectOutline(px, py, POP_W, POP_H, T().popupBorder, 2);
 
     int cx = px + POP_W / 2;
+#ifdef OH_LINUX
+    int y = py + 22;
+#else
     int y = py + 25;
+#endif
 
     // Title
     drawTextCentered(i18n::get(StrKey::AboutTitle), cx, y, T().shiny, fontLarge_);
+#ifdef OH_LINUX
+    y += 32;
+#else
     y += 38;
+#endif
 
     // Version / author (GitHub URLs moved to Basato su section)
     drawTextCentered("v" APP_VERSION " - Developed by " APP_AUTHOR, cx, y, T().textDim, fontSmall_);
@@ -2423,7 +2541,11 @@ void UI::drawAboutPopup() {
     // Divider
     SDL_SetRenderDrawColor(renderer_, T().popupBorder.r, T().popupBorder.g, T().popupBorder.b, T().popupBorder.a);
     SDL_RenderDrawLine(renderer_, px + 30, y, px + POP_W - 30, y);
+#ifdef OH_LINUX
+    y += 12;
+#else
     y += 18;
+#endif
 
     // Description - wrapped to stay inside popup ( AboutDesc2 was overflowing )
     constexpr int MAX_W = POP_W - 60;
@@ -2478,42 +2600,104 @@ void UI::drawAboutPopup() {
     y += 6;
     // AboutDesc2 uses smaller font and wrapping to avoid going off-screen (it.json is very long)
     drawWrappedCentered(i18n::get(StrKey::AboutDesc2), fontAbout_, T().text, MAX_W, 26, y);
+#ifdef OH_LINUX
+    y += 10;
+#else
     y += 16;
+#endif
 
     drawTextCentered(i18n::get(StrKey::SupportedGames), cx, y, T().selected, font_);
     y += 22;
     drawTextCentered(i18n::get(StrKey::SupportedLGPE), cx, y, T().textDim, fontSmall_);
+#ifdef OH_LINUX
+    y += 16;
+#else
     y += 18;
+#endif
     drawTextCentered(i18n::get(StrKey::SupportedSwSh), cx, y, T().textDim, fontSmall_);
+#ifdef OH_LINUX
+    y += 16;
+#else
     y += 18;
+#endif
     drawTextCentered(i18n::get(StrKey::SupportedSVZA), cx, y, T().textDim, fontSmall_);
+#ifdef OH_LINUX
+    y += 16;
+#else
     y += 18;
+#endif
     drawTextCentered(i18n::get(StrKey::SupportedFRLG), cx, y, T().textDim, fontSmall_);
+#ifdef OH_LINUX
+    y += 16;
+#else
     y += 18;
+#endif
     drawTextCentered(i18n::get(StrKey::SupportedGB), cx, y, T().textDim, fontSmall_);
+#ifdef OH_LINUX
+    y += 12;
+#else
     y += 14;
+#endif
 
     // Divider
     SDL_SetRenderDrawColor(renderer_, T().popupBorder.r, T().popupBorder.g, T().popupBorder.b, T().popupBorder.a);
     SDL_RenderDrawLine(renderer_, px + 30, y, px + POP_W - 30, y);
+#ifdef OH_LINUX
+    y += 12;
+#else
     y += 14;
+#endif
 
-    // Basato su / Based on - ordered: pkHouse grafica/UI, OpenHome cross-gen, Sphaira forwarder, PKHeX, libnx, devkitPro
+    // Basato su / Based on - ordered by peso reale: OpenHome (core Rust vivo,
+    // compilato dentro l'app) prima di pkHouse (ormai solo credito storico,
+    // l'idea originale della griglia box/banche - vedi about_based_pkhouse).
+    // Poi Sphaira forwarder, PKHeX, libnx, devkitPro.
     drawTextCentered(i18n::get(StrKey::AboutBasedOn), cx, y, T().selected, font_);
+#ifdef OH_LINUX
+    y += 19;
+#else
     y += 20;
-    drawTextCentered(i18n::get(StrKey::AboutBasedPKHouse), cx, y, T().textDim, fontSmall_);
-    y += 18;
+#endif
     drawTextCentered(i18n::get(StrKey::AboutBasedOpenHome), cx, y, T().textDim, fontSmall_);
+#ifdef OH_LINUX
+    y += 16;
+#else
     y += 18;
+#endif
+    drawTextCentered(i18n::get(StrKey::AboutBasedPKHouse), cx, y, T().textDim, fontSmall_);
+#ifdef OH_LINUX
+    y += 16;
+#else
+    y += 18;
+#endif
     drawTextCentered(i18n::get(StrKey::AboutBasedSphaira), cx, y, T().textDim, fontSmall_);
+#ifdef OH_LINUX
+    y += 16;
+#else
     y += 18;
+#endif
     drawTextCentered(i18n::get(StrKey::AboutBasedPKHeX), cx, y, T().textDim, fontSmall_);
+#ifdef OH_LINUX
+    y += 16;
+#else
     y += 18;
+#endif
     drawTextCentered(i18n::get(StrKey::AboutBasedLibnx), cx, y, T().textDim, fontSmall_);
+#ifdef OH_LINUX
+    y += 16;
+#else
     y += 18;
+#endif
     drawTextCentered(i18n::get(StrKey::AboutBasedDevkitPro), cx, y, T().textDim, fontSmall_);
+#ifdef OH_LINUX
+    y += 16;
+#else
     y += 18;
+#endif
 
+#ifdef OH_LINUX
+    // R36S: niente sezione Comandi (layout tasti Switch, non applicabile).
+#else
     // Divider before controls
     SDL_SetRenderDrawColor(renderer_, T().popupBorder.r, T().popupBorder.g, T().popupBorder.b, T().popupBorder.a);
     SDL_RenderDrawLine(renderer_, px + 30, y, px + POP_W - 30, y);
@@ -2526,6 +2710,7 @@ void UI::drawAboutPopup() {
     y += 18;
     drawText(i18n::get(StrKey::ControlsLine2), px + 50, y, T().textDim, fontSmall_);
     y += 10;
+#endif
 
     // Footer (anchored to bottom of popup, no longer overlapping controls)
     drawTextCentered(i18n::get(StrKey::PressMinusBClose), cx, py + POP_H - 18, T().textDim, fontSmall_);

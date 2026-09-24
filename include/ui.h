@@ -19,6 +19,9 @@
 #include <unordered_set>
 #include <functional>
 
+struct RemoteUpdateInfo; // update_net.h (solo ref nei helper cancel)
+class BackgroundJob; // job.h (solo ref nel pump-loop)
+
 // Which panel the cursor is on
 enum class Panel { Game, Bank };
 
@@ -73,6 +76,56 @@ struct SearchResult {
     std::string otName;
 };
 
+// Righe categoria 5 (Sviluppatore) in ordine di visualizzazione.
+// UNICA fonte di verita' per count/label/value/activate di cat.5:
+// aggiungere una voce = un enumeratore qui + un push_back in devRowList +
+// un case nelle tre funzioni (era in ui_settings.cpp, spostato qui perche'
+// la tendina tiene la lista disegnata nei membri).
+enum class DevRow {
+    DbgToggle, QuickMenu,
+    ClearBp, Normalize, ClearGal,
+    SendLog, Crash,
+    DevSync,
+};
+
+// Animazione "tendina" per voci di menù che appaiono/scompaiono (copia
+// esatta della molla di Impostazioni > Aspetto per Zoom/Menu radiale):
+// 0 = visibili, 1 = nascoste, con overshoot durante la transizione.
+// La logica/nav resta istantanea, solo il disegno interpola.
+struct CollapseAnim {
+    float v = 0.0f;
+    float vel = 0.0f;
+    void reset(float target) { v = target; vel = 0.0f; }
+    // Fermi sul target (nessuna ghost da disegnare).
+    bool settled(float target) const { return v == target && vel == 0.0f; }
+    // Avanza verso target con la stessa molla del riordino dock (K/D
+    // uguali). Ritorna true mentre si muove (serve ridisegno).
+    bool step(float target) {
+        constexpr float K = 0.35f, D = 0.65f;
+        float disp = v - target;
+        if (disp == 0.0f && vel == 0.0f) return false;
+        vel += -disp * K - vel * D;
+        v += vel;
+        if (std::fabs(v - target) < 0.01f && std::fabs(vel) < 0.01f) {
+            v = target;
+            vel = 0.0f;
+            return false;
+        }
+        return true;
+    }
+};
+
+// Riepilogo di un lato (locale/remoto) per il popup di confronto della
+// Sincronizza DevSync — vedi UI::showSyncCompareDialog.
+struct SyncSideInfo {
+    std::string trainer;
+    long playTimeSeconds = -1;   // -1 = non disponibile per questo formato
+    int  dexCaught = -1;
+    int  dexTotal  = -1;
+    bool dexSupported = false;
+    long long modifiedUnix = 0;  // 0 = sconosciuto
+};
+
 // Cursor position within the two-panel display
 struct Cursor {
     Panel panel = Panel::Game;
@@ -83,19 +136,66 @@ struct Cursor {
     int slot(int cols = 6) const { return row * cols + col; }
 };
 
+// update.cfg parsed in memory (vedi commento sul formato accanto a
+// parseUpdateCfgFile() in ui_update.cpp). Era locale all'anonymous
+// namespace di ui_selectors.cpp prima dello split in piu' file -- serve
+// sia a ui_update.cpp (parsing) sia a ui_selectors.cpp/ui_backups.cpp/
+// ui_settings.cpp (lettura), quindi ora e' un tipo condiviso qui.
+struct UpdateCfg {
+    std::string url, token;
+    std::string channel;   // "" o "stable" = release stabili, "beta" = pre-release
+    long backupMb = 256;   // tetto CUMULATIVO auto-backup titoli installati
+    long backupMbSd = 32;  // tetto cumulativo save file-backed (SD, piccoli)
+    bool autoOn = true;    // check al boot: default ON se la chiave `auto` manca
+};
+
 // Main UI class - manages rendering and input for the two-panel box viewer.
 class UI {
 public:
     bool init();
     void shutdown();
+    // Exit code con cui main() deve uscire (0 = normale; 42 = R36S: update
+    // installato, il launcher rilancia una volta sola).
+    void setExitCode(int c) { exitCode_ = c; }
+    int exitCode() const { return exitCode_; }
     // holdMs: how long the logo stays up (pumps events meanwhile).
     // fadeOut=false leaves the last logo frame on screen so init work below
     // doesn't play over a black gap; call showSplash(0, true) when ready.
     void showSplash(int holdMs = 2500, bool fadeOut = true);
     int  drawBodyText(const std::string& body, int startY, const std::string& footer);
     std::vector<std::string> wrapText(const std::string& line, TTF_Font* f, int maxW);
+    // Righe wrappate dell'intero body (una per riga video) per i dialog
+    // scrollabili. -1/0/+1 da D-pad su/giu o stick sinistro Y (con repeat),
+    // 0 se nessun controller o nessuna direzione premuta.
+    std::vector<std::string> wrapBodyLines(const std::string& body);
+    int  dialogScrollDir(uint32_t now, uint32_t& lastTick, int& lastDir);
+    int  drawBodyWindow(const std::vector<std::string>& lines, int first,
+                        int topY, int bottomY, int lineH,
+                        SDL_Color col, SDL_Color footCol);
     void showMessageAndWait(const std::string& title, const std::string& body);
+    // Come showMessageAndWait ma con lo sprite dello scambio sopra il testo
+    // (conferma visiva, non solo testuale) -- species2 != 0 per lo scambio
+    // doppio (Karrablast/Shelmet), mostra entrambi affiancati.
+    void showTradeResultDialog(const std::string& title, const std::string& body,
+                               uint16_t species1, uint16_t species2 = 0);
     bool showConfirmDialog(const std::string& title, const std::string& body);
+    // Scelta tipo banca alla creazione: 0=cross-gen (A), 1=specifica (Y),
+    // -1=annullato (B, non crea nulla). Vedi ui_bank.cpp per l'uso.
+    int  pickNewBankKind(const std::string& title, const std::string& body);
+    // Popup di conferma per "Sincronizza" (DevSync): due riquadri affiancati
+    // (locale/remoto) con allenatore, Pokédex, tempo di gioco e data
+    // salvataggio, cosi' si vede il criterio usato per scegliere la
+    // direzione invece del solo testo "il save locale e' piu' recente".
+    // criterionKey e' una StrKey (DevSyncCriterion*) gia' risolta dal
+    // chiamante in base a howDecided.
+    // alreadySynced=true (tempo di gioco e Pokédex identici su entrambi i
+    // lati): niente bordo evidenziato su nessuno dei due lati, "=" al posto
+    // della freccia, messaggio "gia' sincronizzati" al posto del criterio --
+    // stessi due riquadri, non un popup a se stante, cosi' il colpo d'occhio
+    // resta coerente con la normale conferma.
+    bool showSyncCompareDialog(const std::string& gameName, const SyncSideInfo& local,
+                                const SyncSideInfo& remote, bool remoteNewer,
+                                const char* criterionKey, bool alreadySynced = false);
     // Popup di scoperta "Installa launcher" (icona app + testo), mostrato
     // una sola volta in vita: solo informativo (il pulsante vero sta in
     // Impostazioni > Sistema, non ancora costruito), quindi niente scelta
@@ -124,6 +224,12 @@ private:
     SDL_Window*          window_    = nullptr;
     SDL_Renderer*        renderer_  = nullptr;
     SDL_GameController*  pad_       = nullptr;
+    // true se pad_ ha gia' un bind nativo per BACK/START dopo aver caricato
+    // l'eventuale mappatura extra (vedi UI::init()) -- se true, il fallback
+    // raw-joybutton in ui_input.cpp deve stare zitto per non duplicare
+    // l'evento (altrimenti Select/Start scatterebbero due volte a pressione).
+    bool padNativeBack_  = false;
+    bool padNativeStart_ = false;
     TTF_Font*            font_      = nullptr;
     TTF_Font*            fontSmall_ = nullptr;
     TTF_Font*            fontLarge_ = nullptr;
@@ -251,7 +357,6 @@ private:
     void dockStateLoad();
     void dockStateSave() const;
     void dockStateResetToDefault();
-    bool dockStateCanReorder() const;
     void dockStateEnterReorderMode(int startIdx);
     void dockStateExitReorderMode(bool save);
     void dockStateSwapItems(int i, int j);
@@ -270,7 +375,6 @@ private:
     // Prima/ultima voce visibile (atterraggi e ripartenza gear).
     bool dockFocusFirst();
     bool dockFocusLast();
-    bool dockFocusBanksOrFirst();
     // Attiva la voce puntata (stesse azioni del tap/conferma).
     void dockActivateFocused(bool& running);
 
@@ -284,11 +388,35 @@ private:
     // color rect (which stays as fallback), e.g. Emerald artwork.
     std::unordered_map<GameType, SDL_Texture*> tileBgCache_;
 
-    // Screen dimensions (Switch: 1280x720)
+    // Screen dimensions (Switch: 1280x720, R36S nativo 4:3: 640x480)
+#ifdef OH_LINUX
+    static constexpr int SCREEN_W = 640;
+    static constexpr int SCREEN_H = 480;
+#else
     static constexpr int SCREEN_W = 1280;
     static constexpr int SCREEN_H = 720;
+#endif
 
     // Layout
+#ifdef OH_LINUX
+    // Nativo 4:3 (640px): due pannelli affiancati come da originale,
+    // scalati per stare fianco a fianco (305+305). Colonne fisse da save.
+    static constexpr int PANEL_W   = 305;
+    static constexpr int PANEL_X_L = 10;
+    static constexpr int PANEL_X_R = 325;
+    static constexpr int BOX_HDR_Y = 10;
+    static constexpr int BOX_HDR_H = 40;
+    static constexpr int GRID_Y    = 55;
+
+    // Grid cells scalate: 6 col x 47px = 302 <= 305; 5 righe x 70 = 366
+    // (55+366=421, status bar a 445).
+    static constexpr int CELL_W   = 47;
+    static constexpr int CELL_H   = 70;
+    static constexpr int CELL_PAD = 4;
+
+    // Sprite size within a cell
+    static constexpr int SPRITE_SIZE = 34;
+#else
     static constexpr int PANEL_W   = 610;
     static constexpr int PANEL_X_L = 15;
     static constexpr int PANEL_X_R = 655;
@@ -303,6 +431,7 @@ private:
 
     // Sprite size within a cell
     static constexpr int SPRITE_SIZE = 68;
+#endif
 
     // Status bar
     static constexpr int STATUS_BAR_H = 40;
@@ -399,15 +528,38 @@ private:
     bool remoteBoxActive_ = false;
     std::vector<RemoteBoxEntry> remoteBoxEntries_;
     std::vector<GameType> savedAvailableGames_;
+    std::vector<char> savedAvailableGamesNative_;
     std::vector<ImportedGame> savedImportedGames_;
 
     void appendImportedGames();               // scans importPaths_, extends availableGames_
     void rescanImportedGames();      // re-scan in place + popup on newly found games
+    // "" if this occurrence has no save (native title, or a ROM-only entry
+    // from Settings::showRomsWithoutSave() -- see hasSave on ImportedGame).
     std::string importedSavePath(GameType game, int occurrence = 0) const;
     std::string importedSourceTag(GameType game, int occurrence = 0) const; // small on-tile badge text
+    // The actual playable ROM path for this occurrence, whichever way it's
+    // known: derived from its save (Emulator::findRomForSave) when hasSave,
+    // or the ROM path stored directly for a save-less entry. "" if this
+    // occurrence isn't an import at all (native title, no ImportedGame).
+    // Single place both loadGameIcons() (cover lookup) and the launcher
+    // (requestLaunchGame/isGameLaunchableAt) resolve the ROM from, so they
+    // can never drift onto two different files for the same tile.
+    std::string importedRomPath(GameType game, int occurrence = 0) const;
+    // True only for a save-less ROM-only entry (Settings::showRomsWithoutSave()):
+    // launch-only tile, no box/party/items/trade to show for it.
+    bool importedIsRomOnly(GameType game, int occurrence = 0) const;
+    // Vero se la ROM FRLG va nascosta: toggle OFF e nativa dello stesso
+    // gruppo (bankGroupName, copre le varianti regionali) in lista.
+    bool hideFrlgRom(GameType t) const;
     // Which occurrence of `game` is the tile at availableGames_[cursor]?
-    // Counts same-type tiles before it (duplicates = same game, other device).
+    // -1 se la tile e' nativa (titleId, mai un indice in importedGames_);
+    // altrimenti indice fra gli import (conta solo le tile non-native prima,
+    // mai le native mescolate). -1 e' sicuro con tutti i resolver (seen
+    // parte da 0 e non matcha mai).
     int importedOccurrence(int cursor) const;
+    // Vero se availableGames_[idx] e' un titolo nativo (profilo/titleId),
+    // falso se import da file. Sostituisce l'euristica "path vuoto = nativo".
+    bool isNativeAt(int idx) const;
 
     // Game selector menu state (+ button: Switch Core / Debug log / Exit)
     bool showGameSelMenu_ = false;
@@ -430,6 +582,14 @@ private:
     std::string settingsRowLabel(int cat, int row) const;
     std::string settingsRowValue(int cat, int row);
     void settingsRowActivate(int cat, int row, int dir, bool& running);
+    // Azioni boxart/ROM condivise (Dati cat 3): corpi ex-Sviluppatore.
+    void runBoxartRename();
+    void runBoxartUpdate();
+    void clearBoxartCache();
+    // Sistema: riga Emulatore (2 se rilevato o ghost in chiusura, -1 se
+    // assente) e riga Conferma uscita (3 con emulatore, 2 senza).
+    int sysEmuRow() const;
+    int sysConfirmRow() const;
     // Impostazioni -> Sviluppatore -> Ricerca dispositivi (stage 1: login +
     // test di lista sul Filebrowser web di ArkOS/JELOS/ROCKNIX via LAN).
     void remoteSyncTestRow();
@@ -523,6 +683,10 @@ private:
     // default 256/32; 0 = illimitato). Mai i manuali.
     long backupCapMb(bool fileBacked) const;
     std::vector<std::string> autoBackupEntries(GameType g) const;
+    // Sync FRLG nativo <-> ROM a tempo di gioco (vince il piu' giocato).
+    // silent=true: niente dialoghi (auto-sync). Bottone manuale di default,
+    // auto-sync spento di default finche' non e' provato.
+    void syncFrlgSaves(bool silent);
     bool autoBackupNeeded(GameType g, const std::string& srcFile, uint64_t srcSize, long srcMt, bool haveSrc);
     uint64_t pruneBackupsToCap(GameType g, bool fileBacked);
 
@@ -552,15 +716,18 @@ private:
     // li salta) - vedi backpackLeftStep/backpackBagStep.
     struct BackpackLeftRow { bool header = false; int idx = 0; int pocket = -1; };
     std::vector<BackpackLeftRow> backpackLeft_;
-    std::vector<SaveFile::GbaBagSlot> backpackGameBag_; // slot non vuoti dello scratch
+    std::vector<SaveFile::GbaBagSlot> backpackGameBag_; // slot non vuoti dello scratch (GBA)
+    std::vector<SaveFile::DsBagSlot> backpackGameBagDs_; // idem DS (Gen4/5)
+    std::vector<SaveFile::GbBagSlot> backpackGameBagGb_; // voci presenti (GB Gen1/2, compatte)
+    bool backpackBagIsDs_ = false; // destra/audit leggono i vettori DS invece dei GBA
+    bool backpackBagIsGb_ = false; // idem GB (mai entrambe vere)
     int backpackLeftCursor_ = 0, backpackLeftScroll_ = 0;
-    // Tab categoria del catalogo (0=Sfere,1=MN,2=MT,3=Consumabili,
-    // 4=Speciali,5=Bacche): con ~300 voci per gioco (es. Emerald)
-    // un'unica lista era impraticabile da scorrere, richiesta esplicita
-    // di dividerla come nel gioco vero. MN prima di MT (nel gioco le
-    // Macchine Nascoste vengono prima). ZL/ZR la cambiano (vedi
-    // handleBackpackInput), sempre attiva a prescindere dal fuoco
-    // visto che il catalogo e' sempre visibile.
+    // Tab categoria del catalogo. GBA: 0=Sfere,1=MN,2=MT,3=Consumabili,
+    // 4=Speciali,5=Bacche. Gen4: +6=Posta,7=Med,8=Lotta. Gen5: senza Sfere
+    // (le sfere stanno negli Strumenti): 0=MN,1=MT,2=Consumabili,3=Speciali,
+    // 4=Bacche,5=Med. Gen1: solo 0=Consumabili. Gen2: 0=Sfere,1=MN,2=MT,
+    // 3=Consumabili,4=Speciali (niente Bacche). Vedi bpTabCount/bpCatTabFor/
+    // bpCatTabKey in ui_backpack.
     int backpackCatTab_ = 0;
     bool backpackZlHeld_ = false, backpackZrHeld_ = false; // edge-detect ZL/ZR
     // Destra a gioco scelto: righe dello zaino VERO (al posto della
@@ -570,6 +737,8 @@ private:
     int backpackQty_ = 1;
     bool backpackBaseMode_ = false;
     std::vector<Backpack::Anomaly> backpackAnoms_;
+    std::vector<Backpack::DsAnomaly> backpackDsAnoms_;
+    std::vector<Backpack::GbAnomaly> backpackGbAnoms_;
     std::vector<Backpack::JournalRow> backpackJournal_; // regali (audit): una riga per {item, pocket}
     int backpackAuditCursor_ = 0, backpackAuditScroll_ = 0;
     SaveFile backpackSave_;          // scratch
@@ -756,6 +925,9 @@ private:
     float touchStartX_ = 0, touchStartY_ = 0;
     bool touchDown_ = false, touchMoved_ = false;
     void selectorTap(float px, float py, bool& running);
+    // Ultimo indice cursore della pagina (continuita' tornando indietro con
+    // L / swipe / frecce: si riparte dall'ultima icona, non dalla prima).
+    int pageLastCursor(int page) const;
     // Effetto molla/budino sul riordino dock (entry: Y su icona dock o menu +):
     // offset x per slot, il draw lo insegue con molla smorzata (overshoot +
     // ritorno), azzerato a riposo.
@@ -763,11 +935,22 @@ private:
     float dockSlide_[MAX_DOCK_SLOTS] = {};
     float dockSlideVel_[MAX_DOCK_SLOTS] = {};
     void dockSpringStep(std::vector<DockSlot>& slots); // aggiorna dockSlide_ per frame
-    // Stessa molla, applicata al collasso delle voci Zoom/Menu radiale in
-    // Impostazioni > Aspetto (nascoste in layout Galleria): 0 = visibili,
-    // 1 = nascoste, con overshoot durante la transizione (vedi drawSettingsPopup).
-    float appearanceCollapse_ = 0.0f;
-    float appearanceCollapseVel_ = 0.0f;
+    // Tendine (vedi CollapseAnim): una per gruppo di voci che
+    // appaiono/scompaiono — Aspetto (Zoom/Menu radiale in Galleria),
+    // Sistema (Emulatore se rilevato), Aggiornamenti (Modifica se custom),
+    // Sviluppatore (righe da devRowList). Sostituisce i vecchi float
+    // appearanceCollapse_/Vel_ sparsi.
+    CollapseAnim appearanceAnim_;
+    CollapseAnim emuAnim_;
+    CollapseAnim modUrlAnim_;
+    CollapseAnim devAnim_;
+    // Tendina cat 5: lista disegnata (resta la precedente durante la
+    // transizione), ghost in apertura/chiusura, direzione.
+    std::vector<DevRow> devDrawList_;
+    std::vector<DevRow> devGhosts_;
+    bool devExpanding_ = false;
+    // Lista righe Sviluppatore da usare (transizione in corso o live).
+    std::vector<DevRow> devShownList() const;
     // Animazione pulsanti bassi: posizioni/alpha correnti -> target per frame.
     float ejectBtnX_ = -1.0f;
     float ejectBtnA_ = 0.0f;
@@ -796,6 +979,14 @@ private:
     bool allBanksMode_ = false;       // entered bank selector via "View All Banks"
     bool bankRightCrossGen_ = false;  // right-panel bank selector showing ALL games (cross-gen), normal mode
     std::vector<GameType> availableGames_;
+    // Flag parallelo (char, non vector<bool>): true = tile nativa da
+    // profilo/titleId, false = import da file. VA TENUTO IN SYNC in ogni
+    // punto che muta availableGames_ (push nativi, append/erase import,
+    // applyFavoritesOrder, box remoto); assertGamesInSync() lo controlla.
+    std::vector<char> availableGamesNative_;
+    // Crash immediato in debug se un sito di mutazione dimentica il vettore
+    // parallelo: meglio questo che l'off-by-one silenzioso di prima.
+    void assertGamesInSync() const;
     std::unordered_map<GameType, SDL_Texture*> gameIconCache_;
     // Colore medio della cover (campionato una volta al caricamento in
     // loadGameIcons()): sfondo "vetro" della vista Galleria.
@@ -871,6 +1062,13 @@ private:
     int  bankSelScroll_ = 0;
     bool showDeleteConfirm_ = false;
     bool newBankCrossGen_ = false;
+    // true quando "crea banca" e' stata avviata dalla vista cross-gen
+    // (bankRightCrossGen_): quel percorso scende temporaneamente in
+    // modalita' singolo-gioco solo per calcolare bankFolderNameOf()/
+    // banksDir_ corretti, ma senza questo flag la vista restava li'
+    // (lista di un solo gioco) anche dopo la creazione, finche' non si
+    // usciva e rientrava -- vedi UI::commitTextInput().
+    bool bankCreateWasCrossGenView_ = false;
 
     TextInputPurpose textInputPurpose_;
     std::string textInputBuffer_;
@@ -1012,8 +1210,22 @@ private:
         std::string otName;     // valore mostrato (puo' essere l'override)
         std::string otNameReal; // valore vero dal save, mai sovrascritto
         bool dexSupported = false; int dexCaught = 0; int dexTotal = 0;
+        long playTimeSeconds = -1; // -1 = non disponibile per questo formato (vedi SaveFile::playTimeSeconds)
     };
-    std::unordered_map<GameType, PartyPreview> galPartyCache_;
+    // Chiave cache anteprime: (gioco, occorrenza). occ -1 = nativa, >=0 =
+    // indice fra gli import (vedi importedOccurrence): nativa e ROM dello
+    // stesso GameType hanno anteprime separate, mai sovrascritte.
+    struct GalKey {
+        GameType g = GameType::EMERALD;
+        int8_t occ = -1;
+        bool operator==(const GalKey& o) const { return g == o.g && occ == o.occ; }
+    };
+    struct GalKeyHash {
+        size_t operator()(const GalKey& k) const noexcept {
+            return std::hash<int>()(static_cast<int>(k.g) * 8 + (k.occ + 1));
+        }
+    };
+    std::unordered_map<GalKey, PartyPreview, GalKeyHash> galPartyCache_;
     int galPreviewGame_ = -1;
     uint32_t galPreviewTick_ = 0;
     // Un solo probe (mount+stat) per atterraggio sulla selezione: il save
@@ -1034,9 +1246,14 @@ private:
     // ma taglia la spesa di ~30x.
     uint32_t galOverrideOtTick_ = 0;
     std::string galOverrideOtCached_;
-    long galSaveMtime(GameType g);
-    void galEnsureParty(GameType g);
-    void galInvalidateParty(GameType g);
+    long galSaveMtime(GameType g, int occ);
+    void galEnsureParty(GameType g, int occ);
+    void galInvalidateParty(GameType g, int occ);
+    // Occurrence del gioco aperto (selectGame) e del gioco zaino, per
+    // invalidare la chiave giusta (vedi GalKey): senza, nativa e ROM
+    // condividerebbero l'invalidazione come condividevano la cache.
+    int selectedOccurrence_ = -1;
+    int backpackOccCurrent_ = -1;
     // Persistenza su disco di galPartyCache_ (party/OT/dex): sopravvive al
     // riavvio, cosi' al rientro in Galleria si vede subito l'ultimo party
     // noto invece di "..." finche' non ti fermi di nuovo — galEnsureParty()
@@ -1058,6 +1275,11 @@ private:
     // (altrimenti l'animazione avanza di un solo passo per evento).
     bool galleryPreviewAnim();
     void selectGame(GameType game, int occurrence = 0);
+    // "A" diretto sulla griglia (non dal radiale, gia' filtrato a monte in
+    // openRadialMenu()): una ROM-only entry (importedIsRomOnly()) non ha
+    // nulla da editare, la si avvia direttamente invece di fallire su
+    // Mount Error dentro selectGame().
+    void selectOrLaunchGame(GameType game, int occurrence, bool& running);
     std::string buildBackupDir(GameType game) const;
     bool saveBankFiles();
     // Write the game save (+ account commit + "Saving…" mask + LED) only when a
@@ -1114,6 +1336,10 @@ private:
                   int highlightState = 0, bool isParty = false);
     void drawText(const std::string& text, int x, int y, SDL_Color color, TTF_Font* f);
     void drawTextCentered(const std::string& text, int cx, int cy, SDL_Color color, TTF_Font* f);
+    // Come drawText ma con alpha separata via modulate: riusa la texture
+    // opaca in cache invece di crearne una per step (la tendina al primo
+    // giro scattava per il baking di ~16 varianti alpha a frame).
+    void drawTextFaded(const std::string& text, int x, int y, SDL_Color color, Uint8 alpha, TTF_Font* f);
     void drawRect(int x, int y, int w, int h, SDL_Color color);
     void drawRectOutline(int x, int y, int w, int h, SDL_Color color, int thickness);
     void drawSpriteFit(int x, int y, int w, int h, SDL_Texture* tex);
@@ -1159,6 +1385,27 @@ private:
     // se l'USB non ha niente di più recente torna silenzioso senza toccare
     // SD/rete. Il menu manuale usa la catena completa (default).
     bool checkForUpdate(bool usbOnly = false);
+#ifdef OH_LINUX
+    // Updater R36S (zip + unzip + exit 42): vedi checkForUpdateR36S.
+    bool checkForUpdateR36S(const std::string& curVer);
+#endif
+    // Rete updater su worker (job.h) con pump-loop modale + B-annulla.
+    // Ok = fatto, Failed = errore (dialog dal chiamante), Cancelled = B
+    // (loggato, niente dialog). Il download scrive .part + rename atomico:
+    // annullare non tocca mai il binario buono.
+    enum class NetCancelResult { Ok, Failed, Cancelled };
+    NetCancelResult fetchInfoCancel(const std::string& url, const std::string& token,
+                                   RemoteUpdateInfo& info, std::string& err,
+                                   const char* infoFile = "latest.json");
+    NetCancelResult fetchBetaCancel(const std::string& token,
+                                   std::string& outBase, std::string& outTag, std::string& err);
+    NetCancelResult downloadFileCancel(const std::string& url, const std::string& token,
+                                      const std::string& dst, const std::string& sha,
+                                      const std::string& ver, std::string& err);
+    int exitCode_ = 0;
+    // Pump-loop modale condivisa: barra (idle o ultima riga) + hint B,
+    // eventi (B = cancel, QUIT = cancel + ripubblicata), join alla fine.
+    void pumpJobCancel(class BackgroundJob& job, bool& cancel, const std::string& idle);
     // Consolidate a pending OpenHomeNX.nro.new from a self-update. Returns true
     // when it just wrote the new bytes onto the canonical .nro while running
     // from the throw-away .new — the caller should then bounce straight into

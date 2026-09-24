@@ -1,9 +1,11 @@
 #pragma once
 #include <cstdint>
+#include <string>
+#include "string_utils.h"
 
 // Supported game types (sequential enum used as array index)
-enum class GameType { ZA, S, V, Sw, Sh, BD, SP, LA, GP, GE, FR, LG, FR_ES, LG_ES, FR_DE, LG_DE, FR_IT, LG_IT, FR_FR, LG_FR, FR_JA, LG_JA, RUBY, SAPPHIRE, EMERALD, RED, BLUE, YELLOW, GOLD, SILVER, CRYSTAL, DIAMOND, PEARL, PLATINUM, HEARTGOLD, SOULSILVER, BLACK, WHITE, BLACK2, WHITE2, X, Y, SUN, MOON };
-static constexpr int GAME_TYPE_COUNT = 44;
+enum class GameType { ZA, S, V, Sw, Sh, BD, SP, LA, GP, GE, FR, LG, FR_ES, LG_ES, FR_DE, LG_DE, FR_IT, LG_IT, FR_FR, LG_FR, FR_JA, LG_JA, RUBY, SAPPHIRE, EMERALD, RED, BLUE, YELLOW, GOLD, SILVER, CRYSTAL, DIAMOND, PEARL, PLATINUM, HEARTGOLD, SOULSILVER, BLACK, WHITE, BLACK2, WHITE2, X, Y, OMEGA_RUBY, ALPHA_SAPPHIRE, SUN, MOON, ULTRA_SUN, ULTRA_MOON };
+static constexpr int GAME_TYPE_COUNT = 48;
 
 inline bool isSV(GameType g) { return g == GameType::S || g == GameType::V; }
 inline bool isSwSh(GameType g) { return g == GameType::Sw || g == GameType::Sh; }
@@ -17,6 +19,19 @@ inline bool isFRLG(GameType g) {
            g == GameType::FR_IT || g == GameType::LG_IT ||
            g == GameType::FR_FR || g == GameType::LG_FR ||
            g == GameType::FR_JA || g == GameType::LG_JA;
+}
+// Gioco base FRLG ignorando la regione (FR* -> FR, LG* -> LG). Usato per
+// accoppiare nativo <-> ROM nel sync e nel filtro doppioni: MAI per
+// bankGroupName (il gruppo copre entrambi i giochi e mischiava FR con LG).
+inline GameType frlgBase(GameType g) {
+    switch (g) {
+        case GameType::LG:
+        case GameType::LG_ES: case GameType::LG_DE: case GameType::LG_IT:
+        case GameType::LG_FR: case GameType::LG_JA:
+            return GameType::LG;
+        default:
+            return GameType::FR; // chiamante garantisce isFRLG(g)
+    }
 }
 
 // File-backed games with no Switch titleId: found on SD/USB by scanning
@@ -70,9 +85,23 @@ inline bool isGen6XY(GameType g) {
     return g == GameType::X || g == GameType::Y;
 }
 
+// File-backed Gen 6 ORAS saves (PKHeX SAV6AO: Box 0x33000 31x30x232, party
+// 0x14200 6x260, MyStatus 0x14000+4 = 26/27, nomi 0x04400 31x0x22).
+// Stesso record Pk6 di XY, blocchi spostati.
+inline bool isGen6ORAS(GameType g) {
+    return g == GameType::OMEGA_RUBY || g == GameType::ALPHA_SAPPHIRE;
+}
+
 // File-backed Gen 7 SM saves (same decrypted-only policy).
 inline bool isGen7SM(GameType g) {
     return g == GameType::SUN || g == GameType::MOON;
+}
+
+// File-backed Gen 7 USUM saves (decrypted Citra-style dumps, PKHeX SAV7USUM:
+// BoxPokemon 0x05200 32x30x232, party 0x01600 6x260, MyStatus 0x01400+4 = 32/33,
+// box names 0x04800+0x400=0x04C00 32x0x22). Same Pk7 record as SM.
+inline bool isGen7USUM(GameType g) {
+    return g == GameType::ULTRA_SUN || g == GameType::ULTRA_MOON;
 }
 
 // Either GB generation (shared record traits: no PID/IV32/crypto/eggs/HT,
@@ -274,6 +303,14 @@ inline const GameInfo& gameInfo(GameType g) {
         {0x14,               "",                 "Pokemon Y",                      "Pokemon Y",
          "Y",                "Y",                 "pk6", 260,   31, 30, 232,   0, 232,
          false, false, "", "Y"},
+        // OMEGA_RUBY (Gen 6 ORAS decrypted dump; 31 boxes, Pk6 records)
+        {0x19,               "",                 "Pokemon Omega Ruby",             "Pokemon Omega Ruby",
+         "OmegaRuby",        "OmegaRuby",         "pk6", 260,   31, 30, 232,   0, 232,
+         false, false, "", "OmegaRuby"},
+        // ALPHA_SAPPHIRE
+        {0x1A,               "",                 "Pokemon Alpha Sapphire",         "Pokemon Alpha Sapphire",
+         "AlphaSapphire",    "AlphaSapphire",     "pk6", 260,   31, 30, 232,   0, 232,
+         false, false, "", "AlphaSapphire"},
         // SUN (Gen 7 SM decrypted dump; 32 boxes)
         {0x15,               "",                 "Pokemon Sun",                    "Pokemon Sun",
          "Sun",              "Sun",               "pk7", 260,   32, 30, 232,   0, 232,
@@ -282,6 +319,14 @@ inline const GameInfo& gameInfo(GameType g) {
         {0x16,               "",                 "Pokemon Moon",                   "Pokemon Moon",
          "Moon",             "Moon",              "pk7", 260,   32, 30, 232,   0, 232,
          false, false, "", "Moon"},
+        // ULTRA_SUN (Gen 7 USUM decrypted dump; 32 boxes, Pk7 records)
+        {0x17,               "",                 "Pokemon Ultra Sun",              "Pokemon Ultra Sun",
+         "UltraSun",         "UltraSun",          "pk7", 260,   32, 30, 232,   0, 232,
+         false, false, "", "UltraSun"},
+        // ULTRA_MOON
+        {0x18,               "",                 "Pokemon Ultra Moon",             "Pokemon Ultra Moon",
+         "UltraMoon",        "UltraMoon",         "pk7", 260,   32, 30, 232,   0, 232,
+         false, false, "", "UltraMoon"},
     };
     return INFO[static_cast<int>(g)];
 }
@@ -319,8 +364,12 @@ inline GameType pairedGame(GameType g) {
         case GameType::WHITE2: return GameType::BLACK2;
         case GameType::X: return GameType::Y;
         case GameType::Y: return GameType::X;
+        case GameType::OMEGA_RUBY: return GameType::ALPHA_SAPPHIRE;
+        case GameType::ALPHA_SAPPHIRE: return GameType::OMEGA_RUBY;
         case GameType::SUN: return GameType::MOON;
         case GameType::MOON: return GameType::SUN;
+        case GameType::ULTRA_SUN: return GameType::ULTRA_MOON;
+        case GameType::ULTRA_MOON: return GameType::ULTRA_SUN;
         default: return g;
     }
 }
@@ -330,7 +379,13 @@ inline uint64_t    titleIdOf(GameType g)        { return gameInfo(g).titleId; }
 inline const char* saveFileNameOf(GameType g)   { return gameInfo(g).saveFileName; }
 inline const char* gameDisplayNameOf(GameType g){ return gameInfo(g).displayName; }
 inline const char* bankGroupNameOf(GameType g)  { return gameInfo(g).bankGroupName; }
-inline const char* bankFolderNameOf(GameType g) { return gameInfo(g).bankFolderName; }
+inline std::string bankFolderNameOf(GameType g) {
+    std::string s = gameInfo(g).bankFolderName;
+#ifdef OH_LINUX
+    s = toLowerCopy(s);
+#endif
+    return s;
+}
 inline const char* gamePathNameOf(GameType g)   { return gameInfo(g).gamePathName; }
 inline const char* pkFileExtension(GameType g)  { return gameInfo(g).pkExtension; }
 inline int         pkPartySize(GameType g)      { return gameInfo(g).pkPartySize; }
@@ -340,8 +395,9 @@ inline int genOf(GameType g) {
     if (isFRLG(g) || isImportedFile(g)) return 3;
     if (isGen4File(g)) return 4;
     if (isGen5File(g)) return 5;
-    if (isGen6XY(g)) return 6;
+    if (isGen6XY(g) || isGen6ORAS(g)) return 6;
     if (isGen7SM(g)) return 7;
+    if (isGen7USUM(g)) return 7;
     if (isLGPE(g)) return 7;
     if (isSV(g) || g == GameType::ZA) return 9;
     return 8; // SwSh, BDSP, Legends Arceus
@@ -367,8 +423,9 @@ inline int ohTargetGenFor(GameType g) {
     if (isFRLG(g) || isImportedFile(g)) return 3;
     if (isGen4File(g)) return 4;  // Pk4 (DPPt/HGSS)
     if (isGen5File(g)) return 5;  // Pk5 (BW/B2W2)
-    if (isGen6XY(g)) return 6;  // Pk6 (X/Y)
+    if (isGen6XY(g) || isGen6ORAS(g)) return 6;  // Pk6 (X/Y/ORAS)
     if (isGen7SM(g)) return 7;  // Pk7 (S/M)
+    if (isGen7USUM(g)) return 7;  // Pk7 (US/UM, stesso record)
     if (g == GameType::LA) return 10; // PA8 (Legends: Arceus)
     if (g == GameType::ZA) return 11; // PA9 (Legends: Z-A)
     if (isBDSP(g))         return 12; // PB8 (BDSP)
@@ -390,8 +447,9 @@ inline int ohSourceGenFor(GameType g) {
     if (isFRLG(g) || isImportedFile(g)) return 3;
     if (isGen4File(g)) return 4;  // Pk4 (DPPt/HGSS)
     if (isGen5File(g)) return 5;  // Pk5 (BW/B2W2)
-    if (isGen6XY(g)) return 6;  // Pk6 (X/Y)
+    if (isGen6XY(g) || isGen6ORAS(g)) return 6;  // Pk6 (X/Y/ORAS)
     if (isGen7SM(g)) return 7;  // Pk7 (S/M)
+    if (isGen7USUM(g)) return 7;  // Pk7 (US/UM, stesso record)
     if (g == GameType::LA) return 10; // PA8 (Legends: Arceus)
     if (g == GameType::ZA) return 11; // PA9 (Legends: Z-A)
     if (isBDSP(g))         return 12; // PB8 (BDSP)
@@ -437,7 +495,9 @@ inline int learnsetTableFor(GameType g) {
     if (g == GameType::BLACK || g == GameType::WHITE) return 17; // BW
     if (g == GameType::BLACK2 || g == GameType::WHITE2) return 18; // B2W2
     if (g == GameType::X || g == GameType::Y) return 19; // XY
+    if (g == GameType::OMEGA_RUBY || g == GameType::ALPHA_SAPPHIRE) return 20; // ORAS
     if (g == GameType::SUN || g == GameType::MOON) return 21; // SM (22 = USUM, later)
+    if (g == GameType::ULTRA_SUN || g == GameType::ULTRA_MOON) return 22; // USUM
     if (isLGPE(g)) return 8;                                    // GG
     if (isSwSh(g)) return 9;                                    // SWSH
     if (isBDSP(g)) return 10;                                   // BDSP

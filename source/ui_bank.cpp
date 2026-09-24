@@ -101,10 +101,18 @@ void UI::drawBankSelectorFrame() {
                          selCenterX, SCREEN_H / 2 + 15, T().textDim, fontSmall_);
     } else if (bankManager_.isAllMode()) {
         // All-banks mode: grouped list with game headers
+#ifdef OH_LINUX
+        // 4:3: lista contenuta nello schermo (status bar a 445).
+        int LIST_W = splitView ? (PANEL_W - 30) : 600;
+        int LIST_X = splitView ? (selAreaX + 15) : (SCREEN_W - LIST_W) / 2;
+        int LIST_Y = splitView ? 50 : 80;
+        int LIST_BOTTOM = 420;
+#else
         int LIST_W = splitView ? (PANEL_W - 30) : 800;
         int LIST_X = splitView ? (selAreaX + 15) : (SCREEN_W - LIST_W) / 2;
         int LIST_Y = splitView ? 50 : 80;
         int LIST_BOTTOM = 580;
+#endif
         int ROW_H = 50;
         int HDR_H = 32;
         int visiblePixels = LIST_BOTTOM - LIST_Y;
@@ -211,10 +219,18 @@ void UI::drawBankSelectorFrame() {
         }
     } else {
         // Normal mode: flat bank list
+#ifdef OH_LINUX
+        // 4:3: lista contenuta nello schermo (status bar a 445).
+        int LIST_W = splitView ? (PANEL_W - 30) : 600;
+        int LIST_X = splitView ? (selAreaX + 15) : (SCREEN_W - LIST_W) / 2;
+        int LIST_Y = splitView ? 50 : 80;
+        int LIST_BOTTOM = 420;
+#else
         int LIST_W = splitView ? (PANEL_W - 30) : 800;
         int LIST_X = splitView ? (selAreaX + 15) : (SCREEN_W - LIST_W) / 2;
         int LIST_Y = splitView ? 50 : 80;
         int LIST_BOTTOM = 580;
+#endif
         int ROW_H = 50;
         int visibleRows = (LIST_BOTTOM - LIST_Y) / ROW_H;
 
@@ -262,7 +278,7 @@ void UI::drawBankSelectorFrame() {
 
     // Status bar
     if (bankRightCrossGen_)
-        drawStatusBar("A: Open   X: New bank   Y: Rename   +: Delete   B: Back");
+        drawStatusBar("A: Open   X: New bank   Y: Rename   -: Delete   B: Back   +: About");
     else if (bankManager_.isAllMode())
         drawStatusBar(i18n::get(StrKey::StatusBankAll));
     else
@@ -397,22 +413,43 @@ void UI::handleBankSelectorInput(bool& running) {
                         bankManager_.init(basePath_, selectedGame_);
                     }
                     return;
-                case SDL_CONTROLLER_BUTTON_Y: // Switch X = new
+                case SDL_CONTROLLER_BUTTON_Y: { // Switch X = new
+                    // A = cross-gen, Y = solo questo gioco, B = annulla per
+                    // davvero (prima B sceglieva "banca normale" invece di
+                    // uscire senza fare nulla, come B fa ovunque altrove).
                     if (!bankManager_.isAllMode()) {
-                        newBankCrossGen_ = showConfirmDialog(i18n::get(StrKey::CreateBankTitle),
+                        int kind = pickNewBankKind(i18n::get(StrKey::CreateBankTitle),
                             i18n::get(StrKey::CreateBankBody));
-                        beginTextInput(TextInputPurpose::CreateBank);
+                        if (kind >= 0) {
+                            newBankCrossGen_ = (kind == 0);
+                            beginTextInput(TextInputPurpose::CreateBank);
+                        }
                     } else if (bankRightCrossGen_) {
                         // New bank is created for the currently loaded game;
-                        // drop back to its single-game list first.
+                        // drop back to its single-game list first. Restored
+                        // after la creazione in UI::commitTextInput() --
+                        // altrimenti la vista restava sul singolo gioco
+                        // finche' non si usciva e rientrava.
                         bankRightCrossGen_ = false;
+                        bankCreateWasCrossGenView_ = true;
                         bankManager_.init(basePath_, selectedGame_);
-                        newBankCrossGen_ = showConfirmDialog(i18n::get(StrKey::CreateBankTitle),
+                        int kind = pickNewBankKind(i18n::get(StrKey::CreateBankTitle),
                             i18n::get(StrKey::CreateBankBody));
-                        beginTextInput(TextInputPurpose::CreateBank);
+                        if (kind >= 0) {
+                            newBankCrossGen_ = (kind == 0);
+                            beginTextInput(TextInputPurpose::CreateBank);
+                        } else {
+                            // Annullato: nessun commitTextInput arrivera' mai
+                            // a consumare bankCreateWasCrossGenView_, quindi
+                            // il ripristino va fatto subito qui.
+                            bankCreateWasCrossGenView_ = false;
+                            bankRightCrossGen_ = true;
+                            bankManager_.initAll(basePath_);
+                        }
                         return;
                     }
                     break;
+                }
                 case SDL_CONTROLLER_BUTTON_X: // Switch Y = rename / theme
                     if (bankManager_.isAllMode()) {
                         showThemeSelector_ = true;
@@ -422,12 +459,24 @@ void UI::handleBankSelectorInput(bool& running) {
                         beginTextInput(TextInputPurpose::RenameBank);
                     }
                     break;
-                case SDL_CONTROLLER_BUTTON_BACK: // - = about
-                    showAbout_ = true;
-                    break;
-                case SDL_CONTROLLER_BUTTON_START: // + = delete
-                    if (bankCount > 0 && !bankManager_.isAllMode())
+                case SDL_CONTROLLER_BUTTON_BACK: // - = delete (era +: "-" si legge
+                    // piu' naturalmente come "togli/elimina" di "+" che
+                    // suggerisce "aggiungi" -- scambiati su richiesta.
+                    // L'hint "-: Delete" compare anche nella vista cross-gen
+                    // di default (bankRightCrossGen_, box a sinistra + lista
+                    // banche a destra) ma il controllo bloccava sempre lì
+                    // perche' quella vista usa bankManager_.initAll() ->
+                    // isAllMode()==true. deleteBank() lavora per fullPath
+                    // per-voce e non dipende da banksDir_, quindi funziona
+                    // gia' bene in questa modalita': va permesso. Resta
+                    // bloccato solo nel picker esplicito "Tutte le banche"
+                    // (allBanksMode_ senza bankRightCrossGen_), il cui hint
+                    // infatti non promette Delete.
+                    if (bankCount > 0 && (bankRightCrossGen_ || !bankManager_.isAllMode()))
                         showDeleteConfirm_ = true;
+                    break;
+                case SDL_CONTROLLER_BUTTON_START: // + = about (era -)
+                    showAbout_ = true;
                     break;
             }
         }
@@ -694,6 +743,20 @@ void UI::beginTextInput(TextInputPurpose purpose) {
         swkbdConfigSetHeaderText(&kbd, i18n::get(StrKey::SetEditUrlHdr).c_str());
         swkbdConfigSetStringLenMax(&kbd, 127);
     }
+#ifdef OH_LINUX
+    // Build Linux (R36S): non c'e' la tastiera virtuale di Switch (swkbd).
+    // Forniamo un input automatico: per creare banca un default univoco, per
+    // gli altri purpose il buffer gia' preimpostato. Cosi' la creazione
+    // banca funziona anche senza tastiera.
+    if (purpose == TextInputPurpose::CreateBank) {
+        int n = 1;
+        while (bankManager_.bankExists("Banca " + std::to_string(n))) n++;
+        textInputBuffer_ = "Banca " + std::to_string(n);
+        textInputCursorPos_ = (int)textInputBuffer_.size();
+    }
+    commitTextInput(textInputBuffer_);
+    return;
+#endif
     if (purpose == TextInputPurpose::RenameBank && !renamingBankName_.empty())
         swkbdConfigSetInitialText(&kbd, renamingBankName_.c_str());
     else if (!textInputBuffer_.empty())
@@ -709,10 +772,29 @@ void UI::beginTextInput(TextInputPurpose purpose) {
         commitTextInput(result);
     else if (R_SUCCEEDED(rc))
         commitTextInput("");
+    else if (bankCreateWasCrossGenView_) {
+        // Tastiera di sistema annullata (B) durante "crea banca" dalla
+        // vista cross-gen: commitTextInput() non arriva mai a consumare
+        // il flag di ripristino, quindi va fatto qui.
+        bankCreateWasCrossGenView_ = false;
+        bankRightCrossGen_ = true;
+        bankManager_.initAll(basePath_);
+    }
 }
 
 void UI::commitTextInput(const std::string& text) {
     if (textInputPurpose_ == TextInputPurpose::CreateBank) {
+        // Ripristina la vista cross-gen se "crea banca" e' partita da li'
+        // (vedi bankCreateWasCrossGenView_) -- prima di qualunque return
+        // anticipato qui sotto (spazio insufficiente, nome duplicato),
+        // altrimenti quei casi lascerebbero comunque la vista bloccata sul
+        // singolo gioco. banksDir_ resta quello giusto (settato da
+        // bankManager_.init() prima di arrivare qui), initAll() non lo tocca.
+        if (bankCreateWasCrossGenView_) {
+            bankCreateWasCrossGenView_ = false;
+            bankRightCrossGen_ = true;
+            bankManager_.initAll(basePath_);
+        }
         {
             Bank temp;
             if (newBankCrossGen_)

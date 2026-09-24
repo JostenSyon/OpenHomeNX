@@ -1,6 +1,8 @@
 #include "import_scan.h"
 #include "save_file.h"
 #include "debug_log.h"
+#include "rominfo.h"
+#include "string_utils.h"
 #ifdef OH_USB_UPDATE
 #include <usbhsfs.h>
 #endif
@@ -18,20 +20,20 @@
 
 namespace {
 
-std::string toLower(std::string s) {
-    std::transform(s.begin(), s.end(), s.begin(),
-        [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-    return s;
-}
-
 // Ruby and Sapphire share gameCode 0 at sector-0 offset 0xac — real GBA
 // cartridges never recorded which of the two a save came from. OpenHome's own
 // G3SaveBackup (upstream reference) has the exact same ambiguity and falls
 // back to Ruby when nothing else disambiguates it; we do the same, preferring
 // a filename hint first since emulator save files are almost always named
-// after the ROM. gameCode 1 is FireRed/LeafGreen — rejected here since those
-// already have real titleId-backed GameTypes; import scanning isn't meant to
-// duplicate that path.
+// after the ROM. gameCode 1 is FireRed/LeafGreen: questi hanno anche
+// GameType nativi con titleId reale (NSO GBA), quindi in teoria "gia'
+// coperti" — ma solo per chi possiede quel titolo Switch. Chi ha solo la
+// ROM GBA (praticamente sempre su R36S/ArkOS, dove non esiste alcun
+// concetto di titolo Switch installato) restava senza alcuna riga per
+// FireRed/LeafGreen: prima qui veniva scartato a prescindere. Ora viene
+// classificato come qualunque altro Gen3 -- l'eventuale doppione quando
+// ENTRAMBI (titolo nativo + ROM import) sono presenti si evita a monte,
+// in UI::appendImportedGames() (stesso bankGroupName gia' in availableGames_).
 bool detectGen3Version(const std::string& filename, SaveFile& probe, GameType& outType) {
     uint8_t* sector0 = probe.findGbaSectorData(0);
     if (!sector0)
@@ -40,8 +42,6 @@ bool detectGen3Version(const std::string& filename, SaveFile& probe, GameType& o
                        | (static_cast<uint32_t>(sector0[0xad]) << 8)
                        | (static_cast<uint32_t>(sector0[0xae]) << 16)
                        | (static_cast<uint32_t>(sector0[0xaf]) << 24);
-    if (gameCode == 1)
-        return false;
 
     // Filename keywords in all common languages (EN/IT/DE/FR/ES): the GBA
     // save itself carries no game code (bytes at 0xAC are 0 on real saves),
@@ -52,6 +52,8 @@ bool detectGen3Version(const std::string& filename, SaveFile& probe, GameType& o
     if (has("sapphire") || has("zaffiro") || has("saphir") || has("zafiro")) { outType = GameType::SAPPHIRE; return true; }
     if (has("ruby") || has("rubino") || has("rubin") || has("rubis") || has("rub")) { outType = GameType::RUBY; return true; }
     if (has("emerald") || has("smeraldo") || has("smaragd") || has("meraude") || has("esmeralda")) { outType = GameType::EMERALD; return true; }
+    if (has("leafgreen") || has("verdefoglia") || has("verde foglia") || has("blattgruen") || has("feuille") || has("hoja")) { outType = GameType::LG; return true; }
+    if (has("firered") || has("rossofuoco") || has("rosso fuoco") || has("feuerrot") || has("rougefeu") || has("rojofuego")) { outType = GameType::FR; return true; }
     // No keyword: the save's own game code (ASCII at sector0+0xAC).
     char code[5] = {0};
     code[0] = static_cast<char>(sector0[0xac]);
@@ -61,6 +63,9 @@ bool detectGen3Version(const std::string& filename, SaveFile& probe, GameType& o
     if (std::strcmp(code, "AXPE") == 0) { outType = GameType::SAPPHIRE; return true; }
     if (std::strcmp(code, "AXVE") == 0) { outType = GameType::RUBY;     return true; }
     if (std::strcmp(code, "BPEE") == 0) { outType = GameType::EMERALD;  return true; }
+    if (std::strcmp(code, "BPRE") == 0) { outType = GameType::FR;       return true; }
+    if (std::strcmp(code, "BPGE") == 0) { outType = GameType::LG;       return true; }
+    if (gameCode == 1) { outType = GameType::FR; return true; } // FR/LG ambigui: FR come default, stessa politica di Ruby
     outType = (gameCode == 0) ? GameType::RUBY : GameType::EMERALD;
     return true;
 }
@@ -225,40 +230,77 @@ bool detectDSVersion(const std::string& filename, const std::string& full, GameT
     return true;
 }
 
-// Gen 6 XY / Gen 7 SM (decrypted 3DS dumps, Citra/Checkpoint style).
+// Gen 6 XY / Gen 7 SM+USUM (decrypted 3DS dumps, Citra/Checkpoint style).
 // Detection is fully byte-driven: fixed MyStatus offsets carry exact Game
-// bytes (XY: 24/25, SM: 30/31), then box slots must decrypt to valid
-// checksums. Encrypted cartridge dumps fail the Game byte explicitly.
+// bytes (XY: 24/25, SM: 30/31, USUM: 32/33), then box slots must decrypt to
+// valid checksums. Encrypted cartridge dumps fail the Game byte explicitly.
+// I marker delle tre famiglie vivono a offset diversi (0x14000 / 0x01200 /
+// 0x01400): ogni ramo rifiuta se un'altra famiglia dichiara il file, cosi'
+// un byte coincidente altrove non dirotta mai il detect (i loader 3DS non
+// hanno checksum e tornerebbero true anche a box vuoti).
 bool detect3DSVersion(const std::string& full, GameType& outType) {
     std::ifstream file(full, std::ios::binary | std::ios::ate);
     if (!file.is_open())
         return false;
     size_t size = static_cast<size_t>(file.tellg());
     file.seekg(0);
+    auto markerAt = [&](size_t off) -> int {
+        if (size < off + 8) return -1;
+        std::vector<uint8_t> status(8);
+        file.clear();
+        file.seekg(off);
+        file.read(reinterpret_cast<char*>(status.data()), 8);
+        if (!file) return -1;
+        return status[4];
+    };
+    int mXY = markerAt(0x14000);
+    int mSM = markerAt(0x01200);
+    int mUSUM = markerAt(0x01400);
+    // XY e ORAS condividono l'offset MyStatus (0x14000+4: 24/25 vs 26/27,
+    // valori disgiunti). mXY qui sotto vale per entrambi: il ramo ORAS
+    // richiede 26/27, quello XY 24/25.
+    // USUM prima: il suo marker (32/33) non collide mai con SM (max count 6).
+    // Ogni ramo richiede il proprio marker E nessun altro: un file con due
+    // marker (corrotto/patologico) non viene attribuito a nessun gioco,
+    // mai al gioco sbagliato.
+    if (size >= 0x05200 + static_cast<size_t>(32) * 30 * 232) {
+        if ((mUSUM == 32 || mUSUM == 33) && mXY != 24 && mXY != 25 && mXY != 26 && mXY != 27 && mSM != 30 && mSM != 31) {
+            SaveFile probe;
+            probe.setGameType(mUSUM == 32 ? GameType::ULTRA_SUN : GameType::ULTRA_MOON);
+            if (probe.load(full)) {
+                outType = mUSUM == 32 ? GameType::ULTRA_SUN : GameType::ULTRA_MOON;
+                return true;
+            }
+        }
+    }
     // XY boxes end at 0x22600 + 31*30*232; SM at 0x04E00 + 32*30*232.
     if (size >= 0x22600 + static_cast<size_t>(31) * 30 * 232) {
-        std::vector<uint8_t> status(8);
-        file.seekg(0x14000);
-        file.read(reinterpret_cast<char*>(status.data()), 8);
-        if (file && (status[4] == 24 || status[4] == 25)) {
+        if ((mXY == 24 || mXY == 25) && mSM != 30 && mSM != 31 && mUSUM != 32 && mUSUM != 33) {
             SaveFile probe;
-            probe.setGameType(status[4] == 24 ? GameType::X : GameType::Y);
+            probe.setGameType(mXY == 24 ? GameType::X : GameType::Y);
             if (probe.load(full)) {
-                outType = status[4] == 24 ? GameType::X : GameType::Y;
+                outType = mXY == 24 ? GameType::X : GameType::Y;
+                return true;
+            }
+        }
+    }
+    // ORAS: Box 0x33000 (31x30x232), stesso MyStatus di XY (26/27).
+    if (size >= 0x33000 + static_cast<size_t>(31) * 30 * 232) {
+        if ((mXY == 26 || mXY == 27) && mSM != 30 && mSM != 31 && mUSUM != 32 && mUSUM != 33) {
+            SaveFile probe;
+            probe.setGameType(mXY == 27 ? GameType::OMEGA_RUBY : GameType::ALPHA_SAPPHIRE);
+            if (probe.load(full)) {
+                outType = mXY == 27 ? GameType::OMEGA_RUBY : GameType::ALPHA_SAPPHIRE;
                 return true;
             }
         }
     }
     if (size >= 0x04E00 + static_cast<size_t>(32) * 30 * 232) {
-        file.clear();
-        file.seekg(0x01200);
-        std::vector<uint8_t> status(8);
-        file.read(reinterpret_cast<char*>(status.data()), 8);
-        if (file && (status[4] == 30 || status[4] == 31)) {
+        if ((mSM == 30 || mSM == 31) && mUSUM != 32 && mUSUM != 33) {
             SaveFile probe;
-            probe.setGameType(status[4] == 30 ? GameType::SUN : GameType::MOON);
+            probe.setGameType(mSM == 30 ? GameType::SUN : GameType::MOON);
             if (probe.load(full)) {
-                outType = status[4] == 30 ? GameType::SUN : GameType::MOON;
+                outType = mSM == 30 ? GameType::SUN : GameType::MOON;
                 return true;
             }
         }
@@ -396,9 +438,60 @@ void scanDir(const std::string& dir, std::vector<ImportedGame>& out, std::set<st
                     dir.c_str(), filesSeen, regularFiles, gbaSized, matched);
 }
 
+// RomInfo::detect()'s Info.game ("emerald", "firered", ...) -> GameType.
+// Unica implementazione: prima duplicata a mano in tre punti diversi
+// (ui.cpp boot, ui_selectors.cpp isGameLaunchableAt, e il commento in
+// ui_settings.cpp) -- ognuna rifaceva anche la scansione directory da capo
+// ad ogni chiamata invece di leggere il risultato di uno scan gia' fatto.
+// GameType::EMERALD di fallback per un "game" riconosciuto da RomInfo ma non
+// (ancora) elencato qui non dovrebbe mai capitare: i valori possibili sono
+// tutti quelli assegnati in rominfo.cpp (GBA: emerald/firered/leafgreen/
+// ruby/sapphire; GB/GBC: red/blue/yellow/gold/silver/crystal).
+GameType gameTypeFromRomInfoGame(const std::string& g) {
+    if (g == "emerald")   return GameType::EMERALD;
+    if (g == "ruby")      return GameType::RUBY;
+    if (g == "sapphire")  return GameType::SAPPHIRE;
+    if (g == "firered")   return GameType::FR;
+    if (g == "leafgreen") return GameType::LG;
+    if (g == "red")       return GameType::RED;
+    if (g == "blue")      return GameType::BLUE;
+    if (g == "yellow")    return GameType::YELLOW;
+    if (g == "gold")      return GameType::GOLD;
+    if (g == "silver")    return GameType::SILVER;
+    if (g == "crystal")   return GameType::CRYSTAL;
+    return GameType::EMERALD; // fallback difensivo, non dovrebbe accadere
+}
+
+// Seconda passata (Settings::showRomsWithoutSave()): ROM GBA/GB/GBC senza
+// alcun save trovato sopra. Stesso `claimed` della passata save -- una ROM
+// il cui gioco ha gia' un save reale (in questa o altra cartella) non
+// produce mai un doppione orfano.
+void scanRomsWithoutSave(const std::vector<ImportPathEntry>& paths,
+                         std::vector<ImportedGame>& out, std::set<std::string>& claimed) {
+    std::vector<std::string> dirs;
+    for (const auto& e : paths)
+        if (e.enabled && !e.path.empty() && e.path.rfind("usb:", 0) != 0)
+            dirs.push_back(e.path);
+    for (const auto& rom : RomInfo::scanRoms(dirs)) {
+        RomInfo::Info info;
+        if (!RomInfo::detect(rom, info) || info.game.empty())
+            continue; // NDS/3DS (kind riconosciuto, game no) o ROM ignota
+        GameType type = gameTypeFromRomInfoGame(info.game);
+        size_t slash = rom.find_last_of('/');
+        std::string tag = sourceTagFor(slash == std::string::npos ? rom : rom.substr(0, slash));
+        std::string key = std::to_string(static_cast<int>(type)) + '\x1f' + tag;
+        if (claimed.count(key) != 0)
+            continue; // gia' coperto da un save reale (o da un'altra ROM prima)
+        claimed.insert(key);
+        out.push_back({type, rom, tag, /*hasSave=*/false});
+        DebugLog::line("import scan: %s -> %s (senza save)", rom.c_str(), gameInfo(type).gameTag);
+    }
+}
+
 } // namespace
 
-std::vector<ImportedGame> scanImportPaths(const std::vector<ImportPathEntry>& paths, bool autoCheckUsb) {
+std::vector<ImportedGame> scanImportPaths(const std::vector<ImportPathEntry>& paths, bool autoCheckUsb,
+                                          bool includeRomsWithoutSave) {
     std::vector<ImportedGame> out;
     std::set<std::string> claimed;
 
@@ -459,6 +552,9 @@ std::vector<ImportedGame> scanImportPaths(const std::vector<ImportPathEntry>& pa
         DebugLog::line("import scan: autocheck USB enabled but built without OH_USB_UPDATE, skipped");
 #endif
     }
+
+    if (includeRomsWithoutSave)
+        scanRomsWithoutSave(paths, out, claimed);
 
     DebugLog::line("import scan: done, %zu game(s) found", out.size());
     return out;

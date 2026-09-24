@@ -25,6 +25,7 @@ static char s_version[32] = {0};
 static char s_err[160] = {0};
 static std::string s_url, s_token, s_cur;
 static bool s_beta = false;
+static const char* s_infoFile = "latest.json"; // R36S: "latest-r36s.json"
 
 void workerMain(void*) {
     RemoteUpdateInfo info;
@@ -61,7 +62,7 @@ void workerMain(void*) {
             return;
         }
     }
-    bool ok = updateNetFetchInfo(fetchUrl, s_token, info, err);
+    bool ok = updateNetFetchInfo(fetchUrl, s_token, info, err, nullptr, s_infoFile);
     s_stage.store(2, std::memory_order_release);
     if (ok) {
         if (compareVersionStrings(info.version, s_cur) > 0)
@@ -76,7 +77,7 @@ void workerMain(void*) {
 } // namespace
 
 void autoUpdateStart(const std::string& url, const std::string& token,
-                     const std::string& curVer, bool beta) {
+                     const std::string& curVer, bool beta, const char* infoFile) {
     bool expected = false;
     if (!s_started.compare_exchange_strong(expected, true))
         return; // una sola partenza per boot
@@ -84,6 +85,7 @@ void autoUpdateStart(const std::string& url, const std::string& token,
     s_token = token;
     s_cur = curVer;
     s_beta = beta && url.empty(); // custom url vince sempre sul canale
+    s_infoFile = infoFile ? infoFile : "latest.json";
     s_state.store(1, std::memory_order_release);
     Result rcCreate = threadCreate(&s_thread, workerMain, nullptr, nullptr,
                                    kStackSize, 0x2C, -2);
@@ -155,7 +157,14 @@ bool readUpdateAutoCfg(const std::string& basePath, std::string& urlOut,
     // quello è statico in un anonymous namespace).
     const std::string paths[] = { basePath + "update.cfg",
                                   "sdmc:/switch/OpenHomeNX/update.cfg" };
-    bool autoOn = false;
+    // Default ON: nuovo utente parte con il check di boot attivo.
+    // L'utente spegne scrivendo auto=0 (o off/no/false) dal menu Impostazioni.
+    bool autoOn = true;
+    bool autoSeenActive = false;
+    auto trim = [](std::string& s) {
+        while (!s.empty() && (s.front() == ' ' || s.front() == '\t')) s.erase(s.begin());
+        while (!s.empty() && (s.back()  == ' ' || s.back()  == '\t')) s.pop_back();
+    };
     for (const auto& p : paths) {
         std::ifstream f(p);
         if (!f.good()) continue;
@@ -166,17 +175,46 @@ bool readUpdateAutoCfg(const std::string& basePath, std::string& urlOut,
             auto eq = line.find('=');
             if (eq == std::string::npos) continue;
             std::string k = line.substr(0, eq), v = line.substr(eq + 1);
-            auto trim = [](std::string& s) {
-                while (!s.empty() && (s.front() == ' ' || s.front() == '\t')) s.erase(s.begin());
-                while (!s.empty() && (s.back()  == ' ' || s.back()  == '\t')) s.pop_back();
-            };
             trim(k); trim(v);
             if (k == "url") urlOut = v;
             else if (k == "token") tokenOut = v;
             else if (k == "channel") channelOut = v;
-            else if (k == "auto" && (v == "1" || v == "on" || v == "yes")) autoOn = true;
+            else if (k == "auto") {
+                // Ultimo file/scrittura vince; valori sconosciuti non cambiano lo stato.
+                autoSeenActive = true;
+                if (v == "0" || v == "off" || v == "no" || v == "false") autoOn = false;
+                else if (v == "1" || v == "on" || v == "yes" || v == "true") autoOn = true;
+            }
         }
-        if (autoOn) return true;
     }
-    return false;
+    // 2026-09-19: "auto" (check al boot) e' una preferenza indipendente
+    // dalla sorgente (url/GitHub vs custom), ma updateCfgHome() in
+    // ui_selectors.cpp scrive nel file .off quando quello e' l'unico con un
+    // url salvato (per non riattivarlo mai da solo) -- risultato: con
+    // sorgente GitHub il toggle "Controlla aggiornamenti all'avvio" restava
+    // sempre ON, mai spegnibile, perche' la scrittura andava nel .off e
+    // questa lettura non lo guardava mai. Fix: se nessuno dei file attivi
+    // ha specificato "auto" esplicitamente, recuperalo dal .off -- MAI
+    // url/token da li' (un server disattivato non va ricontattato da solo).
+    if (!autoSeenActive) {
+        const std::string offPaths[] = { basePath + "update.cfg.off",
+                                         "sdmc:/switch/OpenHomeNX/update.cfg.off" };
+        for (const auto& p : offPaths) {
+            std::ifstream f(p);
+            if (!f.good()) continue;
+            std::string line;
+            while (std::getline(f, line)) {
+                if (!line.empty() && line.back() == '\r') line.pop_back();
+                if (line.empty() || line[0] == '#') continue;
+                auto eq = line.find('=');
+                if (eq == std::string::npos) continue;
+                std::string k = line.substr(0, eq), v = line.substr(eq + 1);
+                trim(k); trim(v);
+                if (k != "auto") continue;
+                if (v == "0" || v == "off" || v == "no" || v == "false") autoOn = false;
+                else if (v == "1" || v == "on" || v == "yes" || v == "true") autoOn = true;
+            }
+        }
+    }
+    return autoOn;
 }

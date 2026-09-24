@@ -49,4 +49,14 @@ std::string remoteSyncUser(); // default "ark" (credenziale di default ArkOS)
 void setRemoteSyncUser(const std::string& v);
 std::string remoteSyncPass(); // default "ark"
 void setRemoteSyncPass(const std::string& v);
+int boxartStyle(); // Sviluppatore -> Stile boxart: 0=Locale, 1=2D, 2=3D
+void setBoxartStyle(int v);
+bool showRomsWithoutSave(); // Sviluppatore -> Mostra ROM senza save
+void setShowRomsWithoutSave(bool v);
+bool showFrlgRoms(); // Sviluppatore -> Versioni ROM di FRLG: default OFF (nascoste se nativa)
+void setShowFrlgRoms(bool v);
+bool frlgAutoSync(); // Sviluppatore -> Auto-sync FRLG: default OFF finche' non e' provato
+void setFrlgAutoSync(bool v);
+bool confirmExit(); // Sistema -> Conferma uscita con B: off = esci subito
+void setConfirmExit(bool v);
 } // namespace Settings

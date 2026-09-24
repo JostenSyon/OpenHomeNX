@@ -1,4 +1,5 @@
 #include "settings_cfg.h"
+#include "path_utils.h"
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
@@ -30,10 +31,6 @@ void setInt(const char* k, int v) {
     save();
 }
 
-bool fileExists(const std::string& p) {
-    std::ifstream f(p);
-    return f.good();
-}
 std::string readLine(const std::string& p) {
     std::ifstream f(p);
     std::string s;
@@ -167,6 +164,24 @@ void setDockOrder(const std::string& v) {
 }
 bool dockVisible() { return getInt("dock_visible", 1) != 0; }
 void setDockVisible(bool v) { setInt("dock_visible", v ? 1 : 0); }
+int boxartStyle() {
+    int v = getInt("boxart_style", 0);
+    if (v < 0 || v > 2) v = 0;
+    return v;
+}
+void setBoxartStyle(int v) {
+    if (v < 0) v = 0;
+    if (v > 2) v = 2;
+    setInt("boxart_style", v);
+}
+bool showRomsWithoutSave() { return getInt("show_roms_without_save", 0) != 0; }
+void setShowRomsWithoutSave(bool v) { setInt("show_roms_without_save", v ? 1 : 0); }
+bool showFrlgRoms() { return getInt("show_frlg_roms", 0) != 0; }
+void setShowFrlgRoms(bool v) { setInt("show_frlg_roms", v ? 1 : 0); }
+bool frlgAutoSync() { return getInt("frlg_auto_sync", 0) != 0; }
+void setFrlgAutoSync(bool v) { setInt("frlg_auto_sync", v ? 1 : 0); }
+bool confirmExit() { return getInt("confirm_exit", 0) != 0; }
+void setConfirmExit(bool v) { setInt("confirm_exit", v ? 1 : 0); }
 std::string remoteSyncHost() {
     auto it = g_kv.find("remotesync_host");
     return (it == g_kv.end()) ? "" : it->second;

@@ -1,5 +1,7 @@
 #include "update_net.h"
 #include "debug_log.h"
+#include "string_utils.h"
+#include "path_utils.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -157,11 +159,6 @@ std::string sha256HexBuf(const uint8_t* data, size_t len) {
 }
 
 
-std::string toLower(std::string s) {
-    for (char& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    return s;
-}
-
 } // namespace
 
 std::string sha256HexFile(const std::string& path) {
@@ -170,11 +167,12 @@ std::string sha256HexFile(const std::string& path) {
     mbedtls_sha256_context ctx;
     mbedtls_sha256_init(&ctx);
     mbedtls_sha256_starts_ret(&ctx, 0);
-    unsigned char buf[65536];
+    // Buffer su heap (non stack): chiamato anche da thread con stack limitato
+    std::vector<unsigned char> buf(65536);
     size_t n = 0;
     bool ok = true;
-    while ((n = std::fread(buf, 1, sizeof(buf), f)) > 0) {
-        if (mbedtls_sha256_update_ret(&ctx, buf, n) != 0) { ok = false; break; }
+    while ((n = std::fread(buf.data(), 1, buf.size(), f)) > 0) {
+        if (mbedtls_sha256_update_ret(&ctx, buf.data(), n) != 0) { ok = false; break; }
     }
     if (std::ferror(f)) ok = false;
     std::fclose(f);
@@ -192,23 +190,62 @@ std::string sha256HexFile(const std::string& path) {
 bool updateNetAvailable() { return g_netReady; }
 void updateNetSetReady(bool ready) { g_netReady = ready; }
 
+void updateNetInitCurl() {
+    // Chiamata una sola volta dal boot (main thread): niente guard, niente
+    // mutex — il chiamante garantisce il contesto single-threaded.
+    if (curl_global_init(CURL_GLOBAL_DEFAULT) != CURLE_OK)
+        DebugLog::line("update-net: curl_global_init FALLITA");
+}
+
 bool updateNetEnsureReady() {
-    static bool curlDone = false;
     if (!g_netReady) {
         Result rc = socketInitializeDefault();
         g_netReady = R_SUCCEEDED(rc);
         DebugLog::line("update-net: retry socket -> 0x%08X (%s)", (unsigned)rc,
                        g_netReady ? "on" : "off");
     }
-    if (g_netReady && !curlDone) {
-        if (curl_global_init(CURL_GLOBAL_DEFAULT) != CURLE_OK) {
-            g_netReady = false;
-            return false;
-        }
-        curlDone = true;
-    }
     return g_netReady;
 }
+
+namespace {
+// Tempo di parete in secondi. `clock()` su newlib/Switch è tempo CPU: durante un
+// download il processo è bloccato su I/O e `clock()` non avanza → il throttle
+// non scadeva mai e il callback non emetteva. Uso il tick di sistema di libnx.
+double wallSeconds() {
+    return (double)armTicksToNs(armGetSystemTick()) / 1.0e9;
+}
+
+// Throttle UI a 0.1s (era 0.25s): barra piu fluida senza affamare il socket.
+struct DlProgress {
+    UpdateProgressFn cb;
+    const bool* cancel = nullptr; // se alzato, curl abortisce al prossimo tick
+    std::string label = "Downloading";
+    double lastEmit = 0.0;
+    double startTime = 0.0;
+};
+
+int dlXferInfoUI(void* p, curl_off_t dltotal, curl_off_t dlnow, curl_off_t, curl_off_t) {
+    auto* dp = static_cast<DlProgress*>(p);
+    if (dp->cancel && *dp->cancel) return 1; // CURLE_ABORTED_BY_CALLBACK
+    if (!dp->cb) return 0; // solo cancel, niente UI
+    double now = wallSeconds();
+    if (dp->lastEmit != 0.0 && now - dp->lastEmit < 0.1) return 0;
+    dp->lastEmit = now;
+    double elapsed = now - dp->startTime;
+    double mbps = (elapsed > 0.05) ? ((double)dlnow / elapsed / (1024.0 * 1024.0)) : 0.0;
+    char line[160];
+    if (dltotal > 0) {
+        int pct = (int)((dlnow * 100) / dltotal);
+        std::snprintf(line, sizeof(line), "Downloading\n  %d%%  (%.1f / %.1f MB)  -  %.1f MB/s",
+                      pct, dlnow / (1024.0 * 1024.0), dltotal / (1024.0 * 1024.0), mbps);
+    } else {
+        std::snprintf(line, sizeof(line), "Downloading\n  %.1f MB  -  %.1f MB/s",
+                      dlnow / (1024.0 * 1024.0), mbps);
+    }
+    dp->cb(line);
+    return 0;
+}
+} // namespace
 
 // Init nifm:u condivisa (idempotente): usata sia da updateNetLinkStr() qui
 // sotto sia da remoteSyncScanLan() (remote_sync.cpp) per l'IP locale. Presa
@@ -247,9 +284,10 @@ const char* updateNetLinkStr() {
 }
 
 bool updateNetFetchInfo(const std::string& baseUrl, const std::string& token,
-                        RemoteUpdateInfo& out, std::string& err) {
+                        RemoteUpdateInfo& out, std::string& err,
+                        const bool* cancel, const char* infoFile) {
     if (!g_netReady) { err = "rete non inizializzata"; return false; }
-    const std::string url = joinUrl(baseUrl, "latest.json");
+    const std::string url = joinUrl(baseUrl, infoFile ? infoFile : "latest.json");
 
     CURL* c = curl_easy_init();
     if (!c) { err = "curl_easy_init fallito"; return false; }
@@ -260,6 +298,13 @@ bool updateNetFetchInfo(const std::string& baseUrl, const std::string& token,
     curl_easy_setopt(c, CURLOPT_WRITEFUNCTION, writeToString);
     curl_easy_setopt(c, CURLOPT_WRITEDATA, &body);
     curl_easy_setopt(c, CURLOPT_TIMEOUT, 30L);
+    DlProgress dp;
+    if (cancel) {
+        dp.cancel = cancel;
+        curl_easy_setopt(c, CURLOPT_NOPROGRESS, 0L);
+        curl_easy_setopt(c, CURLOPT_XFERINFOFUNCTION, dlXferInfoUI);
+        curl_easy_setopt(c, CURLOPT_XFERINFODATA, &dp);
+    }
 
     CURLcode rc = curl_easy_perform(c);
     long http = 0;
@@ -327,7 +372,8 @@ bool jsonBoolAt(const std::string& body, size_t pos, const char* key) {
 
 bool updateNetFetchBetaBase(const std::string& owner, const std::string& repo,
                             const std::string& token, std::string& outBase,
-                            std::string& outTag, std::string& err) {
+                            std::string& outTag, std::string& err,
+                            const bool* cancel) {
     if (!g_netReady) { err = "rete non inizializzata"; return false; }
     const std::string url = "https://api.github.com/repos/" + owner + "/" + repo + "/releases";
     CURL* c = curl_easy_init();
@@ -359,6 +405,13 @@ bool updateNetFetchBetaBase(const std::string& owner, const std::string& repo,
     curl_easy_setopt(c, CURLOPT_URL, url.c_str());
     curl_easy_setopt(c, CURLOPT_WRITEFUNCTION, writeCapped);
     curl_easy_setopt(c, CURLOPT_WRITEDATA, &sink);
+    DlProgress dp;
+    if (cancel) {
+        dp.cancel = cancel;
+        curl_easy_setopt(c, CURLOPT_NOPROGRESS, 0L);
+        curl_easy_setopt(c, CURLOPT_XFERINFOFUNCTION, dlXferInfoUI);
+        curl_easy_setopt(c, CURLOPT_XFERINFODATA, &dp);
+    }
     CURLcode rc = curl_easy_perform(c);
     long http = 0;
     curl_easy_getinfo(c, CURLINFO_RESPONSE_CODE, &http);
@@ -392,46 +445,11 @@ bool updateNetFetchBetaBase(const std::string& owner, const std::string& repo,
     return false;
 }
 
-namespace {
-// Tempo di parete in secondi. `clock()` su newlib/Switch è tempo CPU: durante un
-// download il processo è bloccato su I/O e `clock()` non avanza → il throttle
-// non scadeva mai e il callback non emetteva. Uso il tick di sistema di libnx.
-double wallSeconds() {
-    return (double)armTicksToNs(armGetSystemTick()) / 1.0e9;
-}
-
-// Throttle UI a 0.1s (era 0.25s): barra piu fluida senza affamare il socket.
-struct DlProgress {
-    UpdateProgressFn cb;
-    std::string label = "Downloading";
-    double lastEmit = 0.0;
-    double startTime = 0.0;
-};
-
-int dlXferInfoUI(void* p, curl_off_t dltotal, curl_off_t dlnow, curl_off_t, curl_off_t) {
-    auto* dp = static_cast<DlProgress*>(p);
-    double now = wallSeconds();
-    if (dp->lastEmit != 0.0 && now - dp->lastEmit < 0.1) return 0;
-    dp->lastEmit = now;
-    double elapsed = now - dp->startTime;
-    double mbps = (elapsed > 0.05) ? ((double)dlnow / elapsed / (1024.0 * 1024.0)) : 0.0;
-    char line[160];
-    if (dltotal > 0) {
-        int pct = (int)((dlnow * 100) / dltotal);
-        std::snprintf(line, sizeof(line), "Downloading\n  %d%%  (%.1f / %.1f MB)  -  %.1f MB/s",
-                      pct, dlnow / (1024.0 * 1024.0), dltotal / (1024.0 * 1024.0), mbps);
-    } else {
-        std::snprintf(line, sizeof(line), "Downloading\n  %.1f MB  -  %.1f MB/s",
-                      dlnow / (1024.0 * 1024.0), mbps);
-    }
-    dp->cb(line);
-    return 0;
-}
-} // namespace
 
 bool updateNetDownload(const std::string& url, const std::string& token,
                        const std::string& destPath, const std::string& expectSha256,
-                       std::string& err, UpdateProgressFn progress) {
+                       std::string& err, UpdateProgressFn progress,
+                       const bool* cancel) {
     if (!g_netReady) { err = "rete non inizializzata"; return false; }
 
     // Tutto in RAM (veloce: niente SD nel percorso caldo), poi una sola
@@ -449,8 +467,9 @@ bool updateNetDownload(const std::string& url, const std::string& token,
     curl_easy_setopt(c, CURLOPT_TIMEOUT, 600L);
 
     DlProgress dp;
-    if (progress) {
+    if (progress || cancel) {
         dp.cb = progress;
+        dp.cancel = cancel;
         dp.startTime = wallSeconds();
         curl_easy_setopt(c, CURLOPT_NOPROGRESS, 0L);
         curl_easy_setopt(c, CURLOPT_XFERINFOFUNCTION, dlXferInfoUI);
@@ -474,6 +493,7 @@ bool updateNetDownload(const std::string& url, const std::string& token,
         err = "file oltre il tetto RAM 256MB, download abortito";
         return false;
     }
+    if (rc == CURLE_ABORTED_BY_CALLBACK) { err = "annullato"; return false; }
     if (rc != CURLE_OK) {
         err = std::string("download: ") + curl_easy_strerror(rc);
         return false;
@@ -513,6 +533,9 @@ bool updateNetDownload(const std::string& url, const std::string& token,
         DebugLog::line("update-net: sha256 ok");
     }
 
+    // La cartella di destinazione puo' non esistere (visto su R36S con
+    // update/ mai creata): senza non si scrive nulla e sembra rete rotta.
+    if (!ensureDir(parentDir(destPath))) { err = "impossibile creare cartella per " + destPath; return false; }
     const std::string tmp = destPath + ".part";
     std::remove(tmp.c_str());
     FILE* f = std::fopen(tmp.c_str(), "wb");

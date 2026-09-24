@@ -163,6 +163,9 @@ int main(int argc, char* argv[]) {
                        (unsigned)netRc, netReady ? "on" : "off", pendingUpdate ? 1 : 0);
         updateNetSetReady(netReady);
     }
+    // curl una volta sola qui (main thread, prima di qualunque worker):
+    // dopo questo punto curl_global_init() non deve piu' essere chiamata.
+    updateNetInitCurl();
     bootMark("rete");
 
     // Auto-check update in parallelo (solo se `auto=1` in update.cfg, mai sul
@@ -175,7 +178,11 @@ int main(int argc, char* argv[]) {
             if (url.empty() && !beta)
                 url = githubReleasesUrl("JostenSyon", "OpenHomeNX");
             DebugLog::line("autoupdate: background check -> %s", beta ? "beta" : url.c_str());
+#ifdef OH_LINUX
+            autoUpdateStart(url, token, APP_VERSION, beta, "latest-r36s.json");
+#else
             autoUpdateStart(url, token, APP_VERSION, beta);
+#endif
         }
     }
 
@@ -285,5 +292,5 @@ int main(int argc, char* argv[]) {
     appletUnhook(&s_exitHookCookie);
     romfsExit();
     DebugLog::line("exit: shutdown complete");
-    return 0;
+    return ui.exitCode();
 }

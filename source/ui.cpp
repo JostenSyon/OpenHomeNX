@@ -8,6 +8,9 @@
 #include "autoupdate.h"
 #include "remote_sync.h"
 #include "settings_cfg.h"
+#include "rominfo.h"
+#include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -46,6 +49,19 @@ bool UI::init() {
         return false;
     }
 
+#ifdef OH_LINUX
+    // Build Linux (R36S): il display nativo è più piccolo di SCREEN_W/H.
+    // Apriamo la finestra a risoluzione nativa e lasciamo che SDL scali
+    // tutto il rendering (disegnato a SCREEN_W/SCREEN_H) al display.
+    {
+        SDL_DisplayMode dm;
+        if (SDL_GetCurrentDisplayMode(0, &dm) == 0 && dm.w > 0 && dm.h > 0) {
+            SDL_SetWindowSize(window_, dm.w, dm.h);
+            SDL_SetWindowFullscreen(window_, SDL_WINDOW_FULLSCREEN_DESKTOP);
+        }
+    }
+#endif
+
     renderer_ = SDL_CreateRenderer(window_, -1,
         SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
     if (!renderer_) {
@@ -57,6 +73,13 @@ bool UI::init() {
     }
     SDL_SetRenderDrawBlendMode(renderer_, SDL_BLENDMODE_BLEND);
 
+#ifdef OH_LINUX
+    // Nativo 4:3 (640x480): logical 1:1, niente letterbox. Il layout
+    // usa SCREEN_W/H ovunque, quindi centrature e barre seguono da sole.
+    SDL_RenderSetLogicalSize(renderer_, SCREEN_W, SCREEN_H);
+    SDL_RenderSetIntegerScale(renderer_, SDL_FALSE);
+#endif
+
     // Load font
     // NOTE: PlSharedFontType_Standard covers Latin, Cyrillic, and Japanese glyphs.
     // Korean (PlSharedFontType_KO) and Chinese (PlSharedFontType_ChineseSimplified /
@@ -67,21 +90,44 @@ bool UI::init() {
     plInitialize(PlServiceType_System);
     plGetSharedFontByType(&fontData, PlSharedFontType_Standard);
     SDL_RWops* rw = SDL_RWFromMem(fontData.address, fontData.size);
+#ifdef OH_LINUX
+    // Nativo 4:3: nessuna downscale, dimensioni originali (le celle del
+    // layout sono disegnate per queste misure).
     font_ = TTF_OpenFontRW(rw, 0, 18);
     fontSmall_ = TTF_OpenFontRW(SDL_RWFromMem(fontData.address, fontData.size), 0, 14);
     fontLarge_ = TTF_OpenFontRW(SDL_RWFromMem(fontData.address, fontData.size), 0, 28);
     fontAbout_ = TTF_OpenFontRW(SDL_RWFromMem(fontData.address, fontData.size), 0, 20);
+#else
+    font_ = TTF_OpenFontRW(rw, 0, 18);
+    fontSmall_ = TTF_OpenFontRW(SDL_RWFromMem(fontData.address, fontData.size), 0, 14);
+    fontLarge_ = TTF_OpenFontRW(SDL_RWFromMem(fontData.address, fontData.size), 0, 28);
+    fontAbout_ = TTF_OpenFontRW(SDL_RWFromMem(fontData.address, fontData.size), 0, 20);
+#endif
 
     if (!font_ || !fontSmall_) {
+#ifdef OH_LINUX
         if (!font_)
             font_ = TTF_OpenFont("romfs:/fonts/default.ttf", 18);
         if (!fontSmall_)
             fontSmall_ = TTF_OpenFont("romfs:/fonts/default.ttf", 14);
+#else
+        if (!font_)
+            font_ = TTF_OpenFont("romfs:/fonts/default.ttf", 18);
+        if (!fontSmall_)
+            fontSmall_ = TTF_OpenFont("romfs:/fonts/default.ttf", 14);
+#endif
     }
+#ifdef OH_LINUX
     if (!fontLarge_)
         fontLarge_ = TTF_OpenFont("romfs:/fonts/default.ttf", 28);
     if (!fontAbout_)
         fontAbout_ = TTF_OpenFont("romfs:/fonts/default.ttf", 20);
+#else
+    if (!fontLarge_)
+        fontLarge_ = TTF_OpenFont("romfs:/fonts/default.ttf", 28);
+    if (!fontAbout_)
+        fontAbout_ = TTF_OpenFont("romfs:/fonts/default.ttf", 20);
+#endif
     if (!fontAbout_) fontAbout_ = font_; // mai nullo al draw
 
     // Load status icons
@@ -219,12 +265,35 @@ bool UI::init() {
         tileBgCache_[GameType::SAPPHIRE] = loadBg("sapphire");
     }
 
+#ifdef OH_LINUX
+    // ArkOS spedisce una mappatura SDL_GameController extra per pad senza
+    // entry nel DB comunitario di SDL (es. "GO-Super Gamepad": back/start
+    // sono bottoni "TRIGGER_HAPPY" fuori standard, mai esposti come
+    // CONTROLLERBUTTONDOWN senza questa mappatura -- verificato su hardware:
+    // ne' il joybutton grezzo ne' un fallback tastiera arrivavano affatto).
+    // I tool di sistema (es. "Advanced > Controller Tester") la caricano
+    // via SDL_GAMECONTROLLERCONFIG_FILE prima di aprire il pad; facciamo lo
+    // stesso qui. File assente/non ArkOS -> ritorna -1, nessun problema,
+    // resta solo il fallback raw-joybutton gia' in ui_input.cpp.
+    int nMap = SDL_GameControllerAddMappingsFromFile("/opt/inttools/gamecontrollerdb.txt");
+    DebugLog::line("pad: SDL_GameControllerAddMappingsFromFile -> %d", nMap);
+#endif
+
     // Open game controller
     for (int i = 0; i < SDL_NumJoysticks(); i++) {
         if (SDL_IsGameController(i)) {
             pad_ = SDL_GameControllerOpen(i);
+            DebugLog::line("pad: aperto joystick %d ('%s') come GameController (pad_=%p)", i,
+                           SDL_JoystickNameForIndex(i) ? SDL_JoystickNameForIndex(i) : "?", (void*)pad_);
             break;
         }
+    }
+    if (pad_) {
+        padNativeBack_  = SDL_GameControllerGetBindForButton(pad_, SDL_CONTROLLER_BUTTON_BACK).bindType != SDL_CONTROLLER_BINDTYPE_NONE;
+        padNativeStart_ = SDL_GameControllerGetBindForButton(pad_, SDL_CONTROLLER_BUTTON_START).bindType != SDL_CONTROLLER_BINDTYPE_NONE;
+        DebugLog::line("pad: bind nativo back=%d start=%d", (int)padNativeBack_, (int)padNativeStart_);
+    } else {
+        DebugLog::line("pad: nessun GameController aperto");
     }
 
     // Set default theme (persisted selection loaded in run())
@@ -268,9 +337,16 @@ void UI::showSplash(int holdMs, bool fadeOut) {
     int texW, texH;
     SDL_QueryTexture(tex, nullptr, nullptr, &texW, &texH);
 
+#ifdef OH_LINUX
+    // 4:3 fullscreen: riempi lo schermo mantenendo il rapporto,
+    // tagliando i laterali (l'immagine e' centrata).
+    float scale = std::max(static_cast<float>(SCREEN_W) / texW,
+                           static_cast<float>(SCREEN_H) / texH);
+#else
     // Scale to fit screen while preserving aspect ratio
     float scale = std::min(static_cast<float>(SCREEN_W) / texW,
                            static_cast<float>(SCREEN_H) / texH);
+#endif
     int dstW = static_cast<int>(texW * scale);
     int dstH = static_cast<int>(texH * scale);
     SDL_Rect dst = {(SCREEN_W - dstW) / 2, (SCREEN_H - dstH) / 2, dstW, dstH};
@@ -389,10 +465,76 @@ std::vector<std::string> UI::wrapText(const std::string& line, TTF_Font* f, int 
     return out;
 }
 
+std::vector<std::string> UI::wrapBodyLines(const std::string& body) {
+    std::vector<std::string> out;
+    const int maxW = SCREEN_W - 80;
+    std::string remaining = body;
+    while (!remaining.empty()) {
+        size_t nl = remaining.find('\n');
+        std::string line = (nl != std::string::npos) ? remaining.substr(0, nl) : remaining;
+        for (auto& wl : wrapText(line, font_, maxW))
+            out.push_back(wl);
+        if (nl == std::string::npos) break;
+        remaining = remaining.substr(nl + 1);
+    }
+    if (out.empty()) out.push_back("");
+    return out;
+}
+
+int UI::dialogScrollDir(uint32_t now, uint32_t& lastTick, int& lastDir) {
+    int dir = 0;
+    if (pad_) {
+        if (SDL_GameControllerGetButton(pad_, SDL_CONTROLLER_BUTTON_DPAD_UP))
+            dir = -1;
+        else if (SDL_GameControllerGetButton(pad_, SDL_CONTROLLER_BUTTON_DPAD_DOWN))
+            dir = 1;
+        else {
+            int16_t ly = SDL_GameControllerGetAxis(pad_, SDL_CONTROLLER_AXIS_LEFTY);
+            if (ly > 8000) dir = 1;
+            else if (ly < -8000) dir = -1;
+        }
+    }
+    if (dir == 0) { lastDir = 0; return 0; }
+    if (dir != lastDir) { lastDir = dir; lastTick = now; return dir; } // scatto immediato
+    if (now - lastTick >= 200) { lastTick = now; return dir; } // repeat
+    return 0;
+}
+
+// Disegna la finestra scrollabile di righe [first, ...] fra topY e bottomY.
+// Ritorna la y del footer (dinamica se tutto entra, fissa in basso se scroll).
+int UI::drawBodyWindow(const std::vector<std::string>& lines, int first,
+                       int topY, int bottomY, int lineH,
+                       SDL_Color col, SDL_Color footCol) {
+    int visible = (bottomY - topY) / lineH;
+    if (visible < 1) visible = 1;
+    int maxFirst = (int)lines.size() - visible;
+    if (maxFirst < 0) maxFirst = 0;
+    if (first < 0) first = 0;
+    if (first > maxFirst) first = maxFirst;
+    for (int i = 0; i < visible && (size_t)(first + i) < lines.size(); i++)
+        drawTextCentered(lines[(size_t)(first + i)], SCREEN_W / 2,
+                         topY + i * lineH, col, font_);
+    if (maxFirst > 0) {
+        if (first > 0)
+            drawTextCentered("^", SCREEN_W / 2, topY - 20, footCol, font_);
+        if (first < maxFirst)
+            drawTextCentered("v", SCREEN_W / 2, bottomY + 4, footCol, font_);
+        return SCREEN_H - 40; // footer fisso in basso durante lo scroll
+    }
+    return topY + (int)lines.size() * lineH + 20; // tutto entra: come prima
+}
+
 void UI::showMessageAndWait(const std::string& title, const std::string& body) {
     if (!renderer_) return;
     markDirty(); // Force redraw after modal returns
 
+    const int lineH = 24;
+    const int topY = SCREEN_H / 2 + 5;
+    const int bottomY = SCREEN_H - 56;
+    std::vector<std::string> lines = wrapBodyLines(body);
+    int first = 0;
+    uint32_t lastTick = 0;
+    int lastDir = 0;
     bool waiting = true;
     while (waiting) {
         SDL_Event event;
@@ -406,11 +548,106 @@ void UI::showMessageAndWait(const std::string& title, const std::string& body) {
             }
         }
 
+        int maxFirst = (int)lines.size() - (bottomY - topY) / lineH;
+        if (maxFirst < 0) maxFirst = 0;
+        first += dialogScrollDir(SDL_GetTicks(), lastTick, lastDir);
+        if (first < 0) first = 0;
+        if (first > maxFirst) first = maxFirst;
+
         SDL_SetRenderDrawColor(renderer_, T().bg.r, T().bg.g, T().bg.b, 255);
         SDL_RenderClear(renderer_);
 
         drawTextCentered(title, SCREEN_W / 2, SCREEN_H / 2 - 40, T().red, fontLarge_);
-        drawBodyText(body, SCREEN_H / 2 + 5, i18n::get(StrKey::PressBToDismiss));
+        int footY = drawBodyWindow(lines, first, topY, bottomY, lineH,
+                                   T().textDim, T().textDim);
+        drawTextCentered(i18n::get(StrKey::PressBToDismiss),
+                         SCREEN_W / 2, maxFirst > 0 ? SCREEN_H - 40 : footY,
+                         T().textDim, fontSmall_);
+
+        SDL_RenderPresent(renderer_);
+        SDL_Delay(16);
+    }
+}
+
+void UI::showTradeResultDialog(const std::string& title, const std::string& body,
+                               uint16_t species1, uint16_t species2) {
+    if (!renderer_) return;
+    markDirty();
+
+    // Stessa dimensione sprite dell'animazione di scambio (playTradeEvolveAnim,
+    // ui_input.cpp): e' il "vibe" scambio voluto, resta 176 su entrambe le
+    // piattaforme -- solo il layout attorno si adatta all'altezza schermo.
+    constexpr int SPR = 176;
+#ifdef OH_LINUX
+    constexpr int SPR_GAP = 16;
+    constexpr int TITLE_H = 30, GAP1 = 14, GAP2 = 16, GAP3 = 14, FOOTER_H = 18;
+#else
+    constexpr int SPR_GAP = 24;
+    constexpr int TITLE_H = 40, GAP1 = 20, GAP2 = 24, GAP3 = 20, FOOTER_H = 22;
+#endif
+    SDL_Texture* tex1 = getSprite(species1, 0);
+    SDL_Texture* tex2 = species2 != 0 ? getSprite(species2, 0) : nullptr;
+
+    const int lineH = 24;
+    const int margin = 20; // margine minimo sopra se il blocco non ci sta centrato
+    std::vector<std::string> lines = wrapBodyLines(body);
+
+    // Blocco intero (titolo + sprite + testo + footer) centrato verticalmente
+    // nello schermo, non ancorato in alto -- se il testo fosse troppo lungo
+    // per starci (raro per una conferma scambio), si ancora al margine e il
+    // testo scrolla come gli altri dialog (drawBodyWindow gestisce gia' il caso).
+    int bodyH = (int)lines.size() * lineH;
+    int totalH = TITLE_H + GAP1 + SPR + GAP2 + bodyH + GAP3 + FOOTER_H;
+    int blockTop = (SCREEN_H - totalH) / 2;
+    if (blockTop < margin) blockTop = margin;
+
+    const int TITLE_Y = blockTop + TITLE_H / 2;
+    const int SPR_Y = blockTop + TITLE_H + GAP1;
+    const int topY = SPR_Y + SPR + GAP2;
+    const int bottomY = SCREEN_H - 56;
+    int first = 0;
+    uint32_t lastTick = 0;
+    int lastDir = 0;
+    bool waiting = true;
+    while (waiting) {
+        SDL_Event event;
+        while (SDL_PollEvent(&event)) {
+            if (event.type == SDL_QUIT) {
+                waiting = false;
+            }
+            if (event.type == SDL_CONTROLLERBUTTONDOWN) {
+                if (event.cbutton.button == SDL_CONTROLLER_BUTTON_A) // Switch B
+                    waiting = false;
+            }
+        }
+
+        int maxFirst = (int)lines.size() - (bottomY - topY) / lineH;
+        if (maxFirst < 0) maxFirst = 0;
+        first += dialogScrollDir(SDL_GetTicks(), lastTick, lastDir);
+        if (first < 0) first = 0;
+        if (first > maxFirst) first = maxFirst;
+
+        SDL_SetRenderDrawColor(renderer_, T().bg.r, T().bg.g, T().bg.b, 255);
+        SDL_RenderClear(renderer_);
+
+        drawTextCentered(title, SCREEN_W / 2, TITLE_Y, T().red, fontLarge_);
+
+        if (tex2) {
+            // Scambio doppio: entrambi gli sprite affiancati, centrati come coppia.
+            int pairW = SPR * 2 + SPR_GAP;
+            int x1 = SCREEN_W / 2 - pairW / 2;
+            int x2 = x1 + SPR + SPR_GAP;
+            if (tex1) drawSpriteFit(x1, SPR_Y, SPR, SPR, tex1);
+            drawSpriteFit(x2, SPR_Y, SPR, SPR, tex2);
+        } else if (tex1) {
+            drawSpriteFit(SCREEN_W / 2 - SPR / 2, SPR_Y, SPR, SPR, tex1);
+        }
+
+        int footY = drawBodyWindow(lines, first, topY, bottomY, lineH,
+                                   T().textDim, T().textDim);
+        drawTextCentered(i18n::get(StrKey::PressBToDismiss),
+                         SCREEN_W / 2, maxFirst > 0 ? SCREEN_H - 40 : footY,
+                         T().textDim, fontSmall_);
 
         SDL_RenderPresent(renderer_);
         SDL_Delay(16);
@@ -421,6 +658,13 @@ bool UI::showConfirmDialog(const std::string& title, const std::string& body) {
     if (!renderer_) return false;
     markDirty(); // Force redraw after modal returns
 
+    const int lineH = 24;
+    const int topY = SCREEN_H / 2 + 5;
+    const int bottomY = SCREEN_H - 56;
+    std::vector<std::string> lines = wrapBodyLines(body);
+    int first = 0;
+    uint32_t lastTick = 0;
+    int lastDir = 0;
     int result = -1; // -1 = undecided
     while (result < 0) {
         SDL_Event event;
@@ -436,11 +680,165 @@ bool UI::showConfirmDialog(const std::string& title, const std::string& body) {
             }
         }
 
+        int maxFirst = (int)lines.size() - (bottomY - topY) / lineH;
+        if (maxFirst < 0) maxFirst = 0;
+        first += dialogScrollDir(SDL_GetTicks(), lastTick, lastDir);
+        if (first < 0) first = 0;
+        if (first > maxFirst) first = maxFirst;
+
         SDL_SetRenderDrawColor(renderer_, T().bg.r, T().bg.g, T().bg.b, 255);
         SDL_RenderClear(renderer_);
 
         drawTextCentered(title, SCREEN_W / 2, SCREEN_H / 2 - 40, T().red, fontLarge_);
-        drawBodyText(body, SCREEN_H / 2 + 5, i18n::get(StrKey::AContinueBCancel));
+        int footY = drawBodyWindow(lines, first, topY, bottomY, lineH,
+                                   T().textDim, T().textDim);
+        drawTextCentered(i18n::get(StrKey::AContinueBCancel),
+                         SCREEN_W / 2, maxFirst > 0 ? SCREEN_H - 40 : footY,
+                         T().textDim, fontSmall_);
+
+        SDL_RenderPresent(renderer_);
+        SDL_Delay(16);
+    }
+    return result == 1;
+}
+
+// Scelta tipo banca alla creazione: A = cross-gen, Y = specifica per questo
+// gioco, B = annulla (davvero annulla, non crea nulla -- prima B era
+// "riutilizzato" per scegliere "banca specifica" invece di uscire senza
+// fare nulla, confuso perche' B ovunque nel resto dell'app significa
+// "annulla/torna indietro" senza effetti collaterali).
+// Ritorna: 0 = cross-gen, 1 = specifica per il gioco, -1 = annullato.
+int UI::pickNewBankKind(const std::string& title, const std::string& body) {
+    if (!renderer_) return -1;
+    markDirty();
+
+    int result = -2; // -2 = in attesa
+    while (result == -2) {
+        SDL_Event event;
+        while (SDL_PollEvent(&event)) {
+            if (event.type == SDL_QUIT) result = -1;
+            if (event.type == SDL_CONTROLLERBUTTONDOWN) {
+                if (event.cbutton.button == SDL_CONTROLLER_BUTTON_B) result = 0;       // Switch A = cross-gen
+                else if (event.cbutton.button == SDL_CONTROLLER_BUTTON_X) result = 1;  // Switch Y = specifica
+                else if (event.cbutton.button == SDL_CONTROLLER_BUTTON_A) result = -1; // Switch B = annulla
+            }
+        }
+
+        SDL_SetRenderDrawColor(renderer_, T().bg.r, T().bg.g, T().bg.b, 255);
+        SDL_RenderClear(renderer_);
+
+        drawTextCentered(title, SCREEN_W / 2, SCREEN_H / 2 - 40, T().red, fontLarge_);
+        drawBodyText(body, SCREEN_H / 2 + 5, i18n::get(StrKey::NewBankKindFooter));
+
+        SDL_RenderPresent(renderer_);
+        SDL_Delay(16);
+    }
+    return result;
+}
+
+bool UI::showSyncCompareDialog(const std::string& gameName, const SyncSideInfo& local,
+                                const SyncSideInfo& remote, bool remoteNewer,
+                                const char* criterionKey, bool alreadySynced) {
+    if (!renderer_) return false;
+    markDirty(); // Force redraw after modal returns
+
+    constexpr int POP_W = 980;
+    constexpr int POP_H = 424;
+    constexpr int BOX_GAP = 56; // spazio attorno alla freccia ">" tra i riquadri, prima era quasi attaccata
+    constexpr int BOX_W = (POP_W - BOX_GAP) / 2;
+    constexpr int BOX_H = 300;
+    constexpr int BOX_R = 12; // stesso raggio delle card/popup nel resto dell'app (vedi drawRoundRect altrove)
+    int popX = (SCREEN_W - POP_W) / 2;
+    int popY = (SCREEN_H - POP_H) / 2;
+    int leftX  = popX;
+    int rightX = popX + BOX_W + BOX_GAP;
+    int boxY = popY + 84;
+
+    auto fmtRow = [&](int boxX, int rowY, const std::string& label, const std::string& value) {
+        drawText(label, boxX + 20, rowY, T().textDim, fontSmall_);
+        const auto& ve = getTextEntry(value, fontSmall_, T().text);
+        drawText(value, boxX + BOX_W - 20 - (int)ve.w, rowY, T().text, fontSmall_);
+    };
+    auto fmtDate = [](long long unixTime) -> std::string {
+        if (unixTime <= 0) return "--";
+        time_t t = (time_t)unixTime;
+        struct tm tmv;
+        localtime_r(&t, &tmv);
+        char buf[32];
+        std::snprintf(buf, sizeof(buf), "%04d-%02d-%02d %02d:%02d",
+                      tmv.tm_year + 1900, tmv.tm_mon + 1, tmv.tm_mday, tmv.tm_hour, tmv.tm_min);
+        return buf;
+    };
+    auto fmtPlaytime = [](long secs) -> std::string {
+        if (secs < 0) return "--";
+        char buf[32];
+        std::snprintf(buf, sizeof(buf), "%ldh %02ldm", secs / 3600, (secs % 3600) / 60);
+        return buf;
+    };
+    auto fmtDex = [](const SyncSideInfo& s) -> std::string {
+        if (!s.dexSupported) return "--";
+        return std::to_string(s.dexCaught) + "/" + std::to_string(s.dexTotal);
+    };
+
+    int result = -1; // -1 = undecided
+    while (result < 0) {
+        SDL_Event event;
+        while (SDL_PollEvent(&event)) {
+            if (event.type == SDL_QUIT) result = 0;
+            if (event.type == SDL_CONTROLLERBUTTONDOWN) {
+                if (event.cbutton.button == SDL_CONTROLLER_BUTTON_B) result = 1; // Switch A = conferma
+                if (event.cbutton.button == SDL_CONTROLLER_BUTTON_A) result = 0; // Switch B = annulla
+            }
+        }
+
+        SDL_SetRenderDrawColor(renderer_, T().bg.r, T().bg.g, T().bg.b, 255);
+        SDL_RenderClear(renderer_);
+
+        drawTextCentered(i18n::fmt(StrKey::DevSyncSyncTitle, gameName), SCREEN_W / 2, popY + 18, T().red, fontLarge_);
+        if (alreadySynced) {
+            drawTextCentered(i18n::get(StrKey::DevSyncCompareAlreadySynced),
+                              SCREEN_W / 2, popY + 54, T().textDim, fontSmall_);
+        } else {
+            drawTextCentered(i18n::fmt(StrKey::DevSyncCompareCriterion, i18n::get(criterionKey)),
+                              SCREEN_W / 2, popY + 54, T().textDim, fontSmall_);
+        }
+
+        // Freccia tra i due riquadri, unico indicatore del verso (niente piu'
+        // "LOCALE > REMOTO" a parole sotto il titolo: col criterio mtime il
+        // verso suggerito puo' essere fuorviante -- un file appena inviato al
+        // remoto prende la data di invio ed e' sempre "piu' recente" anche
+        // senza alcun progresso reale, quindi meglio non dichiararlo a parole
+        // in grande, il bordo evidenziato sul riquadro sorgente basta). Se
+        // alreadySynced non c'e' nessun verso: "=" al posto di "<"/">".
+        drawTextCentered(alreadySynced ? "=" : (remoteNewer ? "<" : ">"),
+                          leftX + BOX_W + BOX_GAP / 2, boxY + BOX_H / 2, T().arrow, fontLarge_);
+
+        for (int side = 0; side < 2; side++) {
+            bool isLocal = side == 0;
+            const SyncSideInfo& s = isLocal ? local : remote;
+            int bx = isLocal ? leftX : rightX;
+            bool isSource = !alreadySynced && (isLocal ? !remoteNewer : remoteNewer);
+            SDL_Color border = isSource ? T().cursor : T().textDim;
+
+            drawRoundRect(bx, boxY, BOX_W, BOX_H, BOX_R, T().panelBg);
+            drawRoundRectOutline(bx, boxY, BOX_W, BOX_H, BOX_R, border, isSource ? 3 : 1);
+
+            drawTextCentered(i18n::get(isLocal ? StrKey::DevSyncCompareLocal : StrKey::DevSyncCompareRemote),
+                              bx + BOX_W / 2, boxY + 24, isSource ? T().cursor : T().text, font_);
+            if (isSource)
+                drawTextCentered(i18n::get(StrKey::DevSyncCompareSource), bx + BOX_W / 2, boxY + 50, T().cursor, fontSmall_);
+
+            int rowY = boxY + 96;
+            fmtRow(bx, rowY, i18n::get(StrKey::FilterOT), s.trainer.empty() ? "--" : s.trainer);
+            rowY += 32;
+            fmtRow(bx, rowY, "Pokédex", fmtDex(s));
+            rowY += 32;
+            fmtRow(bx, rowY, i18n::get(StrKey::GalPlayTime), fmtPlaytime(s.playTimeSeconds));
+            rowY += 32;
+            fmtRow(bx, rowY, i18n::get(StrKey::DevSyncCompareSaveDate), fmtDate(s.modifiedUnix));
+        }
+
+        drawTextCentered(i18n::get(StrKey::AContinueBCancel), SCREEN_W / 2, popY + POP_H - 16, T().textDim, fontSmall_);
 
         SDL_RenderPresent(renderer_);
         SDL_Delay(16);
@@ -530,9 +928,13 @@ void UI::showWorking(const std::string& msg) {
     {
         size_t p = msg.find('%');
         if (p != std::string::npos && p > 0) {
-            size_t s = msg.rfind(' ', p);
-            if (s != std::string::npos) {
-                pct = std::atoi(msg.substr(s + 1, p - s - 1).c_str());
+            // Cerca l'inizio del numero prima di '%', tollera '(' e spazi
+            // (es. " (10%) 1/10" o " 10% (1/10)") cosi' la prima riga
+            // stabile non deve per forza essere " 10%".
+            size_t s = p;
+            while (s > 0 && std::isdigit((unsigned char)msg[s - 1])) s--;
+            if (s < p) {
+                pct = std::atoi(msg.substr(s, p - s).c_str());
                 if (pct < 0) pct = -1;
                 if (pct > 100) pct = 100;
             }
@@ -678,17 +1080,32 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
     auto fillPresentGames = [&]() {
         std::set<uint64_t> present = account_.presentApplications();
         availableGames_.clear();
-        if (present.empty()) {
-            availableGames_.assign(std::begin(allGames), std::end(allGames));
-        } else {
+        availableGamesNative_.clear();
+        if (!present.empty()) {
             for (GameType g : allGames)
-                if (present.count(titleIdOf(g)))
+                if (present.count(titleIdOf(g))) {
                     availableGames_.push_back(g);
-            if (availableGames_.empty())
-                availableGames_.assign(std::begin(allGames), std::end(allGames));
+                    availableGamesNative_.push_back(1);
+                }
         }
+#ifndef OH_LINUX
+        if (present.empty() || availableGames_.empty()) {
+            availableGames_.assign(std::begin(allGames), std::end(allGames));
+            // Fallback senza profilo: phantom titleId, mai import.
+            availableGamesNative_.assign(availableGames_.size(), 1);
+        }
+#else
+        DebugLog::line("r36s: fillPresentGames present=%zu avail(before import)=%zu", present.size(), availableGames_.size());
+#endif
         appendImportedGames();
+        // Le ROM senza save (Settings::showRomsWithoutSave()) sono gia'
+        // incluse qui sopra: scanImportPaths() le produce come ImportedGame
+        // hasSave=false, e appendImportedGames() le aggiunge ad
+        // availableGames_ come ogni altro import.
         applyFavoritesOrder();
+#ifdef OH_LINUX
+        DebugLog::line("r36s: fillPresentGames dopo import=%zu", availableGames_.size());
+#endif
     };
 
     if (appletMode_) {
@@ -1298,12 +1715,28 @@ void UI::run(const std::string& basePath, const std::string& savePath) {
     account_.shutdown();
 }
 
+// Wrapper per i punti di "conferma" sul selettore giochi (tap/A sulla card
+// quando il menu radiale e' disattivo): una ROM senza save (Settings::
+// showRomsWithoutSave()) non ha alcun box da aprire, quindi selectGame()
+// fallirebbe con un Mount Error -- qui si comporta invece come il pulsante
+// "Avvia" del launcher. Il chiamante deve aver gia' impostato gameSelCursor_
+// sull'indice giusto (requestLaunchGame() legge da li'), come fanno gia'
+// tutti i call-site esistenti prima di selezionare/lanciare.
+void UI::selectOrLaunchGame(GameType game, int occurrence, bool& running) {
+    if (importedIsRomOnly(game, occurrence)) {
+        requestLaunchGame(running);
+        return;
+    }
+    selectGame(game, occurrence);
+}
+
 void UI::selectGame(GameType game, int occurrence) {
     // Backup del gioco precedente se modificato (prima di cambiare).
     backupOnExitIfNeeded();
     exitBackedUp_ = false;
     uint32_t openT0 = SDL_GetTicks();
     selectedGame_ = game;
+    selectedOccurrence_ = occurrence;
     partyCursor_ = -1; // save changes: drop any OT-strip focus
     detailParty_ = -1;
     invalidateAllSlotDisplays();
@@ -1327,17 +1760,38 @@ void UI::selectGame(GameType game, int occurrence) {
         showWorking(i18n::get(StrKey::LoadingSaveData));
         activeSaveIsRemote_ = false;
 
+        // FR/LG sono l'unica famiglia che puo' essere SIA nativa (titleId
+        // reale, AccountManager -- chi possiede il titolo Switch/NSO GBA)
+        // SIA import da file (ROM GBA scansionata -- l'unico modo di
+        // averli su R36S/ArkOS, dove non esiste alcun titolo "installato").
+        // Le altre famiglie qui sotto sono sempre e solo import, quindi
+        // basta il GameType a deciderlo; per FR/LG serve invece controllare
+        // se QUESTA occorrenza specifica ha davvero un path di import --
+        // importedSavePath() ritorna "" quando non lo trova, il che
+        // coincide comodamente con "non e' un import, prova il mount
+        // nativo" (branch sotto). Prima mancava del tutto: un FireRed/
+        // LeafGreen import restava senza nessuna delle due strade valide
+        // e cadeva nel ramo finale "else" (path fittizio "basePath_+main",
+        // mai esistito), fallendo il load in silenzio.
+        // occurrence < 0 = tile nativa (vedi importedOccurrence): mai
+        // lookup fra gli import, dritto al mount. Prima la nativa
+        // risolveva occ 0 = primo import, aprendo il save della ROM.
+        std::string frlgImportPath =
+            (isFRLG(game) && occurrence >= 0) ? importedSavePath(game, occurrence) : std::string();
+
         if (isImportedFile(game) || isGen1File(game) || isGen2File(game) ||
-            isGen45File(game) || isGen6XY(game) || isGen7SM(game)) {
+            isGen45File(game) || isGen6XY(game) || isGen6ORAS(game) || isGen7SM(game) || isGen7USUM(game) ||
+            !frlgImportPath.empty()) {
             // File-backed game (scanned emulator save) — no titleId, no
             // AccountManager mount/backup: load straight from the resolved
             // path found by appendImportedGames(). Read/write both go
             // through this same file (SaveFile::load()/save() already route
             // GBA through loadGBA()/saveGBA(), GB through loadGB()/saveGB()
             // and GBC through loadGBC()/saveGBC), so GBA writes
-            // land directly on the user's own emulator save. DS/3DS are
-            // read-only v1 (SaveFile::save refuses explicitly).
-            savePath_ = importedSavePath(game, occurrence);
+            // land directly on the user's own emulator save. Tutte le famiglie
+            // file-backed sono scrivibili (GB/GBC/GBA/DS/3DS con write-back +
+            // CRC ricalcolati dove servono).
+            savePath_ = isFRLG(game) ? frlgImportPath : importedSavePath(game, occurrence);
             if (savePath_.empty()) {
                 showMessageAndWait(i18n::get(StrKey::MountError), i18n::get(StrKey::FailedMountSave));
                 return;
@@ -1446,7 +1900,7 @@ void UI::selectGame(GameType game, int occurrence) {
         // Only for SCBlock saves: file-backed GB/GBA/DS/3DS loaders don't
         // fill blocks_/originalFileData_ (they validate per-slot instead).
         if (!isBDSP(game) && !isLGPE(game) && !isFRLG(game) && !isImportedFile(game) && !isGen1File(game) && !isGen2File(game) &&
-            !isGen45File(game) && !isGen6XY(game) && !isGen7SM(game)) {
+            !isGen45File(game) && !isGen6XY(game) && !isGen6ORAS(game) && !isGen7SM(game) && !isGen7USUM(game)) {
             std::string rtResult = save_.verifyRoundTrip();
             if (rtResult != "OK")
                 showMessageAndWait(i18n::get(StrKey::RoundTripCheck), rtResult);
@@ -1539,10 +1993,10 @@ bool UI::persistGameSaveIfDirty() {
         DebugLog::line("persist: commitSave FALLITO dopo save ok (%s)", savePath_.c_str());
         ok = false;
     }
-    if (ok) galInvalidateParty(selectedGame_); // preview galleria da ricaricare
+    if (ok) galInvalidateParty(selectedGame_, selectedOccurrence_); // preview galleria da ricaricare
     ledOff();
-    // Mai fallimento silenzioso: i save read-only v1 (DS/3DS) e gli errori IO
-    // tornano false — l'utente deve saperlo, i dati in memoria restano intatti.
+    // Mai fallimento silenzioso: gli errori IO tornano false — l'utente deve
+    // saperlo, i dati in memoria restano intatti.
     // (Il fallimento IO non annulla il flusso chiamante: come prima.)
     if (!ok)
         showMessageAndWait(i18n::get(StrKey::SaveFailedTitle),

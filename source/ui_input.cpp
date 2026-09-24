@@ -3,6 +3,7 @@
 #include "crypto_engine.h"
 #include "debug_log.h"
 #include "pokemon_ffi.h"
+#include "string_utils.h"
 #include "led.h"
 #include "species_converter.h"
 #include "trade_evo.h"
@@ -131,8 +132,75 @@ void UI::handleInput(bool& running) {
 
         // Any button/key event dirties the screen
         if (event.type == SDL_CONTROLLERBUTTONDOWN ||
-            event.type == SDL_CONTROLLERBUTTONUP)
+            event.type == SDL_CONTROLLERBUTTONUP ||
+            event.type == SDL_JOYBUTTONDOWN ||
+            event.type == SDL_JOYBUTTONUP)
             markDirty();
+
+#ifdef OH_LINUX
+        // R36S: se UI::init() e' riuscito a caricare la mappatura extra di
+        // ArkOS (gamecontrollerdb.txt), back/start arrivano gia' come
+        // SDL_CONTROLLERBUTTONDOWN nativi -- niente da tradurre qui, anzi
+        // tradurre ANCHE il joybutton grezzo li farebbe scattare due volte
+        // (un evento nativo + uno tradotto per la stessa pressione). Questo
+        // fallback quindi resta attivo solo quando il bind nativo manca
+        // (mappatura non trovata/device diverso).
+        if (!padNativeBack_ || !padNativeStart_) {
+        if (event.type == SDL_JOYBUTTONDOWN || event.type == SDL_JOYBUTTONUP) {
+            Uint8 b = event.jbutton.button;
+            // Select (-) -> BACK, Start (+) -> START. Indici confermati su
+            // hardware (GO-Super Gamepad): Select=12, Start=13.
+            bool isBack = !padNativeBack_ && (b == 12);
+            bool isStart = !padNativeStart_ && (b == 13);
+            if (isBack) {
+                if (event.type == SDL_JOYBUTTONDOWN) DebugLog::line("r36s: joybutton 12 -> BACK (-)");
+                event.type = (event.type == SDL_JOYBUTTONDOWN) ? SDL_CONTROLLERBUTTONDOWN : SDL_CONTROLLERBUTTONUP;
+                event.cbutton.button = SDL_CONTROLLER_BUTTON_BACK;
+            } else if (isStart) {
+                if (event.type == SDL_JOYBUTTONDOWN) DebugLog::line("r36s: joybutton 13 -> START (+)");
+                event.type = (event.type == SDL_JOYBUTTONDOWN) ? SDL_CONTROLLERBUTTONDOWN : SDL_CONTROLLERBUTTONUP;
+                event.cbutton.button = SDL_CONTROLLER_BUTTON_START;
+            } else {
+                // Log una sola volta per indice cosi' se in futuro cambia
+                // ancora device/driver si vede subito il valore vero invece
+                // di dover indovinare di nuovo alla cieca. Se INVECE non
+                // compare mai nessun "joybutton" nel log mentre si preme
+                // Select/Start, l'evento non arriva affatto come JoyButton
+                // (probabile gptokeyb che lo trasforma in tastiera prima --
+                // vedi il fallback subito sotto, ora loggato allo stesso modo).
+                static bool seen[256] = {};
+                if (event.type == SDL_JOYBUTTONDOWN && !seen[b]) {
+                    seen[b] = true;
+                    DebugLog::line("r36s: joybutton %u non mappato (ignorato)", (unsigned)b);
+                }
+                continue;
+            }
+        }
+        // Fallback per gptokeyb: Select/Start tradotti in tasti tastiera
+        if (event.type == SDL_KEYDOWN || event.type == SDL_KEYUP) {
+            if (event.key.keysym.sym == SDLK_TAB || event.key.keysym.sym == SDLK_ESCAPE) {
+                if (event.type == SDL_KEYDOWN) DebugLog::line("r36s: keydown TAB/ESCAPE -> BACK (-)");
+                event.type = (event.type == SDL_KEYDOWN) ? SDL_CONTROLLERBUTTONDOWN : SDL_CONTROLLERBUTTONUP;
+                event.cbutton.button = SDL_CONTROLLER_BUTTON_BACK;
+            } else if (event.key.keysym.sym == SDLK_RETURN || event.key.keysym.sym == SDLK_KP_ENTER) {
+                if (event.type == SDL_KEYDOWN) DebugLog::line("r36s: keydown RETURN -> START (+)");
+                event.type = (event.type == SDL_KEYDOWN) ? SDL_CONTROLLERBUTTONDOWN : SDL_CONTROLLERBUTTONUP;
+                event.cbutton.button = SDL_CONTROLLER_BUTTON_START;
+            } else {
+                // non è un tasto che ci interessa per BACK/START -- ma se e'
+                // uno di quelli premuti da Select/Start via gptokeyb con un
+                // keysym diverso da quelli attesi, questo log lo rivela.
+                static bool seenKey[512] = {};
+                unsigned idx = (unsigned)(event.key.keysym.sym) % 512;
+                if (event.type == SDL_KEYDOWN && !seenKey[idx]) {
+                    seenKey[idx] = true;
+                    DebugLog::line("r36s: keydown sym=%d non mappato (ignorato)", (int)event.key.keysym.sym);
+                }
+                if (event.type == SDL_KEYDOWN || event.type == SDL_KEYUP) continue;
+            }
+        }
+        } // !padNativeBack_ || !padNativeStart_
+#endif
 
         if (showMenu_)               { handleMenuInput(event, running); continue; }
         if (showSpeciesListPicker_)  { handleSpeciesListPickerInput(event); continue; }
@@ -157,9 +225,11 @@ void UI::handleInput(bool& running) {
 void UI::handleMenuInput(const SDL_Event& event, bool& running) {
     bool hasWC = gameInfo(selectedGame_).hasWondercards;
     bool hasExport = !selectedSlots_.empty();
-    // "Send current save": solo a save caricato e mai in dual-bank (lì il
-    // pannello sinistro è una banca, non il save del gioco aperto).
-    bool hasSend = !isDualBankMode() && save_.isLoaded();
+    // "Send current save": solo a save caricato, mai dual-bank, e SOLO con
+    // override rete attivo (debug + url custom). Vedere il commento analogo
+    // in UI::drawMenuPopup() — le tre definizioni di hasSend devono restare
+    // coerenti tra questa input handler e i due punti del render.
+    bool hasSend = !isDualBankMode() && save_.isLoaded() && sendAvailable();
     // "Generate test mons": solo debug, mai dual-bank.
     bool hasGen = DebugLog::enabled() && !isDualBankMode();
     // "Scambio": solo a save Gen3 caricato (record Pk3, Fase 1), mai dual-bank.
@@ -803,11 +873,7 @@ void UI::handleNormalInput(const SDL_Event& event) {
 bool UI::canEditParty() const {
     if (!save_.isLoaded())
         return false;
-    // Gen5: save intero read-only (footer CRC a blocchi) — editarne il party
-    // in memoria per poi fallire il save sarebbe perdita mascherata da edit.
-    if (isGen5File(save_.gameType()))
-        return false;
-    // Tutte le altre famiglie (incl. GB/GBC con write-back): solo con debug
+    // Tutte le famiglie (incl. GB/GBC/DS con write-back): solo con debug
     // attivo (toggle dedicato in futuro).
     return DebugLog::enabled();
 }
@@ -916,7 +982,11 @@ void UI::handleStickRepeat() {
             tradeCursor_ += stickDirY_ > 0 ? 1 : -1;
             if (tradeCursor_ < 0) tradeCursor_ = count - 1;
             if (tradeCursor_ >= count) tradeCursor_ = 0;
+#ifdef OH_LINUX
+            constexpr int VISIBLE = 4; // sync con drawTradeListPopup()
+#else
             constexpr int VISIBLE = 6;
+#endif
             if (tradeCursor_ < tradeScroll_) tradeScroll_ = tradeCursor_;
             else if (tradeCursor_ >= tradeScroll_ + VISIBLE) tradeScroll_ = tradeCursor_ - VISIBLE + 1;
         }
@@ -2722,11 +2792,7 @@ bool UI::matchesSearchFilter(const Pokemon& pkm,
                              const std::string& filterOT) const {
     if (pkm.isEmpty()) return false;
 
-    auto toLower = [](const std::string& s) {
-        std::string out = s;
-        for (auto& c : out) c = std::tolower(static_cast<unsigned char>(c));
-        return out;
-    };
+    auto toLower = [](const std::string& s) { return toLowerCopy(s); };
 
     // Species filter: exact match by ID if set, otherwise substring match
     if (searchFilter_.speciesId > 0) {
@@ -2794,11 +2860,7 @@ bool UI::matchesSearchFilter(const Pokemon& pkm,
 void UI::executeSearch() {
     searchResults_.clear();
 
-    auto toLower = [](const std::string& s) {
-        std::string out = s;
-        for (auto& c : out) c = std::tolower(static_cast<unsigned char>(c));
-        return out;
-    };
+    auto toLower = [](const std::string& s) { return toLowerCopy(s); };
     std::string filterSpecies = toLower(searchFilter_.speciesName);
     std::string filterOT = toLower(searchFilter_.otName);
 
@@ -2931,11 +2993,7 @@ void UI::refreshHighlightSet() {
     searchMatchSet_.clear();
     searchResults_.clear();
 
-    auto toLower = [](const std::string& s) {
-        std::string out = s;
-        for (auto& c : out) c = std::tolower(static_cast<unsigned char>(c));
-        return out;
-    };
+    auto toLower = [](const std::string& s) { return toLowerCopy(s); };
     std::string filterSpecies = toLower(searchFilter_.speciesName);
     std::string filterOT = toLower(searchFilter_.otName);
 
@@ -3364,8 +3422,9 @@ void UI::doTradeEvolve(int candidateIdx) {
                 showTradeList_ = false;
                 playTradeEvolveAnim(pkm.species(), rule->to);
                 playTradeEvolveAnim(pkm2.species(), rule2->to);
-                showMessageAndWait(i18n::get(StrKey::TradeDoneTitle),
-                                   i18n::fmt(StrKey::TradeDoubleDoneBody, from1, to1, from2, to2));
+                showTradeResultDialog(i18n::get(StrKey::TradeDoneTitle),
+                                      i18n::fmt(StrKey::TradeDoubleDoneBody, from1, to1, from2, to2),
+                                      rule->to, rule2->to);
                 return;
             }
         }
@@ -3389,8 +3448,9 @@ void UI::doTradeEvolve(int candidateIdx) {
     persistGameSaveIfDirty();
     showTradeList_ = false;
     playTradeEvolveAnim(fromSpeciesAnim, toSpeciesAnim);
-    showMessageAndWait(i18n::get(StrKey::TradeDoneTitle),
-                       i18n::fmt(StrKey::TradeDoneBody, from, to));
+    showTradeResultDialog(i18n::get(StrKey::TradeDoneTitle),
+                          i18n::fmt(StrKey::TradeDoneBody, from, to),
+                          toSpeciesAnim);
 }
 
 void UI::playTradeEvolveAnim(uint16_t fromSpecies, uint16_t toSpecies) {
@@ -3433,7 +3493,17 @@ void UI::playTradeEvolveAnim(uint16_t fromSpecies, uint16_t toSpecies) {
     // scosta di lato (verso alto-sinistra per il blu, verso basso-destra
     // per il verde), la y segue comunque la diagonale cosi' il percorso
     // resta sempre parallelo ad essa senza mai attraversarla.
+    // SPR resta 176 anche su R36S (640px): lo sprite grande e' voluto, da'
+    // il "vibe" scambio dei vecchi giochi su schermo piccolo. Pero' 230 di
+    // OFFSET su 640px di larghezza tagliava lo sprite per buona parte di
+    // ingresso/uscita (appariva tardi, spariva presto) -- 150 tiene lo
+    // sprite dentro lo schermo gia' a fade-in completato, con margine di
+    // ~82px alla pausa centrale, senza mai attraversare la diagonale.
+#ifdef OH_LINUX
+    constexpr float OFFSET = 150.0f;
+#else
     constexpr float OFFSET = 230.0f;
+#endif
     float blY = SCREEN_H * 0.86f, trY = SCREEN_H * 0.14f;
     auto splitXAt = [=](float y) { return SCREEN_W * (1.0f - y / SCREEN_H); };
 
@@ -3536,7 +3606,7 @@ void UI::playTradeEvolveAnim(uint16_t fromSpecies, uint16_t toSpecies) {
             SDL_RenderDrawLine(renderer_, ix, iy - arm, ix, iy + arm);
         }
 
-        SDL_Color shadow = {0, 0, 0, 200};
+        SDL_Color shadow = shadowForText(T().text, 200);
         if (elapsed < PHASE_MS) {
             // Primo Pokemon (quello che se ne va): corsia blu, dal
             // basso-sinistra verso l'alto-destra della propria corsia.
@@ -3580,7 +3650,11 @@ void UI::playTradeEvolveAnim(uint16_t fromSpecies, uint16_t toSpecies) {
 
 void UI::handleTradeListInput(const SDL_Event& event) {
     int count = (int)tradeCandidates_.size();
+#ifdef OH_LINUX
+    constexpr int VISIBLE = 4; // sync con drawTradeListPopup()
+#else
     constexpr int VISIBLE = 6;
+#endif
     auto scrollIntoView = [&]() {
         if (tradeCursor_ < tradeScroll_)
             tradeScroll_ = tradeCursor_;
@@ -3606,6 +3680,7 @@ void UI::handleTradeListInput(const SDL_Event& event) {
                 break;
             case SDL_CONTROLLER_BUTTON_A: // Switch B = chiudi
                 showTradeList_ = false;
+                markDirty(); // senza refresh resta il frame stale del popup
                 break;
         }
     }

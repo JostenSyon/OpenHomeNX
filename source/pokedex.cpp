@@ -1039,10 +1039,40 @@ static void registerFRLG(SaveFile& save, const Pokemon& pkm) {
 }
 
 // R/S/E: stesso contenitore a settori GBA e stesso bitfield "owned"
-// (sezione 0 + 0x28) di FRLG (vedi getDexStatus), MA le copie seen in
-// sezione 1/4 e gli slot PID Unown/Spinda sono layout FRLG: su RSE quegli
-// offset contengono altri dati, quindi qui si scrive SOLO il primario
-// caught+seen in sezione 0. Niente copie = niente corruzione.
+// (sezione 0 + 0x28) di FRLG (vedi getDexStatus). Gli slot PID Unown/Spinda
+// sono layout FRLG (offset diversi su RSE, non replicati qui).
+//
+// 2026-09-19: bug reale segnalato dall'utente, sopravvissuto al fix
+// precedente (National Dex byte) -- un mon MAI visto in game e trasferito
+// solo via box appariva SOLO nel box, mai nel Pokedex (né seen né caught),
+// nonostante caught fosse correttamente settato su disco (verificato byte
+// per byte, checksum validi, identici su entrambi i banchi). Causa reale,
+// trovata leggendo GetSetPokedexFlag() nel sorgente pret/pokeemerald e
+// pret/pokeruby (src/pokedex.c): il gioco NON si fida del bitfield
+// owned/seen da solo. Per FLAG_GET_SEEN confronta pokedex.seen contro DUE
+// copie ridondanti in SaveBlock1 (gSaveBlock2Ptr->pokedex.seen[i] ==
+// gSaveBlock1Ptr->seen1[i] == gSaveBlock1Ptr->seen2[i] su Emerald;
+// dexSeen2/dexSeen3 su Ruby/Sapphire) e se anche un solo bit non combacia
+// AZZERA TUTTE E TRE le copie silenziosamente in RAM -- non su richiesta
+// esplicita, ma al primo GetSetPokedexFlag(FLAG_GET_SEEN) sulla specie,
+// cioè non appena il Pokedex in game prova a disegnare quella entry. Per
+// FLAG_GET_CAUGHT il controllo è su QUATTRO copie (owned + seen + le due
+// ridondanti): stessa sorte. Scrivere solo owned/seen di sezione 0 (fix
+// precedente) lasciava le due copie a 0 per una specie mai vista in game:
+// al primo giro nel Pokedex il gioco le trovava incoerenti e le azzerava
+// tutte -- il mon spariva sia da seen che da caught, esattamente il bug
+// segnalato. Per una specie già vista organicamente in game invece le due
+// copie erano già a 1 (settate dal gioco stesso), quindi coincidevano per
+// puro caso col nostro owned/seen e l'incoerenza non si manifestava mai --
+// da cui l'impressione che "il bit funzioni" solo per i mon già visti.
+//
+// Fix: scriviamo anche le due copie ridondanti. SaveBlock1 occupa le
+// sezioni 1-4 (0xF80 byte utili a settore, come da GBA_SECTOR_USED
+// esistente): Emerald seen1 @ SaveBlock1+0x988 (sezione 1, stesso offset)
+// e seen2 @ SaveBlock1+0x3B24 (sezione 4, offset -0x2E80 = 0xCA4);
+// Ruby/Sapphire dexSeen2 @ SaveBlock1+0x938 (sezione 1) e dexSeen3 @
+// SaveBlock1+0x3A8C (sezione 4, offset -0x2E80 = 0xC0C). Bit = specie-1,
+// stesso indice del bitfield primario.
 static void registerRSE(SaveFile& save, const Pokemon& pkm) {
     uint16_t species = pkm.species();
     if (species == 0 || species > FRLG_MAX_SPECIES) return;
@@ -1053,7 +1083,24 @@ static void registerRSE(SaveFile& save, const Pokemon& pkm) {
     uint8_t* pdx = sect0 + FRLG_POKEDEX_OFS;
     setFlagBit(pdx + FRLG_CAUGHT_OFS, species);
     setFlagBit(pdx + FRLG_SEEN_OFS, species);
+
+    GameType game = save.gameType();
+    int sec1Ofs, sec4Ofs;
+    if (game == GameType::RUBY || game == GameType::SAPPHIRE) {
+        sec1Ofs = 0x938;
+        sec4Ofs = 0x3A8C - 0x2E80; // 0xC0C
+    } else { // EMERALD
+        sec1Ofs = 0x988;
+        sec4Ofs = 0x3B24 - 0x2E80; // 0xCA4
+    }
+    if (uint8_t* sect1 = save.findGbaSectorData(1))
+        setFlagBit(sect1 + sec1Ofs, species);
+    if (uint8_t* sect4 = save.findGbaSectorData(4))
+        setFlagBit(sect4 + sec4Ofs, species);
+
     save.markDirty();
+    DebugLog::line("registerRSE: spc=%u bit=%u (caught+seen+copie ridondanti SaveBlock1)",
+                   species, species - 1);
     // National Dex: in RSE è bloccato finché non arriva un fuori-Hoenn
     // (come il trade FRLG→RSE originale). Lo sblocchiamo automatico al primo
     // fuori-Hoenn, mai per i 202 Hoenn.
@@ -1086,6 +1133,62 @@ static void registerGen2(SaveFile& save, const Pokemon& pkm) {
     save.markDirty();
 }
 
+// Gen6 XY: ZukanData blocco 20 @0x15000 (PKHeX Zukan6: caught @+0x8,
+// seen maschi @+0x68, bit = specie-1, 721 specie). Verificato
+// empiricamente su oh_y.sav (15/15 boxed sono caught).
+static void registerXY(SaveFile& save, const Pokemon& pkm) {
+    uint16_t species = pkm.species();
+    if (species == 0 || species > 721) return;
+    constexpr size_t kDex = 0x15000;
+    if (save.rawDataSize() < kDex + 0x68 + 91) return;
+    uint8_t* d = save.rawData();
+    setFlagBit(d + kDex + 0x08, species);
+    setFlagBit(d + kDex + 0x68, species);
+    save.markDirty();
+}
+
+// Gen6 ORAS: ZukanData blocco 20 @0x15000 (PKHeX Zukan6: caught @+0x8,
+// seen maschi @+0x68, bit = specie-1, 721 specie). Verificato
+// empiricamente su oh_omegaruby.sav (125/125 boxed sono caught).
+static void registerORAS(SaveFile& save, const Pokemon& pkm) {
+    uint16_t species = pkm.species();
+    if (species == 0 || species > 721) return;
+    constexpr size_t kDex = 0x15000;
+    if (save.rawDataSize() < kDex + 0x68 + 91) return;
+    uint8_t* d = save.rawData();
+    setFlagBit(d + kDex + 0x08, species);
+    setFlagBit(d + kDex + 0x68, species);
+    save.markDirty();
+}
+
+// Gen7 SM: ZukanData blocco 06 @0x02A00 (PKHeX Zukan7: caught @+0x88,
+// seen @+0xF0, bit = specie-1, 807 specie). Verificato empiricamente su
+// moon-sm.sav (802/802 boxed sono caught) e Moon-oldCitra-main (60/60).
+static void registerSM(SaveFile& save, const Pokemon& pkm) {
+    uint16_t species = pkm.species();
+    if (species == 0 || species > 807) return;
+    constexpr size_t kDex = 0x02A00;
+    if (save.rawDataSize() < kDex + 0xF0 + 101) return;
+    uint8_t* d = save.rawData();
+    setFlagBit(d + kDex + 0x88, species);
+    setFlagBit(d + kDex + 0xF0, species);
+    save.markDirty();
+}
+
+// Gen7 USUM: ZukanData blocco 06 @0x02C00 (PKHeX Zukan7: magic 0x2F120F17,
+// caught @+0x88, seen @+0xF0, bit = specie-1, 807 specie). Verificato
+// empiricamente su oh_ultrasun.sav (807/807 boxed sono caught, magic ok).
+static void registerUSUM(SaveFile& save, const Pokemon& pkm) {
+    uint16_t species = pkm.species();
+    if (species == 0 || species > 807) return;
+    constexpr size_t kDex = 0x02C00;
+    if (save.rawDataSize() < kDex + 0xF0 + 101) return;
+    uint8_t* d = save.rawData();
+    setFlagBit(d + kDex + 0x88, species);
+    setFlagBit(d + kDex + 0xF0, species);
+    save.markDirty();
+}
+
 // ============================================================
 //  Dispatcher
 // ============================================================
@@ -1096,6 +1199,9 @@ void registerPokemon(SaveFile& save, const Pokemon& pkm) {
     if (pkm.isEmpty() || pkm.isEgg()) return;
 
     GameType game = save.gameType();
+    // Log diagnostico (dex RSE sotto indagine 2026-09-18): ramo preso o nessuno.
+    DebugLog::line("registerPokemon: game=%d spc=%u gt=%d", (int)game,
+                   pkm.species(), (int)pkm.gameType_);
 
     // Only register for dual/paired games (version exclusives require cross-save transfer).
     // ZA and LA are single games — all Pokemon obtainable in one playthrough.
@@ -1115,6 +1221,14 @@ void registerPokemon(SaveFile& save, const Pokemon& pkm) {
         registerGen1(save, pkm);
     } else if (isGen2File(game)) {
         registerGen2(save, pkm);
+    } else if (isGen6XY(game)) {
+        registerXY(save, pkm);
+    } else if (isGen6ORAS(game)) {
+        registerORAS(save, pkm);
+    } else if (isGen7SM(game)) {
+        registerSM(save, pkm);
+    } else if (isGen7USUM(game)) {
+        registerUSUM(save, pkm);
     }
 }
 
@@ -1302,6 +1416,34 @@ DexStatus getDexStatusGen5(SaveFile& save) {
     return {true, popcountBits(save.rawData() + kCaughtOfs, 649), 649};
 }
 
+// Gen6 XY: caught @0x15000+0x08, 721 specie (vedi registerXY).
+DexStatus getDexStatusXY(SaveFile& save) {
+    constexpr size_t kCaughtOfs = 0x15000 + 0x08;
+    if (save.rawDataSize() < kCaughtOfs + 91) return {};
+    return {true, popcountBits(save.rawData() + kCaughtOfs, 721), 721};
+}
+
+// Gen7 SM: caught @0x02A00+0x88, 807 specie (vedi registerSM).
+DexStatus getDexStatusSM(SaveFile& save) {
+    constexpr size_t kCaughtOfs = 0x02A00 + 0x88;
+    if (save.rawDataSize() < kCaughtOfs + 101) return {};
+    return {true, popcountBits(save.rawData() + kCaughtOfs, 807), 807};
+}
+
+// Gen6 ORAS: caught @0x15000+0x08, 721 specie (vedi registerORAS).
+DexStatus getDexStatusORAS(SaveFile& save) {
+    constexpr size_t kCaughtOfs = 0x15000 + 0x08;
+    if (save.rawDataSize() < kCaughtOfs + 91) return {};
+    return {true, popcountBits(save.rawData() + kCaughtOfs, 721), 721};
+}
+
+// Gen7 USUM: caught @0x02C00+0x88, 807 specie (vedi registerUSUM).
+DexStatus getDexStatusUSUM(SaveFile& save) {
+    constexpr size_t kCaughtOfs = 0x02C00 + 0x88;
+    if (save.rawDataSize() < kCaughtOfs + 101) return {};
+    return {true, popcountBits(save.rawData() + kCaughtOfs, 807), 807};
+}
+
 } // anon
 
 DexStatus getDexStatus(SaveFile& save) {
@@ -1320,7 +1462,11 @@ DexStatus getDexStatus(SaveFile& save) {
     if (isGen2File(game))  return getDexStatusGen2(save);
     if (isGen4File(game))  return getDexStatusGen4(save);
     if (isGen5File(game))  return getDexStatusGen5(save); // solo B/W, vedi commento sopra
-    return {}; // Gen6/7(DS/3DS)/LA/B2W2: non ancora coperti
+    if (isGen6XY(game))    return getDexStatusXY(save);
+    if (isGen6ORAS(game))  return getDexStatusORAS(save);
+    if (isGen7SM(game))    return getDexStatusSM(save);
+    if (isGen7USUM(game))  return getDexStatusUSUM(save);
+    return {}; // LA / B2W2: non ancora coperti
 }
 
 } // namespace Pokedex

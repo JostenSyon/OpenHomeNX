@@ -8,7 +8,8 @@
 // beta=true (solo se url vuoto): risolve la pre-release corrente via API
 // invece del latest stabile. Custom url vince sempre sul canale.
 void autoUpdateStart(const std::string& url, const std::string& token,
-                     const std::string& curVer, bool beta = false);
+                     const std::string& curVer, bool beta = false,
+                     const char* infoFile = "latest.json");
 
 // Ritorna true una sola volta, quando il worker ha trovato una versione più
 // recente (outVersion = "x.y.z"). False altrimenti (ancora in corso, niente

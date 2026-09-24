@@ -69,17 +69,32 @@ SDL_Color UI::computeAccentColor(SDL_Surface* surf) const {
 namespace {
 // Geometria condivisa fra drawGameList_Gallery() e selectorTapGallery():
 // TENERLE IN SYNC se si cambia una delle due.
+#ifdef OH_LINUX
+// Nativo 4:3 (640x480): lista stretta + preview compatto (80..380,
+// aria sopra il dock a 412).
+constexpr int GAL_LIST_X = 20, GAL_LIST_Y = 80, GAL_LIST_W = 200;
+constexpr int GAL_ROW_H = 42, GAL_VISIBLE_ROWS = 7;
+constexpr int GAL_PREVIEW_X = GAL_LIST_X + GAL_LIST_W + 20;   // 240
+constexpr int GAL_PREVIEW_Y = 80;
+constexpr int GAL_PREVIEW_H = 300;
+constexpr int GAL_BTN_W = 150, GAL_BTN_H = 36, GAL_BTN_MARGIN = 20;
+#else
 constexpr int GAL_LIST_X = 70, GAL_LIST_Y = 108, GAL_LIST_W = 360;
 constexpr int GAL_ROW_H = 46, GAL_VISIBLE_ROWS = 9;
 constexpr int GAL_PREVIEW_X = GAL_LIST_X + GAL_LIST_W + 40;   // 470
 constexpr int GAL_PREVIEW_Y = 100;
 constexpr int GAL_PREVIEW_H = 460;
 constexpr int GAL_BTN_W = 190, GAL_BTN_H = 50, GAL_BTN_MARGIN = 34;
+#endif
 // Stessa X del blocco di testo (titolo/party/statistiche) del pannello:
 // coverX + COVER + 40, vedi textX in drawGameList_Gallery -- TENERLA IN
 // SYNC se cambia quel calcolo. Il pulsante sta sotto quel blocco, non
 // appeso al bordo destro del pannello.
+#ifdef OH_LINUX
+constexpr int GAL_BTN_X = GAL_PREVIEW_X + 20 + 140 + 20;
+#else
 constexpr int GAL_BTN_X = GAL_PREVIEW_X + 46 + 260 + 40;
+#endif
 
 // Rettangolo del pulsante "Avvia" nel pannello anteprima: stessa geometria
 // sia in drawGameList_Gallery() (disegno) sia in selectorTapGallery() (tap)
@@ -130,7 +145,11 @@ void UI::drawGameList_Gallery() {
     int numGames = (int)availableGames_.size();
     if (numGames == 0) return;
 
+#ifdef OH_LINUX
+    const int previewW = SCREEN_W - GAL_PREVIEW_X - 20;
+#else
     const int previewW = SCREEN_W - GAL_PREVIEW_X - 70;
+#endif
 
     int sel = galClampSel(gameSelCursor_, numGames);
     int scrollT = galScrollFor(sel, numGames);
@@ -270,6 +289,7 @@ void UI::drawGameList_Gallery() {
     // Accent pieno vicino alla copertina (a sinistra), sfuma verso il nero
     // andando a destra: piu' "vetro colorato" e meno tinta piatta uniforme.
     GameType selGame = availableGames_[shown];
+    GalKey selKey{selGame, (int8_t)importedOccurrence(shown)};
     auto acIt = gameAccentCache_.find(selGame);
     // I giochi senza titleId (importati/Gen1/Gen2/RSE senza NS control data)
     // non passano mai da gameIconCache_ (vedi loadGameIcons()), quindi non
@@ -288,24 +308,47 @@ void UI::drawGameList_Gallery() {
     // fa gia' al suo interno il lookup su gameIconCache_, quindi le formule
     // (gia' espresse come percentuali di IS) scalano da sole a COVER senza
     // bisogno di duplicare qui il ramo "copertina trovata".
+#ifdef OH_LINUX
+    constexpr int COVER = 140;
+    int coverX = GAL_PREVIEW_X + 20;
+#else
     constexpr int COVER = 260;
     int coverX = GAL_PREVIEW_X + 46;
+#endif
     int coverY = panelY + (GAL_PREVIEW_H - COVER) / 2;
     drawGameArt(shown, coverX, coverY, COVER, true);
 
+#ifdef OH_LINUX
+    int textX = coverX + COVER + 20;
+#else
     int textX = coverX + COVER + 40;
+#endif
+#ifdef OH_LINUX
+    // 4:3: blocco centrato tra bordo superiore e tasto Avvia.
+    int textY = panelY + GAL_PREVIEW_H / 2 - 46 - 60;
+#else
     int textY = panelY + GAL_PREVIEW_H / 2 - 46;
+#endif
     std::string name = gameDisplayNameOf(selGame);
     if (name.substr(0, 8) == "Pokemon ") name = name.substr(8);
+#ifdef OH_LINUX
+    // Pannello stretto: tronca titoli lunghi (display-only).
+    if (name.length() > 16) name = name.substr(0, 15) + ".";
+#endif
     // Titolo in fontLarge_ (28pt, gia' usato per i titoli About/errore) reso
     // in grassetto qui sul momento: piu' vicino allo stile "da copertina"
     // del mockup del font di sistema normale usato ovunque nell'app. Lo
     // stile e' globale sul font_ pointer (SDL_ttf), quindi va ripristinato
     // subito dopo per non sporcare gli altri usi di fontLarge_ nello stesso
     // frame (es. il popup About sopra questa stessa schermata).
+#ifdef OH_LINUX
+    // 4:3: titolo in font_ (il pannello preview e' stretto, fontLarge_ sborderebbe).
+    drawText(name, textX, textY, T().text, font_);
+#else
     TTF_SetFontStyle(fontLarge_, TTF_STYLE_BOLD);
     drawText(name, textX, textY, T().text, fontLarge_);
     TTF_SetFontStyle(fontLarge_, TTF_STYLE_NORMAL);
+#endif
 
     drawText(i18n::get(StrKey::PartyPokemon), textX, textY + 46, T().textDim, fontSmall_);
 
@@ -318,20 +361,31 @@ void UI::drawGameList_Gallery() {
         // Log solo su cache-miss (partirà un load): gli hit sono il 95%
         // dei settle in scroll veloce e ogni riga è write+flush su SD
         // nel main thread (micro-scatti). Il load logga già per sé.
-        if (galPartyCache_.find(selGame) == galPartyCache_.end())
+        if (galPartyCache_.find(selKey) == galPartyCache_.end())
             DebugLog::line("gal preview: settled %s cache=0 (miss)", gameInfo(selGame).gameTag);
     } else if (nowT - galPreviewTick_ > 400) {
-        galEnsureParty(selGame);
+        galEnsureParty(selGame, selKey.occ);
     }
     {
         int partyY = textY + 46;
+#ifdef OH_LINUX
+        // 4:3: "Squadra" su riga propria, sprite sotto ingranditi (26px,
+        // 6x26 = 156px nei 160 disponibili).
+        int rightEdge = GAL_PREVIEW_X + previewW - 20;
+        int partyXFixed = textX;
+        int spriteY = partyY + 20;
+        int spritePitch = 26, spriteSize = 26;
+#else
         int rightEdge = GAL_PREVIEW_X + previewW - 40;
         int partyW = 5 * 36 + 32;
         int partyXFixed = rightEdge - partyW;
         if (partyXFixed < textX) partyXFixed = textX;
-        auto pit = galPartyCache_.find(selGame);
+        int spriteY = partyY - 4;
+        int spritePitch = 36, spriteSize = 32;
+#endif
+        auto pit = galPartyCache_.find(selKey);
         if (pit == galPartyCache_.end()) {
-            drawText("…", partyXFixed, partyY, T().textDim, fontSmall_);
+            drawText("…", partyXFixed, spriteY, T().textDim, fontSmall_);
         } else {
             for (int k = 0; k < 6; k++) {
                 const PartyPreviewMon& m = pit->second.mons[k];
@@ -353,13 +407,17 @@ void UI::drawGameList_Gallery() {
                     SDL_SetTextureColorMod(spr, 110, 110, 110);
                     SDL_SetTextureAlphaMod(spr, 110);
                 }
-                drawSpriteFit(partyXFixed + k * 36, partyY - 4, 32, 32, spr);
+                drawSpriteFit(partyXFixed + k * spritePitch, spriteY, spriteSize, spriteSize, spr);
                 if (isEmpty) {
                     SDL_SetTextureColorMod(spr, 255, 255, 255);
                     SDL_SetTextureAlphaMod(spr, 255);
                 }
             }
+#ifdef OH_LINUX
+            int statRowY = partyY + 54; // 4:3: dopo la riga sprite, bottone sotto libero
+#else
             int statRowY = partyY + 40;
+#endif
             if (!pit->second.otName.empty()) {
                 std::string lbl = i18n::get(StrKey::FilterOT);
                 drawText(lbl, textX, statRowY, T().textDim, fontSmall_);
@@ -374,7 +432,11 @@ void UI::drawGameList_Gallery() {
                 }
                 const auto& ve = getTextEntry(ot, fontSmall_, T().text);
                 drawText(ot, rightEdge - (int)ve.w, statRowY, T().text, fontSmall_);
+#ifdef OH_LINUX
+                statRowY += 22;
+#else
                 statRowY += 26;
+#endif
             }
             if (pit->second.dexSupported) {
                 // Non tradotto di proposito: e' lo stesso trattamento che
@@ -386,6 +448,25 @@ void UI::drawGameList_Gallery() {
                 drawText(lbl, textX, statRowY, T().textDim, fontSmall_);
                 std::string val = std::to_string(pit->second.dexCaught) + "/" +
                                    std::to_string(pit->second.dexTotal);
+                const auto& ve = getTextEntry(val, fontSmall_, T().text);
+                drawText(val, rightEdge - (int)ve.w, statRowY, T().text, fontSmall_);
+#ifdef OH_LINUX
+                statRowY += 22;
+#else
+                statRowY += 26;
+#endif
+            }
+            if (pit->second.playTimeSeconds >= 0) {
+                // Sotto il Pokédex, stesso trattamento label/valore. Solo
+                // GBA per ora (vedi SaveFile::playTimeSeconds): -1 su tutti
+                // gli altri formati, riga nascosta.
+                long total = pit->second.playTimeSeconds;
+                long hh = total / 3600, mm = (total % 3600) / 60;
+                std::string lbl = i18n::get(StrKey::GalPlayTime);
+                drawText(lbl, textX, statRowY, T().textDim, fontSmall_);
+                char buf[32];
+                std::snprintf(buf, sizeof(buf), "%ldh %02ldm", hh, mm);
+                std::string val = buf;
                 const auto& ve = getTextEntry(val, fontSmall_, T().text);
                 drawText(val, rightEdge - (int)ve.w, statRowY, T().text, fontSmall_);
             }
@@ -484,21 +565,23 @@ bool UI::galleryPreviewAnim() {
         return true;
     }
     if (galSelShown_ != sel || galSlide_ != 0.0f) return true;
-    if (galPartyCache_.find(availableGames_[sel]) == galPartyCache_.end()) {
+    GalKey skey{availableGames_[sel], (int8_t)importedOccurrence(sel)};
+    if (galPartyCache_.find(skey) == galPartyCache_.end()) {
         // Il commento sopra diceva "settle qui" ma il caricamento vero e
         // proprio avveniva solo dentro drawGameList_Gallery(), quindi senza
         // ulteriori markDirty() a valle (es. muovendo il cursore su
         // avatar/zaino/banca) il draw non veniva mai richiamato e la
         // party restava vuota a schermo fermo. Carica direttamente qui.
-        if (SDL_GetTicks() - galPreviewTick_ > 400) galEnsureParty(availableGames_[sel]);
+        if (SDL_GetTicks() - galPreviewTick_ > 400) galEnsureParty(availableGames_[sel], skey.occ);
         return true;
     }
     return false;
 }
 
-long UI::galSaveMtime(GameType g) {
-    // Titoli: mount + stat singolo (niente decrypt). File: stat diretto.
-    if (selectedProfile_ >= 0 && selectedProfile_ < account_.profileCount() &&
+long UI::galSaveMtime(GameType g, int occ) {
+    // occ < 0 = nativa (unica a poter andare di mount); le ROM non montano
+    // mai, anche se condividono GameType/titleId con la nativa (FRLG).
+    if (occ < 0 && selectedProfile_ >= 0 && selectedProfile_ < account_.profileCount() &&
         titleIdOf(g) >= 0x0100000000010000ULL && saveFileNameOf(g)[0] != '\0') {
         std::string mnt = account_.mountSave(selectedProfile_, g);
         if (mnt.empty()) return -1;
@@ -507,13 +590,14 @@ long UI::galSaveMtime(GameType g) {
         account_.unmountSave();
         return mt;
     }
-    std::string p = importedSavePath(g, 0);
+    if (occ < 0) return -1; // nativa senza mount valido: niente probe
+    std::string p = importedSavePath(g, occ);
     if (p.empty()) return -1;
     struct stat st;
     return (stat(p.c_str(), &st) == 0) ? (long)st.st_mtime : -1;
 }
 
-void UI::galEnsureParty(GameType g) {
+void UI::galEnsureParty(GameType g, int occ) {
     if (!galCacheLoadedFromDisk_) {
         galCacheLoadedFromDisk_ = true;
         galLoadCacheFromDisk();
@@ -544,7 +628,8 @@ void UI::galEnsureParty(GameType g) {
         galOverrideOtCached_ = fresh;
     }
     std::string overrideOt = galOverrideOtCached_;
-    auto it = galPartyCache_.find(g);
+    GalKey key{g, (int8_t)occ};
+    auto it = galPartyCache_.find(key);
     if (it != galPartyCache_.end()) {
         // Applica/rimuovi l'override sull'entry gia' in cache SEMPRE, ad
         // ogni chiamata: e' una lettura di file locale (nessun mount),
@@ -570,7 +655,7 @@ void UI::galEnsureParty(GameType g) {
     galSettleChecked_ = true;
     // Se il probe fallisce (mt<0) NON ricaricare: una probe flaky non deve
     // mai sovrascrivere una cache buona col vuoto (flicker party/OT/dex).
-    long mt = galSaveMtime(g);
+    long mt = galSaveMtime(g, occ);
     if (mt < 0) {
         if (it == galPartyCache_.end())
             DebugLog::line("gal party: %s probe fallita, niente cache", gameInfo(g).gameTag);
@@ -590,12 +675,15 @@ void UI::galEnsureParty(GameType g) {
         sf.setGameType(g);
         std::string path;
         std::string mnt;
-        bool isTitle = selectedProfile_ >= 0 && titleIdOf(g) >= 0x0100000000010000ULL && saveFileNameOf(g)[0] != '\0';
+        // Stessa regola del mtime sopra: mount solo per le native (occ<0).
+        // Le ROM FRLG non prendono mai la strada del titolo.
+        bool isTitle = occ < 0 && selectedProfile_ >= 0 &&
+                       titleIdOf(g) >= 0x0100000000010000ULL && saveFileNameOf(g)[0] != '\0';
         if (isTitle) {
             mnt = account_.mountSave(selectedProfile_, g);
             if (!mnt.empty()) path = mnt + saveFileNameOf(g);
-        } else {
-            path = importedSavePath(g, 0);
+        } else if (occ >= 0) {
+            path = importedSavePath(g, occ);
         }
         if (!path.empty()) {
             sf.load(path);
@@ -624,7 +712,14 @@ void UI::galEnsureParty(GameType g) {
             pv.dexSupported = dex.supported;
             pv.dexCaught = dex.caught;
             pv.dexTotal = dex.total;
-            DebugLog::line("gal party: %s cached %d/6", gameInfo(g).gameTag, filled);
+            pv.playTimeSeconds = sf.playTimeSeconds();
+            // 2026-09-19: log esplicito del valore per diagnosticare "playtime
+            // assente su alcuni giochi" senza dover indovinare -- dexSupported/
+            // dexCaught inclusi per lo stesso motivo (correlare coi due bug gia'
+            // visti quest'oggi: sezione0 non trovata / dati non plausibili).
+            DebugLog::line("gal party: %s cached %d/6 dex=%d/%d(%s) playtime=%ld",
+                           gameInfo(g).gameTag, filled, dex.caught, dex.total,
+                           dex.supported ? "sup" : "unsup", pv.playTimeSeconds);
         } else {
             // Nessun path: scrivi il vuoto solo se non c'è già una cache
             // (primo giro), altrimenti tienila (stesso anti-flicker sopra).
@@ -641,14 +736,27 @@ void UI::galEnsureParty(GameType g) {
     pv.otName = overrideOt.empty() ? pv.otNameReal : overrideOt;
     if (!overrideOt.empty())
         DebugLog::line("gal party: overrideOT.cfg attivo, OT mostrato come '%s'", overrideOt.c_str());
-    galPartyCache_[g] = pv;
+    galPartyCache_[key] = pv;
     galSaveCacheToDisk();
     markDirty();
 }
 
-void UI::galInvalidateParty(GameType g) {
-    galPartyCache_.erase(g);
+void UI::galInvalidateParty(GameType g, int occ) {
+    galPartyCache_.erase(GalKey{g, (int8_t)occ});
     galSaveCacheToDisk();
+    // 2026-09-19: se il gioco appena invalidato e' quello attualmente
+    // mostrato nel pannello anteprima, resetta anche galSettleChecked_ --
+    // altrimenti galEnsureParty() esce subito al suo primo controllo (vedi
+    // "il probe vero e proprio avviene al massimo una volta per atterraggio")
+    // e la scheda resta vuota per sempre finche' l'utente non sposta la
+    // selezione altrove e ritorna (un nuovo "atterraggio"). Caso reale:
+    // apri il save da Galleria, modifichi qualcosa, torni con B senza mai
+    // cambiare selezione -- persistGameSaveIfDirty() invalida la cache di
+    // questo stesso gioco, ma senza questo reset il pannello restava
+    // bloccato su "…" poi vuoto, mai ricaricato da solo.
+    if (galPreviewGame_ >= 0 && galPreviewGame_ < (int)availableGames_.size() &&
+        availableGames_[galPreviewGame_] == g)
+        galSettleChecked_ = false;
 }
 
 void UI::galPreloadCacheFromDisk() {
@@ -680,22 +788,42 @@ void UI::galLoadCacheFromDisk() {
     }
     uint8_t version = 0;
     uint32_t count = 0;
-    if (std::fread(&version, sizeof(version), 1, f) != 1 || version != 2 ||
+    // v3 (2026-09-19): + playTimeSeconds (int64, -1 = non disponibile) dopo
+    // dexTotal. v2 viene scartata in blocco (return, cache vuota, si
+    // ricostruisce da sola al primo giro su ogni gioco) invece di provare a
+    // leggerla a campi mancanti: stesso trattamento gia' riservato a
+    // qualunque versione sconosciuta qui sotto.
+    // v4 (2026-09-19): STESSO layout byte-per-byte di v3 -- bump fatto solo
+    // per invalidare in blocco le entry gia' in cache scritte quando
+    // SaveFile::playTimeSeconds() copriva solo GBA. Senza questo, un gioco
+    // GB/GBC/LGPE/BDSP/SwSh/SV/LA/ZA gia' visto in Galleria PRIMA che il
+    // supporto per il suo formato venisse aggiunto restava con
+    // playTimeSeconds=-1 congelato per sempre: l'mtime del save non cambia
+    // solo perche' il nostro codice e' diventato piu' capace, quindi la
+    // cache lo considerava ancora valido e non lo ricalcolava mai (bug
+    // osservato dall'utente: playtime assente su alcuni giochi GB/GBC/GBA
+    // ma non su altri, a seconda di quando erano stati aperti la prima
+    // volta in Galleria rispetto a questi fix).
+    if (std::fread(&version, sizeof(version), 1, f) != 1 || version != 5 ||
         std::fread(&count, sizeof(count), 1, f) != 1 || count > 4096) {
         std::fclose(f);
-        return;
+        return; // v4 o precedente: chiave senza occorrenza, scartata e ricostruita
     }
     for (uint32_t i = 0; i < count; i++) {
         uint8_t gameByte = 0;
+        int8_t occByte = -1;
         int64_t mtime = -1;
         uint8_t dexSupported = 0;
         int32_t dexCaught = 0, dexTotal = 0;
+        int64_t playTimeSeconds = -1;
         uint8_t otLen = 0;
         if (std::fread(&gameByte, 1, 1, f) != 1 ||
+            std::fread(&occByte, 1, 1, f) != 1 ||
             std::fread(&mtime, sizeof(mtime), 1, f) != 1 ||
             std::fread(&dexSupported, 1, 1, f) != 1 ||
             std::fread(&dexCaught, sizeof(dexCaught), 1, f) != 1 ||
             std::fread(&dexTotal, sizeof(dexTotal), 1, f) != 1 ||
+            std::fread(&playTimeSeconds, sizeof(playTimeSeconds), 1, f) != 1 ||
             std::fread(&otLen, 1, 1, f) != 1)
             break;
         std::string ot;
@@ -717,6 +845,7 @@ void UI::galLoadCacheFromDisk() {
         pv.dexSupported = dexSupported != 0;
         pv.dexCaught = dexCaught;
         pv.dexTotal = dexTotal;
+        pv.playTimeSeconds = static_cast<long>(playTimeSeconds);
         pv.otName = ot;
         pv.otNameReal = otReal;
         pv.mons.assign(6, PartyPreviewMon{});
@@ -734,7 +863,7 @@ void UI::galLoadCacheFromDisk() {
         }
         if (!ok) break;
         if (gameByte >= GAME_TYPE_COUNT) continue; // file da una build futura/diversa: salta la voce
-        galPartyCache_[static_cast<GameType>(gameByte)] = pv;
+        galPartyCache_[GalKey{static_cast<GameType>(gameByte), occByte}] = pv;
     }
     std::fclose(f);
     DebugLog::line("gal cache: caricate %zu voci da disco", galPartyCache_.size());
@@ -744,23 +873,27 @@ void UI::galSaveCacheToDisk() const {
     FILE* f = std::fopen((basePath_ + "gallery_cache.dat").c_str(), "wb");
     if (!f) return;
     uint32_t magic = GAL_CACHE_MAGIC;
-    uint8_t version = 2;
+    uint8_t version = 5; // v5: +1 byte occorrenza per voce (nativa/ROM separati)
     uint32_t count = static_cast<uint32_t>(galPartyCache_.size());
     std::fwrite(&magic, sizeof(magic), 1, f);
     std::fwrite(&version, sizeof(version), 1, f);
     std::fwrite(&count, sizeof(count), 1, f);
-    for (const auto& [game, pv] : galPartyCache_) {
-        uint8_t gameByte = static_cast<uint8_t>(game);
+    for (const auto& [key, pv] : galPartyCache_) {
+        uint8_t gameByte = static_cast<uint8_t>(key.g);
+        int8_t occByte = key.occ;
         int64_t mtime = pv.mtime;
         uint8_t dexSupported = pv.dexSupported ? 1 : 0;
         int32_t dexCaught = pv.dexCaught, dexTotal = pv.dexTotal;
+        int64_t playTimeSeconds = pv.playTimeSeconds;
         uint8_t otLen = static_cast<uint8_t>(std::min<size_t>(pv.otName.size(), 255));
         uint8_t otRealLen = static_cast<uint8_t>(std::min<size_t>(pv.otNameReal.size(), 255));
         std::fwrite(&gameByte, 1, 1, f);
+        std::fwrite(&occByte, 1, 1, f);
         std::fwrite(&mtime, sizeof(mtime), 1, f);
         std::fwrite(&dexSupported, 1, 1, f);
         std::fwrite(&dexCaught, sizeof(dexCaught), 1, f);
         std::fwrite(&dexTotal, sizeof(dexTotal), 1, f);
+        std::fwrite(&playTimeSeconds, sizeof(playTimeSeconds), 1, f);
         std::fwrite(&otLen, 1, 1, f);
         if (otLen > 0) std::fwrite(pv.otName.data(), 1, otLen, f);
         std::fwrite(&otRealLen, 1, 1, f);

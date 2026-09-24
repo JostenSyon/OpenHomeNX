@@ -99,9 +99,20 @@ public:
     // Returns pointer to the sector's 0x1000-byte region, or nullptr.
     uint8_t* findGbaSectorData(int sectionId);
 
-    // National Dex flag for R/S/E (SaveBlock2+0x19, byte 0/1, entrambe le slot)
+    // National Dex flag for R/S/E (struct Pokedex @ section0+0x18: order@0,
+    // mode@1, nationalMagic@2 -- il vero gate, deve valere 0xDA -- SaveBlock2
+    // offset assoluto 0x1A; scritto su entrambe le slot)
     bool isNationalDexEnabled() const;
     void setNationalDexEnabled();
+    // Inverso esatto di setNationalDexEnabled() -- stesso mirroring pret
+    // (event_data.c DisableNationalPokedex): azzera nationalMagic, mode,
+    // VAR_NATIONAL_DEX e FLAG_SYS_NATIONAL_DEX su entrambe le slot. Non
+    // tocca i bitfield caught/seen (restano intatti, riappaiono in vista
+    // National se lo si riabilita) -- e' l'unica azione che il gioco vero
+    // stesso compie (in pratica solo a New Game), quindi sicura da rifare
+    // a mano: reversibile, nessun altro sistema dipende dal fatto che sia
+    // irreversibile.
+    void disableNationalDex();
 
     // Borsa Gen3 GBA (RSE/FRLG, settore 1 = SaveBlock1). Slot da 4B
     // {id u16 LE, count u16 LE}. Layout verificato: pret global.h di
@@ -115,7 +126,12 @@ public:
     std::vector<GbaBagSlot> readGbaBag() const;
     // Scrive uno slot (set dirty). False se pocket/slot fuori range.
     bool writeGbaBagSlot(GbaBagPocket p, int slot, uint16_t id, uint16_t count);
-    // Flag evento Gen3 (FRLG/RSE) a SaveBlock1+0xEE0, 1 bit per flag (flag/8, flag%8).
+    // Flag evento Gen3 (FRLG/RSE), 1 bit per flag (flag/8, flag%8) dentro
+    // SaveBlock1.flags[]. Offset assoluto e sezione GBA (settore 1-4)
+    // dipendono dal gioco -- FRLG/RSE hanno struct SaveBlock1 diverse
+    // (flags[] a 0xEE0 su FRLG, 0x1270 su Emerald, 0x1220 su Ruby/Sapphire;
+    // 2026-09-19: un offset unico riusato da FRLG su Emerald/RS scriveva
+    // nel settore sbagliato, vedi gbaFlagLocation() in save_file.cpp).
     // Per FRLG Aurora/Mistico imposta 0x2A7/0x84B e 0x2A8/0x84A, per Smeraldo ecc. vedi docs.
     bool setGbaFlag(uint16_t flag);
     bool isGbaFlagSet(uint16_t flag) const;
@@ -124,6 +140,60 @@ public:
     // conteggi zaino (Bulbapedia "Save data structure (Generation III)").
     // Ritorna solo i 16 bit bassi (quelli usati per gli item), 0 se non serve.
     uint16_t gbaSecurityKeyLow16() const;
+
+    // Tempo di gioco totale in secondi, per confrontare due copie dello
+    // stesso save senza fidarsi solo della data di modifica del file (vedi
+    // DevSync in ui_selectors.cpp: mtime da solo non distingue "questa copia
+    // ha più progressi" da "questo file è stato semplicemente toccato più di
+    // recente" -- una copia via USB, un semplice caricamento in un
+    // emulatore, o un orologio di sistema sbagliato bastano a confonderlo).
+    // -1 se il formato caricato non espone ancora questo campo. Coperti:
+    // GBA R/S/E/FR/LG (SaveBlock2+0x0E, verificato contro pret/pokeruby,
+    // pret/pokeemerald, pret/pokefirered), LGPE (flat, blocco #10 @0x45400,
+    // PKHeX BelugaBlockIndex.PlayTime), BDSP (flat, offset fisso 0x79C04,
+    // PKHeX SAV8BS), SwSh e LA (SCBlock, PKHeX SaveBlockAccessor8SWSH/8LA
+    // KPlayTime), SV (SCBlock, PKHeX SaveBlockAccessor9SV KPlayTime -- layout
+    // diverso, i32 invece di u16+u8+u8), ZA (SCBlock, PKHeX
+    // SaveBlockAccessor9ZA KPlayedSeconds -- double, secondi gia' totali),
+    // Gen1 R/B/Y (SRAM flat, PKHeX SAV1Offsets.INT -- hours e' un solo
+    // byte, non u16), Gen2 G/S/C (SRAM flat, PKHeX SAV2Offsets ramo
+    // Internazionale -- hours e' u16 BIG-ENDIAN, non little).
+    // Non ancora coperti: Gen4/5 (NDS).
+    long playTimeSeconds() const;
+
+    // Borsa Gen4/5 DS (PKHeX PlayerBag4DP/4Pt/4HGSS/5BW/5B2W2). Slot da 4B
+    // {id u16 LE, count u16 LE}, in chiaro (niente XOR). Gen4: base relativa
+    // al blocco General della partizione attiva (dsPart_); Gen5: blocco 25
+    // fisso 0x18400. Slot gestiti = liste legali PKHeX (padding preservato,
+    // mai toccato); CRC sistemati da saveDS4/saveDS5.
+    enum class DsBagPocket { Items = 0, Key, TmHm, Mail, Medicine, Berries, Balls, Battle, Count };
+    struct DsBagSlot { DsBagPocket pocket; int slot; uint16_t id; uint16_t count; };
+    bool dsBagSupported() const;
+    int dsBagPocketSlots(DsBagPocket p) const; // 0 se non supportato (es. Mail su Gen5)
+    // Tutti gli slot gestiti (anche vuoti id==0) per lettura/scansione.
+    std::vector<DsBagSlot> readDsBag() const;
+    // Scrive uno slot (set dirty). False se pocket/slot fuori range.
+    bool writeDsBagSlot(DsBagPocket p, int slot, uint16_t id, uint16_t count);
+
+    // Borsa Gen1/2 GB (PKHeX PlayerBag1/PlayerBag2 + InventoryPouchGB).
+    // Niente slot fissi: tasche normali = liste compattate [count][id,count]*
+    // + 0xFF (Key: [count][id]* + 0xFF, count sempre 1); TM Gen2 = array fisso
+    // 57B (count per indice lista legale, 0 = assente). Gli slot esposti qui
+    // sono POSIZIONI nella lista compattata (per vista/audit); la scrittura
+    // riscrive la tasca intera compattata come PKHeX SetPouch. Gen1: solo
+    // Items (le MT sono oggetti normali); PC fuori perimetro. Solo INT
+    // (i JP hanno offset diversi e lo scan li rifiuta).
+    enum class GbBagPocket { Items = 0, Key, TmHm, Balls, Count };
+    struct GbBagSlot { GbBagPocket pocket; int slot; uint16_t id; uint16_t count; };
+    bool gbBagSupported() const;
+    // Tutte le voci presenti (niente vuoti: le liste sono compattate).
+    std::vector<GbBagSlot> readGbBag() const;
+    // Riscrive una tasca intera da lista compattata (set dirty). False se
+    // tasca assente per il gioco o count oltre i max gestiti.
+    bool writeGbBagPocket(GbBagPocket p,
+                          const std::vector<std::pair<uint16_t, uint16_t>>& items);
+    // Ordine id legali della tasca TM Gen2 (array fisso); vuoto altrove.
+    std::vector<uint16_t> gbBagTmOrder() const;
 
     // Get trainer info from save file (SV/ZA only, SCBlock-based)
     TrainerInfo getTrainerInfo() const;
@@ -324,15 +394,29 @@ private:
     bool loadDS4(const std::string& path);
     bool saveDS4(const std::string& path);
     bool loadDS5(const std::string& path);
+    bool saveDS5(const std::string& path);
     // Gen 6/7 (decrypted 3DS dumps, Citra/Checkpoint style; cartridge-encrypted
     // dumps are rejected explicitly). Flat images without checksums: writable.
     bool loadDXY(const std::string& path);
     bool saveDXY(const std::string& path);
+    // Gen 6 ORAS (PKHeX SAV6AO, stesso record Pk6 di XY ma blocchi spostati:
+    // box 0x33000 31x30x232, party 0x14200 6x260, MyStatus 0x14000+4 = 26/27,
+    // nomi 0x04400 31x0x22). Stesso modello flat di loadDXY (niente checksum).
+    bool loadDSORAS(const std::string& path);
+    bool saveDSORAS(const std::string& path);
     bool loadDSM(const std::string& path);
     bool saveDSM(const std::string& path);
+    // Gen 7 USUM (PKHeX SAV7USUM, stesso record Pk7 di SM ma blocchi spostati:
+    // box 0x05200 32x30x232, party 0x01600 6x260, MyStatus 0x01400+4 = 32/33,
+    // nomi 0x04C00 32x0x22). Stesso modello flat di loadDSM (niente checksum).
+    bool loadDSUSUM(const std::string& path);
+    bool saveDSUSUM(const std::string& path);
     std::vector<uint8_t> dsStorage_;
     Ds4Layout ds4Layout_ = Ds4Layout::DP;
     int dsPart_ = 0; // active Gen4 partition picked by loadDS4
+    // Inizio regione borsa DS nei dati grezzi (assoluto in rawData_), o -1 se
+    // gioco/layout incoerenti (mai scrivere all'offset sbagliato).
+    long dsBagBase() const;
     uint8_t dsRomCode_ = 0;
     uint8_t dsGameByte_ = 0;
     std::vector<Pokemon> dsParty_;

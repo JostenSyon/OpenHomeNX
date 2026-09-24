@@ -2,6 +2,7 @@
 #include "debug_log.h"
 #include "settings_cfg.h"
 #include "update_net.h"
+#include "string_utils.h"
 
 #define JSON_NOEXCEPTION
 #include "json.hpp"
@@ -126,12 +127,6 @@ void applyLanOpts(CURL* c) {
     // http:// in LAN, nessun certificato da verificare.
     curl_easy_setopt(c, CURLOPT_SSL_VERIFYPEER, 0L);
     curl_easy_setopt(c, CURLOPT_SSL_VERIFYHOST, 0L);
-}
-
-std::string toLowerRS(const std::string& s) {
-    std::string out = s;
-    for (char& c : out) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    return out;
 }
 
 // Tempo di parete in secondi, stesso helper (stesso motivo: clock() su
@@ -773,10 +768,24 @@ std::vector<SyncCandidate> remoteSyncBuildCandidates(
             c.remoteSaveModifiedUnix = f.saveModified;
             c.hasRemoteRom = f.hasRom;
             c.remoteRomBaseName = f.romBaseName;
+            auto sameGroup = [](GameType a, GameType b) -> bool {
+                if (a == b) return true;
+                // FRLG: tutte le lingue dello stesso gioco (FR o LG) sono lo stesso save compatibile
+                if (isFRLG(a) && isFRLG(b)) {
+                    bool aIsFR = (a == GameType::FR || a == GameType::FR_ES || a == GameType::FR_DE || a == GameType::FR_IT || a == GameType::FR_FR || a == GameType::FR_JA);
+                    bool bIsFR = (b == GameType::FR || b == GameType::FR_ES || b == GameType::FR_DE || b == GameType::FR_IT || b == GameType::FR_FR || b == GameType::FR_JA);
+                    bool aIsLG = !aIsFR; // se è FRLG ma non FR, è LG
+                    bool bIsLG = !bIsFR;
+                    return (aIsFR && bIsFR) || (aIsLG && bIsLG);
+                }
+                return false;
+            };
             for (const auto& lg : localGames) {
-                if (lg.type == c.type) {
+                if (sameGroup(lg.type, c.type)) {
                     c.hasLocal = true;
                     c.localPath = lg.filePath;
+                    // Salva anche il tipo effettivo locale per distinzione SW/ROM nel picker
+                    c.type = lg.type; // usa il tipo locale per coerenza (es. FR_IT invece di FR generico)
                     break;
                 }
             }
@@ -878,8 +887,11 @@ bool remoteSyncUpload(const std::string& host, const std::string& token,
     if (!f.is_open()) { err = "file locale non leggibile"; return false; }
     std::streamsize size = f.tellg();
     f.seekg(0);
-    std::vector<char> buf(static_cast<size_t>(size > 0 ? size : 0));
-    if (size > 0 && !f.read(buf.data(), size)) { err = "lettura file locale fallita"; return false; }
+    DebugLog::line("remote sync: upload leggo %s (%lld byte)", localPath.c_str(), (long long)size);
+    if (size <= 0 || size > 256 * 1024 * 1024) { err = "dimensione file non valida"; return false; }
+    std::vector<char> buf(static_cast<size_t>(size));
+    if (!f.read(buf.data(), size)) { err = "lettura file locale fallita"; return false; }
+    DebugLog::line("remote sync: upload letto, calcolo sha...");
 
     // Checksum sempre attivo (richiesto esplicitamente): calcolato PRIMA
     // dell'invio sul file locale, confrontato dopo l'upload con lo stesso
@@ -887,6 +899,7 @@ bool remoteSyncUpload(const std::string& host, const std::string& token,
     // non solo lo stato HTTP 200/201.
     std::string localHash = sha256HexFile(localPath);
     if (localHash.empty()) { err = "impossibile calcolare checksum locale"; return false; }
+    DebugLog::line("remote sync: upload sha ok, POST...");
 
     std::string p = remotePath;
     while (!p.empty() && p.front() == '/')
@@ -920,6 +933,7 @@ bool remoteSyncUpload(const std::string& host, const std::string& token,
     curl_slist_free_all(hdrs);
     curl_easy_cleanup(c);
 
+    DebugLog::line("remote sync: upload POST finito rc=%d http=%ld", (int)rc, http);
     if (rc != CURLE_OK) { err = std::string("rete: ") + curl_easy_strerror(rc); return false; }
     if (http != 200 && http != 201) { err = "HTTP " + std::to_string(http); return false; }
 
@@ -927,9 +941,11 @@ bool remoteSyncUpload(const std::string& host, const std::string& token,
     // stessa funzione grezza usata da remoteSyncDownload, non la versione
     // con doppio controllo -- eviterebbe un terzo GET inutile) e confronta
     // l'hash con quello calcolato sul locale prima dell'invio.
+    DebugLog::line("remote sync: upload verifico riscaricando...");
     std::string verifyPath = localPath + ".vrfy";
     std::string verifyErr;
     bool verifyOk = downloadRawToFile(host, token, remotePath, verifyPath, verifyErr);
+    DebugLog::line("remote sync: upload verifica download %s", verifyOk ? "ok" : verifyErr.c_str());
     std::string remoteHash = verifyOk ? sha256HexFile(verifyPath) : std::string();
     std::remove(verifyPath.c_str());
     if (!verifyOk || remoteHash.empty() || remoteHash != localHash) {

@@ -4,14 +4,19 @@
 #include <string>
 #include <vector>
 
-// One save file found while scanning enabled import paths.
+// One save file (or, with hasSave=false, one orphan ROM with no save yet)
+// found while scanning enabled import paths.
 struct ImportedGame {
     GameType    type;      // isImportedFile() (Gen3 GBA) or isGen1File() (Gen1 SRAM) slot
-    std::string filePath;  // absolute path, ready for SaveFile::load()
+    std::string filePath;  // hasSave: absolute save path, ready for SaveFile::load().
+                            // !hasSave: absolute ROM path directly (no save to load).
     std::string sourceTag; // last path segment before the filename ("saves",
                             // "roms", ...) — shown as a small on-tile badge
                             // when more than one source could plausibly hold
                             // the same game, so the user can tell them apart.
+    bool hasSave = true;   // false = ROM found with no matching save (Settings::
+                            // showRomsWithoutSave()) — launch-only entry, no
+                            // box/party/items to edit until a save exists.
 };
 
 // Scans every enabled entry in `paths` for a Gen3 GBA save (128KB, valid
@@ -35,4 +40,14 @@ struct ImportedGame {
 // FireRed/LeafGreen save (already reachable via their real titleId-backed
 // GameType), is silently skipped: scanning a folder full of unrelated files
 // is the normal case, not an error.
-std::vector<ImportedGame> scanImportPaths(const std::vector<ImportPathEntry>& paths, bool autoCheckUsb);
+//
+// includeRomsWithoutSave (Settings::showRomsWithoutSave()): after the normal
+// save scan above, also looks for GBA/GB/GBC ROM files (header-identified via
+// RomInfo::detect(), not save-shaped) that have NO matching save among the
+// entries just found — pushed as hasSave=false ImportedGame (rom path in
+// filePath, launch-only). Same `claimed` dedup as the save scan, so a game
+// that already has a real save never gets a duplicate orphan entry. NDS/3DS
+// ROMs are skipped here: RomInfo::detect() identifies the console for them
+// but not which specific game (no per-title code table yet).
+std::vector<ImportedGame> scanImportPaths(const std::vector<ImportPathEntry>& paths, bool autoCheckUsb,
+                                          bool includeRomsWithoutSave = false);

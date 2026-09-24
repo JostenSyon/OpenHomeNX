@@ -35,6 +35,23 @@ std::vector<ImportPathEntry> loadImportPaths(const std::string& basePath) {
     if (!hasDefault)
         out.insert(out.begin(), ImportPathEntry{defaultPath, true});
 
+#ifdef OH_LINUX
+    // Build Linux (R36S): oltre alla cartella import/, scansiona di default
+    // le cartelle ROM di ArkOS (GBA/GBC/GB), dove RetroArch salva i .srm
+    // accanto alle ROM. Se il file import_paths.cfg le gia' elenca, niente
+    // doppioni. Le cartelle inesistenti vengono ignorate da scanImportPaths.
+    {
+        const char* kRomsDirs[] = { "/roms/gba", "/roms/gbc", "/roms/gb" };
+        for (const char* d : kRomsDirs) {
+            bool present = false;
+            for (const auto& e : out)
+                if (e.path == d) { present = true; break; }
+            if (!present)
+                out.push_back({d, true});
+        }
+    }
+#endif
+
     // Best-effort: make sure the default folder actually exists so the user
     // has somewhere obvious to drop files into. Never fatal if it fails.
     mkdir(defaultPath.c_str(), 0755);

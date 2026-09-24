@@ -14,6 +14,12 @@
 #                              build diagnostica che linka libusbhsfsd.a)
 set -e
 cd "$(dirname "$0")"
+# Ctrl-C a meta' build: uccide anche il make figlio (stesso gruppo) ed esce
+# con un messaggio pulito invece della cascata di errori delle recipe.
+# dist/ resta invariato (la copia avviene solo a build riuscita) e
+# .build-variant NON viene toccato (scritto solo dopo, vedi sotto): il
+# prossimo giro ricomincia dallo stato giusto senza pulizie a mano.
+trap 'echo ""; echo "interrotto: build incompleta, dist/ invariato (rilancia per ricominciare)"; exit 130' INT TERM
 export DEVKITPRO=/opt/devkitpro
 export MAKE=/usr/bin/make
 VARIANT="debug"
@@ -33,9 +39,12 @@ if [ -n "$want_clean" ]; then
   echo "==> cambio variante ($VARIANT): make clean"
   MAKE=/usr/bin/make DEVKITPRO=/opt/devkitpro make clean > /dev/null
 fi
+JOBS=$(sysctl -n hw.ncpu 2>/dev/null || echo 4)
+echo "==> make release [$VARIANT] -j$JOBS (APP_VERSION=$(grep '^APP_VERSION' Makefile | awk '{print $3}'))"
+MAKE=/usr/bin/make DEVKITPRO=/opt/devkitpro make -j$JOBS release $EXTRA
+# Solo DOPO build riuscita: scriverlo prima e interrompere lasciava il flag
+# della variante nuova con oggetti misti, e il giro dopo saltava il clean.
 echo "$VARIANT" > .build-variant
-echo "==> make release [$VARIANT] (APP_VERSION=$(grep '^APP_VERSION' Makefile | awk '{print $3}'))"
-MAKE=/usr/bin/make DEVKITPRO=/opt/devkitpro make release $EXTRA
 echo "$VARIANT" > dist/variant.txt
 echo ""
 ls -lh dist/OpenHomeNX.nro dist/latest.json

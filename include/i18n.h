@@ -276,6 +276,7 @@ namespace StrKey {
     constexpr const char* SetCleanConfirm = "set_clean_confirm";
     constexpr const char* SetCleanDone    = "set_clean_done";
     constexpr const char* SetCheckUpdate  = "set_checkupdate";
+    constexpr const char* SetUpdateBoot   = "set_update_boot";
     constexpr const char* SetChannel      = "set_channel";
     constexpr const char* ChannelStable   = "channel_stable";
     constexpr const char* ChannelBeta     = "channel_beta";
@@ -288,6 +289,9 @@ namespace StrKey {
     // Riga "Installa launcher" dentro Sistema (ex Core) + suo dialogo/esiti.
     constexpr const char* SetInstallLauncher      = "set_install_launcher";
     constexpr const char* SetDefaultEmulator      = "set_default_emulator";
+    constexpr const char* SetConfirmExit          = "set_confirm_exit";
+    constexpr const char* ConfirmExitTitle        = "confirm_exit_title";
+    constexpr const char* ConfirmExitBody         = "confirm_exit_body";
     constexpr const char* LaunchGameTitle         = "launch_game_title";
     constexpr const char* LaunchGameConfirm       = "launch_game_confirm";
     constexpr const char* LaunchGameFailed        = "launch_game_failed";
@@ -317,11 +321,17 @@ namespace StrKey {
     constexpr const char* BpBalls         = "bp_balls";
     constexpr const char* BpTm            = "bp_tm";
     constexpr const char* BpBerries       = "bp_berries";
+    constexpr const char* BpMail          = "bp_mail";
+    constexpr const char* BpMed           = "bp_med";
+    constexpr const char* BpBattle        = "bp_battle";
     constexpr const char* BpTabBalls      = "bp_tab_balls";
     constexpr const char* BpTabMt         = "bp_tab_mt";
     constexpr const char* BpTabMn         = "bp_tab_mn";
     constexpr const char* BpTabCons       = "bp_tab_cons";
     constexpr const char* BpTabSpecial    = "bp_tab_special";
+    constexpr const char* BpTabMail       = "bp_tab_mail";
+    constexpr const char* BpTabMed        = "bp_tab_med";
+    constexpr const char* BpTabBattle     = "bp_tab_battle";
     constexpr const char* BpOwned         = "bp_owned";
     constexpr const char* SetFooterSlider = "set_footer_slider";
     constexpr const char* ImportFoundTitle     = "import_found_title";
@@ -439,6 +449,10 @@ namespace StrKey {
     constexpr const char* Right                = "right";
 
     // Updater (ui_selectors.cpp checkForUpdate + Send log)
+    // Hint B-annulla generico per i job (scraper, updater, ...): stesso
+    // testo ovunque, una sola coppia di chiavi.
+    constexpr const char* JobCancelHint        = "job_cancel_hint";
+    constexpr const char* JobCancelling        = "job_cancelling";
     constexpr const char* UpdateTitle          = "update_title";
     constexpr const char* UpdateNetOff         = "update_net_off";
     constexpr const char* UpdateContacting     = "update_contacting";
@@ -474,6 +488,32 @@ namespace StrKey {
     constexpr const char* ClearBpHistBody      = "clearbphist_body";
     constexpr const char* ClearBpHistDone      = "clearbphist_done";
     constexpr const char* ClearBpHistFailed    = "clearbphist_failed";
+    constexpr const char* ClearGalCacheTitle   = "cleargalcache_title";
+    constexpr const char* ClearGalCacheBody    = "cleargalcache_body";
+    constexpr const char* ClearGalCacheDone    = "cleargalcache_done";
+    constexpr const char* ScraperBoxartTitle   = "scraper_boxart_title";
+    constexpr const char* ScraperBoxartDone    = "scraper_boxart_done";
+    constexpr const char* ScraperBoxartRetry = "scraper_boxart_retry";
+    constexpr const char* ScraperBoxartOffline = "scraper_boxart_offline";
+    constexpr const char* ScraperBoxartClear   = "scraper_boxart_clear";
+    constexpr const char* ScraperBoxartClearBody = "scraper_boxart_clear_body";
+    constexpr const char* ScraperBoxartCleared = "scraper_boxart_cleared";
+    constexpr const char* ScraperBoxartStyle   = "scraper_boxart_style";
+    constexpr const char* ScraperBoxartStyleLocale = "scraper_boxart_style_locale";
+    constexpr const char* ScraperBoxartStyle2d = "scraper_boxart_style_2d";
+    constexpr const char* ScraperBoxartStyle3d = "scraper_boxart_style_3d";
+    constexpr const char* ScraperRenameTitle = "scraper_rename_title";
+    constexpr const char* ScraperRenameDone  = "scraper_rename_done";
+    constexpr const char* ShowRomsNoSaveTitle = "show_roms_no_save_title";
+    constexpr const char* ShowFrlgRomsTitle = "show_frlg_roms_title";
+    constexpr const char* SyncFrlgTitle = "sync_frlg_title";
+    constexpr const char* SyncFrlgConfirm = "sync_frlg_confirm";
+    constexpr const char* SyncFrlgDone = "sync_frlg_done";
+    constexpr const char* SyncFrlgNone = "sync_frlg_none";
+    constexpr const char* SyncFrlgNoProfile = "sync_frlg_no_profile";
+    constexpr const char* SyncFrlgNeedClose = "sync_frlg_need_close";
+    constexpr const char* AutoSyncFrlgTitle = "autosync_frlg_title";
+    constexpr const char* ShowRomsNoSaveDesc  = "show_roms_no_save_desc";
     constexpr const char* SetNormalizeSave     = "set_normalize_save";
     constexpr const char* ClearLogDone         = "clearlog_done";
     constexpr const char* ClearLogFailed       = "clearlog_failed";
@@ -526,6 +566,17 @@ namespace StrKey {
     constexpr const char* DevSyncSyncNoLocalOrRemote = "devsync_sync_no_local_or_remote";
     constexpr const char* DevSyncAskRomTitle = "devsync_ask_rom_title";
     constexpr const char* DevSyncAskRomBody  = "devsync_ask_rom_body";
+    // Popup di confronto locale/remoto per "Sincronizza" (due riquadri
+    // affiancati, vedi UI::showSyncCompareDialog).
+    constexpr const char* DevSyncCompareLocal    = "devsync_compare_local";
+    constexpr const char* DevSyncCompareRemote   = "devsync_compare_remote";
+    constexpr const char* DevSyncCompareSource   = "devsync_compare_source";
+    constexpr const char* DevSyncCompareSaveDate = "devsync_compare_save_date";
+    constexpr const char* DevSyncCompareCriterion = "devsync_compare_criterion";
+    constexpr const char* DevSyncCompareAlreadySynced = "devsync_compare_already_synced";
+    constexpr const char* DevSyncCriterionPlaytime = "devsync_criterion_playtime";
+    constexpr const char* DevSyncCriterionDex      = "devsync_criterion_dex";
+    constexpr const char* DevSyncCriterionMtime    = "devsync_criterion_mtime";
 
     // Box Remoto (apre un save remoto nel selettore giochi/banca locale).
     constexpr const char* RemoteBoxMenuLabel   = "remotebox_menu_label";
@@ -567,9 +618,13 @@ namespace StrKey {
     // Bank creation (ui_bank.cpp)
     constexpr const char* CreateBankTitle      = "create_bank_title";
     constexpr const char* CreateBankBody       = "create_bank_body";
+    constexpr const char* NewBankKindFooter    = "new_bank_kind_footer";
 
     // Applet mode info (ui.cpp)
     constexpr const char* AppletTitle          = "applet_title";
     constexpr const char* AppletBody           = "applet_body";
+
+    // Scheda Galleria: riga tempo di gioco sotto il Pokédex (ui_gallery.cpp)
+    constexpr const char* GalPlayTime          = "gal_play_time";
 
 }

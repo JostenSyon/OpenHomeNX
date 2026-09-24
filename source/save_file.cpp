@@ -103,8 +103,12 @@ bool SaveFile::load(const std::string& path) {
         ok = loadDS5(path);
     else if (isGen6XY(gameType_))
         ok = loadDXY(path);
+    else if (isGen6ORAS(gameType_))
+        ok = loadDSORAS(path);
     else if (isGen7SM(gameType_))
         ok = loadDSM(path);
+    else if (isGen7USUM(gameType_))
+        ok = loadDSUSUM(path);
     else if (isBDSP(gameType_))
         ok = loadBDSP(path);
     else if (isLGPE(gameType_))
@@ -132,16 +136,14 @@ bool SaveFile::save(const std::string& path) {
         ok = saveDS4(path);
     else if (isGen6XY(gameType_))
         ok = saveDXY(path);
+    else if (isGen6ORAS(gameType_))
+        ok = saveDSORAS(path);
     else if (isGen7SM(gameType_))
         ok = saveDSM(path);
-    else if (isGen5File(gameType_)) {
-        // Gen5 stays read-only: BW/B2W2 saves carry per-block CRC footers via
-        // a block map this loader doesn't parse — writing slots without fixing
-        // them risks a save the game rejects, with no backup copy on cart.
-        // Explicit failure, never silent.
-        DebugLog::line("save: Gen5 read-only v1, rifiuto scrittura %s", path.c_str());
-        ok = false;
-    }
+    else if (isGen7USUM(gameType_))
+        ok = saveDSUSUM(path);
+    else if (isGen5File(gameType_))
+        ok = saveDS5(path);
     else if (isFRLG(gameType_) || isImportedFile(gameType_))
         ok = saveGBA(path);
     else if (isBDSP(gameType_))
@@ -563,14 +565,21 @@ void SaveFile::setPartySlot(int idx, const Pokemon& pkm) {
             if (toWrite.isEmpty()) std::memset(dst, 0, pSize);
             else toWrite.getEncrypted(dst);
         }
-    } else if (gameType_ == GameType::X || gameType_ == GameType::Y) {
-        constexpr size_t OFF = 0x14200; constexpr int PS=260;
+    } else if (gameType_ == GameType::X || gameType_ == GameType::Y ||
+               gameType_ == GameType::OMEGA_RUBY || gameType_ == GameType::ALPHA_SAPPHIRE) {
+        constexpr size_t OFF = 0x14200; constexpr int PS=260; // XY e ORAS: stesso blocco party
         if (OFF + (size_t)idx*PS + PS <= rawData_.size()) {
             uint8_t* dst = rawData_.data()+OFF+idx*PS;
             if (toWrite.isEmpty()) std::memset(dst,0,PS); else toWrite.getEncrypted(dst);
         }
     } else if (gameType_ == GameType::SUN || gameType_ == GameType::MOON) {
         constexpr size_t OFF = 0x01400; constexpr int PS=260;
+        if (OFF + (size_t)idx*PS + PS <= rawData_.size()) {
+            uint8_t* dst = rawData_.data()+OFF+idx*PS;
+            if (toWrite.isEmpty()) std::memset(dst,0,PS); else toWrite.getEncrypted(dst);
+        }
+    } else if (gameType_ == GameType::ULTRA_SUN || gameType_ == GameType::ULTRA_MOON) {
+        constexpr size_t OFF = 0x01600; constexpr int PS=260;
         if (OFF + (size_t)idx*PS + PS <= rawData_.size()) {
             uint8_t* dst = rawData_.data()+OFF+idx*PS;
             if (toWrite.isEmpty()) std::memset(dst,0,PS); else toWrite.getEncrypted(dst);
@@ -655,6 +664,15 @@ void SaveFile::setPartySlot(int idx, const Pokemon& pkm) {
             if(off+PokeCrypto::SIZE_6PARTY <= boxDataLen_){ toWrite.getEncrypted(boxData_+off); }
         }
     }
+    // Registra nel Pokedex (2026-09-18): setBoxSlot lo fa da sempre, ma
+    // setPartySlot non l'ha MAI fatto -- qualsiasi Pokemon piazzato
+    // direttamente in squadra (trasferimento in party, non in una box)
+    // restava fuori dal Pokedex per sempre (bug osservato: Espeon in
+    // squadra ma assente dal dex). registerPokemon() e' idempotente e
+    // gia' scarta da sola vuoti/uova.
+    if (!toWrite.isEmpty())
+        Pokedex::registerPokemon(*this, toWrite);
+
     dsParty_[idx]=toWrite;
     dirty_=true; invalidateAllBoxCache();
 }
@@ -2362,6 +2380,172 @@ bool SaveFile::loadGBA(const std::string& path) {
     else if (!valid[1]) gbaActiveSlot_ = 0;
     else gbaActiveSlot_ = (counter[1] > counter[0]) ? 1 : 0;
 
+    // Recupero Pokedex per fork (2026-09-18 v2): il tentativo precedente
+    // (scartare TUTTO il banco col contatore piu' alto se aveva meno
+    // catture) era sbagliato -- dai log reali si e' visto che dopo il
+    // chain-load mGBA continua ad avanzare il SUO banco (contatore sempre
+    // piu' alto, progressi di gioco reali: nuove catture, oggetti, ecc.)
+    // mentre l'altro banco resta congelato al momento del fork, con in
+    // pancia SOLO le catture fatte fino a quel momento (es. il trasferimento
+    // OpenHomeNX). Scartare il banco col contatore piu' alto buttava via
+    // tutti i progressi successivi (ogni nuova catture veniva ignorata).
+    // Fix corretto: il banco attivo resta quello col contatore piu' alto
+    // (e' il piu' recente), ma i flag Pokedex "caught"/"seen" sono
+    // permanenti quindi va bene unire (OR bit a bit) quelli dell'altro
+    // banco in quello attivo -- si recupera cosi' l'eventuale specie
+    // presente solo nel banco piu' vecchio (es. dopo un trasferimento)
+    // senza perdere nessun progresso successivo. Il prossimo saveGBA()
+    // ricopiera' il banco attivo (ora con l'unione) sull'altro banco.
+    bool gbaPokedexMergeDirty = false;
+    if (valid[0] && valid[1]) {
+        constexpr int kPokedexOfs = 0x18, kCaughtOfs = 0x10, kSeenOfs = 0x44;
+        constexpr int kMaxSpecies = 386;
+        constexpr int kFlagBytes = (kMaxSpecies + 7) / 8; // 49 byte, bit = specie-1
+
+        auto sectorOfs = [&](int slot, int sectionId) -> int {
+            int slotBase = slot * GBA_SECTOR_COUNT * GBA_SECTOR_SIZE;
+            for (int i = 0; i < GBA_SECTOR_COUNT; i++) {
+                int off = slotBase + i * GBA_SECTOR_SIZE;
+                if (readU16LE(rawData_.data() + off + GBA_OFS_SECTOR_ID) == sectionId)
+                    return off;
+            }
+            return -1;
+        };
+        auto sector0Ofs = [&](int slot) -> int { return sectorOfs(slot, 0); };
+
+        int otherSlot = 1 - gbaActiveSlot_;
+        int activeSec0 = sector0Ofs(gbaActiveSlot_);
+        int otherSec0 = sector0Ofs(otherSlot);
+        if (activeSec0 >= 0 && otherSec0 >= 0) {
+            // Guardia identita' allenatore (2026-09-18 v4, DANNO REALE
+            // osservato: dopo "Nuova Partita" un banco aveva ancora il
+            // trainer/dex della partita PRECEDENTE mentre l'altro aveva
+            // gia' quello nuovo -- unire ciecamente i flag caught/seen ha
+            // resuscitato l'intero Pokedex della partita vecchia dentro
+            // quella nuova, +27/+31 specie di colpo). Se OT name (8B @0x00)
+            // o TID/SID (4B @0x0A) non coincidono tra i due banchi sono due
+            // trainer/partite diverse: NON uniamo mai il Pokedex tra loro,
+            // qualunque sia il contatore -- unire dex di trainer diversi
+            // non e' mai corretto, a differenza del fork stesso trainer.
+            bool sameTrainer =
+                std::memcmp(rawData_.data() + activeSec0, rawData_.data() + otherSec0, 8) == 0 &&
+                std::memcmp(rawData_.data() + activeSec0 + 0x0A, rawData_.data() + otherSec0 + 0x0A, 4) == 0;
+
+            int mergedCaught = 0, mergedSeen = 0;
+            bool mergedNatDex = false;
+            if (sameTrainer) {
+            uint8_t* activeCaught = rawData_.data() + activeSec0 + kPokedexOfs + kCaughtOfs;
+            uint8_t* activeSeen   = rawData_.data() + activeSec0 + kPokedexOfs + kSeenOfs;
+            const uint8_t* otherCaught = rawData_.data() + otherSec0 + kPokedexOfs + kCaughtOfs;
+            const uint8_t* otherSeen   = rawData_.data() + otherSec0 + kPokedexOfs + kSeenOfs;
+            for (int b = 0; b < kFlagBytes; b++) {
+                uint8_t oldC = activeCaught[b];
+                uint8_t oldS = activeSeen[b];
+                uint8_t newC = static_cast<uint8_t>(oldC | otherCaught[b]);
+                uint8_t newS = static_cast<uint8_t>(oldS | otherSeen[b]);
+                mergedCaught += __builtin_popcount(static_cast<unsigned>(newC & ~oldC));
+                mergedSeen   += __builtin_popcount(static_cast<unsigned>(newS & ~oldS));
+                activeCaught[b] = newC;
+                activeSeen[b] = newS;
+            }
+
+            // Copie ridondanti seen1/seen2 (Emerald, SaveBlock1 +0x988/
+            // +0x3B24) o dexSeen2/dexSeen3 (Ruby/Sapphire, SaveBlock1
+            // +0x938/+0x3A8C) in sezione 1/4 -- vedi Pokedex::registerRSE
+            // (source/pokedex.cpp) per il perche': senza queste tre/quattro
+            // copie coerenti tra loro, GetSetPokedexFlag() del gioco vero
+            // azzera owned/seen al primo accesso. Se il banco "congelato"
+            // le aveva gia' impostate (catture organiche precedenti al
+            // fork), vanno unite qui esattamente come owned/seen, altrimenti
+            // il recupero sopra resterebbe comunque incoerente e il gioco
+            // lo azzererebbe di nuovo da solo.
+            if (isImportedFile(gameType_)) {
+                int sec1Ofs, sec4Ofs;
+                if (gameType_ == GameType::RUBY || gameType_ == GameType::SAPPHIRE) {
+                    sec1Ofs = 0x938; sec4Ofs = 0x3A8C - 0x2E80;
+                } else {
+                    sec1Ofs = 0x988; sec4Ofs = 0x3B24 - 0x2E80;
+                }
+                int activeSec1 = sectorOfs(gbaActiveSlot_, 1), otherSec1 = sectorOfs(otherSlot, 1);
+                int activeSec4 = sectorOfs(gbaActiveSlot_, 4), otherSec4 = sectorOfs(otherSlot, 4);
+                if (activeSec1 >= 0 && otherSec1 >= 0) {
+                    uint8_t* a = rawData_.data() + activeSec1 + sec1Ofs;
+                    const uint8_t* o = rawData_.data() + otherSec1 + sec1Ofs;
+                    for (int b = 0; b < kFlagBytes; b++) a[b] |= o[b];
+                }
+                if (activeSec4 >= 0 && otherSec4 >= 0) {
+                    uint8_t* a = rawData_.data() + activeSec4 + sec4Ofs;
+                    const uint8_t* o = rawData_.data() + otherSec4 + sec4Ofs;
+                    for (int b = 0; b < kFlagBytes; b++) a[b] |= o[b];
+                }
+            }
+
+            // Stesso problema, stesso rimedio, per il flag National Dex
+            // (2026-09-18 v3, corretto v5): setNationalDexEnabled() scrive
+            // gia' entrambi i banchi quando viene chiamata, ma se lo sblocco
+            // avviene mentre l'altro banco e' quello "congelato" dal fork
+            // mGBA, un ciclo saveGBA() successivo puo' rispecchiare il banco
+            // SENZA il flag sull'altro, perdendolo su entrambi. IMPORTANTE
+            // (2026-09-18 v5): il byte giusto da controllare/unire e' 0x1A
+            // (nationalMagic, deve valere 0xDA -- struct Pokedex di
+            // pokeemerald: order@0, mode@1, nationalMagic@2, unknown2@3, ...),
+            // NON 0x1A-1=0x19 (mode, solo la vista Hoenn/National correntemente
+            // selezionata: settarlo da solo non sblocca nulla per il gioco,
+            // che controlla SOLO nationalMagic==0xDA per decidere se il
+            // National Dex e' disponibile).
+            constexpr int kNatDexOfs = 0x1A;
+            uint8_t* activeNatDex = rawData_.data() + activeSec0 + kNatDexOfs;
+            const uint8_t* otherNatDex = rawData_.data() + otherSec0 + kNatDexOfs;
+            mergedNatDex = (*activeNatDex != 0xDA && *otherNatDex == 0xDA);
+            if (mergedNatDex) {
+                *activeNatDex = 0xDA;
+                (rawData_.data() + activeSec0 + 0x19)[0] = 1; // mode segue nationalMagic
+            }
+
+            // 2026-09-19: nationalMagic da solo non e' il vero gate (vedi
+            // isNationalDexEnabled/setNationalDexEnabled) -- il gioco
+            // controlla anche VAR_NATIONAL_DEX==0x302 e FLAG_SYS_NATIONAL_DEX,
+            // che vivono in sezione 2 (SaveBlock1), non in sezione 0. Stesso
+            // rischio di "banco congelato" del merge sopra: uniamo anche
+            // questi se l'altro banco li aveva gia' impostati.
+            if (isImportedFile(gameType_)) {
+                int flagOfs, varOfs;
+                if (gameType_ == GameType::RUBY || gameType_ == GameType::SAPPHIRE) {
+                    flagOfs = 0x3A6; varOfs = 0x44C;
+                } else {
+                    flagOfs = 0x402; varOfs = 0x4A8;
+                }
+                constexpr int kBit = 6; // FLAG_SYS_NATIONAL_DEX & 7
+                int activeSec2 = sectorOfs(gbaActiveSlot_, 2), otherSec2 = sectorOfs(otherSlot, 2);
+                if (activeSec2 >= 0 && otherSec2 >= 0) {
+                    uint8_t* aFlag = rawData_.data() + activeSec2 + flagOfs;
+                    const uint8_t* oFlag = rawData_.data() + otherSec2 + flagOfs;
+                    uint16_t oVar = readU16LE(rawData_.data() + otherSec2 + varOfs);
+                    if (!(*aFlag & (1 << kBit)) && (*oFlag & (1 << kBit))) {
+                        *aFlag |= (1 << kBit);
+                        mergedNatDex = true;
+                    }
+                    if (oVar == 0x302 && readU16LE(rawData_.data() + activeSec2 + varOfs) != 0x302) {
+                        writeU16LE(rawData_.data() + activeSec2 + varOfs, 0x302);
+                        mergedNatDex = true;
+                    }
+                }
+            }
+            }
+
+            if (mergedCaught > 0 || mergedSeen > 0 || mergedNatDex) {
+                DebugLog::line("loadGBA: %s -> Pokedex banco %d unito nel banco attivo %d "
+                               "(+%d catture, +%d viste, natDex %s recuperati dal banco piu' vecchio)",
+                               path.c_str(), otherSlot, gbaActiveSlot_, mergedCaught, mergedSeen,
+                               mergedNatDex ? "SI" : "no");
+                gbaPokedexMergeDirty = true;
+            } else if (!sameTrainer) {
+                DebugLog::line("loadGBA: %s -> banchi con trainer diversi (nuova partita?), "
+                               "nessuna unione Pokedex", path.c_str());
+            }
+        }
+    }
+
     // Build contiguous storage buffer from sectors 5-13 of active slot
     gbaStorage_.resize(GBA_STORAGE_SECTORS * GBA_SECTOR_USED);
     std::memset(gbaStorage_.data(), 0, gbaStorage_.size());
@@ -2471,6 +2655,22 @@ bool SaveFile::loadGBA(const std::string& path) {
         }
     }
 
+    // Persistenza immediata (2026-09-18 v2): l'unione Pokedex sopra vive
+    // solo in RAM finche' non viene scritta su disco. Se OpenHomeNX si
+    // limita a SFOGLIARE il save (import scan) e poi l'utente lancia mGBA
+    // direttamente in chain-load, mGBA legge il file COSI' COM'E' su SD --
+    // non vede mai la correzione fatta solo in memoria. Quindi appena
+    // l'unione ha davvero recuperato qualcosa, la ri-salviamo subito qui
+    // (saveGBA mischia il banco attivo, ora corretto, sull'altro banco e
+    // ricalcola i checksum): cosi' il file su disco e' gia' sano PRIMA
+    // che l'utente apra mGBA, senza bisogno di nessuna azione manuale.
+    if (gbaPokedexMergeDirty) {
+        if (saveGBA(path))
+            DebugLog::line("loadGBA: %s -> unione Pokedex salvata su disco", path.c_str());
+        else
+            DebugLog::line("loadGBA: %s -> unione Pokedex NON salvata (saveGBA fallita)", path.c_str());
+    }
+
     loaded_ = true;
     return true;
 }
@@ -2483,15 +2683,43 @@ bool SaveFile::saveGBA(const std::string& path) {
     }
 
     // Write modified storage back to sectors in BOTH save slots
+    // 2026-09-19: oltre a non essere mai identico tra i due banchi (fix
+    // precedente), sull'hardware vero il contatore del banco attivo
+    // AVANZA di 1 ad ogni salvataggio nativo -- qui restava congelato tra
+    // due nostri saveGBA() consecutivi (mai toccato se non dal gioco
+    // stesso), stato che una console reale non produce mai (il contatore
+    // e' un numero di generazione monotono, mai fermo tra due salvataggi).
+    // Un nostro saveGBA() e' a tutti gli effetti un nuovo salvataggio, cosi'
+    // lo incrementiamo anche noi: il banco attivo passa da N a N+1, il
+    // banco specchiato riceve N (il valore che l'attivo aveva PRIMA di
+    // questo giro) -- resta sempre esattamente 1 indietro, mai un
+    // pareggio, esattamente come produce l'hardware vero quando scrive nel
+    // banco "nuovo" e lascia l'altro fermo al suo ultimo valore.
+    uint32_t activeBase_ = gbaActiveSlot_ * GBA_SECTOR_COUNT * GBA_SECTOR_SIZE;
+    uint32_t activeCounterOld = readU32LE(rawData_.data() + activeBase_ + GBA_OFS_SAVE_INDEX);
+    uint32_t activeCounterNew = activeCounterOld + 1;
+
     for (int slot = 0; slot < 2; slot++) {
         int slotBase = slot * GBA_SECTOR_COUNT * GBA_SECTOR_SIZE;
 
-        // Copy sector structure from active slot if writing to the other slot
-        if (slot != gbaActiveSlot_) {
+        if (slot == gbaActiveSlot_) {
+            for (int i = 0; i < GBA_SECTOR_COUNT; i++) {
+                int sectorOfs = slotBase + i * GBA_SECTOR_SIZE;
+                writeU32LE(rawData_.data() + sectorOfs + GBA_OFS_SAVE_INDEX, activeCounterNew);
+            }
+        } else {
+            // Copy sector structure from the active slot onto the mirror slot
+            // (contenuto identico su entrambi i banchi -- rete di sicurezza
+            // del merge cross-banco, vedi loadGBA), poi il contatore un
+            // passo indietro rispetto al nuovo valore dell'attivo.
             int activeBase = gbaActiveSlot_ * GBA_SECTOR_COUNT * GBA_SECTOR_SIZE;
             std::memcpy(rawData_.data() + slotBase,
                         rawData_.data() + activeBase,
                         GBA_SECTOR_COUNT * GBA_SECTOR_SIZE);
+            for (int i = 0; i < GBA_SECTOR_COUNT; i++) {
+                int sectorOfs = slotBase + i * GBA_SECTOR_SIZE;
+                writeU32LE(rawData_.data() + sectorOfs + GBA_OFS_SAVE_INDEX, activeCounterOld);
+            }
         }
 
         // Write storage data back to sectors 5-13
@@ -2586,24 +2814,114 @@ uint8_t* SaveFile::findGbaSectorData(int sectionId) {
     return nullptr;
 }
 
+// 2026-09-19 v6: nationalMagic==0xDA da solo NON basta -- e' il bug
+// residuo per cui Mew (non-Hoenn) resta invisibile nel dex in game anche
+// dopo il fix v5 e dopo il fix seen1/seen2 (specie Hoenn come Pikachu
+// funzionano gia', Mew no). Fonte: pret/pokeemerald e pret/pokeruby
+// src/event_data.c, IsNationalPokedexEnabled():
+//   nationalMagic==0xDA && VarGet(VAR_NATIONAL_DEX)==0x302 &&
+//   FlagGet(FLAG_SYS_NATIONAL_DEX)
+// VAR_NATIONAL_DEX e FLAG_SYS_NATIONAL_DEX NON vivono nel Pokedex struct
+// di sezione 0 (SaveBlock2): sono in gSaveBlock1Ptr->vars[]/flags[]
+// (SaveBlock1, sezione 2 per entrambi i giochi). Senza questi due,
+// CreatePokedexList() (src/pokedex.c) forza dexMode a DEX_MODE_HOENN ad
+// ogni apertura del Pokedex indipendentemente da nationalMagic o dal
+// nostro mode=1 -- le specie non-Hoenn restano quindi invisibili anche
+// con caught+seen (+ copie ridondanti) corretti su disco.
+// Offset calcolati da include/constants/{flags,vars}.h + global.h (SYSTEM_FLAGS,
+// FLAGS_COUNT/vars[] field offset) e verificati byte-per-byte:
+//   Emerald:       FLAG_SYS_NATIONAL_DEX=0x896 -> SaveBlock1+0x1382 (bit 6)
+//                  VAR_NATIONAL_DEX=0x4046      -> SaveBlock1+0x1428 (u16)
+//   Ruby/Sapphire: FLAG_SYS_NATIONAL_DEX=0x836 -> SaveBlock1+0x1326 (bit 6)
+//                  VAR_NATIONAL_DEX=0x4046      -> SaveBlock1+0x13CC (u16)
+// Entrambi cadono in sezione 2 (SaveBlock1 offset [0xF80,0x1F00)) per
+// entrambi i giochi -- offset relativo = assoluto - 0xF80.
+namespace {
+bool gbaNationalDexFlagVarOfs(GameType g, int& flagOfs, int& varOfs) {
+    if (g == GameType::RUBY || g == GameType::SAPPHIRE) {
+        flagOfs = 0x3A6; varOfs = 0x44C; return true;
+    }
+    if (g == GameType::EMERALD) {
+        flagOfs = 0x402; varOfs = 0x4A8; return true;
+    }
+    return false;
+}
+constexpr int kNatDexFlagBit = 6; // FLAG_SYS_NATIONAL_DEX & 7 (0x896 e 0x836 hanno entrambi bit 6)
+} // namespace
+
 bool SaveFile::isNationalDexEnabled() const {
     if (!isImportedFile(gameType_)) return false;
     uint8_t* sec0 = const_cast<SaveFile*>(this)->findGbaSectorData(0);
     if (!sec0) return false;
-    return sec0[0x19] != 0;
+    if (sec0[0x1A] != 0xDA) return false; // nationalMagic: gate primario (v5)
+
+    int flagOfs, varOfs;
+    if (!gbaNationalDexFlagVarOfs(gameType_, flagOfs, varOfs)) return false;
+    uint8_t* sec2 = const_cast<SaveFile*>(this)->findGbaSectorData(2);
+    if (!sec2) return false;
+    bool flagSet = (sec2[flagOfs] & (1 << kNatDexFlagBit)) != 0;
+    uint16_t varVal = readU16LE(sec2 + varOfs);
+    return flagSet && varVal == 0x302;
 }
 
 void SaveFile::setNationalDexEnabled() {
     if (!isImportedFile(gameType_)) return;
+    int flagOfs, varOfs;
+    if (!gbaNationalDexFlagVarOfs(gameType_, flagOfs, varOfs)) return;
     // Scrivi su entrambe le slot (come fa il gioco quando sblocca il National Dex)
+    //
+    // 2026-09-19: bug reale trovato analizzando un save utente in cui
+    // Espeon (transfer non-Hoenn) risultava caught+seen su disco ma
+    // nationalMagic/FLAG/VAR restavano a 0 nonostante il log mostrasse
+    // "National Dex sbloccato" -- la guardia sotto era
+    // "ofs + GBA_SAVE_SIZE > rawData_.size()" (GBA_SAVE_SIZE = 0x20000,
+    // l'INTERO save, non un settore). Con rawData_ tipicamente esattamente
+    // 0x20000 byte, "ofs + 0x20000 > 0x20000" e' vero per QUALSIASI ofs>0
+    // -- il loop scrive quindi SOLO l'eventuale settore a ofs==0 (il primo
+    // settore fisico dello slot 0) e salta silenziosamente tutti gli altri
+    // 27, sui due slot. Se in quel momento lo slot ATTIVO (quello da cui
+    // findGbaSectorData(0) legge/scrive caught/seen in registerRSE) e'
+    // lo slot 1, l'unica scrittura che sopravvive alla guardia finisce
+    // nello slot 0 (quello "specchiato"/scartato da saveGBA(), che
+    // sovrascrive lo slot non attivo con una copia dello slot attivo) --
+    // persa al primo saveGBA(), mentre caught/seen (scritti nello slot
+    // attivo) sopravvivono. Era chiaramente un refuso: il confronto voleva
+    // controllare che un SINGOLO SETTORE (GBA_SECTOR_SIZE, 0x1000) non
+    // sfori il buffer, non l'intero save.
     for (int slot = 0; slot < 2; slot++) {
         int base = slot * GBA_SECTOR_COUNT * GBA_SECTOR_SIZE;
         for (int i = 0; i < GBA_SECTOR_COUNT; i++) {
             int ofs = base + i * GBA_SECTOR_SIZE;
-            if (ofs + GBA_SAVE_SIZE > (int)rawData_.size()) continue;
+            if (ofs + GBA_SECTOR_SIZE > (int)rawData_.size()) continue;
             uint16_t sid = readU16LE(rawData_.data() + ofs + GBA_OFS_SECTOR_ID);
             if (sid == 0) {
-                rawData_[ofs + 0x19] = 1;
+                rawData_[ofs + 0x19] = 1;    // mode: forza vista National (0=Hoenn,1=National)
+                rawData_[ofs + 0x1A] = 0xDA; // nationalMagic: gate primario (v5, vedi isNationalDexEnabled)
+            } else if (sid == 2) {
+                rawData_[ofs + flagOfs] |= (1 << kNatDexFlagBit); // FLAG_SYS_NATIONAL_DEX
+                writeU16LE(rawData_.data() + ofs + varOfs, 0x302); // VAR_NATIONAL_DEX
+            }
+        }
+    }
+    dirty_ = true;
+}
+
+void SaveFile::disableNationalDex() {
+    if (!isImportedFile(gameType_)) return;
+    int flagOfs, varOfs;
+    if (!gbaNationalDexFlagVarOfs(gameType_, flagOfs, varOfs)) return;
+    for (int slot = 0; slot < 2; slot++) {
+        int base = slot * GBA_SECTOR_COUNT * GBA_SECTOR_SIZE;
+        for (int i = 0; i < GBA_SECTOR_COUNT; i++) {
+            int ofs = base + i * GBA_SECTOR_SIZE;
+            if (ofs + GBA_SECTOR_SIZE > (int)rawData_.size()) continue;
+            uint16_t sid = readU16LE(rawData_.data() + ofs + GBA_OFS_SECTOR_ID);
+            if (sid == 0) {
+                rawData_[ofs + 0x19] = 0; // mode: torna a vista Hoenn
+                rawData_[ofs + 0x1A] = 0; // nationalMagic
+            } else if (sid == 2) {
+                rawData_[ofs + flagOfs] &= static_cast<uint8_t>(~(1 << kNatDexFlagBit)); // FLAG_SYS_NATIONAL_DEX
+                writeU16LE(rawData_.data() + ofs + varOfs, 0); // VAR_NATIONAL_DEX
             }
         }
     }
@@ -2650,6 +2968,138 @@ uint16_t SaveFile::gbaSecurityKeyLow16() const {
     uint8_t* sec0 = const_cast<SaveFile*>(this)->findGbaSectorData(0);
     if (!sec0) return 0;
     return static_cast<uint16_t>(readU32LE(sec0 + off) & 0xFFFF);
+}
+
+namespace {
+// PlayTime<T> di PKHeX (Gen6+ fino a LA incluso): 4 byte, hours u16 LE @0,
+// minutes u8 @2, seconds u8 @3 (il resto del blocco, se piu' grande, e'
+// padding/altri campi non correlati). Stesso helper per LGPE/BDSP (flat) e
+// SwSh/LA (SCBlock) -- vedi playTimeSeconds() sotto per i rispettivi
+// offset/key.
+long playTime4Byte(const uint8_t* d, size_t len) {
+    if (!d || len < 4) return -1;
+    uint16_t hours = readU16LE(d);
+    uint8_t minutes = d[2], seconds = d[3];
+    if (minutes > 59 || seconds > 59) return -1; // dati non plausibili, non fidarsi
+    return static_cast<long>(hours) * 3600 + static_cast<long>(minutes) * 60 + seconds;
+}
+} // namespace
+
+long SaveFile::playTimeSeconds() const {
+    if (!loaded_) return -1;
+
+    // GBA R/S/E/FR/LG: Section0 (SaveBlock2/trainer info), offset 0x0E --
+    // stesso layout in tutti e cinque i giochi (playTimeHours u16 LE @0x0E,
+    // playTimeMinutes u8 @0x10, playTimeSeconds u8 @0x11 -- playTimeVBlanks
+    // @0x12 ignorato, sub-secondo, irrilevante per un confronto "chi ha piu'
+    // progressi"). Verificato contro pret/pokeruby, pret/pokeemerald,
+    // pret/pokefirered include/global.h: vive nella parte iniziale,
+    // condivisa, di SaveBlock2, prima che i giochi divergano piu' avanti
+    // nella struct.
+    if (isImportedFile(gameType_) || isFRLG(gameType_)) {
+        // 2026-09-19: bug reale, mio -- il refactor che ha introdotto
+        // playTime4Byte() per riuso su LGPE/BDSP/SwSh/LA aveva perso il "+
+        // 0x0E" qui: passava sec0 (inizio sezione0, cioe' l'OT name) invece
+        // di sec0+0x0E (playTimeHours). Leggeva quindi byte dell'OT come
+        // hours/minutes/seconds, quasi sempre > 59 -> il controllo di
+        // plausibilita' in playTime4Byte scartava tutto silenziosamente,
+        // sempre -1. La mia stessa verifica su save reali era fatta in
+        // Python leggendo l'offset giusto direttamente dal file: mai
+        // passata per questo codice, quindi non l'ha mai vista.
+        uint8_t* sec0 = const_cast<SaveFile*>(this)->findGbaSectorData(0);
+        return sec0 ? playTime4Byte(sec0 + 0x0E, 4) : -1;
+    }
+
+    // LGPE (Let's Go Pikachu/Eevee): flat, blocco fisso #10 "PlayTime" a
+    // offset assoluto 0x45400 (PKHeX BelugaBlockIndex.PlayTime -- stesso
+    // offset gia' presente in LGPE_BLOCKS qui sotto, indice 10).
+    if (isLGPE(gameType_)) {
+        constexpr size_t kOfs = 0x45400;
+        if (rawDataSize() < kOfs + 4) return -1;
+        return playTime4Byte(const_cast<SaveFile*>(this)->rawData() + kOfs, 4);
+    }
+
+    // BDSP: flat, offset fisso 0x79C04 (PKHeX SAV8BS: Played = new
+    // PlayTime8b(this, Raw.Slice(0x79C04, 0x04))).
+    if (isBDSP(gameType_)) {
+        constexpr size_t kOfs = 0x79C04;
+        if (rawDataSize() < kOfs + 4) return -1;
+        return playTime4Byte(const_cast<SaveFile*>(this)->rawData() + kOfs, 4);
+    }
+
+    // SwSh: SCBlock key 0x8cbbfd90 "Time Played" (PKHeX
+    // SaveBlockAccessor8SWSH.KPlayTime), stesso layout PlayTime<T> a 4 byte.
+    if (isSwSh(gameType_)) {
+        SCBlock* b = const_cast<SaveFile*>(this)->findBlock(0x8cbbfd90);
+        return b ? playTime4Byte(b->data.data(), b->data.size()) : -1;
+    }
+
+    // Legends Arceus: SCBlock key 0xC4FA7C8C "Time Played" (PKHeX
+    // SaveBlockAccessor8LA.KPlayTime), stesso layout a 4 byte.
+    if (gameType_ == GameType::LA) {
+        SCBlock* b = const_cast<SaveFile*>(this)->findBlock(0xC4FA7C8C);
+        return b ? playTime4Byte(b->data.data(), b->data.size()) : -1;
+    }
+
+    // SV: SCBlock key 0xEDAFF794 "Time Played" (PKHeX
+    // SaveBlockAccessor9SV.KPlayTime), MA layout diverso da PlayTime<T>:
+    // hours/minutes/seconds sono ciascuno un i32 LE separato (12 byte
+    // totali), non u16+u8+u8 (PKHeX PlayTime9, unico caso Gen9 con questo
+    // formato piu' largo).
+    if (isSV(gameType_)) {
+        SCBlock* b = const_cast<SaveFile*>(this)->findBlock(0xEDAFF794);
+        if (!b || b->data.size() < 12) return -1;
+        int32_t hours   = static_cast<int32_t>(readU32LE(b->data.data() + 0));
+        int32_t minutes = static_cast<int32_t>(readU32LE(b->data.data() + 4));
+        int32_t seconds = static_cast<int32_t>(readU32LE(b->data.data() + 8));
+        if (hours < 0 || minutes < 0 || seconds < 0 || minutes > 59 || seconds > 59) return -1;
+        return static_cast<long>(hours) * 3600 + static_cast<long>(minutes) * 60 + seconds;
+    }
+
+    // Legends Z-A: SCBlock key 0xCE3AF8F2 "KPlayedSeconds" (PKHeX
+    // SaveBlockAccessor9ZA), double LE a 8 byte = secondi totali gia'
+    // accumulati (non piu' un campo hours/minutes/seconds separato come
+    // le generazioni precedenti -- PKHeX PlayTime9a.RawSeconds).
+    if (gameType_ == GameType::ZA) {
+        SCBlock* b = const_cast<SaveFile*>(this)->findBlock(0xCE3AF8F2);
+        if (!b || b->data.size() < 8) return -1;
+        double secs = 0.0;
+        std::memcpy(&secs, b->data.data(), 8);
+        if (!(secs >= 0.0) || secs > 1e9) return -1; // sanity: mai negativo, mai assurdo
+        return static_cast<long>(secs);
+    }
+
+    // Gen1 (R/B/Y): SRAM flat, offset assoluto 0x2CED (PKHeX SAV1Offsets.INT
+    // -- stesso set INT di DexCaught 0x25A3/DexSeen 0x25B6 gia' usato in
+    // registerGen1(), quindi stesso layout confermato). Diverso dal 4-byte
+    // standard: hours e' UN SOLO byte (max 255, con un secondo byte
+    // "PlayedMaximum" @+1 quando satura), non un u16 -- minutes @+2,
+    // seconds @+3.
+    if (isGen1File(gameType_)) {
+        constexpr size_t kOfs = 0x2CED;
+        if (rawDataSize() < kOfs + 4) return -1;
+        const uint8_t* d = const_cast<SaveFile*>(this)->rawData() + kOfs;
+        uint8_t hours = d[0], minutes = d[2], seconds = d[3];
+        if (minutes > 59 || seconds > 59) return -1;
+        return static_cast<long>(hours) * 3600 + static_cast<long>(minutes) * 60 + seconds;
+    }
+
+    // Gen2 (G/S/C): SRAM flat, offset assoluto per versione (PKHeX
+    // SAV2Offsets, ramo Internazionale -- stesso ramo gia' confermato da
+    // GBC_GS/GBC_C in questo file, i cui offset combaciano esattamente con
+    // quelli INT di PKHeX). A differenza di Gen1/GBA, PlayedHours qui e' un
+    // u16 BIG-ENDIAN (non little-endian): PKHeX usa ReadUInt16BigEndian.
+    if (isGen2File(gameType_)) {
+        size_t ofs = gbcIsCrystal_ ? 0x2052 : 0x2053;
+        if (rawDataSize() < ofs + 4) return -1;
+        const uint8_t* d = const_cast<SaveFile*>(this)->rawData() + ofs;
+        uint16_t hours = static_cast<uint16_t>((d[0] << 8) | d[1]); // big-endian
+        uint8_t minutes = d[2], seconds = d[3];
+        if (minutes > 59 || seconds > 59) return -1;
+        return static_cast<long>(hours) * 3600 + static_cast<long>(minutes) * 60 + seconds;
+    }
+
+    return -1;
 }
 
 bool SaveFile::gbaBagSupported() const {
@@ -2707,29 +3157,330 @@ bool SaveFile::writeGbaBagSlot(GbaBagPocket p, int slot, uint16_t id, uint16_t c
     return true;
 }
 
+namespace {
+// 2026-09-19: setGbaFlag()/isGbaFlagSet() assumevano SEMPRE settore 1 con
+// flags[] a SaveBlock1+0xEE0 -- vero SOLO per FRLG (pret/pokefirered
+// include/global.h: struct SaveBlock1 flags[] @ 0x0EE0, dentro il settore
+// 1 [0,0xF80)). Ruby/Sapphire ed Emerald hanno flags[] a un offset
+// DIVERSO nel loro SaveBlock1 (struct diversa, stesso problema gia' visto
+// per seen1/seen2 e per VAR/FLAG National Dex): Emerald 0x1270, Ruby/
+// Sapphire 0x1220 -- entrambi cadono in SETTORE 2, non 1. Con l'offset
+// FRLG riusato su Emerald/RS: Aurora/Mistico/Old Sea Map/Ship Southern
+// Island finivano scritti nel settore SBAGLIATO (corrompendo un campo
+// SaveBlock1 non correlato), e l'Eon Ticket di Ruby/Sapphire (flag 0x853)
+// calcolava un offset che sfora GBA_SECTOR_USED nel settore 1 -- setGbaFlag
+// ritornava false silenziosamente (il chiamante non controllava il valore
+// di ritorno) e non scriveva MAI nulla. Anche per FRLG stesso solo meta'
+// del problema era coperta: i flag RECEIVED (0x2A7/0x2A8) cadono davvero
+// in settore 1, ma i flag SHIP_BIRTH_ISLAND/SHIP_NAVEL_ROCK (0x84B/0x84A,
+// necessari perche' la nave ti ci porti davvero) cadono in settore 2 --
+// scritti anche loro nel settore sbagliato.
+// Fix: localizza settore+offset dinamicamente in base al gioco, invece di
+// assumere sempre settore1+0xEE0.
+bool gbaFlagLocation(GameType g, uint16_t flag, int& sectionId, size_t& byteOfs) {
+    int flagsBase;
+    if (isFRLG(g)) flagsBase = 0x0EE0;
+    else if (g == GameType::RUBY || g == GameType::SAPPHIRE) flagsBase = 0x1220;
+    else if (g == GameType::EMERALD) flagsBase = 0x1270;
+    else return false;
+    constexpr int kSectorUsed = 0xF80; // = SaveFile::GBA_SECTOR_USED (private, non raggiungibile da qui)
+    int abs = flagsBase + (flag >> 3);
+    sectionId = 1 + abs / kSectorUsed;
+    byteOfs = static_cast<size_t>(abs % kSectorUsed);
+    return true;
+}
+} // namespace
+
 bool SaveFile::isGbaFlagSet(uint16_t flag) const {
     if (!gbaBagSupported()) return false;
-    uint8_t* sec1 = const_cast<SaveFile*>(this)->findGbaSectorData(1);
-    if (!sec1) return false;
-    constexpr int FLAGS_OFF = 0xEE0;
-    size_t off = FLAGS_OFF + (flag >> 3);
-    if (off >= GBA_SECTOR_USED) return false;
-    return (sec1[off] >> (flag & 7)) & 1;
+    int sectionId; size_t byteOfs;
+    if (!gbaFlagLocation(gameType_, flag, sectionId, byteOfs)) return false;
+    uint8_t* sec = const_cast<SaveFile*>(this)->findGbaSectorData(sectionId);
+    if (!sec || byteOfs >= GBA_SECTOR_USED) return false;
+    return (sec[byteOfs] >> (flag & 7)) & 1;
 }
 
 bool SaveFile::setGbaFlag(uint16_t flag) {
     if (!gbaBagSupported()) return false;
-    uint8_t* sec1 = findGbaSectorData(1);
-    if (!sec1) return false;
-    constexpr int FLAGS_OFF = 0xEE0;
-    size_t off = FLAGS_OFF + (flag >> 3);
-    if (off >= GBA_SECTOR_USED) return false;
-    sec1[off] |= (1u << (flag & 7));
+    int sectionId; size_t byteOfs;
+    if (!gbaFlagLocation(gameType_, flag, sectionId, byteOfs)) return false;
+    uint8_t* sec = findGbaSectorData(sectionId);
+    if (!sec || byteOfs >= GBA_SECTOR_USED) return false;
+    sec[byteOfs] |= (1u << (flag & 7));
     dirty_ = true;
     return true;
 }
 
-// --- Gen 4/5 (DS .sav dumps, PKHeX SAV4*/SAV5BW.cs) — read-only v1 ---
+// --- Borsa Gen4/5 DS ---
+// Layout PKHeX PlayerBag4DP/4Pt/4HGSS/5BW/5B2W2: offset tasca (relativi alla
+// base borsa) + slot gestiti (= liste legali ItemStorage, vedi
+// tools/gen_items_gen45.py). Base Gen4 relativa al General della partizione
+// attiva, Gen5 assoluta (blocco 25). Validato byte a byte sulle fixture
+// tools/test save/upstream/oh_*.sav (bad_id=0 over_max=0 ovunque).
+namespace {
+struct DsBagLayout { int base; int off[8]; int slots[8]; };
+// Tabella borsa dal GIOCO (non dal layout rilevato): detectDSVersion distingue
+// Pt/HGSS dai byte, solo il tie D/P e' da filename — e D/P condividono la tabella.
+// Se il layout rilevato contraddice il gioco, niente tabella (mai scrivere
+// all'offset sbagliato): esplicito, mai silenzioso.
+bool dsBagLayoutFor(GameType g, SaveFile::Ds4Layout l4, DsBagLayout& out) {
+    auto layoutOk = [&]() -> bool {
+        switch (l4) {
+            case SaveFile::Ds4Layout::DP: return g == GameType::DIAMOND || g == GameType::PEARL;
+            case SaveFile::Ds4Layout::PT: return g == GameType::PLATINUM;
+            case SaveFile::Ds4Layout::HGSS: return g == GameType::HEARTGOLD || g == GameType::SOULSILVER;
+        }
+        return false;
+    };
+    if (g == GameType::DIAMOND || g == GameType::PEARL) {
+        if (!layoutOk()) return false;
+        out = {0x624,
+               {0x000, 0x294, 0x35C, 0x4EC, 0x51C, 0x5BC, 0x6BC, 0x6F8},
+               {161, 37, 100, 12, 38, 64, 15, 13}};
+        return true;
+    }
+    if (g == GameType::PLATINUM) {
+        if (!layoutOk()) return false;
+        out = {0x630,
+               {0x000, 0x294, 0x35C, 0x4EC, 0x51C, 0x5BC, 0x6BC, 0x6F8},
+               {162, 40, 100, 12, 38, 64, 15, 13}};
+        return true;
+    }
+    if (g == GameType::HEARTGOLD || g == GameType::SOULSILVER) {
+        if (!layoutOk()) return false;
+        out = {0x644,
+               {0x000, 0x294, 0x35C, 0x4F0, 0x520, 0x5C0, 0x6C0, 0x720},
+               {162, 38, 100, 12, 38, 64, 24, 13}};
+        return true;
+    }
+    if (g == GameType::BLACK || g == GameType::WHITE ||
+        g == GameType::BLACK2 || g == GameType::WHITE2) {
+        const bool b2w2 = (g == GameType::BLACK2 || g == GameType::WHITE2);
+        out = {0x18400, // blocco 25, uguale BW/B2W2
+               {0x000, 0x4D8, 0x624, 0, 0x7D8, 0x898, 0, 0},
+               {261, b2w2 ? 27 : 19, 101, 0, 47, 64, 0, 0}};
+        return true;
+    }
+    return false;
+}
+} // namespace
+
+// Inizio regione borsa nei dati grezzi (assoluto in rawData_), o -1.
+long SaveFile::dsBagBase() const {
+    DsBagLayout L;
+    if (!dsBagLayoutFor(gameType_, ds4Layout_, L)) return -1;
+    if (isGen4File(gameType_)) {
+        if (dsPart_ < 0 || dsPart_ > 1) return -1;
+        return static_cast<long>(dsPart_) * DS_PARTITION + L.base;
+    }
+    return L.base; // Gen5: blocco 25 fisso
+}
+
+bool SaveFile::dsBagSupported() const {
+    if (!loaded_) return false;
+    return dsBagBase() >= 0;
+}
+
+int SaveFile::dsBagPocketSlots(DsBagPocket p) const {
+    DsBagLayout L;
+    if (!dsBagLayoutFor(gameType_, ds4Layout_, L)) return 0;
+    int i = static_cast<int>(p);
+    if (i < 0 || i >= 8) return 0;
+    return L.slots[i];
+}
+
+std::vector<SaveFile::DsBagSlot> SaveFile::readDsBag() const {
+    std::vector<DsBagSlot> out;
+    if (!loaded_) return out;
+    DsBagLayout L;
+    if (!dsBagLayoutFor(gameType_, ds4Layout_, L)) return out;
+    long base = dsBagBase();
+    if (base < 0) return out;
+    for (int p = 0; p < 8; p++) {
+        for (int s = 0; s < L.slots[p]; s++) {
+            size_t o = static_cast<size_t>(base) + static_cast<size_t>(L.off[p]) +
+                       static_cast<size_t>(s) * 4;
+            if (o + 4 > rawData_.size()) return out;
+            DsBagSlot e;
+            e.pocket = static_cast<DsBagPocket>(p);
+            e.slot = s;
+            e.id = readU16LE(rawData_.data() + o);
+            e.count = readU16LE(rawData_.data() + o + 2);
+            out.push_back(e);
+        }
+    }
+    return out;
+}
+
+bool SaveFile::writeDsBagSlot(DsBagPocket p, int slot, uint16_t id, uint16_t count) {
+    if (!loaded_) return false;
+    DsBagLayout L;
+    if (!dsBagLayoutFor(gameType_, ds4Layout_, L)) return false;
+    int i = static_cast<int>(p);
+    if (i < 0 || i >= 8) return false;
+    if (slot < 0 || slot >= L.slots[i]) return false;
+    long base = dsBagBase();
+    if (base < 0) return false;
+    size_t o = static_cast<size_t>(base) + static_cast<size_t>(L.off[i]) +
+               static_cast<size_t>(slot) * 4;
+    if (o + 4 > rawData_.size()) return false;
+    writeU16LE(rawData_.data() + o, id);
+    writeU16LE(rawData_.data() + o + 2, count);
+    dirty_ = true; // CRC sistemati da saveDS4/saveDS5
+    return true;
+}
+
+// --- Borsa Gen1/2 GB ---
+// Layout PKHeX PlayerBag1/PlayerBag2 (SAV1Offsets INT, SAV2Offsets INT):
+// Gen1 Items @0x25C9 x20; Gen2 GS: TM @0x23E6 x57 fisso, Items @0x241F x20,
+// Key @0x2449 x26, Balls @0x2464 x12; Crystal +1 ovunque. Validato sulle
+// fixture Rossa/Gialla/Oro/Argento/Cristallo (bad_id=0 over_max=0).
+namespace {
+// Ordine id legali tasca TM Gen2 (PKHeX ItemStorage2.Machine, 50 TM + 7 HM):
+// l'indice IN QUESTO ARRAY e' l'offset del count nell'array fisso 57B.
+constexpr uint16_t GB_TM_ORDER[57] = {
+    191, 192, 193, 194, 196, 197, 198, 199, 200, 201,
+    202, 203, 204, 205, 206, 207, 208, 209, 210, 211,
+    212, 213, 214, 215, 216, 217, 218, 219, 221, 222,
+    223, 224, 225, 226, 227, 228, 229, 230, 231, 232,
+    233, 234, 235, 236, 237, 238, 239, 240, 241, 242,
+    243, 244, 245, 246, 247, 248, 249,
+};
+struct GbBagPouch { SaveFile::GbBagPocket pocket; int off; int slots; bool fixed; };
+struct GbBagLayout { GbBagPouch pouches[4]; int n; };
+bool gbBagLayoutFor(GameType g, bool crystal, GbBagLayout& out) {
+    using P = SaveFile::GbBagPocket;
+    if (g == GameType::RED || g == GameType::BLUE || g == GameType::YELLOW) {
+        out.n = 1;
+        out.pouches[0] = {P::Items, 0x25C9, 20, false};
+        return true;
+    }
+    if (g == GameType::GOLD || g == GameType::SILVER || g == GameType::CRYSTAL) {
+        const int d = crystal ? 1 : 0; // Crystal sposta tutto di +1
+        out.n = 4;
+        out.pouches[0] = {P::TmHm, 0x23E6 + d, 57, true};
+        out.pouches[1] = {P::Items, 0x241F + d, 20, false};
+        out.pouches[2] = {P::Key, 0x2449 + d, 26, false};
+        out.pouches[3] = {P::Balls, 0x2464 + d, 12, false};
+        return true;
+    }
+    return false;
+}
+} // namespace
+
+bool SaveFile::gbBagSupported() const {
+    if (!loaded_) return false;
+    GbBagLayout L;
+    return gbBagLayoutFor(gameType_, gbcIsCrystal_, L);
+}
+
+std::vector<uint16_t> SaveFile::gbBagTmOrder() const {
+    if (!isGen2File(gameType_)) return {};
+    return std::vector<uint16_t>(std::begin(GB_TM_ORDER), std::end(GB_TM_ORDER));
+}
+
+std::vector<SaveFile::GbBagSlot> SaveFile::readGbBag() const {
+    std::vector<GbBagSlot> out;
+    if (!loaded_) return out;
+    GbBagLayout L;
+    if (!gbBagLayoutFor(gameType_, gbcIsCrystal_, L)) return out;
+    for (int pi = 0; pi < L.n; pi++) {
+        const auto& P = L.pouches[pi];
+        if (static_cast<size_t>(P.off) >= rawData_.size()) return out;
+        const uint8_t* base = rawData_.data() + P.off;
+        if (P.fixed) {
+            // TM: array fisso, count per indice legale (0 = assente).
+            size_t need = static_cast<size_t>(P.slots);
+            if (static_cast<size_t>(P.off) + need > rawData_.size()) return out;
+            int pos = 0;
+            for (int i = 0; i < P.slots; i++) {
+                if (base[i] == 0) continue;
+                GbBagSlot e;
+                e.pocket = P.pocket;
+                e.slot = pos++;
+                e.id = GB_TM_ORDER[i];
+                e.count = base[i];
+                out.push_back(e);
+            }
+            continue;
+        }
+        // count-driven (come PKHeX GetPouch, con sanity su count assurdi).
+        int n = base[0];
+        if (n < 0 || n > P.slots) continue; // count corrotto: tasca illeggibile, mai crash
+        for (int i = 0; i < n; i++) {
+            GbBagSlot e;
+            e.pocket = P.pocket;
+            e.slot = i;
+            if (P.pocket == GbBagPocket::Key) {
+                e.id = base[1 + i];
+                e.count = 1;
+            } else {
+                e.id = base[1 + i * 2];
+                e.count = base[1 + i * 2 + 1];
+            }
+            out.push_back(e);
+        }
+    }
+    return out;
+}
+
+bool SaveFile::writeGbBagPocket(GbBagPocket p,
+                                const std::vector<std::pair<uint16_t, uint16_t>>& items) {
+    if (!loaded_) return false;
+    GbBagLayout L;
+    if (!gbBagLayoutFor(gameType_, gbcIsCrystal_, L)) return false;
+    const GbBagPouch* found = nullptr;
+    for (int pi = 0; pi < L.n; pi++)
+        if (L.pouches[pi].pocket == p) { found = &L.pouches[pi]; break; }
+    if (!found) return false; // tasca assente per questo gioco
+    uint8_t* base = rawData_.data() + found->off;
+    if (found->fixed) {
+        // TM: riscrittura integrale 57B per indice legale (come PKHeX SetPouch).
+        if (static_cast<size_t>(found->off) + 57 > rawData_.size()) return false;
+        uint8_t full[57] = {};
+        for (auto& kv : items) {
+            if (kv.second > 0xFF) return false;
+            int idx = -1;
+            for (int i = 0; i < 57; i++)
+                if (GB_TM_ORDER[i] == kv.first) { idx = i; break; }
+            if (idx < 0) return false; // id fuori lista legale: mai scrivere a caso
+            if (full[idx] != 0) return false; // duplicato in input: abortito
+            full[idx] = static_cast<uint8_t>(kv.second);
+        }
+        size_t total = 0;
+        for (int i = 0; i < 57; i++) if (full[i] != 0) total++;
+        if (total > static_cast<size_t>(found->slots)) return false;
+        std::memcpy(base, full, 57);
+        dirty_ = true; // checksum sistemati da saveGB/saveGBC
+        return true;
+    }
+    if ((int)items.size() > found->slots) return false;
+    size_t region = 1 + static_cast<size_t>(found->slots) * 2 + 1;
+    if (static_cast<size_t>(found->off) + region > rawData_.size()) return false;
+    if (found->pocket == GbBagPocket::Key) {
+        region = 1 + static_cast<size_t>(found->slots) + 1;
+        if (static_cast<size_t>(found->off) + region > rawData_.size()) return false;
+        base[0] = static_cast<uint8_t>(items.size());
+        for (size_t i = 0; i < items.size(); i++) {
+            // Key: solo id u8 (il count e' sempre 1 alla lettura).
+            if (items[i].first > 0xFF) return false;
+            base[1 + i] = static_cast<uint8_t>(items[i].first);
+        }
+        base[1 + items.size()] = 0xFF;
+    } else {
+        base[0] = static_cast<uint8_t>(items.size());
+        for (size_t i = 0; i < items.size(); i++) {
+            if (items[i].first > 0xFF || items[i].second > 0xFF) return false;
+            base[1 + i * 2] = static_cast<uint8_t>(items[i].first);
+            base[1 + i * 2 + 1] = static_cast<uint8_t>(items[i].second);
+        }
+        base[1 + items.size() * 2] = 0xFF;
+    }
+    dirty_ = true;
+    return true;
+}
+
+// --- Gen 4/5 (DS .sav dumps, PKHeX SAV4*/SAV5BW.cs) ---
 
 // CRC16-CCITT-FALSE (poly 0x1021, init 0xFFFF, no xorout): PKHeX
 // Checksums.CRC16_CCITT, block checksum for Gen4/Gen5 saves. Verified
@@ -3123,6 +3874,193 @@ bool SaveFile::loadDS5(const std::string& path) {
     return true;
 }
 
+// Gen5 block map (PKHeX SaveBlockAccessor5BW / SaveBlockAccessor5B2W2):
+// {data offset, data length, checksum offset, checksum mirror}. Checksum =
+// CRC16-CCITT over [off, off+len), stored u16 LE at chk AND mirror
+// (PKHeX BlockInfoNDS). BW (Game 20/21) e B2W2 (22/23) condividono box,
+// party e testa — solo la coda della mappa cambia.
+struct Ds5Block { uint32_t off, len, chk, mirror; };
+// Blocchi fissi BW esclusi box 1..24 e nomi box (indice 0): in ordine PKHeX,
+// checksum-block per ultimo (i mirror ci scrivono dentro: va ricalcolato dopo).
+static constexpr Ds5Block DS5_FIXED_BW[] = {
+    {0x00000, 0x03E0, 0x003E2, 0x23F00}, // 00 nomi box
+    {0x18400, 0x09C0, 0x18DC2, 0x23F32}, // 25 zaino
+    {0x18E00, 0x0534, 0x19336, 0x23F34}, // 26 party
+    {0x19400, 0x0068, 0x1946A, 0x23F36}, // 27 trainer data
+    {0x19500, 0x009C, 0x1959E, 0x23F38}, // 28 posizione
+    {0x19600, 0x1338, 0x1A93A, 0x23F3A}, // 29 unity tower
+    {0x1AA00, 0x07C4, 0x1B1C6, 0x23F3C}, // 30 pal pad player
+    {0x1B200, 0x0D54, 0x1BF56, 0x23F3E}, // 31 pal pad friend
+    {0x1C000, 0x002C, 0x1C02E, 0x23F40}, // 32 skin info
+    {0x1C100, 0x0658, 0x1C75A, 0x23F42}, // 33 badge data
+    {0x1C800, 0x0A94, 0x1D296, 0x23F44}, // 34 mystery gift
+    {0x1D300, 0x01AC, 0x1D4AE, 0x23F46}, // 35 dream world
+    {0x1D500, 0x03EC, 0x1D8EE, 0x23F48}, // 36 chatter
+    {0x1D900, 0x005C, 0x1D95E, 0x23F4A}, // 37 adventure info
+    {0x1DA00, 0x01E0, 0x1DBE2, 0x23F4C}, // 38 record
+    {0x1DC00, 0x00A8, 0x1DCAA, 0x23F4E}, // 39 ???
+    {0x1DD00, 0x0460, 0x1E162, 0x23F50}, // 40 mail
+    {0x1E200, 0x1400, 0x1F602, 0x23F52}, // 41 overworld
+    {0x1F700, 0x02A4, 0x1F9A6, 0x23F54}, // 42 musical
+    {0x1FA00, 0x02DC, 0x1FCDE, 0x23F56}, // 43 forest/city
+    {0x1FD00, 0x034C, 0x2004E, 0x23F58}, // 44 IR
+    {0x20100, 0x03EC, 0x204EE, 0x23F5A}, // 45 event work
+    {0x20500, 0x00F8, 0x205FA, 0x23F5C}, // 46 GTS
+    {0x20600, 0x02FC, 0x208FE, 0x23F5E}, // 47 regulation
+    {0x20900, 0x0094, 0x20996, 0x23F60}, // 48 gimmick
+    {0x20A00, 0x035C, 0x20D5E, 0x23F62}, // 49 battle box
+    {0x20E00, 0x01CC, 0x20FCE, 0x23F64}, // 50 daycare
+    {0x21000, 0x0168, 0x2116A, 0x23F66}, // 51 boulder
+    {0x21200, 0x00EC, 0x212EE, 0x23F68}, // 52 badge/money
+    {0x21300, 0x01B0, 0x214B2, 0x23F6A}, // 53 entralink
+    {0x21500, 0x001C, 0x2151E, 0x23F6C}, // 54 ???
+    {0x21600, 0x04D4, 0x21AD6, 0x23F6E}, // 55 pokedex
+    {0x21B00, 0x0034, 0x21B36, 0x23F70}, // 56 encount
+    {0x21C00, 0x003C, 0x21C3E, 0x23F72}, // 57 subway play
+    {0x21D00, 0x01AC, 0x21EAE, 0x23F74}, // 58 subway score
+    {0x21F00, 0x0B90, 0x22A92, 0x23F76}, // 59 subway wifi
+    {0x22B00, 0x009C, 0x22B9E, 0x23F78}, // 60 online record
+    {0x22C00, 0x0850, 0x23452, 0x23F7A}, // 61 entralink forest
+    {0x23500, 0x0028, 0x2352A, 0x23F7C}, // 62 ???
+    {0x23600, 0x0284, 0x23886, 0x23F7E}, // 63 questions
+    {0x23900, 0x0010, 0x23912, 0x23F80}, // 64 unity tower
+    {0x23A00, 0x005C, 0x23A5E, 0x23F82}, // 65 battle institute
+    {0x23B00, 0x016C, 0x23C6E, 0x23F84}, // 66 ???
+    {0x23D00, 0x0040, 0x23D42, 0x23F86}, // 67 ???
+    {0x23E00, 0x00FC, 0x23EFE, 0x23F88}, // 68 ???
+    {0x23F00, 0x008C, 0x23F9A, 0x23F9A}, // 69 checksum (chk==mirror)
+};
+static constexpr Ds5Block DS5_FIXED_B2W2[] = {
+    {0x00000, 0x03E0, 0x003E2, 0x25F00}, // 00 nomi box
+    {0x18400, 0x09EC, 0x18DEE, 0x25F32}, // 25 zaino
+    {0x18E00, 0x0534, 0x19336, 0x25F34}, // 26 party
+    {0x19400, 0x00B0, 0x194B2, 0x25F36}, // 27 trainer data
+    {0x19500, 0x00A8, 0x195AA, 0x25F38}, // 28 posizione
+    {0x19600, 0x1338, 0x1A93A, 0x25F3A}, // 29 unity tower
+    {0x1AA00, 0x07C4, 0x1B1C6, 0x25F3C}, // 30 pal pad player
+    {0x1B200, 0x0D54, 0x1BF56, 0x25F3E}, // 31 pal pad friend
+    {0x1C000, 0x0094, 0x1C096, 0x25F40}, // 32 options/skin
+    {0x1C100, 0x0658, 0x1C75A, 0x25F42}, // 33 trainer card
+    {0x1C800, 0x0A94, 0x1D296, 0x25F44}, // 34 mystery gift
+    {0x1D300, 0x01AC, 0x1D4AE, 0x25F46}, // 35 dream world
+    {0x1D500, 0x03EC, 0x1D8EE, 0x25F48}, // 36 chatter
+    {0x1D900, 0x005C, 0x1D95E, 0x25F4A}, // 37 adventure
+    {0x1DA00, 0x01E0, 0x1DBE2, 0x25F4C}, // 38 record
+    {0x1DC00, 0x00A8, 0x1DCAA, 0x25F4E}, // 39 ???
+    {0x1DD00, 0x0460, 0x1E162, 0x25F50}, // 40 mail
+    {0x1E200, 0x1400, 0x1F602, 0x25F52}, // 41 overworld
+    {0x1F700, 0x02A4, 0x1F9A6, 0x25F54}, // 42 musical
+    {0x1FA00, 0x00E0, 0x1FAE2, 0x25F56}, // 43 forest/fused
+    {0x1FB00, 0x034C, 0x1FE4E, 0x25F58}, // 44 IR
+    {0x1FF00, 0x04E0, 0x203E2, 0x25F5A}, // 45 event work
+    {0x20400, 0x00F8, 0x204FA, 0x25F5C}, // 46 GTS
+    {0x20500, 0x02FC, 0x207FE, 0x25F5E}, // 47 regulation
+    {0x20800, 0x0094, 0x20896, 0x25F60}, // 48 gimmick
+    {0x20900, 0x035C, 0x20C5E, 0x25F62}, // 49 battle box
+    {0x20D00, 0x01D4, 0x20ED6, 0x25F64}, // 50 daycare
+    {0x20F00, 0x01E0, 0x210E2, 0x25F66}, // 51 boulder
+    {0x21100, 0x00F0, 0x211F2, 0x25F68}, // 52 misc
+    {0x21200, 0x01B4, 0x213B6, 0x25F6A}, // 53 entralink
+    {0x21400, 0x04DC, 0x218DE, 0x25F6C}, // 54 pokedex
+    {0x21900, 0x0034, 0x21936, 0x25F6E}, // 55 encount
+    {0x21A00, 0x003C, 0x21A3E, 0x25F70}, // 56 subway play
+    {0x21B00, 0x01AC, 0x21CAE, 0x25F72}, // 57 subway score
+    {0x21D00, 0x0B90, 0x22892, 0x25F74}, // 58 subway wifi
+    {0x22900, 0x00AC, 0x229AE, 0x25F76}, // 59 online record
+    {0x22A00, 0x0850, 0x23252, 0x25F78}, // 60 entralink forest
+    {0x23300, 0x0284, 0x23586, 0x25F7A}, // 61 questions
+    {0x23600, 0x0010, 0x23612, 0x25F7C}, // 62 unity tower
+    {0x23700, 0x00A8, 0x237AA, 0x25F7E}, // 63 battle institute/PWT
+    {0x23800, 0x016C, 0x2396E, 0x25F80}, // 64 ???
+    {0x23A00, 0x0080, 0x23A82, 0x25F82}, // 65 ???
+    {0x23B00, 0x00FC, 0x23BFE, 0x25F84}, // 66 hollow/rival
+    {0x23C00, 0x16A8, 0x252AA, 0x25F86}, // 67 join avenue
+    {0x25300, 0x0498, 0x2579A, 0x25F88}, // 68 medal
+    {0x25800, 0x0060, 0x25862, 0x25F8A}, // 69 key system
+    {0x25900, 0x00FC, 0x259FE, 0x25F8C}, // 70 festa
+    {0x25A00, 0x03E4, 0x25DE6, 0x25F8E}, // 71 pokestar
+    {0x25E00, 0x00F0, 0x25EF2, 0x25F90}, // 72 ???
+    {0x25F00, 0x0094, 0x25FA2, 0x25FA2}, // 73 checksum (chk==mirror)
+};
+
+bool SaveFile::saveDS5(const std::string& path) {
+    if (!loaded_ || rawData_.size() != DS_SAVE_SIZE || dsStorage_.empty())
+        return false;
+    if (dsGameByte_ < 20 || dsGameByte_ > 23)
+        return false;
+    const bool b2w2 = dsGameByte_ >= 22;
+
+    // 1. Box: dsStorage_ (mutato da setBoxSlot) nei 24 blocchi da 0x1000.
+    //    Gli slot occupano 0xFF0, il footer 0x10 resta finche' i CRC lo fissano.
+    static constexpr int BOXES = 24;
+    for (int b = 0; b < BOXES; b++)
+        for (int s = 0; s < DS_BOX_SLOTS; s++) {
+            size_t o = 0x400 + static_cast<size_t>(b) * 0x1000 +
+                       static_cast<size_t>(s) * DS_SLOT_SIZE;
+            const uint8_t* src = dsStorage_.data() +
+                (static_cast<size_t>(b) * DS_BOX_SLOTS + s) * DS_SLOT_SIZE;
+            std::memcpy(rawData_.data() + o, src, DS_SLOT_SIZE);
+        }
+
+    // 2. Party: compattato, count + 6x220 cifrati (stessi byte del loader).
+    {
+        std::vector<Pokemon> team;
+        for (auto& pp : dsParty_)
+            if (!pp.isEmpty() && pp.species() != 0) team.push_back(pp);
+        if (team.size() > 6) team.resize(6);
+        rawData_[0x18E04] = static_cast<uint8_t>(team.size());
+        for (int i = 0; i < 6; i++) {
+            uint8_t* dst = rawData_.data() + 0x18E08 + i * 220;
+            if (i >= static_cast<int>(team.size())) {
+                std::memset(dst, 0, 220);
+            } else {
+                Pokemon w = team[i];
+                w.gameType_ = gameType_;
+                w.refreshChecksum();
+                PokemonFFI::encryptArray45(w.data.data(), 220, dst);
+            }
+        }
+        dsParty_.assign(6, Pokemon{});
+        for (size_t i = 0; i < team.size() && i < 6; i++)
+            dsParty_[i] = team[i];
+    }
+
+    // 3. CRC di TUTTI i blocchi (come PKHeX SetChecksums: gli altri blocchi
+    //    tornano identici, i nostri si sistemano; checksum-block per ultimo).
+    auto crcOne = [&](const Ds5Block& B) {
+        if (B.off + B.len > rawData_.size() ||
+            B.chk + 2 > rawData_.size() || B.mirror + 2 > rawData_.size())
+            return;
+        uint16_t c = crc16CcittFalse(rawData_.data() + B.off, B.len);
+        writeU16LE(rawData_.data() + B.chk, c);
+        writeU16LE(rawData_.data() + B.mirror, c);
+    };
+    const Ds5Block* fixed = b2w2 ? DS5_FIXED_B2W2 : DS5_FIXED_BW;
+    size_t nFixed = b2w2 ? sizeof(DS5_FIXED_B2W2) / sizeof(Ds5Block)
+                         : sizeof(DS5_FIXED_BW) / sizeof(Ds5Block);
+    const uint32_t mirrorBase = b2w2 ? 0x25F02 : 0x23F02;
+    crcOne(fixed[0]); // nomi box
+    for (int b = 0; b < BOXES; b++) {
+        Ds5Block bb{static_cast<uint32_t>(0x400 + b * 0x1000), 0xFF0,
+                    static_cast<uint32_t>(0x13F2 + b * 0x1000),
+                    mirrorBase + static_cast<uint32_t>(b) * 2};
+        crcOne(bb);
+    }
+    for (size_t i = 1; i < nFixed; i++)
+        crcOne(fixed[i]); // checksum-block per ultimo
+
+    FILE* f = std::fopen(path.c_str(), "r+b");
+    if (!f)
+        f = std::fopen(path.c_str(), "wb");
+    if (!f)
+        return false;
+    size_t written = std::fwrite(rawData_.data(), 1, rawData_.size(), f);
+    std::fclose(f);
+    DebugLog::line("saveDS5: %s -> OK (game %u %s)", path.c_str(), dsGameByte_,
+                   b2w2 ? "B2W2" : "BW");
+    return written == rawData_.size();
+}
+
 bool SaveFile::loadDXY(const std::string& path) {
     // Gen6 XY decrypted dump (PKHeX SAV6XY): boxes at 0x22600 (31 x 30 x
     // 232B EC-encrypted slots), MyStatus block at 0x14000 (Game byte at +4:
@@ -3393,5 +4331,272 @@ bool SaveFile::saveDSM(const std::string& path) {
     file.write(reinterpret_cast<const char*>(rawData_.data()), rawData_.size());
     file.close();
     DebugLog::line("saveDSM: %s -> OK", path.c_str());
+    return true;
+}
+
+bool SaveFile::loadDSUSUM(const std::string& path) {
+    // Gen7 USUM decrypted dump (PKHeX SAV7USUM): BoxPokemon at 0x05200
+    // (32 x 30 x 232B Pk7 slots, stesso record di SM), MyStatus at 0x01400
+    // (Game at +4: 32 = Ultra Sun, 33 = Ultra Moon), PokePartySave at 0x01600
+    // (6 x 260). Box names in BOX block at 0x04C00 (32 x 0x22 UTF-16LE).
+    // Stesso modello flat di loadDSM (niente checksum). Validato su
+    // tools/test save/upstream/oh_ultrasun.sav (960/960 slot + party 6/6).
+    static constexpr size_t BOX_BASE = 0x05200;
+    static constexpr int BOXES = 32;
+    static constexpr int SLOT = 232;
+    static constexpr size_t MIN_SIZE = BOX_BASE + static_cast<size_t>(BOXES) * 30 * SLOT;
+    std::ifstream file(path, std::ios::binary | std::ios::ate);
+    if (!file.is_open())
+        return false;
+    if (static_cast<size_t>(file.tellg()) < MIN_SIZE)
+        return false;
+    // Full file, see loadDXY: truncating would destroy the dump tail on save.
+    size_t fileSize = static_cast<size_t>(file.tellg());
+    file.seekg(0);
+    rawData_.resize(fileSize);
+    file.read(reinterpret_cast<char*>(rawData_.data()), fileSize);
+    if (!file)
+        return false;
+
+    uint8_t game = rawData_[0x01400 + 4];
+    if (game != 32 && game != 33) {
+        DebugLog::line("loadDSUSUM: %s -> Game byte %u non USUM (dump cifrato?)", path.c_str(), game);
+        return false;
+    }
+    auto slotValid = [&](const uint8_t* slot) -> bool {
+        static const uint8_t ZERO[232] = {};
+        if (std::memcmp(slot, ZERO, sizeof(ZERO)) == 0)
+            return false;
+        uint8_t dec[232];
+        PokeCrypto::decryptArray6(slot, sizeof(dec), dec);
+        uint32_t sum = 0;
+        for (int i = 8; i < 232; i += 2)
+            sum += static_cast<uint32_t>(dec[i] | (dec[i + 1] << 8));
+        uint16_t stored = static_cast<uint16_t>(dec[6] | (dec[7] << 8));
+        return (sum & 0xFFFF) == stored;
+    };
+    int validSlots = 0;
+    for (int b = 0; b < BOXES && validSlots < 3; b++)
+        for (int s = 0; s < 30 && validSlots < 3; s++) {
+            size_t o = BOX_BASE + static_cast<size_t>(b) * 30 * SLOT + static_cast<size_t>(s) * SLOT;
+            if (slotValid(rawData_.data() + o))
+                validSlots++;
+        }
+    if (validSlots <= 0)
+        DebugLog::line("loadDSUSUM: %s -> nessuno slot valido (save vuoto?)", path.c_str());
+    dsStorage_.assign(static_cast<size_t>(BOXES) * 30 * SLOT, 0);
+    int badSlots = 0;
+    for (int b = 0; b < BOXES; b++)
+        for (int s = 0; s < 30; s++) {
+            size_t o = BOX_BASE + static_cast<size_t>(b) * 30 * SLOT + static_cast<size_t>(s) * SLOT;
+            const uint8_t* slot = rawData_.data() + o;
+            uint8_t* dst = dsStorage_.data() + (static_cast<size_t>(b) * 30 + s) * SLOT;
+            static const uint8_t ZERO[232] = {};
+            if (std::memcmp(slot, ZERO, sizeof(ZERO)) == 0)
+                continue;
+            if (!slotValid(slot)) {
+                badSlots++;
+                continue;
+            }
+            std::memcpy(dst, slot, SLOT);
+        }
+    if (badSlots > 0)
+        DebugLog::line("loadDSUSUM: %s -> %d slot corrotti nascosti", path.c_str(), badSlots);
+    DebugLog::line("loadDSUSUM: %s -> Game %u (%s)", path.c_str(), game, game == 32 ? "Ultra Sun" : "Ultra Moon");
+    // Party: block 04 PokePartySave at 0x01600, 6 x 260 (SaveBlockAccessor7USUM[04])
+    dsParty_.assign(6, Pokemon{});
+    {
+        constexpr size_t PARTY_OFF = 0x01600;
+        constexpr int PARTY_SLOTS = 6;
+        constexpr int PARTY_SIZE = 260;
+        if (PARTY_OFF + PARTY_SLOTS * PARTY_SIZE <= rawData_.size()) {
+            int valid = 0;
+            for (int i = 0; i < PARTY_SLOTS; i++) {
+                const uint8_t* raw = rawData_.data() + PARTY_OFF + i * PARTY_SIZE;
+                Pokemon p; p.gameType_ = gameType_;
+                p.loadFromEncrypted(raw, PARTY_SIZE);
+                if (!p.isEmpty() && p.species()!=0) { dsParty_[i]=p; valid++; }
+            }
+            DebugLog::line("loadDSUSUM: %s -> party %d/6", path.c_str(), valid);
+        }
+        if (dsOtName_.empty()) { for(auto &pp: dsParty_) if(!pp.isEmpty()){ dsOtName_=pp.otName(); break; } }
+        if (dsOtName_.empty() && !dsParty_.empty()) dsOtName_ = dsParty_[0].otName();
+    }
+    boxData_ = dsStorage_.data();
+    boxDataLen_ = dsStorage_.size();
+    boxLayoutData_ = rawData_.data() + 0x04C00;
+    boxLayoutLen_ = BOXES * 0x22;
+    loaded_ = true;
+    return true;
+}
+
+bool SaveFile::saveDSUSUM(const std::string& path) {
+    if (!loaded_ || rawData_.empty() || dsStorage_.empty())
+        return false;
+    static constexpr size_t BOX_BASE = 0x05200;
+    static constexpr int BOXES = 32;
+    static constexpr int SLOT = 232;
+    static constexpr size_t PARTY_OFF = 0x01600;
+    static constexpr int PARTY_SIZE = 260;
+    size_t need = BOX_BASE + static_cast<size_t>(BOXES) * 30 * SLOT;
+    if (rawData_.size() < need || dsStorage_.size() < need - BOX_BASE)
+        return false;
+    std::memcpy(rawData_.data() + BOX_BASE, dsStorage_.data(), need - BOX_BASE);
+    if (PARTY_OFF + 6 * PARTY_SIZE <= rawData_.size()) {
+        if ((int)dsParty_.size() != 6) dsParty_.assign(6, Pokemon{});
+        for (int i = 0; i < 6; i++) {
+            uint8_t* dst = rawData_.data() + PARTY_OFF + i * PARTY_SIZE;
+            const Pokemon& m = dsParty_[i];
+            if (m.isEmpty() || m.species() == 0) {
+                std::memset(dst, 0, PARTY_SIZE);
+            } else {
+                Pokemon w = m;
+                w.gameType_ = gameType_;
+                // Full 260B party record (getEncrypted copre solo i 232B box).
+                w.refreshChecksum();
+                PokemonFFI::encryptArray6(w.data.data(), PARTY_SIZE, dst);
+            }
+        }
+    }
+    std::ofstream file(path, std::ios::binary | std::ios::trunc);
+    if (!file.is_open())
+        return false;
+    file.write(reinterpret_cast<const char*>(rawData_.data()), rawData_.size());
+    file.close();
+    DebugLog::line("saveDSUSUM: %s -> OK", path.c_str());
+    return true;
+}
+
+bool SaveFile::loadDSORAS(const std::string& path) {
+    // Gen6 ORAS decrypted dump (PKHeX SAV6AO): Box block 56 at 0x33000
+    // (31 x 30 x 232B Pk6 slots, stesso record di XY), MyStatus block 17 at
+    // 0x14000 (Game at +4: 26 = Alpha Sapphire, 27 = Omega Ruby),
+    // PokePartySave block 18 at 0x14200 (6 x 260). Box names in BOX block 12
+    // at 0x04400 (31 x 0x22 UTF-16LE). Stesso modello flat di loadDXY
+    // (niente checksum). Validato su tools/test save/upstream/oh_omegaruby.sav
+    // (930/930 slot + party 2/6).
+    static constexpr size_t BOX_BASE = 0x33000;
+    static constexpr int BOXES = 31;
+    static constexpr int SLOT = 232;
+    static constexpr size_t MIN_SIZE = BOX_BASE + static_cast<size_t>(BOXES) * 30 * SLOT;
+    std::ifstream file(path, std::ios::binary | std::ios::ate);
+    if (!file.is_open())
+        return false;
+    if (static_cast<size_t>(file.tellg()) < MIN_SIZE)
+        return false;
+    // Full file, see loadDXY: truncating would destroy the dump tail on save.
+    size_t fileSize = static_cast<size_t>(file.tellg());
+    file.seekg(0);
+    rawData_.resize(fileSize);
+    file.read(reinterpret_cast<char*>(rawData_.data()), fileSize);
+    if (!file)
+        return false;
+
+    uint8_t game = rawData_[0x14000 + 4];
+    if (game != 26 && game != 27) {
+        DebugLog::line("loadDSORAS: %s -> Game byte %u non ORAS (dump cifrato?)", path.c_str(), game);
+        return false;
+    }
+    auto slotValid = [&](const uint8_t* slot) -> bool {
+        static const uint8_t ZERO[232] = {};
+        if (std::memcmp(slot, ZERO, sizeof(ZERO)) == 0)
+            return false;
+        uint8_t dec[232];
+        PokeCrypto::decryptArray6(slot, sizeof(dec), dec);
+        uint32_t sum = 0;
+        for (int i = 8; i < 232; i += 2)
+            sum += static_cast<uint32_t>(dec[i] | (dec[i + 1] << 8));
+        uint16_t stored = static_cast<uint16_t>(dec[6] | (dec[7] << 8));
+        return (sum & 0xFFFF) == stored;
+    };
+    int validSlots = 0;
+    for (int b = 0; b < BOXES && validSlots < 3; b++)
+        for (int s = 0; s < 30 && validSlots < 3; s++) {
+            size_t o = BOX_BASE + static_cast<size_t>(b) * 30 * SLOT + static_cast<size_t>(s) * SLOT;
+            if (slotValid(rawData_.data() + o))
+                validSlots++;
+        }
+    if (validSlots <= 0)
+        DebugLog::line("loadDSORAS: %s -> nessuno slot valido (save vuoto?)", path.c_str());
+    dsStorage_.assign(static_cast<size_t>(BOXES) * 30 * SLOT, 0);
+    int badSlots = 0;
+    for (int b = 0; b < BOXES; b++)
+        for (int s = 0; s < 30; s++) {
+            size_t o = BOX_BASE + static_cast<size_t>(b) * 30 * SLOT + static_cast<size_t>(s) * SLOT;
+            const uint8_t* slot = rawData_.data() + o;
+            uint8_t* dst = dsStorage_.data() + (static_cast<size_t>(b) * 30 + s) * SLOT;
+            static const uint8_t ZERO[232] = {};
+            if (std::memcmp(slot, ZERO, sizeof(ZERO)) == 0)
+                continue;
+            if (!slotValid(slot)) {
+                badSlots++;
+                continue;
+            }
+            std::memcpy(dst, slot, SLOT);
+        }
+    if (badSlots > 0)
+        DebugLog::line("loadDSORAS: %s -> %d slot corrotti nascosti", path.c_str(), badSlots);
+    DebugLog::line("loadDSORAS: %s -> Game %u (%s)", path.c_str(), game, game == 27 ? "Omega Ruby" : "Alpha Sapphire");
+    // Party: block 18 PokePartySave at 0x14200, 6 x 260 (come XY)
+    dsParty_.assign(6, Pokemon{});
+    {
+        constexpr size_t PARTY_OFF = 0x14200;
+        constexpr int PARTY_SLOTS = 6;
+        constexpr int PARTY_SIZE = 260;
+        if (PARTY_OFF + PARTY_SLOTS * PARTY_SIZE <= rawData_.size()) {
+            int valid = 0;
+            for (int i = 0; i < PARTY_SLOTS; i++) {
+                const uint8_t* raw = rawData_.data() + PARTY_OFF + i * PARTY_SIZE;
+                Pokemon p; p.gameType_ = gameType_;
+                p.loadFromEncrypted(raw, PARTY_SIZE);
+                if (!p.isEmpty() && p.species()!=0) { dsParty_[i]=p; valid++; }
+            }
+            DebugLog::line("loadDSORAS: %s -> party %d/6", path.c_str(), valid);
+        }
+        if (dsOtName_.empty()) { for(auto &pp: dsParty_) if(!pp.isEmpty()){ dsOtName_=pp.otName(); break; } }
+        if (dsOtName_.empty() && !dsParty_.empty()) dsOtName_ = dsParty_[0].otName();
+    }
+    boxData_ = dsStorage_.data();
+    boxDataLen_ = dsStorage_.size();
+    boxLayoutData_ = rawData_.data() + 0x04400;
+    boxLayoutLen_ = BOXES * 0x22;
+    loaded_ = true;
+    return true;
+}
+
+bool SaveFile::saveDSORAS(const std::string& path) {
+    if (!loaded_ || rawData_.empty() || dsStorage_.empty())
+        return false;
+    static constexpr size_t BOX_BASE = 0x33000;
+    static constexpr int BOXES = 31;
+    static constexpr int SLOT = 232;
+    static constexpr size_t PARTY_OFF = 0x14200;
+    static constexpr int PARTY_SIZE = 260;
+    size_t need = BOX_BASE + static_cast<size_t>(BOXES) * 30 * SLOT;
+    if (rawData_.size() < need || dsStorage_.size() < need - BOX_BASE)
+        return false;
+    std::memcpy(rawData_.data() + BOX_BASE, dsStorage_.data(), need - BOX_BASE);
+    if (PARTY_OFF + 6 * PARTY_SIZE <= rawData_.size()) {
+        if ((int)dsParty_.size() != 6) dsParty_.assign(6, Pokemon{});
+        for (int i = 0; i < 6; i++) {
+            uint8_t* dst = rawData_.data() + PARTY_OFF + i * PARTY_SIZE;
+            const Pokemon& m = dsParty_[i];
+            if (m.isEmpty() || m.species() == 0) {
+                std::memset(dst, 0, PARTY_SIZE);
+            } else {
+                Pokemon w = m;
+                w.gameType_ = gameType_;
+                // Full 260B party record (getEncrypted copre solo i 232B box).
+                w.refreshChecksum();
+                PokemonFFI::encryptArray6(w.data.data(), PARTY_SIZE, dst);
+            }
+        }
+    }
+    std::ofstream file(path, std::ios::binary | std::ios::trunc);
+    if (!file.is_open())
+        return false;
+    file.write(reinterpret_cast<const char*>(rawData_.data()), rawData_.size());
+    file.close();
+    DebugLog::line("saveDSORAS: %s -> OK", path.c_str());
     return true;
 }
