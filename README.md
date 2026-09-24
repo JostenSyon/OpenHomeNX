@@ -23,7 +23,8 @@ Started from **pkHouse**'s box/bank grid concept (C++/SDL2) — that's where the
 - Party strip with OT, grab/swap/place from party, compaction on save
 - Self-trade: evolve trade-only Pokémon (incl. held-item and paired evolutions) without a second player
 - Backpack / item editing across generations (Gen 1/2 GB, Gen 3 RSE/FRLG, Gen 4/5 DS)
-- Boxart: local cover art first, automatic 2D/3D download fallback, per-style cache
+- Boxart: local cover art first, automatic 2D/3D download fallback via ScreenScraper.fr (libretro-thumbnails as backup), per-style cache, background update with live progress and instant cancel
+- Browse and launch your whole ROM library, saves or not: "Show ROMs without save" lists every scanned GBA/GBC/GB ROM even before you've ever played it — box/backpack/trade stay hidden until a real save exists, but the tile is always there and launchable
 - Launch imported GBA/GBC/GB ROMs straight from their save (mGBA on Switch, RetroArch on R36S)
 - ROM rename from cartridge header (real game name + detected language)
 - Native GB/GBC/GBA/DS/decrypted-3DS saves + SD/USB import
@@ -45,11 +46,11 @@ Evolve trade-evolution Pokémon (Kadabra, Machoke, Graveler, Haunter, and the he
 
 ## Boxart (cover art)
 
-Three styles for the game selector art, switchable anytime: **Locale** (use whatever a local scraper already put in `images/`, download the 2D box art on miss), **2D** (always download, box art only), **3D** (prefer local 3D-style art, fall back to 2D download and log it). Downloads use the libretro-thumbnails database; screenshots/logos/marquees are never picked as cover art. Cached per style so switching styles shows different art immediately, without re-downloading what's already cached under the other style.
+Three styles for the game selector art, switchable anytime: **Locale** (use whatever a local scraper already put in `images/`, or your own bundled/local art; falls back to a 2D download only if nothing local exists, and always keeps the game's name visible on that fallback so it's never mistaken for real local art), **2D** (always download, box art only), **3D** (real 3D box art via ScreenScraper.fr, falls back to 2D and logs it — the fallback is never cached in a way that blocks a real 3D cover from being found later). Downloads run on a background thread with a live progress bar and instant `B`-to-cancel — the app never freezes while fetching. Screenshots/logos/marquees are never picked as cover art. Cached per style so switching styles shows different art immediately, without re-downloading what's already cached under another style; a failed fetch is remembered for an hour so a bad connection doesn't get re-hammered on every update, but a cancelled attempt never counts as a failure.
 
 ## ROM launcher
 
-Open a file-backed GB/GBC/GBA save (imported from SD/USB) and launch its matching ROM directly — same filename next to the save, `.gb`/`.gbc`/`.gba` (case-insensitive). On Switch it chainloads mGBA (`sdmc:/switch/mGBA.nro`) via `envSetNextLoad`; on R36S it hands off to RetroArch with the mGBA core and relaunches OpenHomeNX automatically once you're done playing.
+Launch any imported GBA/GBC/GB ROM directly, with or without a save yet — see "Show ROMs without save" above. When a save exists, OpenHomeNX resolves the matching ROM by filename next to it (`.gb`/`.gbc`/`.gba`, case-insensitive) automatically. On Switch it chainloads mGBA (`sdmc:/switch/mGBA.nro`) via `envSetNextLoad`; on R36S it hands off to RetroArch with the mGBA core and relaunches OpenHomeNX automatically once you're done playing.
 
 ## Remote sync (LAN)
 
@@ -65,7 +66,7 @@ Box Remoto and DevSync talk to any Filebrowser-compatible device on the LAN (R36
 | GB (import) | Red / Blue / Yellow, Gold / Silver / Crystal | SD/USB file |
 | DS (import) | Diamond / Pearl / Platinum / HGSS, Black / White / B2W2 (save write-back) | SD/USB file |
 
-FireRed/LeafGreen is the only family that can show up either way: as an installed Switch save *or* as an imported GBA file (R36S always uses the import path, since there's no installed-title concept there) — both are detected and handled per-instance, never assumed from the game type alone.
+FireRed/LeafGreen is the only family that can show up either way: as an installed Switch save *or* as an imported GBA file (R36S always uses the import path, since there's no installed-title concept there) — both are detected and handled per-instance, never assumed from the game type alone. If you own both (e.g. the NSO title on Switch and a matching ROM for R36S), **Settings → Data → Sync FRLG saves** copies whichever side has more play time onto the other — one-tap button, automatic backup on both sides first, optional "Auto-sync FRLG" toggle (off by default). Switch only, since R36S has no installed-title concept to sync against.
 
 Cross-gen bank covers all 13 stored formats (PK1/PK2/PK3/PK4/PK5/PK6/PK7/PK8/PK9/PA8/PA9/PB8/PB7).
 
@@ -219,7 +220,8 @@ Nato dall'idea della griglia box/banche a due pannelli di **pkHouse** (C++/SDL2)
 - Party strip con OT, grab/swap/posa dal party, compattamento al salvataggio
 - Self-trade: evola i Pokémon che evolvono solo per scambio (incl. oggetto in mano ed evoluzioni in coppia) senza bisogno di un secondo giocatore
 - Zaino / modifica oggetti multi-generazione (Gen 1/2 GB, Gen 3 RSE/FRLG, Gen 4/5 DS)
-- Copertine: arte locale prima, download automatico 2D/3D di fallback, cache per stile
+- Copertine: arte locale prima, download automatico 2D/3D di fallback via ScreenScraper.fr (libretro-thumbnails di riserva), cache per stile, aggiornamento in background con progresso live e annullamento immediato
+- Sfoglia e avvia tutta la libreria ROM, con o senza save: "Mostra ROM senza save" elenca ogni ROM GBA/GBC/GB scansionata anche prima di averci mai giocato — banca/zaino/scambio restano nascosti finché non esiste un save vero, ma la tile c'è sempre ed è sempre avviabile
 - Avvia le ROM GBA/GBC/GB importate direttamente dal loro save (mGBA su Switch, RetroArch su R36S)
 - Rinomina ROM dall'header della cartuccia (nome reale del gioco + lingua rilevata)
 - Save nativi GB/GBC/GBA/DS/3DS-decifrati + import da SD/USB
@@ -241,11 +243,11 @@ Evolvi i Pokémon che evolvono solo per scambio (Kadabra, Machoke, Graveler, Hau
 
 ## Copertine (boxart)
 
-Tre stili per l'arte del selettore giochi, cambiabili in ogni momento: **Locale** (usa quello che uno scraper locale ha già messo in `images/`, scarica il 2D in caso di mancanza), **2D** (sempre download, solo box art), **3D** (preferisce arte 3D locale, fallback su download 2D con log). I download passano dal database libretro-thumbnails; screenshot/loghi/banner non vengono mai scelti come copertina. Cache separata per stile, così cambiare stile mostra subito arte diversa senza dover riscaricare quello già in cache per l'altro stile.
+Tre stili per l'arte del selettore giochi, cambiabili in ogni momento: **Locale** (usa quello che uno scraper locale ha già messo in `images/`, o la tua arte già inclusa/locale; scarica il 2D solo se non esiste nulla di locale, e tiene sempre visibile il nome del gioco su quel fallback così non viene mai scambiato per arte locale vera), **2D** (sempre download, solo box art), **3D** (arte 3D vera via ScreenScraper.fr, fallback su 2D con log — il fallback non viene mai messo in cache in un modo che blocchi la ricerca futura di un vero box 3D). I download girano su un thread in background con barra di progresso live e annullamento immediato con `B` — l'app non si blocca mai durante lo scaricamento. Screenshot/loghi/banner non vengono mai scelti come copertina. Cache separata per stile, così cambiare stile mostra subito arte diversa senza dover riscaricare quello già in cache per un altro stile; un tentativo fallito viene ricordato per un'ora così una rete instabile non viene martellata a ogni aggiornamento, ma un annullamento non conta mai come fallimento.
 
 ## Launcher ROM
 
-Apri un save file-backed GB/GBC/GBA (importato da SD/USB) e avvia direttamente la ROM corrispondente — stesso nome del save, `.gb`/`.gbc`/`.gba` (case-insensitive). Su Switch fa il chainload di mGBA (`sdmc:/switch/mGBA.nro`) via `envSetNextLoad`; su R36S passa la mano a RetroArch con il core mGBA e rilancia OpenHomeNX automaticamente al termine della partita.
+Avvia qualsiasi ROM GBA/GBC/GB importata, con o senza save — vedi "Mostra ROM senza save" sopra. Quando un save esiste, OpenHomeNX risolve automaticamente la ROM corrispondente dal nome file accanto ad esso (`.gb`/`.gbc`/`.gba`, case-insensitive). Su Switch fa il chainload di mGBA (`sdmc:/switch/mGBA.nro`) via `envSetNextLoad`; su R36S passa la mano a RetroArch con il core mGBA e rilancia OpenHomeNX automaticamente al termine della partita.
 
 ## Sync remoto (LAN)
 
@@ -261,7 +263,7 @@ Box Remoto e DevSync parlano con qualsiasi dispositivo compatibile Filebrowser s
 | GB (import) | Rosso / Blu / Giallo, Oro / Argento / Cristallo | File SD/USB |
 | DS (import) | Diamante / Perla / Platino / HGSS, Nero / Bianco / B2W2 (scrittura save) | File SD/USB |
 
-Rosso Fuoco/Verde Foglia è l'unica famiglia che può presentarsi in entrambi i modi: come save Switch installato *oppure* come file GBA importato (su R36S è sempre import, li' non esiste il concetto di titolo installato) — entrambi i casi sono riconosciuti e gestiti per singola istanza, mai dedotti dal solo tipo di gioco.
+Rosso Fuoco/Verde Foglia è l'unica famiglia che può presentarsi in entrambi i modi: come save Switch installato *oppure* come file GBA importato (su R36S è sempre import, li' non esiste il concetto di titolo installato) — entrambi i casi sono riconosciuti e gestiti per singola istanza, mai dedotti dal solo tipo di gioco. Se possiedi entrambi (es. il titolo NSO su Switch e una ROM corrispondente per R36S), **Impostazioni → Dati → Sincronizza save FRLG** copia il lato con più tempo di gioco sull'altro — bottone one-tap, backup automatico su entrambi i lati prima, toggle opzionale "Auto-sync FRLG" (spento di default). Solo Switch, dato che R36S non ha un titolo installato con cui sincronizzare.
 
 Banca cross-gen: tutti i 13 formati (PK1/PK2/PK3/PK4/PK5/PK6/PK7/PK8/PK9/PA8/PA9/PB8/PB7).
 
