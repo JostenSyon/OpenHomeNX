@@ -494,29 +494,39 @@ bool UI::importedIsRomOnly(GameType game, int occurrence) const {
 }
 
 void UI::assertGamesInSync() const {
-    // Solo debug (NDEBUG lo compila via): in release il confronto resta
-    // ma senza costo di abort. Chiamato a fine di ogni mutazione e in
-    // ingresso ai resolver per-istanza.
-    assert(availableGamesNative_.size() == availableGames_.size());
+    // NDEBUG non e' definita in nessuna delle due build (Switch/R36S), quindi
+    // un assert() qui abortirebbe anche in release per un utente vero. Per
+    // uno stato interno ricostruibile (non un salvataggio) meglio degradare
+    // con grazia: logga l'anomalia, isNativeAt()/importedOccurrence() sotto
+    // si difendono gia' da soli confrontando le dimensioni invece di
+    // assumerle uguali -- mai un accesso fuori range, mai un crash.
+    if (availableGamesNative_.size() != availableGames_.size())
+        DebugLog::line("BUG: availableGamesNative_ (%zu) fuori sync con availableGames_ (%zu)",
+                       availableGamesNative_.size(), availableGames_.size());
 }
 
 bool UI::isNativeAt(int idx) const {
     assertGamesInSync();
-    if (idx < 0 || idx >= (int)availableGames_.size())
-        return true; // fuori range: via nativa (mai un import)
+    // >= availableGamesNative_.size() (non availableGames_.size()) cosi' un
+    // eventuale disallineamento degrada su "nativa" invece di leggere fuori
+    // dal vettore piu' corto.
+    if (idx < 0 || idx >= (int)availableGamesNative_.size())
+        return true; // fuori range (o disallineato): via nativa, mai un import
     return availableGamesNative_[(size_t)idx] != 0;
 }
 
 int UI::importedOccurrence(int cursor) const {
     assertGamesInSync();
-    if (cursor < 0 || cursor >= (int)availableGames_.size())
+    if (cursor < 0 || cursor >= (int)availableGames_.size() ||
+        cursor >= (int)availableGamesNative_.size())
         return -1;
     if (availableGamesNative_[(size_t)cursor] != 0)
         return -1; // nativa: mai un indice in importedGames_
     GameType game = availableGames_[cursor];
     int n = 0;
     for (int i = 0; i < cursor; i++)
-        if (availableGames_[i] == game && availableGamesNative_[(size_t)i] == 0)
+        if (i < (int)availableGamesNative_.size() &&
+            availableGames_[i] == game && availableGamesNative_[(size_t)i] == 0)
             n++;
     return n;
 }
